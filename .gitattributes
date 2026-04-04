@@ -1,0 +1,4 @@
+*.c         text eol=lf diff=c
+*.h         text eol=lf diff=c
+*.md        text eol=lf diff=markdown
+Makefile    text eol=lf whitespace=tab-in-indent
