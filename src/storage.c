@@ -33,6 +33,56 @@ static void build_toolchain_path(char *buffer, size_t size, const char *toolchai
     snprintf(buffer, size, "%s/%s", TOOLCHAINS_DIR, toolchain_name);
 }
 
+static int remove_directory_recursive(const char *path){
+    DIR *dir;
+    struct dirent *entry;
+    char entry_path[512];
+    struct stat info;
+
+    dir = opendir(path);
+    if(dir == NULL){
+        fprintf(stderr, "Error: could not open directory '%s'.\n", path);
+        return 1;
+    }
+
+    while((entry = readdir(dir)) != NULL){
+        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0){
+            continue;
+        }
+
+        snprintf(entry_path, sizeof(entry_path), "%s/%s", path, entry->d_name);
+
+        if(stat(entry_path, &info) != 0){
+            fprintf(stderr, "Error: could not access '%s'.\n", entry_path);
+            closedir(dir);
+            return 1;
+        }
+
+        if(S_ISDIR(info.st_mode)){
+            if(remove_directory_recursive(entry_path) != 0){
+                closedir(dir);
+                return 1;
+            }
+        }
+        else {
+            if(remove(entry_path) != 0){
+                fprintf(stderr, "Error: could not remove file '%s'.\n", entry_path);
+                closedir(dir);
+                return 1;
+            }
+        }
+    }
+
+    closedir(dir);
+
+    if(rmdir(path) != 0){
+        fprintf(stderr, "Error: could not remove directory '%s'.\n", path);
+        return 1;
+    }
+
+    return 0;
+}
+
 void state_init(CupState *state){
     int i;
 
@@ -183,19 +233,21 @@ int create_toolchain_dir(const char *toolchain_name){
 
 int remove_toolchain_dir(const char *toolchain_name){
     char path[256];
-    char info_path[512];
+    struct stat info;
 
     build_toolchain_path(path, sizeof(path), toolchain_name);
-    snprintf(info_path, sizeof(info_path), "%s/info.txt", path);
 
-    remove(info_path);
-
-    if(rmdir(path) != 0){
-        fprintf(stderr, "Error: could not remove toolchain directory '%s'.\n", path);
+    if(stat(path, &info) != 0){
+        fprintf(stderr, "Error: toolchain directory '%s' does not exist.\n", path);
         return 1;
     }
 
-    return 0;
+    if(!S_ISDIR(info.st_mode)){
+        fprintf(stderr, "Error: '%s' is not a directory.\n", path);
+        return 1;
+    }
+
+    return remove_directory_recursive(path);
 }
 
 int split_toolchain_name(const char *toolchain_name, char *name, size_t name_size, char *version, size_t version_size){
