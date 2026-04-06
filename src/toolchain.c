@@ -77,6 +77,10 @@ int handle_install(const char *name){
         return 1;
     }
 
+    if(write_toolchain_info(name) != 0){
+        return 1;
+    }
+
     if(state_save(&state, STATE_FILE) != 0){
         return 1;
     }

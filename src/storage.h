@@ -26,4 +26,7 @@ int state_set_default(CupState *state, const char *name);
 int create_toolchain_dir(const char *toolchain_name);
 int remove_toolchain_dir(const char *toolchain_name);
 
+int split_toolchain_name(const char *toolchain_name, char *name, size_t name_size, char *version, size_t version_size);
+int write_toolchain_info(const char *toolchain_name);
+
 #endif

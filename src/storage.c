@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+
 #include <dirent.h>
 #include <unistd.h>
+
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "storage.h"
 
@@ -181,13 +183,72 @@ int create_toolchain_dir(const char *toolchain_name){
 
 int remove_toolchain_dir(const char *toolchain_name){
     char path[256];
+    char info_path[512];
 
     build_toolchain_path(path, sizeof(path), toolchain_name);
+    snprintf(info_path, sizeof(info_path), "%s/info.txt", path);
+
+    remove(info_path);
 
     if(rmdir(path) != 0){
         fprintf(stderr, "Error: could not remove toolchain directory '%s'.\n", path);
         return 1;
     }
 
+    return 0;
+}
+
+int split_toolchain_name(const char *toolchain_name, char *name, size_t name_size, char *version, size_t version_size){
+    const char *at = strchr(toolchain_name, '@');
+    size_t name_len;
+    size_t version_len;
+
+    if(at == NULL){
+        return 1;
+    }
+
+    name_len = (size_t)(at - toolchain_name);
+    version_len = strlen(at + 1);
+
+    if(name_len == 0 || version_len == 0){
+        return 1;
+    }
+
+    if(name_len >= name_size || version_len >= version_size){
+        return 1;
+    }
+
+    strncpy(name, toolchain_name, name_len);
+    name[name_len] = '\0';
+
+    strncpy(version, at + 1, version_len);
+    version[version_len] = '\0';
+
+    return 0;
+}
+
+int write_toolchain_info(const char *toolchain_name){
+    char path[256];
+    char name[MAX_NAME_LEN];
+    char version[MAX_NAME_LEN];
+    FILE *file;
+
+    if(split_toolchain_name(toolchain_name, name, sizeof(name), version, sizeof(version)) != 0){
+        fprintf(stderr, "Error: invalid toolchain name '%s'.\n", toolchain_name);
+        return 1;
+    }
+
+    snprintf(path, sizeof(path), "%s/%s/info.txt", TOOLCHAINS_DIR, toolchain_name);
+
+    file = fopen(path, "w");
+    if(file == NULL){
+        fprintf(stderr, "Error: could not write toolchain info for '%s'.\n", toolchain_name);
+        return 1;
+    }
+
+    fprintf(file, "name=%s\n", name);
+    fprintf(file, "version=%s\n", version);
+
+    fclose(file);
     return 0;
 }
