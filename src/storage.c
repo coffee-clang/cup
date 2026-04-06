@@ -2,6 +2,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
+#include <unistd.h>
+
 #include "storage.h"
 
 static void trim_newline(char *s){
@@ -22,6 +25,10 @@ static void ensure_directory(const char *path){
 static void ensure_cup_structure(void){
     ensure_directory(CUP_DIR);
     ensure_directory(TOOLCHAINS_DIR);
+}
+
+static void build_toolchain_path(char *buffer, size_t size, const char *toolchain_name){
+    snprintf(buffer, size, "%s/%s", TOOLCHAINS_DIR, toolchain_name);
 }
 
 void state_init(CupState *state){
@@ -149,6 +156,38 @@ int state_set_default(CupState *state, const char *name){
     
     strncpy(state->default_name, name, MAX_NAME_LEN - 1);
     state->default_name[MAX_NAME_LEN - 1] = '\0';
+
+    return 0;
+}
+
+int create_toolchain_dir(const char *toolchain_name){
+    char path[256];
+    struct stat info = {0};
+
+    ensure_cup_structure();
+    build_toolchain_path(path, sizeof(path), toolchain_name);
+
+    if(stat(path, &info) == 0){
+        return 0;
+    }
+
+    if(mkdir(path, 0700) != 0){
+        fprintf(stderr, "Error: could not create toolchain directory '%s'.\n", path);
+        return 1;
+    }
+
+    return 0;
+}
+
+int remove_toolchain_dir(const char *toolchain_name){
+    char path[256];
+
+    build_toolchain_path(path, sizeof(path), toolchain_name);
+
+    if(rmdir(path) != 0){
+        fprintf(stderr, "Error: could not remove toolchain directory '%s'.\n", path);
+        return 1;
+    }
 
     return 0;
 }

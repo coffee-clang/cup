@@ -3,6 +3,7 @@
 
 #define MAX_TOOLCHAINS 32
 #define MAX_NAME_LEN 64
+
 #define CUP_DIR ".cup"
 #define TOOLCHAINS_DIR ".cup/toolchains"
 #define STATE_FILE ".cup/state.txt"
@@ -21,5 +22,8 @@ int state_find_toolchain(const CupState *state, const char *name);
 int state_add_toolchain(CupState *state, const char *name);
 int state_remove_toolchain(CupState *state, const char *name);
 int state_set_default(CupState *state, const char *name);
+
+int create_toolchain_dir(const char *toolchain_name);
+int remove_toolchain_dir(const char *toolchain_name);
 
 #endif

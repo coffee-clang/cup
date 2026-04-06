@@ -73,6 +73,10 @@ int handle_install(const char *name){
         return 1;
     }
 
+    if(create_toolchain_dir(name) != 0){
+        return 1;
+    }
+
     if(state_save(&state, STATE_FILE) != 0){
         return 1;
     }
@@ -95,6 +99,10 @@ int handle_remove(const char *name){
     result = state_remove_toolchain(&state, name);
     if(result != 0){
         fprintf(stderr, "Error: toolchain '%s' is not installed.\n", name);
+        return 1;
+    }
+
+    if(remove_toolchain_dir(name) != 0){
         return 1;
     }
 
