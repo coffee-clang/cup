@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include "storage.h"
 
 static void trim_newline(char *s){
@@ -7,6 +9,19 @@ static void trim_newline(char *s){
     if(len > 0 && s[len - 1] == '\n'){
         s[len - 1] = '\0';
     }
+}
+
+static void ensure_directory(const char *path){
+    struct stat info = {0};
+
+    if(stat(path, &info) == -1){
+        mkdir(path, 0700);
+    }
+}
+
+static void ensure_cup_structure(void){
+    ensure_directory(CUP_DIR);
+    ensure_directory(TOOLCHAINS_DIR);
 }
 
 void state_init(CupState *state){
@@ -24,6 +39,7 @@ int state_load(CupState *state, const char *filename){
     FILE *file;
     char line[256];
 
+    ensure_cup_structure();
     state_init(state);
 
     file = fopen(filename, "r");
@@ -54,6 +70,8 @@ int state_load(CupState *state, const char *filename){
 int state_save(const CupState *state, const char *filename){
     FILE *file;
     int i;
+
+    ensure_cup_structure();
 
     file = fopen(filename, "w");
     if(file == NULL){

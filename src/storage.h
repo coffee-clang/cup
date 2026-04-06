@@ -3,7 +3,9 @@
 
 #define MAX_TOOLCHAINS 32
 #define MAX_NAME_LEN 64
-#define STATE_FILE "cup_state.txt"
+#define CUP_DIR ".cup"
+#define TOOLCHAINS_DIR ".cup/toolchains"
+#define STATE_FILE ".cup/state.txt"
 
 typedef struct {
     char names[MAX_TOOLCHAINS][MAX_NAME_LEN];

@@ -6,9 +6,9 @@ static void print_usage(const char *prog_name){
     fprintf(stderr,
         "Usage:\n"
         "  %s list\n"
-        "  %s install <name>\n"
-        "  %s remove <name>\n"
-        "  %s default <name>\n"
+        "  %s install <name>@<version>\n"
+        "  %s remove <name>@<version>\n"
+        "  %s default <name>@<version>\n"
         "  %s current\n",
         prog_name, prog_name, prog_name, prog_name, prog_name);
 }

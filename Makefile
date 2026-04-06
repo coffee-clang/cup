@@ -11,6 +11,7 @@ $(OUT): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(OUT) $(LDFLAGS)
 
 clean:
-	rm -f $(OUT) $(STATE_FILE)
+	rm -f $(OUT)
+	rm -rf .cup
 
 .PHONY: all clean

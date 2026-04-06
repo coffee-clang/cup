@@ -3,6 +3,28 @@
 #include "toolchain.h"
 #include "storage.h"
 
+static int is_valid_toolchain_name(const char *name){
+    const char *at = strchr(name, '@');
+
+    if(at == NULL){
+        return 0;
+    }
+
+    if(at == name){
+        return 0;
+    }
+
+    if(*(at + 1) == '\0'){
+        return 0;
+    }
+
+    if(strchr(at + 1, '@') != NULL){
+        return 0;
+    }
+
+    return 1;
+}
+
 int handle_list(void){
     CupState state;
     int i;
@@ -33,6 +55,11 @@ int handle_install(const char *name){
     CupState state;
     int result;
 
+    if(!is_valid_toolchain_name(name)){
+        fprintf(stderr, "Error: invalid toolchain format. Use <name>@<version>.\n");
+        return 1;
+    }
+
     state_load(&state, STATE_FILE);
 
     result = state_add_toolchain(&state, name);
@@ -58,6 +85,11 @@ int handle_remove(const char *name){
     CupState state;
     int result;
 
+    if(!is_valid_toolchain_name(name)){
+        fprintf(stderr, "Error: invalid toolchain format. Use <name>@<version>.\n");
+        return 1;
+    }
+
     state_load(&state, STATE_FILE);
 
     result = state_remove_toolchain(&state, name);
@@ -77,6 +109,11 @@ int handle_remove(const char *name){
 int handle_default(const char *name){
     CupState state;
     int result;
+
+    if(!is_valid_toolchain_name(name)){
+        fprintf(stderr, "Error: invalid toolchain format. Use <name>@<version>.\n");
+        return 1;
+    }
 
     state_load(&state, STATE_FILE);
 

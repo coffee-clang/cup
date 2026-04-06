@@ -6,15 +6,16 @@ Initial prototype of cup.
 
 ## Features
 - list
-- install <name>
-- remove <name>
-- default <name>
+- install <name>@<version>
+- remove <name>@<version>
+- default <name>@<version>
 - current
 
 ## Behavior
 - local state management
 - no real installation is performed
 - simplified toolchain model (compiler only)
+- toolchains identified by <name>@<version>
 
 ## Structure
 - command handling (CLI)
