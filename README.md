@@ -88,6 +88,7 @@ All data is stored locally in:
 
 Structure:
 
+```bash
 ~/.cup/
 ├── state.txt
 ├── components/
@@ -96,26 +97,34 @@ Structure:
 │           └── linux/
 │               └── stable/
 └── tmp/
+```
 
+---
 
-### State File
+## State File
 
 The file `~/.cup/state.txt` contains:
 
-#### Installed entries
+### Installed entries
 
-`installed.<component>=<tool>@<release>`
+Example:
+```bash
+installed.<component>=<tool>@<release>
+```
 
-#### Defaults (one per component)
+### Defaults (one per component)
 
-`default.<component>=<tool>@<release>`
+```bash
+default.<component>=<tool>@<release>
+```
 
 ---
 
 ## Build
 
 
-Build through `make`
+Build through:
+- `make`
 
 Clean through:
 - `make clean` removes the binary
