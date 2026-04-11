@@ -82,12 +82,13 @@ Example:
 
 ## Storage
 
+```
 All data is stored locally in:
 
 `~/.cup`
 
 Structure:
-```bash
+
 ~/.cup/
 ├── state.txt
 ├── components/
@@ -104,20 +105,19 @@ The file `~/.cup/state.txt` contains:
 
 #### Installed entries
 
-installed.compiler=gcc@stable
-
-installed.compiler=clang@nightly
+`installed.<component>=<tool>@<release>`
 
 #### Defaults (one per component)
 
-default.compiler=gcc@stable
+`default.<component>=<tool>@<release>`
 
 ---
 
 ## Build
 
-Build through `make`
 
+Build through `make`
+<br>
 Clean through:
 - `make clean` removes the binary
 - `make dev-clean` removes everything, binary and `~/.cup`, with a console cleanup too
