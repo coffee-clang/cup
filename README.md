@@ -83,7 +83,9 @@ Example:
 ## Storage
 
 All data is stored locally in:
+
 `~/.cup`
+
 Structure:
 ```bash
 ~/.cup/
@@ -103,6 +105,7 @@ The file `~/.cup/state.txt` contains:
 #### Installed entries
 
 installed.compiler=gcc@stable
+
 installed.compiler=clang@nightly
 
 #### Defaults (one per component)
@@ -114,6 +117,7 @@ default.compiler=gcc@stable
 ## Build
 
 Build through `make`
+
 Clean through:
 - `make clean` removes the binary
 - `make dev-clean` removes everything, binary and `~/.cup`, with a console cleanup too
