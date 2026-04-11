@@ -78,6 +78,8 @@ Example:
 ./cup current compiler
 ```
 
+---
+
 ## Storage
 
 All data is stored locally in:
@@ -106,6 +108,8 @@ installed.compiler=clang@nightly
 #### Defaults (one per component)
 
 default.compiler=gcc@stable
+
+---
 
 ## Build
 
