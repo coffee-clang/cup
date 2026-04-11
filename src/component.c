@@ -51,11 +51,11 @@ static int split_entry(const char *entry, char *tool, size_t tool_size, char *re
         return 1;
     }
 
-    strncpy(tool, entry, tool_size - 1);
-    tool[tool_size - 1] = '\0';
+    strncpy(tool, entry, tool_len);
+    tool[tool_len] = '\0';
 
-    strncpy(release, at + 1, release_size - 1);
-    release[release_size - 1] = '\0';
+    strncpy(release, at + 1, release_len);
+    release[release_len] = '\0';
 
     return 0;
 }
