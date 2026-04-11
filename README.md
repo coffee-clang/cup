@@ -82,7 +82,6 @@ Example:
 
 ## Storage
 
-```
 All data is stored locally in:
 
 `~/.cup`
@@ -97,7 +96,7 @@ Structure:
 │           └── linux/
 │               └── stable/
 └── tmp/
-```
+
 
 ### State File
 
@@ -117,7 +116,7 @@ The file `~/.cup/state.txt` contains:
 
 
 Build through `make`
-<br>
+
 Clean through:
 - `make clean` removes the binary
 - `make dev-clean` removes everything, binary and `~/.cup`, with a console cleanup too
