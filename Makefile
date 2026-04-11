@@ -1,9 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11 -g
 LDFLAGS = -static
-SRC = src/main.c src/toolchain.c src/storage.c
+SRC = src/main.c src/component.c src/state.c src/fs.c
 OUT = cup
-STATE_FILE = cup_state.txt
 
 all: $(OUT)
 
@@ -12,6 +11,9 @@ $(OUT): $(SRC)
 
 clean:
 	rm -f $(OUT)
-	rm -rf .cup
 
-.PHONY: all clean
+dev-clean: clean
+	rm -rf ~/.cup
+	clear
+
+.PHONY: all clean dev-clean

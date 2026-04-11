@@ -1,34 +1,115 @@
 # cup
-A modern way to manage a C toolchain.
 
-## Description
-Initial prototype of cup.
+`cup` is a prototype toolchain manager inspired by tools like `rustup`.
+
+It allows managing installable components (such as compilers) and selecting default versions for them.
+
+---
+
+## Status
+
+This is an early prototype.
+
+- No real installation is performed yet
+- Components are simulated via filesystem structure
+- Focus is on CLI behavior and internal architecture
+
+---
 
 ## Features
-- list
-- install `<name>@<version>`
-- remove `<name>@<version>`
-- default `<name>@<version>`
-- current
 
-## Behavior
-- local state management
-- no real installation is performed
-- simplified toolchain model (compiler only)
-- toolchains identified by `<name>@<version>`
+- Install component entries (`<tool>@<release>`)
+- Remove installed entries
+- List installed components
+- Set a default entry per component
+- Store state locally under `~/.cup`
 
-## Structure
-- command handling (CLI)
-- local state management
-- toolchain logic
-
-## Limitations
-- no download support
-- no full component management
-- no multi-architecture support
-
-## Build
-make
+---
 
 ## Usage
-./cup `<command>`
+
+### Install
+
+```bash
+./cup install <component> <tool>@<release>
+```
+
+Example:
+```bash
+./cup install compiler gcc@stable
+./cup install compiler clang@nightly
+```
+
+### Remove
+
+```bash
+./cup remove <component> <tool>@<release>
+```
+
+Example:
+```bash
+./cup remove compiler clang@nightly
+```
+
+### List installed entries
+
+```bash
+./cup list
+```
+
+### Set default
+
+```bash
+./cup default <component> <tool>@<release>
+```
+
+Example:
+```bash
+./cup default compiler clang@nightly
+```
+
+### Show current default
+
+```bash
+./cup current <component>
+```
+Example:
+```bash
+./cup current compiler
+```
+
+## Storage
+
+All data is stored locally in:
+`~/.cup`
+Structure:
+```bash
+~/.cup/
+├── state.txt
+├── components/
+│   └── compiler/
+│       └── gcc/
+│           └── linux/
+│               └── stable/
+└── tmp/
+```
+
+### State File
+
+The file `~/.cup/state.txt` contains:
+
+#### Installed entries
+
+installed.compiler=gcc@stable
+installed.compiler=clang@nightly
+
+#### Defaults (one per component)
+
+default.compiler=gcc@stable
+
+## Build
+
+Build through `make`
+Clean through:
+- `make clean` removes the binary
+- `make dev-clean` removes everything, binary and `~/.cup`, with a console cleanup too
