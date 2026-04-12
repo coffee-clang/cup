@@ -23,7 +23,6 @@ typedef struct {
 } CupState;
 
 void state_init(CupState *state);
-
 int state_load(CupState *state, const char *filename);
 int state_save(const CupState *state, const char *filename);
 
