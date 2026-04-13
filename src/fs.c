@@ -11,13 +11,74 @@
 
 #include "fs.h"
 
-int checked_snprintf(char *buffer, size_t size, const char *format, ...) {
+static CupError create_directory(const char *path) {
+    struct stat info;
+
+    if (stat(path, &info) == -1) {
+        if (mkdir(path, 0700) != 0) {
+            fprintf(stderr, "Error: could not create directory '%s'.\n", path);
+            return CUP_ERR_FS;
+        }
+    }
+
+    return CUP_OK;
+}
+
+static CupError remove_directory_recursive(const char *path) {
+    DIR *dir;
+    struct dirent *entry;
+    struct stat info;
+    char full_path[MAX_PATH_LEN];
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        return CUP_ERR_FS;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        if (checked_snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name) != CUP_OK) {
+            closedir(dir);
+            return CUP_ERR_FS;
+        }
+
+        if (stat(full_path, &info) != 0) {
+            closedir(dir);
+            return CUP_ERR_FS;
+        }
+
+        if (S_ISDIR(info.st_mode)) {
+            if (remove_directory_recursive(full_path) != CUP_OK) {
+                closedir(dir);
+                return CUP_ERR_FS;
+            }
+        } else {
+            if (remove(full_path) != 0) {
+                closedir(dir);
+                return CUP_ERR_FS;
+            }
+        }
+    }
+
+    closedir(dir);
+
+    if (rmdir(path) != 0) {
+        return CUP_ERR_FS;
+    }
+
+    return CUP_OK;
+}
+
+CupError checked_snprintf(char *buffer, size_t size, const char *format, ...) {
     va_list args;
     int written;
 
-    if (!buffer || !format || size == 0) {
+    if (buffer == NULL || format == NULL || size == 0) {
         fprintf(stderr, "Error: invalid snprintf arguments.\n");
-        return 1;
+        return CUP_ERR_INVALID_INPUT;
     }
 
     va_start(args, format);
@@ -25,177 +86,223 @@ int checked_snprintf(char *buffer, size_t size, const char *format, ...) {
     va_end(args);
 
     if (written < 0 || (size_t)written >= size) {
-        fprintf(stderr, "Error: path too long.\n");
-        return 1;
+        fprintf(stderr, "Error: formatted path is too long.\n");
+        return CUP_ERR_FS;
     }
 
-    return 0;
+    return CUP_OK;
 }
 
-/* Temporary stub: platform detection will be improved later. */
+// Temporaneo
 const char *get_platform_name(void) {
     return "linux";
 }
 
-int get_cup_root_path(char *buffer, size_t size) {
-    const char *home = getenv("HOME");
+CupError get_cup_root_path(char *buffer, size_t size) {
+    const char *home;
 
-    if (!home) {
-        fprintf(stderr, "Error: HOME not set.\n");
-        return 1;
+    home = getenv("HOME");
+    if (home == NULL) {
+        fprintf(stderr, "Error: HOME environment variable is not set.\n");
+        return CUP_ERR_FS;
     }
 
     return checked_snprintf(buffer, size, "%s/.cup", home);
 }
 
-int get_tmp_root_path(char *buffer, size_t size) {
+CupError get_tmp_root_path(char *buffer, size_t size) {
+    CupError err;
     char root[MAX_PATH_LEN];
 
-    if (get_cup_root_path(root, sizeof(root)) != 0) 
-        return 1;
+    err = get_cup_root_path(root, sizeof(root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
     return checked_snprintf(buffer, size, "%s/tmp", root);
 }
 
-int get_components_root_path(char *buffer, size_t size) {
+CupError get_components_root_path(char *buffer, size_t size) {
+    CupError err;
     char root[MAX_PATH_LEN];
 
-    if (get_cup_root_path(root, sizeof(root)) != 0) 
-        return 1;
+    err = get_cup_root_path(root, sizeof(root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
     return checked_snprintf(buffer, size, "%s/components", root);
 }
 
-int get_state_file_path(char *buffer, size_t size) {
+CupError get_state_file_path(char *buffer, size_t size) {
+    CupError err;
     char root[MAX_PATH_LEN];
 
-    if (get_cup_root_path(root, sizeof(root)) != 0) 
-        return 1;
+    err = get_cup_root_path(root, sizeof(root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
     return checked_snprintf(buffer, size, "%s/state.txt", root);
 }
 
-static int create_directory(const char *path) {
-    struct stat info;
-
-    if (stat(path, &info) == -1) {
-        if (mkdir(path, 0700) != 0) {
-            fprintf(stderr, "Error: cannot create dir '%s'.\n", path);
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-int ensure_cup_structure(void) {
+CupError ensure_cup_structure(void) {
+    CupError err;
     char root[MAX_PATH_LEN];
     char components[MAX_PATH_LEN];
     char tmp[MAX_PATH_LEN];
 
-    if (get_cup_root_path(root, sizeof(root)) != 0) 
-        return 1;
+    err = get_cup_root_path(root, sizeof(root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (get_components_root_path(components, sizeof(components)) != 0) 
-        return 1;
+    err = get_components_root_path(components, sizeof(components));
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (get_tmp_root_path(tmp, sizeof(tmp)) != 0) 
-        return 1;
+    err = get_tmp_root_path(tmp, sizeof(tmp));
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(root) != 0) 
-        return 1;
+    err = create_directory(root);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(components) != 0) 
-        return 1;
+    err = create_directory(components);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(tmp) != 0) 
-        return 1;
+    err = create_directory(tmp);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    return 0;
+    return CUP_OK;
 }
 
-int ensure_component_dirs(const char *component, const char *tool, const char *platform) {
-    char components[MAX_PATH_LEN];
+CupError ensure_component_dirs(const char *component, const char *tool, const char *platform) {
+    CupError err;
+    char components_root[MAX_PATH_LEN];
     char component_dir[MAX_PATH_LEN];
     char tool_dir[MAX_PATH_LEN];
     char platform_dir[MAX_PATH_LEN];
-    
-    if (!component || !tool || !platform) {
-        fprintf(stderr, "Error: invalid arguments for component dirs.\n");
-        return 1;
+
+    if (component == NULL || tool == NULL || platform == NULL) {
+        fprintf(stderr, "Error: invalid component directory arguments.\n");
+        return CUP_ERR_INVALID_INPUT;
     }
 
-    if (ensure_cup_structure() != 0) 
-        return 1;
+    err = ensure_cup_structure();
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (get_components_root_path(components, sizeof(components)) != 0) 
-        return 1;
+    err = get_components_root_path(components_root, sizeof(components_root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (checked_snprintf(component_dir, sizeof(component_dir), "%s/%s", components, component) != 0) 
-        return 1;
+    err = checked_snprintf(component_dir, sizeof(component_dir), "%s/%s", components_root, component);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (checked_snprintf(tool_dir, sizeof(tool_dir), "%s/%s", component_dir, tool) != 0) 
-        return 1;
+    err = checked_snprintf(tool_dir, sizeof(tool_dir), "%s/%s", component_dir, tool);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (checked_snprintf(platform_dir, sizeof(platform_dir), "%s/%s", tool_dir, platform) != 0) 
-        return 1;
+    err = checked_snprintf(platform_dir, sizeof(platform_dir), "%s/%s", tool_dir, platform);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(component_dir) != 0) 
-        return 1;
+    err = create_directory(component_dir);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(tool_dir) != 0) 
-        return 1;
+    err = create_directory(tool_dir);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(platform_dir) != 0) 
-        return 1;
+    err = create_directory(platform_dir);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    return 0;
+    return CUP_OK;
 }
 
-int build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
-    char root[MAX_PATH_LEN];
+CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
+    CupError err;
+    char components_root[MAX_PATH_LEN];
 
-    if (get_cup_root_path(root, sizeof(root)) != 0) 
-        return 1;
+    err = get_components_root_path(components_root, sizeof(components_root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    return checked_snprintf(buffer, size, "%s/components/%s/%s/%s/%s", root, component, tool, get_platform_name(), release);
+    return checked_snprintf(buffer, size, "%s/%s/%s/%s/%s", components_root, component, tool, get_platform_name(), release);
 }
 
-int build_tmp_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, int suffix) {
+CupError build_tmp_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, int suffix) {
+    CupError err;
     char tmp_root[MAX_PATH_LEN];
 
-    if (get_tmp_root_path(tmp_root, sizeof(tmp_root)) != 0) 
-        return 1;
+    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
+    if (err != CUP_OK) {
+        return err;
+    }
 
     return checked_snprintf(buffer, size, "%s/%s-%s-%s-%d", tmp_root, component, tool, release, suffix);
 }
 
-int create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
-    int suffix = (int)getpid();
+CupError create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
+    CupError err;
+    int suffix;
 
-    if (ensure_cup_structure() != 0) 
-        return 1;
+    err = ensure_cup_structure();
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (build_tmp_install_path(buffer, size, component, tool, release, suffix) != 0) 
-        return 1;
+    suffix = (int)getpid();
 
-    if (create_directory(buffer) != 0) 
-        return 1;
+    err = build_tmp_install_path(buffer, size, component, tool, release, suffix);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    return 0;
+    err = create_directory(buffer);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not create temporary install directory '%s'.\n", buffer);
+        return err;
+    }
+
+    return CUP_OK;
 }
 
-int write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *release) {
-    char path[MAX_PATH_LEN];
+CupError write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *release) {
+    CupError err;
     FILE *file;
+    char info_path[MAX_PATH_LEN];
 
-    if (checked_snprintf(path, sizeof(path), "%s/info.txt", base_path) != 0) 
-        return 1;
+    err = checked_snprintf(info_path, sizeof(info_path), "%s/info.txt", base_path);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    file = fopen(path, "w");
-    if (!file) {
-        fprintf(stderr, "Error: cannot write info file.\n");
-        return 1;
+    file = fopen(info_path, "w");
+    if (file == NULL) {
+        fprintf(stderr, "Error: could not write info file '%s'.\n", info_path);
+        return CUP_ERR_FS;
     }
 
     fprintf(file, "component=%s\n", component);
@@ -204,109 +311,217 @@ int write_component_info_at_path(const char *base_path, const char *component, c
     fprintf(file, "platform=%s\n", get_platform_name());
 
     fclose(file);
-    return 0;
+    return CUP_OK;
 }
 
-int simulate_install(const char *tmp_path, const char *component, const char *tool, const char *release) {
-    char bin[MAX_PATH_LEN];
+CupError simulate_install(const char *tmp_path, const char *component, const char *tool, const char *release) {
+    CupError err;
+    FILE *file;
+    char bin_dir[MAX_PATH_LEN];
+    char fake_binary_path[MAX_PATH_LEN];
 
-    if (checked_snprintf(bin, sizeof(bin), "%s/bin", tmp_path) != 0) 
-        return 1;
+    err = checked_snprintf(bin_dir, sizeof(bin_dir), "%s/bin", tmp_path);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    if (create_directory(bin) != 0) 
-        return 1;
+    err = create_directory(bin_dir);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not create bin directory '%s'.\n", bin_dir);
+        return err;
+    }
+
+    err = checked_snprintf(fake_binary_path, sizeof(fake_binary_path), "%s/%s", bin_dir, tool);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    // Forse non va
+    file = fopen(fake_binary_path, "w");
+    if (file == NULL) {
+        fprintf(stderr, "Error: could not create simulated binary '%s'.\n", fake_binary_path);
+        return CUP_ERR_TMP;
+    }
+
+    fprintf(file, "# simulated binary for %s %s@%s\n", component, tool, release);
+    fclose(file);
 
     return write_component_info_at_path(tmp_path, component, tool, release);
 }
 
-int validate_install(const char *tmp_path) {
-    char info_path[MAX_PATH_LEN];
+CupError validate_install(const char *tmp_path) {
+    CupError err;
+    FILE *file;
     struct stat info;
+    char info_path[MAX_PATH_LEN];
+    char bin_path[MAX_PATH_LEN];
+    int ch;
 
-    if (checked_snprintf(info_path, sizeof(info_path), "%s/info.txt", tmp_path) != 0) 
-        return 1;
+    if (tmp_path == NULL) {
+        fprintf(stderr, "Error: invalid install path.\n");
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (stat(tmp_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
+        fprintf(stderr, "Error: installation validation failed because the temporary directory is missing.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    err = checked_snprintf(info_path, sizeof(info_path), "%s/info.txt", tmp_path);
+    if (err != CUP_OK) {
+        return err;
+    }
 
     if (stat(info_path, &info) != 0) {
-        fprintf(stderr, "Error: invalid install (missing info.txt).\n");
-        return 1;
+        fprintf(stderr, "Error: installation validation failed because info.txt is missing.\n");
+        return CUP_ERR_VALIDATION;
     }
 
-    return 0;
+    file = fopen(info_path, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Error: installation validation failed because info.txt could not be opened.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    ch = fgetc(file);
+    fclose(file);
+
+    if (ch == EOF) {
+        fprintf(stderr, "Error: installation validation failed because info.txt is empty.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    err = checked_snprintf(bin_path, sizeof(bin_path), "%s/bin", tmp_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (stat(bin_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
+        fprintf(stderr, "Error: installation validation failed because the bin directory is missing.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    return CUP_OK;
 }
 
-int commit_install(const char *tmp_path, const char *final_path) {
-    
+CupError commit_install(const char *tmp_path, const char *final_path) {
+    if (tmp_path == NULL || final_path == NULL) {
+        fprintf(stderr, "Error: invalid commit arguments.\n");
+        return CUP_ERR_INVALID_INPUT;
+    }
+
     if (rename(tmp_path, final_path) != 0) {
-        fprintf(stderr, "Error: commit failed.\n");
-        return 1;
+        fprintf(stderr, "Error: could not move temporary installation to final destination.\n");
+        return CUP_ERR_COMMIT;
     }
 
-    return 0;
+    return CUP_OK;
 }
 
-static int remove_directory_recursive(const char *path) {
-    DIR *dir;
-    struct dirent *entry;
-    char full[MAX_PATH_LEN];
+CupError cleanup_tmp_install(const char *tmp_path) {
     struct stat info;
 
-    dir = opendir(path);
-    if (!dir) return 1;
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
-            continue;
-
-        if (checked_snprintf(full, sizeof(full), "%s/%s", path, entry->d_name) != 0) {
-            closedir(dir);
-            return 1;
-        }
-
-        if (stat(full, &info) != 0) {
-            closedir(dir);
-            return 1;
-        }
-
-        if (S_ISDIR(info.st_mode)) {
-            if (remove_directory_recursive(full) != 0) {
-                closedir(dir);
-                return 1;
-            }
-        } 
-        else {
-            if (remove(full) != 0) {
-                closedir(dir);
-                return 1;
-            }
-        }
+    if (tmp_path == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
 
-    closedir(dir);
-    return rmdir(path);
-}
+    if (stat(tmp_path, &info) != 0) {
+        return CUP_OK;
+    }
 
-int cleanup_tmp_install(const char *tmp_path) {
-    struct stat info;
-
-    if (stat(tmp_path, &info) != 0) 
-        return 0;
-
-    if (!S_ISDIR(info.st_mode)) 
-        return 1;
+    if (!S_ISDIR(info.st_mode)) {
+        return CUP_ERR_FS;
+    }
 
     return remove_directory_recursive(tmp_path);
 }
 
-int remove_component_install_dir(const char *component, const char *tool, const char *release) {
-    char path[MAX_PATH_LEN];
+CupError cleanup_all_tmp(void) {
+    CupError err;
+    DIR *dir;
+    struct dirent *entry;
     struct stat info;
+    char tmp_root[MAX_PATH_LEN];
+    char full_path[MAX_PATH_LEN];
 
-    if (build_install_path(path, sizeof(path), component, tool, release) != 0) return 1;
-
-    if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) {
-        fprintf(stderr, "Error: install not found.\n");
-        return 1;
+    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
+    if (err != CUP_OK) {
+        return err;
     }
 
-    return remove_directory_recursive(path);
+    dir = opendir(tmp_root);
+    if (dir == NULL) {
+        return CUP_OK;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        err = checked_snprintf(full_path, sizeof(full_path), "%s/%s", tmp_root, entry->d_name);
+        if (err != CUP_OK) {
+            continue;
+        }
+
+        if (stat(full_path, &info) != 0) {
+            continue;
+        }
+
+        if (S_ISDIR(info.st_mode)) {
+            cleanup_tmp_install(full_path);
+        } else {
+            remove(full_path);
+        }
+    }
+
+    closedir(dir);
+    return CUP_OK;
+}
+
+CupError installation_exists(const char *component, const char *tool, const char *release, int *exists) {
+    CupError err;
+    struct stat info;
+    char path[MAX_PATH_LEN];
+
+    if (exists == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = build_install_path(path, sizeof(path), component, tool, release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (stat(path, &info) == 0 && S_ISDIR(info.st_mode)) {
+        *exists = 1;
+    } else {
+        *exists = 0;
+    }
+
+    return CUP_OK;
+}
+
+CupError remove_component_install_dir(const char *component, const char *tool, const char *release) {
+    CupError err;
+    struct stat info;
+    char path[MAX_PATH_LEN];
+
+    err = build_install_path(path, sizeof(path), component, tool, release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) {
+        fprintf(stderr, "Error: installation directory does not exist.\n");
+        return CUP_ERR_NOT_INSTALLED;
+    }
+
+    err = remove_directory_recursive(path);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not remove installation directory '%s'.\n", path);
+        return err;
+    }
+
+    return CUP_OK;
 }

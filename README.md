@@ -2,7 +2,7 @@
 
 `cup` is a prototype toolchain manager inspired by tools like `rustup`.
 
-It allows managing installable components (such as compilers) and selecting default versions for them.
+It provides a simple CLI to install, manage, and select default toolchain components (currently focused on compilers)
 
 ---
 
@@ -10,9 +10,15 @@ It allows managing installable components (such as compilers) and selecting defa
 
 This is an early prototype.
 
-- No real installation is performed yet
-- Components are simulated via filesystem structure
-- Focus is on CLI behavior and internal architecture
+- Installations are simulated via filesystem operations
+- No real downloads are performed yet
+- Focus is on architecture, CLI design, and robustness
+
+Despit being a prototype, `cup` already implements:
+
+- staged installation (temporary → validated → committed)
+- cleanup of partial installs
+- basic error handling and roolback
 
 ---
 
@@ -22,7 +28,10 @@ This is an early prototype.
 - Remove installed entries
 - List installed components
 - Set a default entry per component
-- Store state locally under `~/.cup`
+- Query current default
+- Local state management under `~/.cup`
+- Safe installation flow with validation and roolback
+- Automatic cleanup of temporary installations
 
 ---
 
@@ -80,7 +89,7 @@ Example:
 
 ---
 
-## Storage
+## Storage Layout
 
 All data is stored locally in:
 
@@ -92,24 +101,32 @@ Structure:
 ~/.cup/
 ├── state.txt
 ├── components/
-│   └── compiler/
-│       └── gcc/
-│           └── linux/
-│               └── stable/
+│   └── <component>/
+│       └── <tool>/
+│           └── <platform>/
+│               └── <release>/
 └── tmp/
+```
+Example:
+```bash
+~/.cup/components/compiler/gcc/linux/stable
 ```
 
 ---
 
 ## State File
 
-The file `~/.cup/state.txt` contains:
+The file `~/.cup/state.txt` tracks installed entries and defaults.
 
 ### Installed entries
 
-Example:
 ```bash
 installed.<component>=<tool>@<release>
+```
+Example:
+```bash
+installed.compiler=gcc@stable
+installed.compiler=clang@nightly
 ```
 
 ### Defaults (one per component)
@@ -117,15 +134,30 @@ installed.<component>=<tool>@<release>
 ```bash
 default.<component>=<tool>@<release>
 ```
+Example:
+```bash
+default.compiler=gcc@stable
+```
 
 ---
 
 ## Build
 
+Build the project using:
+```bash
+make
+```
 
-Build through:
-- `make`
+## Cleaning
 
-Clean through:
-- `make clean` removes the binary
-- `make dev-clean` removes everything, binary and `~/.cup`, with a console cleanup too
+```bash
+make clean
+```
+Removes the binary.
+
+```bash
+make dev-clean
+```
+Removes:
+- the binary 
+- the entire `~/.cup` directory (development only)
