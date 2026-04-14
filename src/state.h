@@ -35,7 +35,7 @@ int state_find_default(const CupState *state, const char *component);
 CupError state_set_default(CupState *state, const char *component, const char *entry);
 const char *state_get_default(const CupState *state, const char *component);
 
-void state_remove_default_component(CupState *state, const char *component);
-void state_remove_default(CupState *state, const char *component, const char *entry);
+void state_remove_default_for_component(CupState *state, const char *component);
+void state_remove_default_if_matches(CupState *state, const char *component, const char *entry);
 
 #endif

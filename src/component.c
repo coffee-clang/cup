@@ -14,8 +14,8 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static int is_valid_component(const char *component) {
-    return strcmp(component, "compiler") == 0;
+static void print_step(const char *message) {
+    printf("==> %s\n", message);
 }
 
 static int is_valid_entry(const char *entry) {
@@ -68,6 +68,57 @@ static CupError split_entry(const char *entry, char *tool, size_t tool_size, cha
     release[release_len] = '\0';
 
     return CUP_OK;
+}
+
+static int is_version_like(const char *release) {
+    size_t i;
+
+    if (release == NULL || release[0] == '\0') {
+        return 0;
+    }
+
+    for (i = 0; release[i] != '\0'; ++i) {
+        if (!((release[i] >= '0' && release[i] <= '9') || release[i] == '.')) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static CupError validate_tool_for_component(const char *component, const char *tool) {
+    if (component == NULL || tool == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (strcmp(component, "compiler") == 0) {
+        if (strcmp(tool, "gcc") == 0 || strcmp(tool, "clang") == 0) {
+            return CUP_OK;
+        }
+
+        fprintf(stderr, "Error: unsupported tool '%s' for component '%s'.\n", tool, component);
+        return CUP_ERR_INVALID_TOOL;
+    }
+
+    fprintf(stderr, "Error: unsupported component '%s'.\n", component);
+    return CUP_ERR_UNSUPPORTED_COMPONENT;
+}
+
+static CupError validate_release_name(const char *release) {
+    if (release == NULL || release[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (strcmp(release, "stable") == 0 || strcmp(release, "nightly") == 0) {
+        return CUP_OK;
+    }
+
+    if (is_version_like(release)) {
+        return CUP_OK;
+    }
+
+    fprintf(stderr, "Error: unsupported release '%s'.\n", release);
+    return CUP_ERR_INVALID_RELEASE;
 }
 
 static CupError check_interrupted(const char *tmp_path) {
@@ -128,6 +179,7 @@ CupError handle_install(const char *component, const char *entry) {
     char state_file[MAX_PATH_LEN];
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
+    char resolved_release[MAX_NAME_LEN];
     char tmp_path[MAX_PATH_LEN];
     char final_path[MAX_PATH_LEN];
     int in_state;
@@ -136,11 +188,6 @@ CupError handle_install(const char *component, const char *entry) {
     tmp_path[0] = '\0';
     g_interrupted = 0;
     signal(SIGINT, handle_sigint);
-
-    if (!is_valid_component(component)) {
-        fprintf(stderr, "Error: unsupported component '%s'.\n", component);
-        return CUP_ERR_UNSUPPORTED_COMPONENT;
-    }
 
     if (!is_valid_entry(entry)) {
         fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
@@ -153,12 +200,24 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
-    err = get_state_file_path(state_file, sizeof(state_file));
+    err = validate_tool_for_component(component, tool);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = build_install_path(final_path, sizeof(final_path), component, tool, release);
+    err = validate_release_name(release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    print_step("Resolving release...");
+    err = resolve_release(resolved_release, sizeof(resolved_release), tool, release);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
+        return err;
+    }
+
+    err = get_state_file_path(state_file, sizeof(state_file));
     if (err != CUP_OK) {
         return err;
     }
@@ -170,7 +229,7 @@ CupError handle_install(const char *component, const char *entry) {
 
     in_state = (state_find_installed(&state, component, entry) != -1);
 
-    err = installation_exists(component, tool, release, &on_disk);
+    err = installation_exists(component, tool, resolved_release, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
@@ -185,7 +244,7 @@ CupError handle_install(const char *component, const char *entry) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = create_tmp_install_dir(tmp_path, sizeof(tmp_path), component, tool, release);
+    err = create_tmp_install_dir(tmp_path, sizeof(tmp_path), component, tool, resolved_release);
     if (err != CUP_OK) {
         return err;
     }
@@ -195,7 +254,8 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
-    err = simulate_install(tmp_path, component, tool, release);
+    print_step("Fetching and installing package...");
+    err = perform_install(tmp_path, component, tool, resolved_release);
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
         return err;
@@ -206,6 +266,7 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
+    print_step("Validating installation...");
     err = validate_install(tmp_path);
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
@@ -217,7 +278,8 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
-    err = ensure_component_dirs(component, tool, get_platform_name());
+    print_step("Preparing final installation directories...");
+    err = ensure_component_base_dirs(component, tool, get_platform_name());
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
         return err;
@@ -228,6 +290,12 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
+    err = build_install_path(final_path, sizeof(final_path), component, tool, resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    print_step("Committing installation...");
     err = commit_install(tmp_path, final_path);
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
@@ -238,7 +306,7 @@ CupError handle_install(const char *component, const char *entry) {
 
     err = state_add_installed(&state, component, entry);
     if (err != CUP_OK) {
-        if (remove_component_install_dir(component, tool, release) != CUP_OK) {
+        if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: failed to add install to state and rollback failed for '%s:%s'.\n", component, entry);
             return CUP_ERR_ROLLBACK;
         }
@@ -247,11 +315,12 @@ CupError handle_install(const char *component, const char *entry) {
         return err;
     }
 
+    print_step("Saving state...");
     err = state_save(&state, state_file);
     if (err != CUP_OK) {
         state_remove_installed(&state, component, entry);
 
-        if (remove_component_install_dir(component, tool, release) != CUP_OK) {
+        if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: state save failed and rollback failed for '%s:%s'.\n", component, entry);
             return CUP_ERR_ROLLBACK;
         }
@@ -270,12 +339,8 @@ CupError handle_remove(const char *component, const char *entry) {
     char state_file[MAX_PATH_LEN];
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
+    char resolved_release[MAX_NAME_LEN];
     int on_disk;
-
-    if (!is_valid_component(component)) {
-        fprintf(stderr, "Error: unsupported component '%s'.\n", component);
-        return CUP_ERR_UNSUPPORTED_COMPONENT;
-    }
 
     if (!is_valid_entry(entry)) {
         fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
@@ -285,6 +350,22 @@ CupError handle_remove(const char *component, const char *entry) {
     err = split_entry(entry, tool, sizeof(tool), release, sizeof(release));
     if (err != CUP_OK) {
         fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
+        return err;
+    }
+
+    err = validate_tool_for_component(component, tool);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_release_name(release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = resolve_release(resolved_release, sizeof(resolved_release), tool, release);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
         return err;
     }
 
@@ -298,7 +379,7 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    err = installation_exists(component, tool, release, &on_disk);
+    err = installation_exists(component, tool, resolved_release, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
@@ -309,9 +390,7 @@ CupError handle_remove(const char *component, const char *entry) {
     }
 
     if (!on_disk) {
-        fprintf(stderr,
-                "Error: installation '%s:%s' is present in state but missing on disk.\n",
-                component, entry);
+        fprintf(stderr, "Error: installation '%s:%s' is present in state but missing on disk.\n", component, entry);
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
@@ -320,9 +399,9 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    state_remove_default(&state, component, entry);
+    state_remove_default_if_matches(&state, component, entry);
 
-    err = remove_component_install_dir(component, tool, release);
+    err = remove_component_install_dir(component, tool, resolved_release);
     if (err != CUP_OK) {
         return err;
     }
@@ -341,15 +420,28 @@ CupError handle_default(const char *component, const char *entry) {
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-
-    if (!is_valid_component(component)) {
-        fprintf(stderr, "Error: unsupported component '%s'.\n", component);
-        return CUP_ERR_UNSUPPORTED_COMPONENT;
-    }
+    char tool[MAX_NAME_LEN];
+    char release[MAX_NAME_LEN];
 
     if (!is_valid_entry(entry)) {
         fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
         return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = split_entry(entry, tool, sizeof(tool), release, sizeof(release));
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
+        return err;
+    }
+
+    err = validate_tool_for_component(component, tool);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_release_name(release);
+    if (err != CUP_OK) {
+        return err;
     }
 
     err = get_state_file_path(state_file, sizeof(state_file));
@@ -388,7 +480,11 @@ CupError handle_current(const char *component) {
     char state_file[MAX_PATH_LEN];
     const char *default_entry;
 
-    if (!is_valid_component(component)) {
+    if (component == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (strcmp(component, "compiler") != 0) {
         fprintf(stderr, "Error: unsupported component '%s'.\n", component);
         return CUP_ERR_UNSUPPORTED_COMPONENT;
     }

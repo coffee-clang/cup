@@ -218,7 +218,7 @@ const char *state_get_default(const CupState *state, const char *component) {
     return state->defaults[index].entry;
 }
 
-void state_remove_default_component(CupState *state, const char *component) {
+void state_remove_default_for_component(CupState *state, const char *component) {
     int index;
     int i;
 
@@ -236,7 +236,7 @@ void state_remove_default_component(CupState *state, const char *component) {
     state->defaults[state->default_count].entry[0] = '\0';
 }
 
-void state_remove_default(CupState *state, const char *component, const char *entry) {
+void state_remove_default_if_matches(CupState *state, const char *component, const char *entry) {
     int index;
 
     index = state_find_default(state, component);
@@ -245,6 +245,6 @@ void state_remove_default(CupState *state, const char *component, const char *en
     }
 
     if (strcmp(state->defaults[index].entry, entry) == 0) {
-        state_remove_default_component(state, component);
+        state_remove_default_for_component(state, component);
     }
 }
