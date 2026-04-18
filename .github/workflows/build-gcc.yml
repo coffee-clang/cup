@@ -1,0 +1,64 @@
+name: Build GCC
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "GCC version to build"
+        required: true
+        default: "15.2.0"
+      build_mode:
+        description: "Build mode"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - minimal
+          - standard
+          - full
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Build Docker image
+        run: docker build -t cup-gcc-builder .
+
+      - name: Run GCC build inside Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            cup-gcc-builder \
+            bash /work/scripts/build-gcc.sh \
+              "${{ github.event.inputs.version }}" \
+              "${{ github.event.inputs.build_mode }}"
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+          BUILD_MODE: ${{ github.event.inputs.build_mode }}
+          TARGET_REPO: mcolombo358/cup-binaries
+        run: |
+          TAG="gcc-${VERSION}-${BUILD_MODE}"
+          TITLE="GCC ${VERSION} (${BUILD_MODE})"
+          FILE="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.gz"
+
+          if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists in ${TARGET_REPO}. Uploading asset..."
+            gh release upload "${TAG}" "${FILE}" \
+              --repo "${TARGET_REPO}" \
+              --clobber
+          else
+            echo "Creating release ${TAG} in ${TARGET_REPO}..."
+            gh release create "${TAG}" "${FILE}" \
+              --repo "${TARGET_REPO}" \
+              --title "${TITLE}" \
+              --notes "Precompiled GCC ${VERSION} built in ${BUILD_MODE} mode."
+          fi
