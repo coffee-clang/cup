@@ -48,16 +48,17 @@ jobs:
         run: |
           TAG="gcc-${VERSION}-${BUILD_MODE}"
           TITLE="GCC ${VERSION} (${BUILD_MODE})"
-          FILE="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.gz"
+          FILE_GZ="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.gz"
+          FILE_XZ="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.xz"
 
           if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists in ${TARGET_REPO}. Uploading asset..."
-            gh release upload "${TAG}" "${FILE}" \
+            gh release upload "${TAG}" "${FILE_GZ}" "${FILE_XZ}" \
               --repo "${TARGET_REPO}" \
               --clobber
           else
             echo "Creating release ${TAG} in ${TARGET_REPO}..."
-            gh release create "${TAG}" "${FILE}" \
+            gh release create "${TAG}" "${FILE_GZ}" "${FILE_XZ}" \
               --repo "${TARGET_REPO}" \
               --title "${TITLE}" \
               --notes "Precompiled GCC ${VERSION} built in ${BUILD_MODE} mode."

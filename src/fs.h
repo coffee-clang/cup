@@ -17,7 +17,6 @@ CupError get_state_file_path(char *buffer, size_t size);
 CupError get_components_root_path(char *buffer, size_t size);
 CupError get_tmp_root_path(char *buffer, size_t size);
 CupError get_cache_root_path(char *buffer, size_t size);
-CupError get_package_manifest_path(char *buffer, size_t size);
 
 // STRUCTURE
 CupError ensure_cup_structure(void);
@@ -28,22 +27,17 @@ CupError ensure_cache_package_dirs(const char *component, const char *tool, cons
 CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release);
 CupError build_tmp_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, int suffix);
 CupError build_cache_package_path(char *buffer, size_t size, const char *component, const char *tool, const char *release);
-CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release);
-CupError build_package_url_from_manifest(char *buffer, size_t size, const char *component, const char *tool, const char *release);
-
-CupError read_manifest_value(char *buffer, size_t size, const char *component, const char *tool, const char *key_suffix);
-CupError replace_version_placeholder(char *buffer, size_t size, const char *template_url, const char *version);
+CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *archive_format);
 
 // INSTALL FLOW
 CupError create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release);
 
-CupError resolve_release(char *buffer, size_t size, const char *tool, const char *release);
 CupError download_package(const char *url, const char *dst_path);
-CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path);
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release);
-CupError install_package(const char *package_path, const char *tmp_path, const char *component, const char *tool, const char *resolved_release);
+CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path, const char *archive_format);
+CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release, const char *archive_format);
+CupError install_package(const char *package_path, const char *tmp_path, const char *archive_format, const char *component, const char *tool, const char *resolved_release);
 
-CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *release);
+CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *release, const char *archive_format);
 CupError validate_install(const char *tmp_path);
 CupError commit_install(const char *tmp_path, const char *final_path);
 

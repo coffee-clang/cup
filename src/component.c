@@ -5,6 +5,7 @@
 #include "component.h"
 #include "state.h"
 #include "fs.h"
+#include "manifest.h"
 #include "error.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -109,7 +110,7 @@ static CupError validate_release_name(const char *release) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (strcmp(release, "stable") == 0 || strcmp(release, "nightly") == 0) {
+    if (strcmp(release, "stable") == 0) {
         return CUP_OK;
     }
 
@@ -173,15 +174,17 @@ CupError handle_list(void) {
     return CUP_OK;
 }
 
-CupError handle_install(const char *component, const char *entry) {
+CupError handle_install(const char *component, const char *entry, const char *format_override) {
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
     char resolved_release[MAX_NAME_LEN];
+    char archive_format[MAX_NAME_LEN];
     char tmp_path[MAX_PATH_LEN];
     char final_path[MAX_PATH_LEN];
+    int format_supported;
     int in_state;
     int on_disk;
 
@@ -211,10 +214,33 @@ CupError handle_install(const char *component, const char *entry) {
     }
 
     print_step("Resolving release...");
-    err = resolve_release(resolved_release, sizeof(resolved_release), tool, release);
+    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
         return err;
+    }
+
+    if (format_override == NULL) {
+        err = get_default_format(archive_format, sizeof(archive_format), component, tool);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Error: could not determine default archive format for tool '%s'.\n", tool);
+            return err;
+        }
+    } else {
+        err = is_format_supported(component, tool, format_override, &format_supported);
+        if (err != CUP_OK) {
+            return err;
+        }
+
+        if (!format_supported) {
+            fprintf(stderr, "Error: archive format '%s' is not supported for tool '%s'.\n", format_override, tool);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = checked_snprintf(archive_format, sizeof(archive_format), "%s", format_override);
+        if (err != CUP_OK) {
+            return err;
+        }
     }
 
     err = get_state_file_path(state_file, sizeof(state_file));
@@ -255,7 +281,7 @@ CupError handle_install(const char *component, const char *entry) {
     }
 
     print_step("Fetching and installing package...");
-    err = perform_install(tmp_path, component, tool, resolved_release);
+    err = perform_install(tmp_path, component, tool, resolved_release, archive_format);
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
         return err;
@@ -363,7 +389,7 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    err = resolve_release(resolved_release, sizeof(resolved_release), tool, release);
+    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
         return err;

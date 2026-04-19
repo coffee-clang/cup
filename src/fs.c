@@ -10,6 +10,7 @@
 #include <sys/types.h>
 
 #include "fs.h"
+#include "manifest.h"
 
 static CupError create_directory(const char *path) {
     struct stat info;
@@ -155,14 +156,6 @@ CupError get_cache_root_path(char *buffer, size_t size) {
     }
 
     return checked_snprintf(buffer, size, "%s/cache", root);
-}
-
-CupError get_package_manifest_path(char *buffer, size_t size) {
-    if (buffer == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    return checked_snprintf(buffer, size, "config/packages.cfg");
 }
 
 CupError ensure_cup_structure(void) {
@@ -361,133 +354,21 @@ CupError build_cache_package_path(char *buffer, size_t size, const char *compone
     return checked_snprintf(buffer, size, "%s/%s/%s/%s", cache_root, component, tool, release);
 }
 
-CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
+CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *archive_format) {
     CupError err;
     char cache_package_path[MAX_PATH_LEN];
+
+    if (archive_format == NULL || archive_format[0] == '\0') {
+        fprintf(stderr, "Error: invalid archive format.\n");
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     err = build_cache_package_path(cache_package_path, sizeof(cache_package_path), component, tool, release);
     if (err != CUP_OK) {
         return err;
     }
 
-    return checked_snprintf(buffer, size, "%s/package.tar.xz", cache_package_path);
-}
-
-CupError build_package_url_from_manifest(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
-    CupError err;
-    char template_url[MAX_PATH_LEN];
-
-    if (buffer == NULL || component == NULL || tool == NULL || release == NULL) {
-        fprintf(stderr, "Error: invalid manifest lookup arguments.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = read_manifest_value(template_url, sizeof(template_url), component, tool, "url");
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return replace_version_placeholder(buffer, size, template_url, release);
-}
-
-CupError read_manifest_value(char *buffer, size_t size, const char *component, const char *tool, const char *key_suffix) {
-    CupError err;
-    FILE *file;
-    char manifest_path[MAX_PATH_LEN];
-    char line[1024];
-    char key[MAX_NAME_LEN *3];
-    size_t key_len;
-
-    if (buffer == NULL || component == NULL || tool == NULL || key_suffix == NULL) {
-        fprintf(stderr, "Error: invalid manifest lookup arguments.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_package_manifest_path(manifest_path, sizeof(manifest_path));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    file = fopen(manifest_path, "r");
-    if (file == NULL) {
-        fprintf(stderr, "Error: could not open package manifest '%s'.\n", manifest_path);
-        return CUP_ERR_FETCH;
-    }
-
-    err = checked_snprintf(key, sizeof(key), "%s.%s.%s=", component, tool, key_suffix);
-    if (err != CUP_OK) {
-        fclose(file);
-        return CUP_ERR_FETCH;
-    }
-
-    key_len = strlen(key);
-
-    while (fgets(line, sizeof(line), file) != NULL) {
-        size_t len;
-
-        if (strncmp(line, key, key_len) != 0) {
-            continue;
-        }
-
-        len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-            line[len - 1] = '\0';
-            len--;
-        }
-
-        fclose(file);
-        return checked_snprintf(buffer, size, "%s", line + key_len);
-    }
-
-    fclose(file);
-    fprintf(stderr, "Error: no package source configured for %s.%s.%s.\n", component, tool, key_suffix);
-    return CUP_ERR_FETCH;
-}
-
-CupError replace_version_placeholder(char *buffer, size_t size, const char *template_url, const char *version) {
-    const char *placeholder = "{version}";
-    const char *cursor;
-    size_t placeholder_len;
-    size_t version_len;
-    size_t out_len;
-    char *out;
-
-    if (buffer == NULL || template_url == NULL || version == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    placeholder_len = strlen(placeholder);
-    version_len = strlen(version);
-    out_len = 0;
-    cursor = template_url;
-    out = buffer;
-
-    while (*cursor != '\0') {
-        if (strncmp(cursor, placeholder, placeholder_len) == 0) {
-            if (out_len + version_len + 1 > size) {
-                fprintf(stderr, "Error: resolved package URL is too long.\n");
-                return CUP_ERR_FETCH;
-            }
-
-            memcpy(out, version, version_len);
-            out += version_len;
-            out_len += version_len;
-            cursor += placeholder_len;
-        } else {
-            if (out_len + 2 > size) {
-                fprintf(stderr, "Error: resolved package URL is too long.\n");
-                return CUP_ERR_FETCH;
-            }
-
-            *out = *cursor;
-            out++;
-            out_len++;
-            cursor++;
-        }
-    }
-
-    *out = '\0';
-    return CUP_OK;
+    return checked_snprintf(buffer, size, "%s/package.%s", cache_package_path, archive_format);
 }
 
 CupError create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
@@ -515,23 +396,6 @@ CupError create_tmp_install_dir(char *buffer, size_t size, const char *component
     return CUP_OK;
 }
 
-CupError resolve_release(char *buffer, size_t size, const char *tool, const char *release) {
-    if (buffer == NULL || tool == NULL || release == NULL || size == 0) {
-        fprintf(stderr, "Error: invalid release resolution arguments.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (strcmp(release, "stable") == 0) {
-        return read_manifest_value(buffer, size, "compiler", tool, "stable_version");
-    }
-
-    if (strcmp(release, "nightly") == 0) {
-        return read_manifest_value(buffer, size, "compiler", tool, "nightly_version");
-    }
-
-    return checked_snprintf(buffer, size, "%s", release);
-}
-
 CupError download_package(const char *url, const char *dst_path) {
     char command[MAX_PATH_LEN * 2];
     int status;
@@ -554,16 +418,25 @@ CupError download_package(const char *url, const char *dst_path) {
     return CUP_OK;
 }
 
-CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path) {
+CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path, const char *archive_format) {
     char command[MAX_PATH_LEN * 2];
     int status;
 
-    if (archive_path == NULL || tmp_path == NULL) {
+    if (archive_path == NULL || tmp_path == NULL || archive_format == NULL) {
         fprintf(stderr, "Error: invalid archive extraction arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (checked_snprintf(command, sizeof(command), "tar -xJf \"%s\" -C \"%s\" >/dev/null 2>&1", archive_path, tmp_path) != CUP_OK) {
+    if (strcmp(archive_format, "tar.gz") == 0) {
+        if (checked_snprintf(command, sizeof(command), "tar -xzf \"%s\" -C \"%s\" >/dev/null 2>&1", archive_path, tmp_path) != CUP_OK) {
+            return CUP_ERR_INSTALL;
+        }
+    } else if (strcmp(archive_format, "tar.xz") == 0) {
+        if (checked_snprintf(command, sizeof(command), "tar -xJf \"%s\" -C \"%s\" >/dev/null 2>&1", archive_path, tmp_path) != CUP_OK) {
+            return CUP_ERR_INSTALL;
+        }
+    } else {
+        fprintf(stderr, "Error: unsupported archive format '%s'.\n", archive_format);
         return CUP_ERR_INSTALL;
     }
 
@@ -576,13 +449,13 @@ CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path) 
     return CUP_OK;
 }
 
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release) {
+CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release, const char *archive_format) {
     CupError err;
     char archive_path[MAX_PATH_LEN];
     char package_url[MAX_PATH_LEN];
     int exists;
 
-    if (buffer == NULL || component == NULL || tool == NULL || resolved_release == NULL) {
+    if (buffer == NULL || component == NULL || tool == NULL || resolved_release == NULL || archive_format == NULL) {
         fprintf(stderr, "Error: invalid package fetch arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
@@ -592,7 +465,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
         return err;
     }
 
-    err = build_cache_archive_path(archive_path, sizeof(archive_path), component, tool, resolved_release);
+    err = build_cache_archive_path(archive_path, sizeof(archive_path), component, tool, resolved_release, archive_format);
     if (err != CUP_OK) {
         return CUP_ERR_FETCH;
     }
@@ -603,7 +476,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
     }
 
     if (!exists) {
-        err = build_package_url_from_manifest(package_url, sizeof(package_url), component, tool, resolved_release);
+        err = build_package_url_from_manifest(package_url, sizeof(package_url), component, tool, resolved_release, archive_format);
         if (err != CUP_OK) {
             return CUP_ERR_FETCH;
         }
@@ -622,15 +495,15 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
     return CUP_OK;
 }
 
-CupError install_package(const char *package_path, const char *tmp_path, const char *component, const char *tool, const char *resolved_release) {
+CupError install_package(const char *package_path, const char *tmp_path, const char *archive_format, const char *component, const char *tool, const char *resolved_release) {
     CupError err;
 
-    if (package_path == NULL || tmp_path == NULL || component == NULL || tool == NULL || resolved_release == NULL) {
+    if (package_path == NULL || tmp_path == NULL || archive_format == NULL || component == NULL || tool == NULL || resolved_release == NULL) {
         fprintf(stderr, "Error: invalid package install arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = extract_archive_to_tmp(package_path, tmp_path);
+    err = extract_archive_to_tmp(package_path, tmp_path, archive_format);
     if (err != CUP_OK) {
         return err;
     }
@@ -643,16 +516,16 @@ CupError install_package(const char *package_path, const char *tmp_path, const c
     return CUP_OK;
 }
 
-CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *release) {
+CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *release, const char *archive_format) {
     CupError err;
     char package_path[MAX_PATH_LEN];
 
-    err = fetch_package(package_path, sizeof(package_path), component, tool, release);
+    err = fetch_package(package_path, sizeof(package_path), component, tool, release, archive_format);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = install_package(package_path, tmp_path, component, tool, release);
+    err = install_package(package_path, tmp_path, archive_format, component, tool, release);
     if (err != CUP_OK) {
         return CUP_ERR_INSTALL;
     }

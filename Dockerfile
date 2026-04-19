@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     tar \
     gzip \
+    xz-utils \
     ca-certificates \
     flex \
     bison \

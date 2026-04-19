@@ -9,16 +9,18 @@ static void print_usage(const char *prog_name) {
     fprintf(stderr,
         "Usage:\n"
         "  %s list\n"
-        "  %s install <component> <tool>@<release>\n"
+        "  %s install <component> <tool>@<release> [--format <archive-format>]\n"
+        "  %s install <component> <tool>@<release> [-f <archive-format>]\n"
         "  %s remove <component> <tool>@<release>\n"
         "  %s default <component> <tool>@<release>\n"
         "  %s current <component>\n",
-        prog_name, prog_name, prog_name, prog_name, prog_name);
+        prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
 int main(int argc, char *argv[]) {
-    const char *command;
     CupError err;
+    const char *command;
+    const char *format_override = NULL;
 
     err = cleanup_all_tmp();
     if (err != CUP_OK) {
@@ -41,11 +43,24 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(command, "install") == 0) {
-        if (argc != 4) {
+        int valid_install_args = 1;
+
+        if (argc == 6) {
+            if (strcmp(argv[4], "--format") == 0 || strcmp(argv[4], "-f") == 0) {
+                format_override = argv[5];
+            } else {
+                valid_install_args = 0;
+            }
+        } else if (argc != 4) {
+            valid_install_args = 0;
+        }
+
+        if (!valid_install_args) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
-        return handle_install(argv[2], argv[3]);
+
+        return handle_install(argv[2], argv[3], format_override);
     }
 
     if (strcmp(command, "remove") == 0) {

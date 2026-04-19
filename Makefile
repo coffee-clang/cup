@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11 -g
 LDFLAGS = -static
-SRC = src/main.c src/component.c src/state.c src/fs.c
+SRC = src/main.c src/component.c src/state.c src/fs.c src/manifest.c
 OUT = cup
 
 all: $(OUT)

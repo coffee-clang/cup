@@ -69,6 +69,7 @@ make install
 echo "==> Packaging release archive"
 cd "${STAGE_DIR}"
 tar -czf "${OUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
+tar -cJf "${OUT_DIR}/${PACKAGE_NAME}.tar.xz" "${PACKAGE_NAME}"
 
 echo "==> Done"
 ls -lh "${OUT_DIR}"
