@@ -21,16 +21,100 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Determine release asset state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+          BUILD_MODE: ${{ github.event.inputs.build_mode }}
+          TARGET_REPO: mcolombo358/cup-binaries
+        run: |
+          set -euo pipefail
+
+          TAG="gcc-${VERSION}-${BUILD_MODE}"
+          TITLE="GCC ${VERSION} (${BUILD_MODE})"
+          PACKAGE_BASE="gcc-${VERSION}-linux-x64-${BUILD_MODE}"
+          ASSET_GZ="${PACKAGE_BASE}.tar.gz"
+          ASSET_XZ="${PACKAGE_BASE}.tar.xz"
+
+          mkdir -p out
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "package_base=${PACKAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "asset_gz=${ASSET_GZ}" >> "$GITHUB_OUTPUT"
+          echo "asset_xz=${ASSET_XZ}" >> "$GITHUB_OUTPUT"
+          
+          HAS_GZ=false
+          HAS_XZ=false
+          RELEASE_EXISTS=false
+          MODE="full_build"
+
+          if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+
+            ASSETS="$(gh release view "${TAG}" --repo "${TARGET_REPO}" --json assets --jq '.assets[].name')"
+
+            if printf '%s\n' "${ASSETS}" | grep -Fxq "${ASSET_GZ}"; then
+              HAS_GZ=true
+            fi
+
+            if printf '%s\n' "${ASSETS}" | grep -Fxq "${ASSET_XZ}"; then
+              HAS_XZ=true
+            fi
+
+            if [ "${HAS_GZ}" = true ] && [ "${HAS_XZ}" = true ]; then
+              MODE="skip"
+            elif [ "${HAS_GZ}" = true ]; then
+              MODE="repack_from_gz"
+              gh release download "${TAG}" \
+                --repo "${TARGET_REPO}" \
+                --pattern "${ASSET_GZ}" \
+                --dir out
+            elif [ "${HAS_XZ}" = true ]; then
+              MODE="repack_from_xz"
+              gh release download "${TAG}" \
+                --repo "${TARGET_REPO}" \
+                --pattern "${ASSET_XZ}" \
+                --dir out
+            else
+              MODE="full_build"
+            fi
+          fi
+
+          echo "release_exists=${RELEASE_EXISTS}" >> "$GITHUB_OUTPUT"
+          echo "has_gz=${HAS_GZ}" >> "$GITHUB_OUTPUT"
+          echo "has_xz=${HAS_XZ}" >> "$GITHUB_OUTPUT"
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Repack missing .tar.xz from .tar.gz
+        if: steps.state.outputs.mode == 'repack_from_gz'
+        run: |
+          bash scripts/repack-package.sh \
+            "${{ steps.state.outputs.package_base }}" \
+            "out/${{ steps.state.outputs.asset_gz }}" \
+            "out/${{ steps.state.outputs.asset_xz }}"
+
+      - name: Repack missing .tar.gz from .tar.xz
+        if: steps.state.outputs.mode == 'repack_from_xz'
+        run: |
+          bash scripts/repack-package.sh \
+            "${{ steps.state.outputs.package_base }}" \
+            "out/${{ steps.state.outputs.asset_xz }}" \
+            "out/${{ steps.state.outputs.asset_gz }}"
+
       - name: Build Docker image
+        if: steps.state.outputs.mode == 'full_build'
         run: docker build -t cup-gcc-builder .
 
       - name: Run GCC build inside Docker
+        if: steps.state.outputs.mode == 'full_build'
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/work" \
@@ -39,27 +123,53 @@ jobs:
               "${{ github.event.inputs.version }}" \
               "${{ github.event.inputs.build_mode }}"
 
-      - name: Create or update GitHub release
+      - name: Publish release assets
+        if: steps.state.outputs.mode != 'skip'
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          TARGET_REPO: mcolombo358/cup-binaries
+          TAG: ${{ steps.state.outputs.tag }}
+          TITLE: ${{ steps.state.outputs.title }}
+          MODE: ${{ steps.state.outputs.mode }}
+          ASSET_GZ: ${{ steps.state.outputs.asset_gz }}
+          ASSET_XZ: ${{ steps.state.outputs.asset_xz }}
+          RELEASE_EXISTS: ${{ steps.state.outputs.release_exists }}
           VERSION: ${{ github.event.inputs.version }}
           BUILD_MODE: ${{ github.event.inputs.build_mode }}
-          TARGET_REPO: mcolombo358/cup-binaries
         run: |
-          TAG="gcc-${VERSION}-${BUILD_MODE}"
-          TITLE="GCC ${VERSION} (${BUILD_MODE})"
-          FILE_GZ="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.gz"
-          FILE_XZ="out/gcc-${VERSION}-linux-x64-${BUILD_MODE}.tar.xz"
+          set -euo pipefail
 
-          if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists in ${TARGET_REPO}. Uploading asset..."
-            gh release upload "${TAG}" "${FILE_GZ}" "${FILE_XZ}" \
+          FILES=()
+
+          case "${MODE}" in
+            repack_from_gz)
+              FILES=("out/${ASSET_XZ}")
+              ;;
+            repack_from_xz)
+              FILES=("out/${ASSET_GZ}")
+              ;;
+            full_build)
+              FILES=("out/${ASSET_GZ}" "out/${ASSET_XZ}")
+              ;;
+            *)
+              echo "Error: unsupported publish mode '${MODE}'."
+              exit 1
+              ;;
+          esac
+
+          if [ "${RELEASE_EXISTS}" = "true" ]; then
+            echo "Uploading assets to existing release ${TAG}..."
+            gh release upload "${TAG}" "${FILES[@]}" \
               --repo "${TARGET_REPO}" \
               --clobber
           else
-            echo "Creating release ${TAG} in ${TARGET_REPO}..."
-            gh release create "${TAG}" "${FILE_GZ}" "${FILE_XZ}" \
+            echo "Creating release ${TAG}..."
+            gh release create "${TAG}" "${FILES[@]}" \
               --repo "${TARGET_REPO}" \
               --title "${TITLE}" \
               --notes "Precompiled GCC ${VERSION} built in ${BUILD_MODE} mode."
           fi
+
+      - name: Nothing to do
+        if: steps.state.outputs.mode == 'skip'
+        run: echo "Both assets already exist. Nothing to do."
