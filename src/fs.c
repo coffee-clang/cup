@@ -405,12 +405,13 @@ CupError download_package(const char *url, const char *dst_path) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (checked_snprintf(command, sizeof(command), "curl -L \"%s\" -o \"%s\" >/dev/null 2>&1", url, dst_path) != CUP_OK) {
+    if (checked_snprintf(command, sizeof(command), "curl -fL \"%s\" -o \"%s\" >/dev/null 2>&1", url, dst_path) != CUP_OK) {
         return CUP_ERR_FETCH;
     }
 
     status = system(command);
     if (status != 0) {
+        remove(dst_path);
         fprintf(stderr, "Error: failed to download package from '%s'.\n", url);
         return CUP_ERR_FETCH;
     }

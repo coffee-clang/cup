@@ -122,6 +122,14 @@ static CupError validate_release_name(const char *release) {
     return CUP_ERR_INVALID_RELEASE;
 }
 
+static CupError build_canonical_entry(char *buffer, size_t size, const char *tool, const char *resolved_release) {
+    if (buffer == NULL || tool == NULL || resolved_release == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    return checked_snprintf(buffer, size, "%s@%s", tool, resolved_release);
+}
+
 static CupError check_interrupted(const char *tmp_path) {
     if (g_interrupted) {
         if (tmp_path != NULL && tmp_path[0] != '\0') {
@@ -181,6 +189,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
     char resolved_release[MAX_NAME_LEN];
+    char canonical_entry[MAX_NAME_LEN];
     char archive_format[MAX_NAME_LEN];
     char tmp_path[MAX_PATH_LEN];
     char final_path[MAX_PATH_LEN];
@@ -220,6 +229,11 @@ CupError handle_install(const char *component, const char *entry, const char *fo
         return err;
     }
 
+    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
     if (format_override == NULL) {
         err = get_default_format(archive_format, sizeof(archive_format), component, tool);
         if (err != CUP_OK) {
@@ -253,7 +267,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
         return err;
     }
 
-    in_state = (state_find_installed(&state, component, entry) != -1);
+    in_state = (state_find_installed(&state, component, canonical_entry) != -1);
 
     err = installation_exists(component, tool, resolved_release, &on_disk);
     if (err != CUP_OK) {
@@ -330,7 +344,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
 
     tmp_path[0] = '\0';
 
-    err = state_add_installed(&state, component, entry);
+    err = state_add_installed(&state, component, canonical_entry);
     if (err != CUP_OK) {
         if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: failed to add install to state and rollback failed for '%s:%s'.\n", component, entry);
@@ -344,7 +358,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     print_step("Saving state...");
     err = state_save(&state, state_file);
     if (err != CUP_OK) {
-        state_remove_installed(&state, component, entry);
+        state_remove_installed(&state, component, canonical_entry);
 
         if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: state save failed and rollback failed for '%s:%s'.\n", component, entry);
@@ -366,6 +380,7 @@ CupError handle_remove(const char *component, const char *entry) {
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
     char resolved_release[MAX_NAME_LEN];
+    char canonical_entry[MAX_ENTRY_LEN];
     int on_disk;
 
     if (!is_valid_entry(entry)) {
@@ -395,6 +410,11 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
+    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
     err = get_state_file_path(state_file, sizeof(state_file));
     if (err != CUP_OK) {
         return err;
@@ -410,7 +430,7 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    if (state_find_installed(&state, component, entry) == -1) {
+    if (state_find_installed(&state, component, canonical_entry) == -1) {
         fprintf(stderr, "Error: '%s:%s' is not installed.\n", component, entry);
         return CUP_ERR_NOT_INSTALLED;
     }
@@ -420,12 +440,12 @@ CupError handle_remove(const char *component, const char *entry) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = state_remove_installed(&state, component, entry);
+    err = state_remove_installed(&state, component, canonical_entry);
     if (err != CUP_OK) {
         return err;
     }
 
-    state_remove_default_if_matches(&state, component, entry);
+    state_remove_default_if_matches(&state, component, canonical_entry);
 
     err = remove_component_install_dir(component, tool, resolved_release);
     if (err != CUP_OK) {
@@ -438,7 +458,7 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    printf("Removed %s %s successfully.\n", component, entry);
+    printf("Removed %s %s successfully.\n", component, canonical_entry);
     return CUP_OK;
 }
 
@@ -448,6 +468,8 @@ CupError handle_default(const char *component, const char *entry) {
     char state_file[MAX_PATH_LEN];
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
+    char resolved_release[MAX_NAME_LEN];
+    char canonical_entry[MAX_ENTRY_LEN];
 
     if (!is_valid_entry(entry)) {
         fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
@@ -470,6 +492,17 @@ CupError handle_default(const char *component, const char *entry) {
         return err;
     }
 
+    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
+        return err;
+    }
+
+    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
     err = get_state_file_path(state_file, sizeof(state_file));
     if (err != CUP_OK) {
         return err;
@@ -480,12 +513,12 @@ CupError handle_default(const char *component, const char *entry) {
         return err;
     }
 
-    if (state_find_installed(&state, component, entry) == -1) {
+    if (state_find_installed(&state, component, canonical_entry) == -1) {
         fprintf(stderr, "Error: '%s:%s' is not installed.\n", component, entry);
         return CUP_ERR_NOT_INSTALLED;
     }
 
-    err = state_set_default(&state, component, entry);
+    err = state_set_default(&state, component, canonical_entry);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not set default for component '%s'.\n", component);
         return err;
