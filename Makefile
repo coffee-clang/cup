@@ -1,19 +1,22 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -std=c11 -g
-LDFLAGS = -static
-SRC = src/main.c src/component.c src/state.c src/fs.c src/manifest.c
-OUT = cup
+PREFIX = $(HOME)/deps/install
 
-all: $(OUT)
+CFLAGS = -Wall -Wextra -Werror -std=c11 -g -I$(PREFIX)/include
+LDFLAGS = -L$(PREFIX)/lib -L$(PREFIX)/lib64
 
-$(OUT): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(OUT) $(LDFLAGS)
+SRC = src/main.c src/component.c src/state.c src/fs.c src/manifest.c src/support.c src/fetch.c src/archive.c src/util.c
+TARGET = cup
+
+LDLIBS = -lcurl -larchive -lssl -lcrypto -lz -llzma -ldl
+
+all: $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) -static $(LDFLAGS) $(LDLIBS)
 
 clean:
-	rm -f $(OUT)
+	rm -f $(TARGET)
 
 dev-clean: clean
 	rm -rf ~/.cup
 	clear
-
-.PHONY: all clean dev-clean

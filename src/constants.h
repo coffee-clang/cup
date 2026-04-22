@@ -1,0 +1,14 @@
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
+
+#define MAX_INSTALLED 32
+#define MAX_DEFAULTS 6
+
+#define MAX_NAME_LEN 64
+#define MAX_ENTRY_LEN 128
+#define MAX_PATH_LEN 512
+
+#define MAX_MANIFEST_LINE_LEN 1024
+#define MAX_MANIFEST_VALUE_LEN 512
+
+#endif

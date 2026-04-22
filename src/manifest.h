@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#include "state.h"
+#include "constants.h"
 #include "error.h"
 
 // PATH
@@ -14,6 +14,7 @@ CupError read_manifest_value(char *buffer, size_t size, const char *component, c
 
 // RELEASE
 CupError resolve_release(char *buffer, size_t size, const char *component, const char *tool, const char *release);
+CupError is_version_available(const char *component, const char *tool, const char *version, int *is_available);
 
 // FORMAT
 CupError get_default_format(char *buffer, size_t size, const char *component, const char *tool);

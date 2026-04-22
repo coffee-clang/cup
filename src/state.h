@@ -3,13 +3,8 @@
 
 #include <stddef.h>
 
+#include "constants.h"
 #include "error.h"
-
-#define MAX_INSTALLED 32
-#define MAX_DEFAULTS 6
-#define MAX_NAME_LEN 64
-#define MAX_ENTRY_LEN 128
-#define MAX_PATH_LEN 512
 
 typedef struct {
     char component[MAX_NAME_LEN];

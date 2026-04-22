@@ -1,8 +1,8 @@
+#include "manifest.h"
+#include "util.h"
+
 #include <stdio.h>
 #include <string.h>
-
-#include "manifest.h"
-#include "fs.h"
 
 static CupError replace_placeholder(char *buffer, size_t size, const char *template_str, const char *placeholder, const char *value) {
     const char *cursor;
@@ -61,7 +61,7 @@ CupError read_manifest_value(char *buffer, size_t size, const char *component, c
     CupError err;
     FILE *file;
     char manifest_path[MAX_PATH_LEN];
-    char line[1024];
+    char line[MAX_MANIFEST_LINE_LEN];
     char key[MAX_NAME_LEN *3];
     size_t key_len;
 
@@ -124,13 +124,42 @@ CupError resolve_release(char *buffer, size_t size, const char *component, const
     return checked_snprintf(buffer, size, "%s", release);
 }
 
+CupError is_version_available(const char *component, const char *tool, const char *version, int *is_available) {
+    CupError err;
+    char versions[MAX_MANIFEST_VALUE_LEN];
+    char *token;
+
+    if (component == NULL || tool == NULL || version == NULL || is_available == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    *is_available = 0;
+
+    err = read_manifest_value(versions, sizeof(versions), component, tool, "available_versions");
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    token = strtok(versions, ",");
+    while (token != NULL) {
+        if (strcmp(token, version) == 0) {
+            *is_available = 1;
+            return CUP_OK;
+        }
+
+        token = strtok(NULL, ",");
+    }
+
+    return CUP_OK;
+}
+
 CupError get_default_format(char *buffer, size_t size, const char *component, const char *tool) {
     return read_manifest_value(buffer, size, component, tool, "default_format");
 }
 
 CupError is_format_supported(const char *component, const char *tool, const char *format, int *is_supported) {
     CupError err;
-    char formats[256];
+    char formats[MAX_MANIFEST_VALUE_LEN];
     char *token;
 
     if (format == NULL || is_supported == NULL) {

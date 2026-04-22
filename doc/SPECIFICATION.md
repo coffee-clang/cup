@@ -2,52 +2,80 @@
 
 ## 1. Purpose
 
-`cup` is a prototype toolchain manager for installing software components.
-The current implementation is centered on compilers.
+`cup` is a prototype toolchain manager for installing software components under a user-owned directory structure.
 
-The project focuses on installation, local state persistence, cache handling, and default selection.
+The current implementation is centered on:
 
-## 2. Objectives
+- installation of components from package archives
+- local state persistence
+- cache reuse
+- per-component default selection
+- support for multiple archive formats
+- manifest-driven version resolution
 
-The implementation is based on the following objectives:
+## 2. Current scope
 
-- maintain consistency between filesystem and internal state
+The current implementation supports multiple components.
+
+Examples currently configured in the project include:
+
+- `compiler`
+- `debugger`
+
+Examples of supported tools include:
+
+- `gcc`
+- `clang`
+- `gdb`
+
+The supported component/tool mapping is defined in source code and validated explicitly.
+
+## 3. Objectives
+
+The implementation follows these objectives:
+
+- keep consistency between persistent state and filesystem layout
 - avoid administrator privileges
-- support multiple tools for the same component
-- support multiple installed releases for the same tool
+- support multiple tools under the same component
+- support multiple installed releases
 - support one default entry per component
-- keep the filesystem layout simple and extendable
+- keep runtime data under a predictable user directory
+- allow package source configuration through a manifest
+- keep the installation flow staged and recoverable
 
-## 3. Terminology
+## 4. Terminology
 
 ### Component
-A logical category of toolchain element.
+A logical category of installable software.
 
-Example:
+Examples:
 
 ```text
 compiler
+debugger
 ```
 
 ### Tool
-A specific implementation belonging to a component.
+A concrete installable implementation inside a component.
 
 Examples:
 
 ```text
 gcc
 clang
+gdb
 ```
 
 ### Release
-A user-requested or resolved release identifier.
+A user-requested or resolved version identifier.
 
 Examples:
 
 ```text
 stable
-nightly
+15.2.0
 22.1.3
+17.1
 ```
 
 ### Entry
@@ -60,37 +88,114 @@ A user-facing identifier in the form:
 Example:
 
 ```text
-clang@stable
+gcc@stable
 ```
 
-## 4. Commands
+### Canonical entry
+The internal normalized form used in persistent state:
 
-The current CLI supports:
+```text
+<tool>@<resolved_version>
+```
+
+Example:
+
+```text
+gcc@15.2.0
+```
+
+### Archive format
+The package compression/container format selected for download.
+
+Examples:
+
+```text
+tar.gz
+tar.xz
+```
+
+## 5. Commands
+
+The CLI currently supports:
 
 ```text
 list
-install <component> <tool>@<release>
+install <component> <tool>@<release> [--format <archive-format>]
 remove <component> <tool>@<release>
 default <component> <tool>@<release>
 current <component>
 ```
 
 ### list
-Shows installed entries and marks defaults.
+Prints installed entries and marks defaults.
 
 ### install
-Installs the requested entry through the staged installation flow.
+Installs a requested tool release for a selected component.
 
 ### remove
-Removes an installed entry from the filesystem and from the local state.
+Removes an installed entry from both filesystem and local state.
 
 ### default
-Sets the default entry for a component.
+Sets the default canonical entry for a component.
 
 ### current
-Shows the current default entry for a component.
+Prints the current default canonical entry for a component.
 
-## 5. Filesystem layout
+## 6. Entry resolution model
+
+The implementation separates user input from internal state.
+
+### 6.1 User input
+The user provides:
+
+```text
+<tool>@<release>
+```
+
+### 6.2 Release resolution
+The release is resolved as follows:
+
+- `stable` is resolved through the manifest
+- explicit versions are used directly
+
+### 6.3 Canonicalization
+After resolution, a canonical entry is built:
+
+```text
+<tool>@<resolved_version>
+```
+
+This canonical entry is used for:
+
+- persistent state
+- installed entry lookup
+- default handling
+- consistency checks
+
+## 7. Version availability
+
+After release resolution, the resolved version is checked against the tool’s declared available versions in the manifest.
+
+If the version is not listed as available, installation fails before any download begins.
+
+This prevents invalid or unsupported version requests from reaching the fetch phase.
+
+## 8. Archive format model
+
+The archive format is selected as follows:
+
+- if the user does not specify a format, the tool’s `default_format` is used
+- if the user specifies a format, it must appear in the tool’s supported `formats` list
+
+The selected format is then used to:
+
+- determine the archive filename in cache
+- build the final package URL
+- select the downloaded asset
+
+Archive extraction is performed by the archive layer and is independent of the originally requested alias.
+
+## 9. Filesystem layout
 
 All runtime data is stored under:
 
@@ -98,7 +203,7 @@ All runtime data is stored under:
 ~/.cup/
 ```
 
-### Root structure
+### 9.1 Root layout
 
 ```text
 ~/.cup/
@@ -108,7 +213,9 @@ All runtime data is stored under:
 └── tmp/
 ```
 
-### Installed components
+### 9.2 Installed components
+
+Installed directories follow:
 
 ```text
 ~/.cup/components/<component>/<tool>/<platform>/<release>
@@ -117,22 +224,35 @@ All runtime data is stored under:
 Example:
 
 ```text
-~/.cup/components/compiler/clang/linux/22.1.3
+~/.cup/components/compiler/gcc/linux/15.2.0
 ```
 
-### Cache
+### 9.3 Cache layout
+
+Cached packages follow:
 
 ```text
-~/.cup/cache/<component>/<tool>/<release>/package.tar.xz
+~/.cup/cache/<component>/<tool>/<release>/package.<format>
 ```
 
-### Temporary directories
+Examples:
+
+```text
+~/.cup/cache/compiler/gcc/15.2.0/package.tar.gz
+~/.cup/cache/compiler/gcc/15.2.0/package.tar.xz
+```
+
+### 9.4 Temporary staging layout
+
+Temporary directories follow:
 
 ```text
 ~/.cup/tmp/<component>-<tool>-<release>-<pid>
 ```
 
-## 6. State model
+These are created during installation and cleaned on failure or startup cleanup.
+
+## 10. State model
 
 Persistent state is stored in:
 
@@ -140,179 +260,175 @@ Persistent state is stored in:
 ~/.cup/state.txt
 ```
 
-Two kinds of records are used.
+The state file contains two record families.
 
 ### Installed entries
 
 ```text
-installed.<component>=<tool>@<release>
+installed.<component>=<tool>@<resolved_version>
 ```
 
 ### Default entries
 
 ```text
-default.<component>=<tool>@<release>
+default.<component>=<tool>@<resolved_version>
 ```
 
-At most one default entry is stored for each component.
+Only one default entry is stored for each component.
 
-## 7. Installation process
+## 11. Installation process
 
-The installation logic is staged.
+The installation flow is staged.
 
-### 7.1 Entry validation
+### 11.1 Entry context resolution
+The implementation resolves an internal entry context that contains:
 
-Validation is divided into two parts:
+- tool
+- requested release
+- resolved release
+- canonical entry
 
-- syntactic validation
-- semantic validation
+This context is reused across install, remove, and default operations.
 
-Syntactic validation checks that the entry contains exactly one `@` and that both parts are non-empty.
+### 11.2 Validation phase
+The install flow validates:
 
-Semantic validation checks:
-
+- entry syntax
 - component support
-- tool support for the component
-- release validity
+- tool support for the selected component
+- release syntax
+- version availability
+- requested archive format support
 
-### 7.2 Release resolution
+### 11.3 Fetch phase
+The package archive is looked up in the local cache.
 
-Requested releases are resolved as follows:
+If the archive is missing, the implementation:
 
-- `stable` is resolved through the manifest
-- `nightly` is resolved through the manifest
-- explicit versions are used directly
+- builds the package URL from the manifest
+- downloads the archive into the cache
 
-### 7.3 Fetch
+### 11.4 Extraction phase
+The archive is extracted into a temporary staging directory.
 
-The package archive is searched in the local cache.
+The current implementation uses a dedicated archive module for extraction.
 
-If the archive is not present, it is downloaded using the URL template defined in the manifest.
+### 11.5 Metadata phase
+After extraction, installation metadata is written to:
 
-### 7.4 Temporary installation
+```text
+info.txt
+```
 
-The archive is extracted into a temporary directory.
+inside the temporary installation directory.
 
-Then `info.txt` metadata is written for the staged installation.
-
-### 7.5 Validation
-
-The current validation checks:
+### 11.6 Validation phase
+The staged installation is checked for:
 
 - temporary directory existence
-- `info.txt` existence
-- `info.txt` readability
-- `info.txt` not empty
+- metadata existence
+- metadata readability
+- metadata non-emptiness
 
-### 7.6 Commit
+### 11.7 Commit phase
+If staging validation succeeds, the installation is moved to the final destination using `rename`.
 
-After validation, the temporary installation is moved to the final destination through `rename`.
-
-### 7.7 State update
-
+### 11.8 State update
 After a successful commit:
 
-- the installed entry is added to state
+- the canonical entry is added to state
 - the state file is saved
 
-If state saving fails after commit, a rollback attempt is performed.
+If state persistence fails after commit, rollback is attempted.
 
-## 8. Package manifest
-
-The implementation uses a local manifest file:
-
-```text
-config/packages.cfg
-```
-
-The manifest is used to store:
-
-- stable release mappings
-- nightly release mappings
-- package URL templates
-
-Example structure:
-
-```text
-compiler.gcc.stable_version=15.2.0
-compiler.gcc.nightly_version=15.2.0
-compiler.gcc.url=https://gcc.gnu.org/pub/gcc/releases/gcc-{version}/gcc-{version}.tar.xz
-
-compiler.clang.stable_version=22.1.3
-compiler.clang.nightly_version=22.1.3
-compiler.clang.url=https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.tar.xz
-```
-
-The placeholder `{version}` is replaced with the resolved release string.
-
-## 9. Error handling
+## 12. Error handling
 
 The project uses explicit error codes through the `CupError` enum.
 
 The current implementation distinguishes errors related to:
 
 - invalid input
-- unsupported component or tool
+- unsupported component
+- invalid tool for component
 - invalid release
+- unavailable version
 - fetch failures
-- installation failures
-- validation failures
+- archive extraction failures
 - filesystem failures
+- validation failures
 - state load/save failures
 - interruption handling
 - rollback failures
 - state/filesystem inconsistencies
 
-## 10. Cleanup and rollback
+## 13. Interruption handling
 
-Temporary directories are cleaned:
+The install flow handles `SIGINT` through a `sig_atomic_t` flag.
 
-- after installation failures
-- after validation failures
-- after interruptions
-- at startup through temporary cleanup
-
-If commit succeeds but state saving fails, the implementation attempts to remove the installed directory.
-
-## 11. Interruption handling
-
-The install flow handles `SIGINT` through a global `sig_atomic_t` flag.
-
-The signal handler only sets the flag.
+The signal handler only records interruption state.
 Cleanup is performed later by normal control flow.
 
-## 12. Source code structure
+## 14. Source code organization
 
-The source code is divided into four modules.
+### `main.c`
+Command-line parsing and dispatch.
 
-### main.c
-Responsible for command dispatch and argument checking.
+### `component.c`
+Command orchestration, entry context resolution, and top-level install/remove/default logic.
 
-### component.c
-Responsible for command logic, entry parsing, semantic validation, and command orchestration.
+### `state.c`
+State initialization, parsing, saving, and mutation.
 
-### state.c
-Responsible for state initialization, load/save operations, and state manipulation.
+### `fs.c`
+Filesystem paths, directory preparation, cache layout, commit, cleanup, and install metadata writing.
 
-### fs.c
-Responsible for path construction, directory management, cache handling, archive download, extraction, validation helpers, commit, and cleanup.
+### `manifest.c`
+Manifest reading, release resolution, version checks, format checks, and URL generation.
 
-## 13. Current limitations
+### `support.c`
+Supported components and their tools.
 
-The current prototype has the following limitations:
+### `fetch.c`
+Archive download and cache acquisition.
 
-- Linux-oriented implementation
-- minimal post-extraction validation
-- no full distinction yet between binary and source archives
-- archive layout normalization is not yet fully handled
+### `archive.c`
+Archive extraction.
 
-## 14. Planned extensions
+### `util.c`
+Reusable general-purpose helpers such as safe formatted string writing.
 
-Possible future extensions include:
+### `constants.h`
+Shared project-wide size limits.
 
-- explicit separation between binary and source packages
-- richer validation of extracted contents
-- support for additional components
-- cross-platform support
-- stronger package provider abstraction
-- improved handling of extracted archive roots
+## 15. Current implementation characteristics
+
+The current implementation is:
+
+- Linux-oriented
+- user-space only
+- manifest-driven
+- cache-aware
+- alias-aware through canonical entries
+- format-aware at package selection time
+
+## 16. Current limitations
+
+The current implementation still has limitations:
+
+- Linux-centric runtime assumptions
+- support tables for components and tools are still code-defined
+- manifest parsing is simple and line-oriented
+- no checksum or signature verification
+- validation of extracted contents is still minimal
+- archive and fetch behavior are implemented around current supported formats and package layout assumptions
+
+## 17. Planned extension areas
+
+Likely future directions include:
+
+- richer post-extraction validation
+- automatic manifest generation/update
+- additional components and tools
+- support for more package providers
+- stronger package integrity verification
+- broader platform support

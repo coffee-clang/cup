@@ -1,9 +1,8 @@
-#include <stdio.h>
-#include <string.h>
-
 #include "state.h"
 #include "fs.h"
-#include "error.h"
+
+#include <stdio.h>
+#include <string.h>
 
 static void trim_newline(char *s) {
     size_t len = strlen(s);

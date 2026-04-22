@@ -3,11 +3,8 @@
 
 #include <stddef.h>
 
-#include "state.h"
+#include "constants.h"
 #include "error.h"
-
-// UTILS
-CupError checked_snprintf(char *buffer, size_t size, const char *format, ...);
 
 // BASE PATH
 const char *get_platform_name(void);
@@ -31,12 +28,6 @@ CupError build_cache_archive_path(char *buffer, size_t size, const char *compone
 
 // INSTALL FLOW
 CupError create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release);
-
-CupError download_package(const char *url, const char *dst_path);
-CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path, const char *archive_format);
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release, const char *archive_format);
-CupError install_package(const char *package_path, const char *tmp_path, const char *archive_format, const char *component, const char *tool, const char *resolved_release);
-
 CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *release, const char *archive_format);
 CupError validate_install(const char *tmp_path);
 CupError commit_install(const char *tmp_path, const char *final_path);

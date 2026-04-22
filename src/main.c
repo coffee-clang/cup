@@ -1,9 +1,8 @@
-#include <stdio.h>
-#include <string.h>
-
 #include "component.h"
 #include "fs.h"
-#include "error.h"
+
+#include <stdio.h>
+#include <string.h>
 
 static void print_usage(const char *prog_name) {
     fprintf(stderr,

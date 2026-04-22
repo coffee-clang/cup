@@ -1,12 +1,20 @@
-#include <stdio.h>
-#include <string.h>
-#include <signal.h>
-
 #include "component.h"
 #include "state.h"
 #include "fs.h"
 #include "manifest.h"
-#include "error.h"
+#include "support.h"
+#include "util.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+
+typedef struct {
+    char tool[MAX_NAME_LEN];
+    char release[MAX_NAME_LEN];
+    char resolved_release[MAX_NAME_LEN];
+    char canonical_entry[MAX_ENTRY_LEN];
+} EntryContext;
 
 static volatile sig_atomic_t g_interrupted = 0;
 
@@ -87,24 +95,6 @@ static int is_version_like(const char *release) {
     return 1;
 }
 
-static CupError validate_tool_for_component(const char *component, const char *tool) {
-    if (component == NULL || tool == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (strcmp(component, "compiler") == 0) {
-        if (strcmp(tool, "gcc") == 0 || strcmp(tool, "clang") == 0) {
-            return CUP_OK;
-        }
-
-        fprintf(stderr, "Error: unsupported tool '%s' for component '%s'.\n", tool, component);
-        return CUP_ERR_INVALID_TOOL;
-    }
-
-    fprintf(stderr, "Error: unsupported component '%s'.\n", component);
-    return CUP_ERR_UNSUPPORTED_COMPONENT;
-}
-
 static CupError validate_release_name(const char *release) {
     if (release == NULL || release[0] == '\0') {
         return CUP_ERR_INVALID_INPUT;
@@ -128,6 +118,53 @@ static CupError build_canonical_entry(char *buffer, size_t size, const char *too
     }
 
     return checked_snprintf(buffer, size, "%s@%s", tool, resolved_release);
+}
+
+static CupError resolve_entry_context(const char *component, const char *entry, EntryContext *ctx) {
+    CupError err;
+
+    if (component == NULL || entry == NULL || ctx == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (!is_valid_entry(entry)) {
+        fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = split_entry(entry, ctx->tool, sizeof(ctx->tool), ctx->release, sizeof(ctx->release));
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
+        return err;
+    }
+
+    err = validate_component(component);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_tool_for_component(component, ctx->tool);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_release_name(ctx->release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = resolve_release(ctx->resolved_release, sizeof(ctx->resolved_release), component, ctx->tool, ctx->release);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", ctx->release, ctx->tool);
+        return err;
+    }
+
+    err = build_canonical_entry(ctx->canonical_entry, sizeof(ctx->canonical_entry), ctx->tool, ctx->resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return CUP_OK;
 }
 
 static CupError check_interrupted(const char *tmp_path) {
@@ -183,16 +220,14 @@ CupError handle_list(void) {
 }
 
 CupError handle_install(const char *component, const char *entry, const char *format_override) {
+    EntryContext ctx;
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-    char tool[MAX_NAME_LEN];
-    char release[MAX_NAME_LEN];
-    char resolved_release[MAX_NAME_LEN];
-    char canonical_entry[MAX_NAME_LEN];
     char archive_format[MAX_NAME_LEN];
     char tmp_path[MAX_PATH_LEN];
     char final_path[MAX_PATH_LEN];
+    int version_available;
     int format_supported;
     int in_state;
     int on_disk;
@@ -201,53 +236,36 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     g_interrupted = 0;
     signal(SIGINT, handle_sigint);
 
-    if (!is_valid_entry(entry)) {
-        fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = split_entry(entry, tool, sizeof(tool), release, sizeof(release));
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
-        return err;
-    }
-
-    err = validate_tool_for_component(component, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = validate_release_name(release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
     print_step("Resolving release...");
-    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
+    err = resolve_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
         return err;
     }
 
-    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    err = is_version_available(component, ctx.tool, ctx.resolved_release, &version_available);
     if (err != CUP_OK) {
         return err;
+    }
+
+    if (!version_available) {
+        fprintf(stderr, "Error: version '%s' is not available for tool '%s'.\n", ctx.resolved_release, ctx.tool);
+        return CUP_ERR_INVALID_RELEASE;
     }
 
     if (format_override == NULL) {
-        err = get_default_format(archive_format, sizeof(archive_format), component, tool);
+        err = get_default_format(archive_format, sizeof(archive_format), component, ctx.tool);
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: could not determine default archive format for tool '%s'.\n", tool);
+            fprintf(stderr, "Error: could not determine default archive format for tool '%s'.\n", ctx.tool);
             return err;
         }
     } else {
-        err = is_format_supported(component, tool, format_override, &format_supported);
+        err = is_format_supported(component, ctx.tool, format_override, &format_supported);
         if (err != CUP_OK) {
             return err;
         }
 
         if (!format_supported) {
-            fprintf(stderr, "Error: archive format '%s' is not supported for tool '%s'.\n", format_override, tool);
+            fprintf(stderr, "Error: archive format '%s' is not supported for tool '%s'.\n", format_override, ctx.tool);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -267,9 +285,9 @@ CupError handle_install(const char *component, const char *entry, const char *fo
         return err;
     }
 
-    in_state = (state_find_installed(&state, component, canonical_entry) != -1);
+    in_state = (state_find_installed(&state, component, ctx.canonical_entry) != -1);
 
-    err = installation_exists(component, tool, resolved_release, &on_disk);
+    err = installation_exists(component, ctx.tool, ctx.resolved_release, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
@@ -284,7 +302,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = create_tmp_install_dir(tmp_path, sizeof(tmp_path), component, tool, resolved_release);
+    err = create_tmp_install_dir(tmp_path, sizeof(tmp_path), component, ctx.tool, ctx.resolved_release);
     if (err != CUP_OK) {
         return err;
     }
@@ -295,7 +313,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     }
 
     print_step("Fetching and installing package...");
-    err = perform_install(tmp_path, component, tool, resolved_release, archive_format);
+    err = perform_install(tmp_path, component, ctx.tool, ctx.resolved_release, archive_format);
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
         return err;
@@ -319,7 +337,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     }
 
     print_step("Preparing final installation directories...");
-    err = ensure_component_base_dirs(component, tool, get_platform_name());
+    err = ensure_component_base_dirs(component, ctx.tool, get_platform_name());
     if (err != CUP_OK) {
         cleanup_tmp_install(tmp_path);
         return err;
@@ -330,7 +348,7 @@ CupError handle_install(const char *component, const char *entry, const char *fo
         return err;
     }
 
-    err = build_install_path(final_path, sizeof(final_path), component, tool, resolved_release);
+    err = build_install_path(final_path, sizeof(final_path), component, ctx.tool, ctx.resolved_release);
     if (err != CUP_OK) {
         return err;
     }
@@ -344,9 +362,9 @@ CupError handle_install(const char *component, const char *entry, const char *fo
 
     tmp_path[0] = '\0';
 
-    err = state_add_installed(&state, component, canonical_entry);
+    err = state_add_installed(&state, component, ctx.canonical_entry);
     if (err != CUP_OK) {
-        if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
+        if (remove_component_install_dir(component, ctx.tool, ctx.resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: failed to add install to state and rollback failed for '%s:%s'.\n", component, entry);
             return CUP_ERR_ROLLBACK;
         }
@@ -358,9 +376,9 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     print_step("Saving state...");
     err = state_save(&state, state_file);
     if (err != CUP_OK) {
-        state_remove_installed(&state, component, canonical_entry);
+        state_remove_installed(&state, component, ctx.canonical_entry);
 
-        if (remove_component_install_dir(component, tool, resolved_release) != CUP_OK) {
+        if (remove_component_install_dir(component, ctx.tool, ctx.resolved_release) != CUP_OK) {
             fprintf(stderr, "Error: state save failed and rollback failed for '%s:%s'.\n", component, entry);
             return CUP_ERR_ROLLBACK;
         }
@@ -374,43 +392,13 @@ CupError handle_install(const char *component, const char *entry, const char *fo
 }
 
 CupError handle_remove(const char *component, const char *entry) {
+    EntryContext ctx;
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-    char tool[MAX_NAME_LEN];
-    char release[MAX_NAME_LEN];
-    char resolved_release[MAX_NAME_LEN];
-    char canonical_entry[MAX_ENTRY_LEN];
     int on_disk;
 
-    if (!is_valid_entry(entry)) {
-        fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = split_entry(entry, tool, sizeof(tool), release, sizeof(release));
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
-        return err;
-    }
-
-    err = validate_tool_for_component(component, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = validate_release_name(release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
-        return err;
-    }
-
-    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    err = resolve_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -425,12 +413,12 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    err = installation_exists(component, tool, resolved_release, &on_disk);
+    err = installation_exists(component, ctx.tool, ctx.resolved_release, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    if (state_find_installed(&state, component, canonical_entry) == -1) {
+    if (state_find_installed(&state, component, ctx.canonical_entry) == -1) {
         fprintf(stderr, "Error: '%s:%s' is not installed.\n", component, entry);
         return CUP_ERR_NOT_INSTALLED;
     }
@@ -440,14 +428,14 @@ CupError handle_remove(const char *component, const char *entry) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = state_remove_installed(&state, component, canonical_entry);
+    err = state_remove_installed(&state, component, ctx.canonical_entry);
     if (err != CUP_OK) {
         return err;
     }
 
-    state_remove_default_if_matches(&state, component, canonical_entry);
+    state_remove_default_if_matches(&state, component, ctx.canonical_entry);
 
-    err = remove_component_install_dir(component, tool, resolved_release);
+    err = remove_component_install_dir(component, ctx.tool, ctx.resolved_release);
     if (err != CUP_OK) {
         return err;
     }
@@ -458,47 +446,17 @@ CupError handle_remove(const char *component, const char *entry) {
         return err;
     }
 
-    printf("Removed %s %s successfully.\n", component, canonical_entry);
+    printf("Removed %s %s successfully.\n", component, entry);
     return CUP_OK;
 }
 
 CupError handle_default(const char *component, const char *entry) {
+    EntryContext ctx;
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-    char tool[MAX_NAME_LEN];
-    char release[MAX_NAME_LEN];
-    char resolved_release[MAX_NAME_LEN];
-    char canonical_entry[MAX_ENTRY_LEN];
 
-    if (!is_valid_entry(entry)) {
-        fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = split_entry(entry, tool, sizeof(tool), release, sizeof(release));
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
-        return err;
-    }
-
-    err = validate_tool_for_component(component, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = validate_release_name(release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = resolve_release(resolved_release, sizeof(resolved_release), component, tool, release);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not resolve release '%s' for tool '%s'.\n", release, tool);
-        return err;
-    }
-
-    err = build_canonical_entry(canonical_entry, sizeof(canonical_entry), tool, resolved_release);
+    err = resolve_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -513,12 +471,12 @@ CupError handle_default(const char *component, const char *entry) {
         return err;
     }
 
-    if (state_find_installed(&state, component, canonical_entry) == -1) {
+    if (state_find_installed(&state, component, ctx.canonical_entry) == -1) {
         fprintf(stderr, "Error: '%s:%s' is not installed.\n", component, entry);
         return CUP_ERR_NOT_INSTALLED;
     }
 
-    err = state_set_default(&state, component, canonical_entry);
+    err = state_set_default(&state, component, ctx.canonical_entry);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not set default for component '%s'.\n", component);
         return err;
@@ -539,13 +497,9 @@ CupError handle_current(const char *component) {
     char state_file[MAX_PATH_LEN];
     const char *default_entry;
 
-    if (component == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (strcmp(component, "compiler") != 0) {
-        fprintf(stderr, "Error: unsupported component '%s'.\n", component);
-        return CUP_ERR_UNSUPPORTED_COMPONENT;
+    err = validate_component(component);
+    if (err != CUP_OK) {
+        return err;
     }
 
     err = get_state_file_path(state_file, sizeof(state_file));
