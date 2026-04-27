@@ -148,7 +148,7 @@ The link command is static and links against:
 -ldl
 ```
 
-The source list must match the current module names:
+The source list should match the current module names:
 
 ```text
 main.c
@@ -200,7 +200,7 @@ The `.vscode/c_cpp_properties.json` file can be adjusted locally if the prefix c
 
 ## 8. GNU package build environment
 
-Some tools, such as GCC and GDB, are built from upstream source releases and then published as prebuilt archives.
+GCC and GDB are built from upstream source releases and then published as prebuilt archives.
 
 The current build structure is:
 
@@ -284,7 +284,7 @@ and calls the tool-specific build script.
 Examples:
 
 ```sh
-bash scripts/build-gnu-package.sh gcc 15.2.0 full
+bash scripts/build-gnu-package.sh gcc 15.2.0 standard
 bash scripts/build-gnu-package.sh gdb 17.1 standard
 ```
 
@@ -335,8 +335,8 @@ Prebuilt package archives must contain a top-level directory.
 Example:
 
 ```text
-gcc-15.2.0-linux-x64-full/bin/gcc
-gcc-15.2.0-linux-x64-full/lib/...
+gcc-15.2.0-linux-x64-standard/bin/gcc
+gcc-15.2.0-linux-x64-standard/lib/...
 ```
 
 This is required because `extract.c` strips the first path component during installation.
@@ -350,20 +350,32 @@ The workflow publishes assets in the same repository.
 Example tag:
 
 ```text
-gcc-15.2.0-full
+gdb-17.1-standard
 ```
 
 Example assets:
 
 ```text
-gcc-15.2.0-linux-x64-full.tar.gz
-gcc-15.2.0-linux-x64-full.tar.xz
+gdb-17.1-linux-x64-standard.tar.gz
+gdb-17.1-linux-x64-standard.tar.xz
 ```
 
-The manifest should point to these assets using the repository URL.
+The manifest points to these assets using the repository URL.
 
 Example:
 
 ```text
-compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-full/gcc-{version}-linux-x64-full.{format}
+debugger.gdb.url_template=https://github.com/coffee-clang/cup/releases/download/gdb-{version}-standard/gdb-{version}-linux-x64-standard.{format}
 ```
+
+## 15. Upstream LLVM packages
+
+Clang and LLDB currently use upstream LLVM release assets.
+
+The manifest points both tools to the LLVM binary archive pattern:
+
+```text
+https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
+```
+
+This avoids maintaining a separate LLVM build workflow for now.

@@ -82,10 +82,13 @@ The output may also indicate:
 ./cup install <component> <tool>@<release>
 ```
 
-Example:
+Examples:
 
 ```sh
 ./cup install compiler gcc@stable
+./cup install compiler clang@stable
+./cup install debugger gdb@stable
+./cup install debugger lldb@stable
 ```
 
 With an explicit archive format:
@@ -156,8 +159,8 @@ Examples:
 ```text
 gcc@stable
 gcc@15.2.0
-clang@22.1.3
 gdb@17.1
+lldb@22.1.3
 ```
 
 `stable` is a symbolic release. It is resolved through the manifest before being stored in the state.
@@ -198,14 +201,24 @@ It defines package metadata using keys in this form:
 <component>.<tool>.<field>=<value>
 ```
 
-Example:
+Example for a package built and published by this repository:
 
 ```text
 compiler.gcc.stable_version=15.2.0
-compiler.gcc.available_versions=15.2.0,15.1.0
+compiler.gcc.available_versions=15.2.0
 compiler.gcc.default_format=tar.gz
 compiler.gcc.formats=tar.gz,tar.xz
-compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-full/gcc-{version}-linux-x64-full.{format}
+compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-standard/gcc-{version}-linux-x64-standard.{format}
+```
+
+Example for an upstream LLVM package:
+
+```text
+compiler.clang.stable_version=22.1.3
+compiler.clang.available_versions=22.1.3,22.1.2,22.1.1
+compiler.clang.default_format=tar.xz
+compiler.clang.formats=tar.xz
+compiler.clang.url_template=https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
 ```
 
 The manifest controls:
@@ -236,16 +249,44 @@ compiler
 debugger
 ```
 
-Current tools include:
+Current tools are:
 
 ```text
 compiler: gcc, clang
-debugger: gdb
+debugger: gdb, lldb
 ```
 
 The registry validates whether a component/tool pair is supported. It does not know which versions exist and does not build URLs. Version and URL data come from the manifest.
 
-## 7. Local filesystem layout
+## 7. Package sources
+
+The current manifest uses two package sources.
+
+### Repository-built GNU packages
+
+GCC and GDB are built from upstream source releases by the repository workflow and published as GitHub Release assets.
+
+Current URL pattern:
+
+```text
+https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-standard/<tool>-<version>-linux-x64-standard.<format>
+```
+
+The `standard` build mode is part of these asset names because these packages are produced by this repository.
+
+### Upstream LLVM packages
+
+Clang and LLDB currently use the upstream LLVM binary archive.
+
+Current URL pattern:
+
+```text
+https://github.com/llvm/llvm-project/releases/download/llvmorg-<version>/LLVM-<version>-Linux-X64.<format>
+```
+
+This means `compiler.clang` and `debugger.lldb` can point to the same upstream archive. The project currently accepts that duplication instead of introducing a shared LLVM-suite model.
+
+## 8. Local filesystem layout
 
 `cup` stores its local data under:
 
@@ -296,7 +337,7 @@ Examples:
 ~/.cup/tmp/remove-compiler-gcc-15.2.0-12345
 ```
 
-## 8. State file
+## 9. State file
 
 The state file is:
 
@@ -318,7 +359,7 @@ The state contains:
 
 The state is saved through a temporary file and then replaced with `rename`.
 
-## 9. Install behavior
+## 10. Install behavior
 
 Installation follows this high-level flow:
 
@@ -347,7 +388,7 @@ temporary install path -> final install path
 
 If the final filesystem commit succeeds but updating the state fails, the code attempts to roll back the committed installation.
 
-## 10. Remove behavior
+## 11. Remove behavior
 
 Removal uses a staged model:
 
@@ -363,7 +404,7 @@ clean temporary remove directory
 
 This keeps the destructive part separated from the state update. If state saving fails after the install path has been moved, the code can attempt to move it back.
 
-## 11. Archive extraction
+## 12. Archive extraction
 
 Archives are extracted with `libarchive`.
 
@@ -381,8 +422,8 @@ Because of first-component stripping, packages are expected to contain one top-l
 Example archive layout:
 
 ```text
-gcc-15.2.0-linux-x64-full/bin/gcc
-gcc-15.2.0-linux-x64-full/lib/...
+gcc-15.2.0-linux-x64-standard/bin/gcc
+gcc-15.2.0-linux-x64-standard/lib/...
 ```
 
 Extracted layout:
@@ -392,7 +433,7 @@ tmp_path/bin/gcc
 tmp_path/lib/...
 ```
 
-## 12. Installation validation
+## 13. Installation validation
 
 After extraction and metadata writing, the temporary installation is validated.
 
@@ -406,7 +447,7 @@ tmp_path/bin exists and is a directory
 
 More specific checks, such as verifying `bin/<tool>` or other component-specific files, can be added later.
 
-## 13. Source layout
+## 14. Source layout
 
 The main source modules are:
 
@@ -440,7 +481,7 @@ Module roles:
 - `constants`: shared limits
 - `error`: project error enum
 
-## 14. Building GNU release packages
+## 15. Building GNU release packages
 
 The repository includes automation for building GNU source releases into archives installable by `cup`.
 
@@ -464,18 +505,25 @@ version
 build_mode
 ```
 
+Current GNU tools handled by this workflow are:
+
+```text
+gcc
+gdb
+```
+
 Example release tags:
 
 ```text
-gcc-15.2.0-full
-gdb-17.1-full
+gcc-15.2.0-standard
+gdb-17.1-standard
 ```
 
 Example assets:
 
 ```text
-gcc-15.2.0-linux-x64-full.tar.xz
-gdb-17.1-linux-x64-full.tar.xz
+gcc-15.2.0-linux-x64-standard.tar.gz
+gdb-17.1-linux-x64-standard.tar.xz
 ```
 
 The current policy is simple: each manual run builds the package and uploads the assets, overwriting existing assets for the same release tag.

@@ -24,7 +24,7 @@ The current implementation is based on these ideas:
 
 A component is a category of tools.
 
-Examples:
+Current components:
 
 ```text
 compiler
@@ -37,12 +37,13 @@ Components are validated by the registry module.
 
 A tool belongs to a component.
 
-Examples:
+Current tools:
 
 ```text
 compiler/gcc
 compiler/clang
 debugger/gdb
+debugger/lldb
 ```
 
 A tool is valid only if the registry declares it for the selected component.
@@ -57,6 +58,7 @@ Examples:
 stable
 15.2.0
 17.1
+22.1.3
 ```
 
 `stable` is symbolic and must be resolved through the manifest.
@@ -70,6 +72,7 @@ Examples:
 ```text
 gcc@stable
 gcc@15.2.0
+lldb@22.1.3
 ```
 
 ### 2.5 Canonical entry
@@ -106,17 +109,27 @@ formats
 url_template
 ```
 
-Example:
+Example for repository-built GNU packages:
 
 ```text
 compiler.gcc.stable_version=15.2.0
-compiler.gcc.available_versions=15.2.0,15.1.0
+compiler.gcc.available_versions=15.2.0
 compiler.gcc.default_format=tar.gz
 compiler.gcc.formats=tar.gz,tar.xz
-compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-full/gcc-{version}-linux-x64-full.{format}
+compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-standard/gcc-{version}-linux-x64-standard.{format}
 ```
 
-The registry decides whether `compiler/gcc` is a valid pair. The manifest decides which versions and formats exist for that pair.
+Example for upstream LLVM packages:
+
+```text
+debugger.lldb.stable_version=22.1.3
+debugger.lldb.available_versions=22.1.3,22.1.2,22.1.1
+debugger.lldb.default_format=tar.xz
+debugger.lldb.formats=tar.xz
+debugger.lldb.url_template=https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
+```
+
+The registry decides whether `debugger/lldb` is a valid pair. The manifest decides which versions and formats exist for that pair.
 
 ## 4. Release resolution
 
@@ -175,7 +188,37 @@ then the selected format must be listed in `formats`.
 
 The selected format replaces `{format}` in the URL template.
 
-## 6. State model
+## 6. Package source model
+
+The current manifest uses two package-source styles.
+
+### 6.1 Repository-built packages
+
+GCC and GDB are built by this repository from upstream source releases.
+
+Their URLs include a build mode, currently `standard`, because the package name is produced by the build workflow.
+
+Example:
+
+```text
+gdb-17.1-linux-x64-standard.tar.xz
+```
+
+### 6.2 Upstream LLVM packages
+
+Clang and LLDB currently use the upstream LLVM binary archive.
+
+Both can point to:
+
+```text
+LLVM-<version>-Linux-X64.tar.xz
+```
+
+This means the current model may duplicate the same upstream LLVM archive across `compiler.clang` and `debugger.lldb`.
+
+This is accepted for now to avoid introducing a shared LLVM-suite model.
+
+## 7. State model
 
 The state file is stored at:
 
@@ -197,7 +240,7 @@ installed.compiler=gcc@15.2.0
 default.compiler=gcc@15.2.0
 ```
 
-### 6.1 State invariants
+### 7.1 State invariants
 
 The intended invariants are:
 
@@ -209,7 +252,7 @@ The intended invariants are:
 
 The last two invariants are checked by command-level logic, not guaranteed by the state file alone.
 
-### 6.2 State save
+### 7.2 State save
 
 State saving uses a temporary file followed by `rename`.
 
@@ -220,7 +263,7 @@ write ~/.cup/state.txt.tmp
 rename ~/.cup/state.txt.tmp -> ~/.cup/state.txt
 ```
 
-## 7. Filesystem model
+## 8. Filesystem model
 
 Main local root:
 
@@ -236,17 +279,17 @@ Main subdirectories:
 ~/.cup/tmp
 ```
 
-### 7.1 Cache paths
+### 8.1 Cache paths
 
 Package archives are cached by component, tool, and release.
 
 Example:
 
 ```text
-~/.cup/cache/compiler/gcc/15.2.0/gcc-15.2.0.tar.xz
+~/.cup/cache/compiler/gcc/15.2.0/gcc-15.2.0.tar.gz
 ```
 
-### 7.2 Install paths
+### 8.2 Install paths
 
 Installed tools are placed under:
 
@@ -262,7 +305,7 @@ Example:
 
 The platform component is currently simple. Complete multi-architecture support is not implemented.
 
-### 7.3 Temporary paths
+### 8.3 Temporary paths
 
 Temporary install and remove directories are placed under:
 
@@ -279,7 +322,7 @@ Examples:
 
 The process id is used as part of the suffix.
 
-## 8. Install flow
+## 9. Install flow
 
 The install command follows this sequence:
 
@@ -304,7 +347,7 @@ The install command follows this sequence:
 18. save state
 ```
 
-### 8.1 Commit
+### 9.1 Commit
 
 The filesystem commit uses `rename`.
 
@@ -316,7 +359,7 @@ temporary install path -> final install path
 
 This is treated as the point where the installation becomes visible on disk.
 
-### 8.2 Install rollback
+### 9.2 Install rollback
 
 If the filesystem commit succeeds but the state update or state save fails, the implementation attempts to remove the committed installation.
 
@@ -329,7 +372,7 @@ cleanup temporary remove path
 
 If rollback also fails, the command returns a rollback error.
 
-## 9. Remove flow
+## 10. Remove flow
 
 The remove command follows this sequence:
 
@@ -348,7 +391,7 @@ The remove command follows this sequence:
 12. clean temporary remove directory
 ```
 
-### 9.1 Remove rollback
+### 10.1 Remove rollback
 
 If state saving fails after moving the final install path to the temporary remove path, the implementation can try to restore it:
 
@@ -356,7 +399,7 @@ If state saving fails after moving the final install path to the temporary remov
 temporary remove path -> final install path
 ```
 
-## 10. Commit path
+## 11. Commit path
 
 The filesystem layer uses a generic commit operation:
 
@@ -376,7 +419,7 @@ remove rollback
 
 The name is intentionally generic because the operation is the same even if the command-level meaning changes.
 
-## 11. Archive extraction model
+## 12. Archive extraction model
 
 Extraction is performed through `libarchive`.
 
@@ -389,14 +432,14 @@ For each archive entry, the extraction logic:
 5. rewrites hardlink targets when present
 6. writes the entry to disk
 
-### 11.1 First-component strip
+### 12.1 First-component strip
 
 Packages are expected to contain a top-level directory.
 
 Example:
 
 ```text
-gcc-15.2.0-linux-x64-full/bin/gcc
+gcc-15.2.0-linux-x64-standard/bin/gcc
 ```
 
 The first component is stripped:
@@ -407,7 +450,7 @@ bin/gcc
 
 This keeps the final installation layout independent from the package root directory name.
 
-### 11.2 Path safety
+### 12.2 Path safety
 
 Extraction rejects paths that are absolute or contain parent-directory references.
 
@@ -421,7 +464,7 @@ dir/../file
 
 Symlink targets are not rewritten. Hardlink targets are rewritten because hardlinks refer to filesystem paths inside the extracted tree.
 
-## 12. Validation model
+## 13. Validation model
 
 Validation currently checks the minimal layout expected after extraction and metadata writing.
 
@@ -443,7 +486,7 @@ executable bits
 component-specific files
 ```
 
-## 13. Interrupt model
+## 14. Interrupt model
 
 `SIGINT` handling is flag-based.
 
@@ -453,7 +496,7 @@ Longer operations periodically check the flag and return `CUP_ERR_INTERRUPT` whe
 
 Cleanup resets the interrupt flag before running. This makes it possible for the first interrupt to stop the main operation and a second interrupt to stop cleanup.
 
-## 14. Module responsibilities
+## 15. Module responsibilities
 
 ### `main`
 
@@ -503,9 +546,9 @@ Project-wide fixed limits.
 
 Project-wide error enum.
 
-## 15. GNU source release builds
+## 16. GNU source release builds
 
-The project contains build automation for source releases that need to be compiled before `cup` can install them as archives.
+The project contains build automation for GNU source releases that need to be compiled before `cup` can install them as archives.
 
 The current structure is:
 
@@ -529,7 +572,7 @@ The workflow always builds and then uploads release assets. Existing assets for 
 
 This build system is separate from runtime installation. `cup` itself only downloads and installs archives referenced by the manifest.
 
-## 16. Limitations
+## 17. Limitations
 
 Current limitations include:
 
