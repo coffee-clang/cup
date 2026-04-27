@@ -20,7 +20,7 @@ on:
         description: "Build mode"
         required: true
         type: choice
-        default: "full"
+        default: "standard"
         options:
           - minimal
           - standard

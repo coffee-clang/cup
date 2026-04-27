@@ -12,7 +12,7 @@ typedef struct {
 
 static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "compiler", { "gcc", "clang", NULL } },
-    { "debugger", { "gdb", NULL } }
+    { "debugger", { "gdb", "lldb", NULL } }
 };
 
 static const SupportedComponent *find_supported_component(const char *component) {

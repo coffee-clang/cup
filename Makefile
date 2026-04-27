@@ -1,7 +1,8 @@
 CC = gcc
 PREFIX = $(HOME)/deps/install
+PROJECT_ROOT = $(CURDIR)
 
-CFLAGS = -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L -I$(PREFIX)/include
+CFLAGS = -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L -I$(PREFIX)/include -I$(PROJECT_ROOT)/include
 LDFLAGS = -L$(PREFIX)/lib -L$(PREFIX)/lib64
 
 SRC = \

@@ -465,6 +465,26 @@ static CupError build_tmp_remove_path(char *buffer, size_t size, const char *com
     return err;
 }
 
+static CupError build_install_child_path(char *buffer, size_t size, const char *base_path, const char *relative_path) {
+    CupError err;
+
+    if (buffer == NULL || base_path == NULL || relative_path == NULL ||
+        size == 0 || base_path[0] == '\0' || relative_path[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (relative_path[0] == '/') {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (strstr(relative_path, "..") != NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = checked_snprintf(buffer, size, "%s/%s", base_path, relative_path);
+    return err;
+}
+
 static CupError build_cache_package_path(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
     CupError err;
     char cache_root[MAX_PATH_LEN];
@@ -568,43 +588,83 @@ CupError create_tmp_remove_dir(char *buffer, size_t size, const char *component,
     return CUP_OK;  
 }
 
+static CupError validate_path_type(const char *path, int want_directory) {
+    struct stat info;
+
+    if (path == NULL || path[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (stat(path, &info) != 0) {
+        return CUP_ERR_VALIDATION;
+    }
+
+    if (want_directory) {
+        if (!S_ISDIR(info.st_mode)) {
+            return CUP_ERR_VALIDATION;
+        }
+
+        return CUP_OK;
+    }
+
+    if (!S_ISREG(info.st_mode)) {
+        return CUP_ERR_VALIDATION;
+    }
+
+    if (info.st_size <= 0) {
+        return CUP_ERR_VALIDATION;
+    }
+
+    return CUP_OK;
+}
+
+static CupError validate_install_child_path(const char *base_path, const char *relative_path, int want_directory) {
+    CupError err;
+    char path[MAX_PATH_LEN];
+
+    err = build_install_child_path(path, sizeof(path), base_path, relative_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_path_type(path, want_directory);
+    return err;
+}
+
 CupError validate_install(const char *tmp_path) {
     CupError err;
-    struct stat info;
-    char info_path[MAX_PATH_LEN];
-    char bin_path[MAX_PATH_LEN];
 
     if (tmp_path == NULL || tmp_path[0] == '\0') {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (stat(tmp_path, &info) != 0) {
-        fprintf(stderr, "Error: temporary install directory '%s' does not exist.\n", tmp_path);
-        return CUP_ERR_VALIDATION;
-    }
-
-    if (!S_ISDIR(info.st_mode)) {
-        fprintf(stderr, "Error: temporary install path '%s' is not a directory.\n", tmp_path);
-        return CUP_ERR_VALIDATION;
-    }
-
-    err = checked_snprintf(info_path, sizeof(info_path), "%s/info.txt", tmp_path);
+    err = validate_path_type(tmp_path, 1);
     if (err != CUP_OK) {
+        fprintf(stderr, "Error: temporary install path '%s' is not a valid directory.\n", tmp_path);
         return CUP_ERR_VALIDATION;
     }
 
-    if (stat(info_path, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0) {
+    err = validate_install_child_path(tmp_path, "info.txt", 0);
+    if (err != CUP_OK) {
         fprintf(stderr, "Error: installed package metadata is missing or invalid.\n");
         return CUP_ERR_VALIDATION;
     }
 
-    err = checked_snprintf(bin_path, sizeof(bin_path), "%s/bin", tmp_path);
+    err = validate_install_child_path(tmp_path, "bin", 1);
     if (err != CUP_OK) {
+        fprintf(stderr, "Error: installed package does not contain a bin directory.\n");
         return CUP_ERR_VALIDATION;
     }
 
-    if (stat(bin_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
-        fprintf(stderr, "Error: installed package does not contain a bin directory.\n");
+    err = validate_install_child_path(tmp_path, "include", 1);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: installed package does not contain an include directory.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    err = validate_install_child_path(tmp_path, "lib", 1);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: installed package does not contain a lib directory.\n");
         return CUP_ERR_VALIDATION;
     }
 
