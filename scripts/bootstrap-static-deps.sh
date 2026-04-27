@@ -193,13 +193,13 @@ mkdir -p "$LIBARCHIVE_BUILD"
 log "Building libarchive ${LIBARCHIVE_VERSION}"
 (
     cd "$LIBARCHIVE_BUILD"
-    cmake "$HOME/deps/src/libarchive-${LIBARCHIVE_VERSION}" \
+    cmake "$LIBARCHIVE_SRC" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_INSTALL_PREFIX="$HOME/deps/install" \
+        -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DCMAKE_INSTALL_INCLUDEDIR=include \
-        -DCMAKE_PREFIX_PATH="$HOME/deps/install"
+        -DCMAKE_PREFIX_PATH="$PREFIX"
 
     cmake --build . -j"$(nproc)"
     cmake --install .

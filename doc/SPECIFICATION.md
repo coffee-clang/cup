@@ -1,52 +1,28 @@
-# CUP SPECIFICATION
+# Specification
 
-## 1. Purpose
+This document describes the current behavior and internal model of `cup`.
 
-`cup` is a prototype toolchain manager for installing software components under a user-owned directory structure.
+It is a technical reference for the implementation. It does not describe a complete future package manager.
 
-The current implementation is centered on:
+## 1. Goal
 
-- installation of components from package archives
-- local state persistence
-- cache reuse
-- per-component default selection
-- support for multiple archive formats
-- manifest-driven version resolution
+`cup` manages local installations of development tools.
 
-## 2. Current scope
+The current implementation is based on these ideas:
 
-The current implementation supports multiple components.
+1. supported tools are declared in code
+2. available versions and URLs are declared in a manifest
+3. user entries are resolved into canonical entries
+4. packages are downloaded as archives
+5. archives are extracted into temporary directories
+6. validated temporary installs are committed with `rename`
+7. local state is stored in a text file
 
-Examples currently configured in the project include:
+## 2. Core concepts
 
-- `compiler`
-- `debugger`
+### 2.1 Component
 
-Examples of supported tools include:
-
-- `gcc`
-- `clang`
-- `gdb`
-
-The supported component/tool mapping is defined in source code and validated explicitly.
-
-## 3. Objectives
-
-The implementation follows these objectives:
-
-- keep consistency between persistent state and filesystem layout
-- avoid administrator privileges
-- support multiple tools under the same component
-- support multiple installed releases
-- support one default entry per component
-- keep runtime data under a predictable user directory
-- allow package source configuration through a manifest
-- keep the installation flow staged and recoverable
-
-## 4. Terminology
-
-### Component
-A logical category of installable software.
+A component is a category of tools.
 
 Examples:
 
@@ -55,48 +31,52 @@ compiler
 debugger
 ```
 
-### Tool
-A concrete installable implementation inside a component.
+Components are validated by the registry module.
+
+### 2.2 Tool
+
+A tool belongs to a component.
 
 Examples:
 
 ```text
-gcc
-clang
-gdb
+compiler/gcc
+compiler/clang
+debugger/gdb
 ```
 
-### Release
-A user-requested or resolved version identifier.
+A tool is valid only if the registry declares it for the selected component.
+
+### 2.3 Release
+
+A release is the version string requested by the user.
 
 Examples:
 
 ```text
 stable
 15.2.0
-22.1.3
 17.1
 ```
 
-### Entry
-A user-facing identifier in the form:
+`stable` is symbolic and must be resolved through the manifest.
 
-```text
-<tool>@<release>
-```
+### 2.4 Entry
 
-Example:
+An entry is the user-facing `<tool>@<release>` form.
+
+Examples:
 
 ```text
 gcc@stable
+gcc@15.2.0
 ```
 
-### Canonical entry
-The internal normalized form used in persistent state:
+### 2.5 Canonical entry
 
-```text
-<tool>@<resolved_version>
-```
+A canonical entry is the internal stored form.
+
+It always contains a concrete release.
 
 Example:
 
@@ -104,118 +84,171 @@ Example:
 gcc@15.2.0
 ```
 
-### Archive format
-The package compression/container format selected for download.
+The state stores canonical entries only.
 
-Examples:
+## 3. Manifest-driven behavior
 
-```text
-tar.gz
-tar.xz
-```
+The manifest is the source of package metadata.
 
-## 5. Commands
-
-The CLI currently supports:
+Path:
 
 ```text
-list
-install <component> <tool>@<release> [--format <archive-format>]
-remove <component> <tool>@<release>
-default <component> <tool>@<release>
-current <component>
+config/packages.cfg
 ```
 
-### list
-Prints installed entries and marks defaults.
-
-### install
-Installs a requested tool release for a selected component.
-
-### remove
-Removes an installed entry from both filesystem and local state.
-
-### default
-Sets the default canonical entry for a component.
-
-### current
-Prints the current default canonical entry for a component.
-
-## 6. Entry resolution model
-
-The implementation separates user input from internal state.
-
-### 6.1 User input
-The user provides:
+For each component/tool pair, the manifest can define:
 
 ```text
-<tool>@<release>
+stable_version
+available_versions
+default_format
+formats
+url_template
 ```
 
-### 6.2 Release resolution
-The release is resolved as follows:
-
-- `stable` is resolved through the manifest
-- explicit versions are used directly
-
-### 6.3 Canonicalization
-After resolution, a canonical entry is built:
+Example:
 
 ```text
-<tool>@<resolved_version>
+compiler.gcc.stable_version=15.2.0
+compiler.gcc.available_versions=15.2.0,15.1.0
+compiler.gcc.default_format=tar.gz
+compiler.gcc.formats=tar.gz,tar.xz
+compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-full/gcc-{version}-linux-x64-full.{format}
 ```
 
-This canonical entry is used for:
+The registry decides whether `compiler/gcc` is a valid pair. The manifest decides which versions and formats exist for that pair.
 
-- persistent state
-- installed entry lookup
-- default handling
-- consistency checks
+## 4. Release resolution
 
-## 7. Version availability
+Release resolution is performed before availability checks.
 
-After release resolution, the resolved version is checked against the tool’s declared available versions in the manifest.
-
-If the version is not listed as available, installation fails before any download begins.
-
-This prevents invalid or unsupported version requests from reaching the fetch phase.
-
-## 8. Archive format model
-
-The archive format is selected as follows:
-
-- if the user does not specify a format, the tool’s `default_format` is used
-- if the user specifies a format, it must appear in the tool’s supported `formats` list
-
-The selected format is then used to:
-
-- determine the archive filename in cache
-- build the final package URL
-- select the downloaded asset
-
-Archive extraction is performed by the archive layer and is independent of the originally requested alias.
-
-## 9. Filesystem layout
-
-All runtime data is stored under:
+If the user passes:
 
 ```text
-~/.cup/
+gcc@stable
 ```
 
-### 9.1 Root layout
+and the manifest contains:
 
 ```text
-~/.cup/
-├── state.txt
-├── components/
-├── cache/
-└── tmp/
+compiler.gcc.stable_version=15.2.0
 ```
 
-### 9.2 Installed components
+then the resolved release is:
 
-Installed directories follow:
+```text
+15.2.0
+```
+
+The canonical entry becomes:
+
+```text
+gcc@15.2.0
+```
+
+Availability is checked against `available_versions` after resolution.
+
+## 5. Archive format model
+
+Each tool has:
+
+```text
+default_format
+formats
+```
+
+If the user does not pass a format override, `default_format` is used.
+
+If the user passes:
+
+```text
+--format tar.xz
+```
+
+or:
+
+```text
+-f tar.xz
+```
+
+then the selected format must be listed in `formats`.
+
+The selected format replaces `{format}` in the URL template.
+
+## 6. State model
+
+The state file is stored at:
+
+```text
+~/.cup/state.txt
+```
+
+It contains lines in this form:
+
+```text
+installed.<component>=<canonical-entry>
+default.<component>=<canonical-entry>
+```
+
+Example:
+
+```text
+installed.compiler=gcc@15.2.0
+default.compiler=gcc@15.2.0
+```
+
+### 6.1 State invariants
+
+The intended invariants are:
+
+- installed entries are canonical
+- default entries are canonical
+- `stable` is not stored in state
+- default entries should point to installed entries
+- installed entries should correspond to directories on disk
+
+The last two invariants are checked by command-level logic, not guaranteed by the state file alone.
+
+### 6.2 State save
+
+State saving uses a temporary file followed by `rename`.
+
+Conceptually:
+
+```text
+write ~/.cup/state.txt.tmp
+rename ~/.cup/state.txt.tmp -> ~/.cup/state.txt
+```
+
+## 7. Filesystem model
+
+Main local root:
+
+```text
+~/.cup
+```
+
+Main subdirectories:
+
+```text
+~/.cup/cache
+~/.cup/components
+~/.cup/tmp
+```
+
+### 7.1 Cache paths
+
+Package archives are cached by component, tool, and release.
+
+Example:
+
+```text
+~/.cup/cache/compiler/gcc/15.2.0/gcc-15.2.0.tar.xz
+```
+
+### 7.2 Install paths
+
+Installed tools are placed under:
 
 ```text
 ~/.cup/components/<component>/<tool>/<platform>/<release>
@@ -227,208 +260,283 @@ Example:
 ~/.cup/components/compiler/gcc/linux/15.2.0
 ```
 
-### 9.3 Cache layout
+The platform component is currently simple. Complete multi-architecture support is not implemented.
 
-Cached packages follow:
+### 7.3 Temporary paths
+
+Temporary install and remove directories are placed under:
 
 ```text
-~/.cup/cache/<component>/<tool>/<release>/package.<format>
+~/.cup/tmp
 ```
 
 Examples:
 
 ```text
-~/.cup/cache/compiler/gcc/15.2.0/package.tar.gz
-~/.cup/cache/compiler/gcc/15.2.0/package.tar.xz
+~/.cup/tmp/install-compiler-gcc-15.2.0-12345
+~/.cup/tmp/remove-compiler-gcc-15.2.0-12345
 ```
 
-### 9.4 Temporary staging layout
+The process id is used as part of the suffix.
 
-Temporary directories follow:
+## 8. Install flow
+
+The install command follows this sequence:
 
 ```text
-~/.cup/tmp/<component>-<tool>-<release>-<pid>
+1. parse entry
+2. validate component
+3. validate tool for component
+4. resolve release
+5. build canonical entry
+6. check version availability
+7. select archive format
+8. load state
+9. check whether the installation is already present or inconsistent
+10. create temporary install directory
+11. fetch package archive
+12. extract package archive
+13. write install metadata
+14. validate temporary installation
+15. create final parent directories
+16. commit temporary install path to final install path
+17. add canonical entry to state
+18. save state
 ```
 
-These are created during installation and cleaned on failure or startup cleanup.
+### 8.1 Commit
 
-## 10. State model
+The filesystem commit uses `rename`.
 
-Persistent state is stored in:
+Conceptually:
 
 ```text
-~/.cup/state.txt
+temporary install path -> final install path
 ```
 
-The state file contains two record families.
+This is treated as the point where the installation becomes visible on disk.
 
-### Installed entries
+### 8.2 Install rollback
+
+If the filesystem commit succeeds but the state update or state save fails, the implementation attempts to remove the committed installation.
+
+The rollback uses the same staged removal idea:
 
 ```text
-installed.<component>=<tool>@<resolved_version>
+final install path -> temporary remove path
+cleanup temporary remove path
 ```
 
-### Default entries
+If rollback also fails, the command returns a rollback error.
+
+## 9. Remove flow
+
+The remove command follows this sequence:
 
 ```text
-default.<component>=<tool>@<resolved_version>
+1. parse entry
+2. validate component/tool
+3. resolve release
+4. build canonical entry
+5. load state
+6. check state/disk consistency
+7. create temporary remove directory
+8. move final install path to temporary remove path
+9. remove canonical entry from state
+10. remove matching default if present
+11. save state
+12. clean temporary remove directory
 ```
 
-Only one default entry is stored for each component.
+### 9.1 Remove rollback
 
-## 11. Installation process
-
-The installation flow is staged.
-
-### 11.1 Entry context resolution
-The implementation resolves an internal entry context that contains:
-
-- tool
-- requested release
-- resolved release
-- canonical entry
-
-This context is reused across install, remove, and default operations.
-
-### 11.2 Validation phase
-The install flow validates:
-
-- entry syntax
-- component support
-- tool support for the selected component
-- release syntax
-- version availability
-- requested archive format support
-
-### 11.3 Fetch phase
-The package archive is looked up in the local cache.
-
-If the archive is missing, the implementation:
-
-- builds the package URL from the manifest
-- downloads the archive into the cache
-
-### 11.4 Extraction phase
-The archive is extracted into a temporary staging directory.
-
-The current implementation uses a dedicated archive module for extraction.
-
-### 11.5 Metadata phase
-After extraction, installation metadata is written to:
+If state saving fails after moving the final install path to the temporary remove path, the implementation can try to restore it:
 
 ```text
-info.txt
+temporary remove path -> final install path
 ```
 
-inside the temporary installation directory.
+## 10. Commit path
 
-### 11.6 Validation phase
-The staged installation is checked for:
+The filesystem layer uses a generic commit operation:
 
-- temporary directory existence
-- metadata existence
-- metadata readability
-- metadata non-emptiness
+```text
+commit_path(source, destination)
+```
 
-### 11.7 Commit phase
-If staging validation succeeds, the installation is moved to the final destination using `rename`.
+The operation is a `rename`.
 
-### 11.8 State update
-After a successful commit:
+It is used for:
 
-- the canonical entry is added to state
-- the state file is saved
+```text
+install commit
+remove staging
+remove rollback
+```
 
-If state persistence fails after commit, rollback is attempted.
+The name is intentionally generic because the operation is the same even if the command-level meaning changes.
 
-## 12. Error handling
+## 11. Archive extraction model
 
-The project uses explicit error codes through the `CupError` enum.
+Extraction is performed through `libarchive`.
 
-The current implementation distinguishes errors related to:
+For each archive entry, the extraction logic:
 
-- invalid input
-- unsupported component
-- invalid tool for component
-- invalid release
-- unavailable version
-- fetch failures
-- archive extraction failures
-- filesystem failures
-- validation failures
-- state load/save failures
-- interruption handling
-- rollback failures
-- state/filesystem inconsistencies
+1. reads the archive pathname
+2. rejects invalid or unsafe paths
+3. strips the first path component
+4. builds the output path under the temporary directory
+5. rewrites hardlink targets when present
+6. writes the entry to disk
 
-## 13. Interruption handling
+### 11.1 First-component strip
 
-The install flow handles `SIGINT` through a `sig_atomic_t` flag.
+Packages are expected to contain a top-level directory.
 
-The signal handler only records interruption state.
-Cleanup is performed later by normal control flow.
+Example:
 
-## 14. Source code organization
+```text
+gcc-15.2.0-linux-x64-full/bin/gcc
+```
 
-### `main.c`
-Command-line parsing and dispatch.
+The first component is stripped:
 
-### `component.c`
-Command orchestration, entry context resolution, and top-level install/remove/default logic.
+```text
+bin/gcc
+```
 
-### `state.c`
-State initialization, parsing, saving, and mutation.
+This keeps the final installation layout independent from the package root directory name.
 
-### `fs.c`
-Filesystem paths, directory preparation, cache layout, commit, cleanup, and install metadata writing.
+### 11.2 Path safety
 
-### `manifest.c`
-Manifest reading, release resolution, version checks, format checks, and URL generation.
+Extraction rejects paths that are absolute or contain parent-directory references.
 
-### `support.c`
-Supported components and their tools.
+Examples rejected:
 
-### `fetch.c`
-Archive download and cache acquisition.
+```text
+/etc/passwd
+../file
+dir/../file
+```
 
-### `archive.c`
-Archive extraction.
+Symlink targets are not rewritten. Hardlink targets are rewritten because hardlinks refer to filesystem paths inside the extracted tree.
 
-### `util.c`
-Reusable general-purpose helpers such as safe formatted string writing.
+## 12. Validation model
 
-### `constants.h`
-Shared project-wide size limits.
+Validation currently checks the minimal layout expected after extraction and metadata writing.
 
-## 15. Current implementation characteristics
+Required:
 
-The current implementation is:
+```text
+tmp_path is a directory
+tmp_path/info.txt is a non-empty regular file
+tmp_path/bin is a directory
+```
 
-- Linux-oriented
-- user-space only
-- manifest-driven
-- cache-aware
-- alias-aware through canonical entries
-- format-aware at package selection time
+This is intentionally not a complete tool validation.
 
-## 16. Current limitations
+Future validation may check:
 
-The current implementation still has limitations:
+```text
+bin/<tool>
+executable bits
+component-specific files
+```
 
-- Linux-centric runtime assumptions
-- support tables for components and tools are still code-defined
-- manifest parsing is simple and line-oriented
-- no checksum or signature verification
-- validation of extracted contents is still minimal
-- archive and fetch behavior are implemented around current supported formats and package layout assumptions
+## 13. Interrupt model
 
-## 17. Planned extension areas
+`SIGINT` handling is flag-based.
 
-Likely future directions include:
+The signal handler only records that an interrupt was requested.
 
-- richer post-extraction validation
-- automatic manifest generation/update
-- additional components and tools
-- support for more package providers
-- stronger package integrity verification
-- broader platform support
+Longer operations periodically check the flag and return `CUP_ERR_INTERRUPT` when appropriate.
+
+Cleanup resets the interrupt flag before running. This makes it possible for the first interrupt to stop the main operation and a second interrupt to stop cleanup.
+
+## 14. Module responsibilities
+
+### `main`
+
+CLI entry point and command dispatch.
+
+### `commands`
+
+Command orchestration and command-level consistency handling.
+
+### `state`
+
+State file load/save and in-memory state operations.
+
+### `registry`
+
+Supported component/tool validation.
+
+### `manifest`
+
+Manifest lookup, release resolution, format checks, URL construction, stable checks.
+
+### `fetch`
+
+Package download and cache reuse.
+
+### `extract`
+
+Archive extraction and archive path rewriting.
+
+### `filesystem`
+
+Local paths, directory creation, temporary directories, commit, cleanup, disk existence checks.
+
+### `interrupt`
+
+Signal setup and interrupt flag.
+
+### `util`
+
+Shared helpers.
+
+### `constants`
+
+Project-wide fixed limits.
+
+### `error`
+
+Project-wide error enum.
+
+## 15. GNU source release builds
+
+The project contains build automation for source releases that need to be compiled before `cup` can install them as archives.
+
+The current structure is:
+
+```text
+.github/workflows/build-gnu.yml
+docker/gnu-builder.Dockerfile
+scripts/build-gnu-package.sh
+scripts/build-gcc.sh
+scripts/build-gdb.sh
+```
+
+The workflow is manually started and receives:
+
+```text
+tool
+version
+build_mode
+```
+
+The workflow always builds and then uploads release assets. Existing assets for the same tag are overwritten.
+
+This build system is separate from runtime installation. `cup` itself only downloads and installs archives referenced by the manifest.
+
+## 16. Limitations
+
+Current limitations include:
+
+- no dependency resolution
+- no automatic repair command
+- no complete multi-architecture selection
+- no deep component-specific validation of extracted packages
+- release package builds are separate from runtime installation logic
+
+These limitations are part of the current design state and should not be documented as implemented features.

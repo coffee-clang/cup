@@ -1,5 +1,5 @@
-#ifndef UTIL_H
-#define UTIL_H
+#ifndef CUP_UTIL_H
+#define CUP_UTIL_H
 
 #include <stddef.h>
 
@@ -7,4 +7,4 @@
 
 CupError checked_snprintf(char *buffer, size_t size, const char *format, ...);
 
-#endif
+#endif /* CUP_UTIL_H */

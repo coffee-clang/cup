@@ -1,19 +1,13 @@
-#ifndef MANIFEST_H
-#define MANIFEST_H
+#ifndef CUP_MANIFEST_H
+#define CUP_MANIFEST_H
 
 #include <stddef.h>
 
-#include "constants.h"
 #include "error.h"
-
-// PATH
-CupError get_package_manifest_path(char *buffer, size_t size);
-
-// LOOKUP
-CupError read_manifest_value(char *buffer, size_t size, const char *component, const char *tool, const char *key_suffix);
 
 // RELEASE
 CupError resolve_release(char *buffer, size_t size, const char *component, const char *tool, const char *release);
+CupError is_stable_release(const char *component, const char *tool, const char *release, int *is_stable);
 CupError is_version_available(const char *component, const char *tool, const char *version, int *is_available);
 
 // FORMAT
@@ -23,4 +17,4 @@ CupError is_format_supported(const char *component, const char *tool, const char
 // URL
 CupError build_package_url_from_manifest(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *format);
 
-#endif
+#endif /* CUP_MANIFEST_H */

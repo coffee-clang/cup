@@ -1,132 +1,236 @@
 #include "state.h"
-#include "fs.h"
+#include "filesystem.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 static void trim_newline(char *s) {
-    size_t len = strlen(s);
+    size_t len;
+
+    if (s == NULL) {
+        return;
+    }
+
+    len = strlen(s);
 
     if (len > 0 && s[len - 1] == '\n') {
         s[len - 1] = '\0';
     }
 }
 
-void state_init(CupState *state) {
-    int i;
+static CupError split_state_line(char *line, const char *prefix, char *component, size_t component_size, const char **entry,  int *matched) {
+    char *separator;
+    size_t prefix_len;
 
-    state->installed_count = 0;
-    state->default_count = 0;
-
-    for (i = 0; i < MAX_INSTALLED; ++i) {
-        state->installed[i].component[0] = '\0';
-        state->installed[i].entry[0] = '\0';
+    if (line == NULL || prefix == NULL || component == NULL ||
+        component_size == 0 || entry == NULL || matched == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
 
-    for (i = 0; i < MAX_DEFAULTS; ++i) {
-        state->defaults[i].component[0] = '\0';
-        state->defaults[i].entry[0] = '\0';
+    *matched = 0;
+    *entry = NULL;
+
+    prefix_len = strlen(prefix);
+
+    if (strncmp(line, prefix, prefix_len) != 0) {
+        return CUP_OK;
     }
+
+    *matched = 1;
+
+    separator = strchr(line, '=');
+    if (separator == NULL) {
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    *separator = '\0';
+    *entry = separator + 1;
+
+    if ((*entry)[0] == '\0') {
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    strncpy(component, line + prefix_len, component_size - 1);
+    component[component_size - 1] = '\0';
+
+    if (component[0] == '\0') {
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    return CUP_OK;
+}
+
+static CupError parse_state_line(CupState *state, char *line) {
+    CupError err;
+    const char *entry;
+    char component[MAX_NAME_LEN];
+    int matched;
+
+    if (state == NULL || line == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    trim_newline(line);
+
+    err = split_state_line(line, "installed.", component, sizeof(component), &entry, &matched);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (matched) {
+        err = state_add_installed(state, component, entry);
+        if (err != CUP_OK) {
+            return CUP_ERR_STATE_LOAD;
+        }
+
+        return CUP_OK;
+    }
+
+    err = split_state_line(line, "default.", component, sizeof(component), &entry, &matched);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (matched) {
+        err = state_set_default(state, component, entry);
+        if (err != CUP_OK) {
+            return CUP_ERR_STATE_LOAD;
+        }
+
+        return CUP_OK;
+    }
+
+    return CUP_OK;
+}
+
+CupError state_init(CupState *state) {
+    if (state == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    memset(state, 0, sizeof(*state));
+    return CUP_OK;
 }
 
 CupError state_load(CupState *state, const char *filename) {
     CupError err;
     FILE *file;
-    char line[256];
+    char line[MAX_STATE_LINE_LEN];
+
+    if (state == NULL || filename == NULL || filename[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     err = ensure_cup_structure();
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    state_init(state);
+    err = state_init(state);
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
+    }
 
     file = fopen(filename, "r");
     if (file == NULL) {
-        return CUP_OK;
+        if (errno == ENOENT) {
+            return CUP_OK;
+        }
+
+        fprintf(stderr, "Error: could not open state file for reading.\n");
+        return CUP_ERR_STATE_LOAD;
     }
 
     while (fgets(line, sizeof(line), file) != NULL) {
-        char *at;
-
-        trim_newline(line);
-
-        if (strncmp(line, "installed.", 10) == 0) {
-            char component[MAX_NAME_LEN];
-            const char *entry;
-
-            at = strchr(line, '=');
-            if (at == NULL) {
-                continue;
-            }
-
-            *at = '\0';
-            entry = at + 1;
-
-            strncpy(component, line + 10, MAX_NAME_LEN - 1);
-            component[MAX_NAME_LEN - 1] = '\0';
-
-            state_add_installed(state, component, entry);
-            continue;
-        }
-
-        if (strncmp(line, "default.", 8) == 0) {
-            char component[MAX_NAME_LEN];
-            const char *entry;
-
-            at = strchr(line, '=');
-            if (at == NULL) {
-                continue;
-            }
-
-            *at = '\0';
-            entry = at + 1;
-
-            strncpy(component, line + 8, MAX_NAME_LEN - 1);
-            component[MAX_NAME_LEN - 1] = '\0';
-
-            state_set_default(state, component, entry);
+        err = parse_state_line(state, line);
+        if (err != CUP_OK) {
+            fclose(file);
+            return CUP_ERR_STATE_LOAD;
         }
     }
 
-    fclose(file);
+    if (fclose(file) != 0) {
+        return CUP_ERR_STATE_LOAD;
+    }
+
     return CUP_OK;
 }
 
 CupError state_save(const CupState *state, const char *filename) {
     CupError err;
     FILE *file;
-    int i;
+    char tmp_filename[MAX_PATH_LEN];
+    int status;
+    size_t i;
+
+    if (state == NULL || filename == NULL || filename[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     err = ensure_cup_structure();
     if (err != CUP_OK) {
         return CUP_ERR_STATE_SAVE;
     }
 
-    file = fopen(filename, "w");
+    err = checked_snprintf(tmp_filename, sizeof(tmp_filename), "%s.tmp", filename);
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_SAVE;
+    }
+
+    file = fopen(tmp_filename, "w");
     if (file == NULL) {
-        fprintf(stderr, "Error: could not open state file for writing.\n");
+        fprintf(stderr, "Error: could not open temporary state file for writing.\n");
         return CUP_ERR_STATE_SAVE;
     }
 
     for (i = 0; i < state->installed_count; ++i) {
-        fprintf(file, "installed.%s=%s\n", state->installed[i].component, state->installed[i].entry);
+        status = fprintf(file, "installed.%s=%s\n", state->installed[i].component, state->installed[i].entry);
+        if (status < 0) {
+            fclose(file);
+            remove(tmp_filename);
+            fprintf(stderr, "Error: could not write installed state.\n");
+            return CUP_ERR_STATE_SAVE;
+        }
     }
 
     for (i = 0; i < state->default_count; ++i) {
-        fprintf(file, "default.%s=%s\n", state->defaults[i].component, state->defaults[i].entry);
+        status = fprintf(file, "default.%s=%s\n", state->defaults[i].component, state->defaults[i].entry);
+        if (status < 0) {
+            fclose(file);
+            remove(tmp_filename);
+            fprintf(stderr, "Error: could not write default state.\n");
+            return CUP_ERR_STATE_SAVE;
+        }
     }
 
-    fclose(file);
+    status = fclose(file);
+    if (status != 0) {
+        remove(tmp_filename);
+        fprintf(stderr, "Error: could not close temporary state file.\n");
+        return CUP_ERR_STATE_SAVE;
+    }
+
+    status = rename(tmp_filename, filename);
+    if (status != 0) {
+        remove(tmp_filename);
+        fprintf(stderr, "Error: could not replace state file.\n");
+        return CUP_ERR_STATE_SAVE;
+    }
+
     return CUP_OK;
 }
 
 int state_find_installed(const CupState *state, const char *component, const char *entry) {
-    int i;
+    size_t i;
 
-    for (i = 0; i < state->installed_count; ++i) {
-        if (strcmp(state->installed[i].component, component) == 0 && strcmp(state->installed[i].entry, entry) == 0) {
-            return i;
+    if (state != NULL && component != NULL && entry != NULL) {
+        for (i = 0; i < state->installed_count; ++i) {
+            if (strcmp(state->installed[i].component, component) == 0 && 
+                strcmp(state->installed[i].entry, entry) == 0) {
+                return (int)i;
+            }
         }
     }
 
@@ -134,12 +238,17 @@ int state_find_installed(const CupState *state, const char *component, const cha
 }
 
 CupError state_add_installed(CupState *state, const char *component, const char *entry) {
-    if (state->installed_count >= MAX_INSTALLED) {
-        return CUP_ERR_STATE_FULL;
+    if (state == NULL || component == NULL || entry == NULL || 
+        component[0] == '\0' || entry[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
     }
 
     if (state_find_installed(state, component, entry) != -1) {
         return CUP_ERR_ALREADY_INSTALLED;
+    }
+
+    if (state->installed_count >= MAX_INSTALLED) {
+        return CUP_ERR_STATE_FULL;
     }
 
     strncpy(state->installed[state->installed_count].component, component, MAX_NAME_LEN - 1);
@@ -153,14 +262,18 @@ CupError state_add_installed(CupState *state, const char *component, const char 
 
 CupError state_remove_installed(CupState *state, const char *component, const char *entry) {
     int index;
-    int i;
+    size_t i;
+
+    if (state == NULL || component == NULL || entry == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     index = state_find_installed(state, component, entry);
     if (index == -1) {
         return CUP_ERR_NOT_INSTALLED;
     }
 
-    for (i = index; i < state->installed_count - 1; ++i) {
+    for (i = (size_t)index; i < state->installed_count - 1; ++i) {
         state->installed[i] = state->installed[i + 1];
     }
 
@@ -172,11 +285,13 @@ CupError state_remove_installed(CupState *state, const char *component, const ch
 }
 
 int state_find_default(const CupState *state, const char *component) {
-    int i;
+    size_t i;
 
-    for (i = 0; i < state->default_count; ++i) {
-        if (strcmp(state->defaults[i].component, component) == 0) {
-            return i;
+    if (state != NULL && component != NULL) {
+        for (i = 0; i < state->default_count; ++i) {
+            if (strcmp(state->defaults[i].component, component) == 0) {
+                return (int)i;
+            }
         }
     }
 
@@ -185,6 +300,11 @@ int state_find_default(const CupState *state, const char *component) {
 
 CupError state_set_default(CupState *state, const char *component, const char *entry) {
     int index;
+
+    if (state == NULL || component == NULL || entry == NULL ||
+        component[0] == '\0' || entry[0] == '\0') {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     index = state_find_default(state, component);
     if (index != -1) {
@@ -209,6 +329,10 @@ CupError state_set_default(CupState *state, const char *component, const char *e
 const char *state_get_default(const CupState *state, const char *component) {
     int index;
 
+    if (state == NULL || component == NULL || component[0] == '\0') {
+        return NULL;
+    }
+
     index = state_find_default(state, component);
     if (index == -1) {
         return NULL;
@@ -217,33 +341,47 @@ const char *state_get_default(const CupState *state, const char *component) {
     return state->defaults[index].entry;
 }
 
-void state_remove_default_for_component(CupState *state, const char *component) {
+CupError state_remove_default_for_component(CupState *state, const char *component) {
     int index;
-    int i;
+    size_t i;
+
+    if (state == NULL || component == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     index = state_find_default(state, component);
     if (index == -1) {
-        return;
+        return CUP_OK;
     }
 
-    for (i = index; i < state->default_count - 1; ++i) {
+    for (i = (size_t)index; i < state->default_count - 1; ++i) {
         state->defaults[i] = state->defaults[i + 1];
     }
 
     state->default_count--;
     state->defaults[state->default_count].component[0] = '\0';
     state->defaults[state->default_count].entry[0] = '\0';
+
+    return CUP_OK;
 }
 
-void state_remove_default_if_matches(CupState *state, const char *component, const char *entry) {
+CupError state_remove_default_if_matches(CupState *state, const char *component, const char *entry) {
+    CupError err;
     int index;
+
+    if (state == NULL || component == NULL || entry == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     index = state_find_default(state, component);
     if (index == -1) {
-        return;
+        return CUP_OK;
     }
 
-    if (strcmp(state->defaults[index].entry, entry) == 0) {
-        state_remove_default_for_component(state, component);
+    if (strcmp(state->defaults[index].entry, entry) != 0) {
+        return CUP_OK;
     }
+
+    err = state_remove_default_for_component(state, component);
+    return err;
 }

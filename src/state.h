@@ -1,5 +1,5 @@
-#ifndef STATE_H
-#define STATE_H
+#ifndef CUP_STATE_H
+#define CUP_STATE_H
 
 #include <stddef.h>
 
@@ -9,18 +9,18 @@
 typedef struct {
     char component[MAX_NAME_LEN];
     char entry[MAX_ENTRY_LEN];
-} ComponentEntry;
+} StateEntry;
 
 typedef struct {
-    ComponentEntry installed[MAX_INSTALLED];
-    int installed_count;
+    StateEntry installed[MAX_INSTALLED];
+    size_t installed_count;
 
-    ComponentEntry defaults[MAX_DEFAULTS];
-    int default_count;
+    StateEntry defaults[MAX_DEFAULTS];
+    size_t default_count;
 } CupState;
 
 // INIT / PERSISTENCE
-void state_init(CupState *state);
+CupError state_init(CupState *state);
 CupError state_load(CupState *state, const char *filename);
 CupError state_save(const CupState *state, const char *filename);
 
@@ -35,7 +35,7 @@ CupError state_set_default(CupState *state, const char *component, const char *e
 const char *state_get_default(const CupState *state, const char *component);
 
 // DEFAULT CLEANUP
-void state_remove_default_for_component(CupState *state, const char *component);
-void state_remove_default_if_matches(CupState *state, const char *component, const char *entry);
+CupError state_remove_default_for_component(CupState *state, const char *component);
+CupError state_remove_default_if_matches(CupState *state, const char *component, const char *entry);
 
-#endif
+#endif /* CUP_STATE_H */

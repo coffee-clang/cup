@@ -1,7 +1,7 @@
+#include "util.h"
+
 #include <stdio.h>
 #include <stdarg.h>
-
-#include "util.h"
 
 CupError checked_snprintf(char *buffer, size_t size, const char *format, ...) {
     va_list args;
@@ -17,7 +17,7 @@ CupError checked_snprintf(char *buffer, size_t size, const char *format, ...) {
     va_end(args);
 
     if (written < 0 || (size_t)written >= size) {
-        fprintf(stderr, "Error: formatted path is too long.\n");
+        fprintf(stderr, "Error: formatted string is too long.\n");
         return CUP_ERR_FS;
     }
 

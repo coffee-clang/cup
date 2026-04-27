@@ -1,5 +1,5 @@
-#ifndef COMPONENT_H
-#define COMPONENT_H
+#ifndef CUP_COMMANDS_H
+#define CUP_COMMANDS_H
 
 #include "error.h"
 
@@ -9,4 +9,4 @@ CupError handle_remove(const char *component, const char *entry);
 CupError handle_default(const char *component, const char *entry);
 CupError handle_current(const char *component);
 
-#endif
+#endif /* CUP_COMMANDS_H */

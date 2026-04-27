@@ -1,10 +1,14 @@
-#include "component.h"
-#include "fs.h"
+#include "commands.h"
+#include "filesystem.h"
 
 #include <stdio.h>
 #include <string.h>
 
 static void print_usage(const char *prog_name) {
+    if (prog_name == NULL) {
+        prog_name = "./cup";
+    }
+
     fprintf(stderr,
         "Usage:\n"
         "  %s list\n"
@@ -21,14 +25,14 @@ int main(int argc, char *argv[]) {
     const char *command;
     const char *format_override = NULL;
 
-    err = cleanup_all_tmp();
-    if (err != CUP_OK) {
-        fprintf(stderr, "Warning: could not clean temporary installation directories.\n");
-    }
-
     if (argc < 2) {
         print_usage(argv[0]);
         return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = cleanup_all_tmp();
+    if (err != CUP_OK) {
+        fprintf(stderr, "Warning: could not clean temporary installation directories.\n");
     }
 
     command = argv[1];
@@ -38,23 +42,27 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
+
         return handle_list();
     }
 
     if (strcmp(command, "install") == 0) {
-        int valid_install_args = 1;
+        int valid_args;
+
+        valid_args = 1;
 
         if (argc == 6) {
-            if (strcmp(argv[4], "--format") == 0 || strcmp(argv[4], "-f") == 0) {
+            if (strcmp(argv[4], "--format") == 0 || 
+                strcmp(argv[4], "-f") == 0) {
                 format_override = argv[5];
             } else {
-                valid_install_args = 0;
+                valid_args = 0;
             }
         } else if (argc != 4) {
-            valid_install_args = 0;
+            valid_args = 0;
         }
 
-        if (!valid_install_args) {
+        if (!valid_args) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
@@ -67,6 +75,7 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
+
         return handle_remove(argv[2], argv[3]);
     }
 
@@ -75,6 +84,7 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
+
         return handle_default(argv[2], argv[3]);
     }
 
@@ -83,6 +93,7 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
+        
         return handle_current(argv[2]);
     }
 
