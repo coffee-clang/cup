@@ -8,7 +8,7 @@ It covers:
 - static dependency bootstrap
 - static linking notes
 - library roles
-- Docker/GitHub Actions dependencies for building GNU package archives
+- Docker/GitHub Actions dependencies for building package archives
 
 ## 1. C build requirements
 
@@ -328,7 +328,84 @@ full
 
 The exact configure flags are defined by the script.
 
-## 13. Package archive layout
+## 13. Optional LLVM package build environment
+
+The repository can also include optional files for building separated Clang and LLDB archives.
+
+The optional structure is:
+
+```text
+.github/workflows/build-llvm.yml
+docker/llvm-builder.Dockerfile
+scripts/build-llvm-package.sh
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+The LLVM Dockerfile uses:
+
+```text
+ubuntu:24.04
+```
+
+and installs tools and libraries needed for LLVM CMake/Ninja builds, including:
+
+```text
+build-essential
+cmake
+ninja-build
+curl
+git
+python3
+python3-dev
+swig
+libedit-dev
+libffi-dev
+libxml2-dev
+libzstd-dev
+libncurses-dev
+zlib1g-dev
+```
+
+The LLVM workflow is separate from the GNU workflow.
+
+## 14. LLVM build dispatcher
+
+The optional LLVM dispatcher is:
+
+```text
+scripts/build-llvm-package.sh
+```
+
+It receives:
+
+```text
+tool
+version
+platform
+```
+
+and calls either:
+
+```text
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+Example:
+
+```sh
+bash scripts/build-llvm-package.sh clang 22.1.3 linux-x64
+bash scripts/build-llvm-package.sh lldb 22.1.3 linux-x64
+```
+
+The current platform mapping is:
+
+```text
+linux-x64 -> LLVM_TARGETS_TO_BUILD=X86
+```
+
+## 15. Package archive layout
 
 Prebuilt package archives must contain a top-level directory.
 
@@ -339,13 +416,20 @@ gcc-15.2.0-linux-x64-standard/bin/gcc
 gcc-15.2.0-linux-x64-standard/lib/...
 ```
 
+For optional LLVM packages:
+
+```text
+clang-22.1.3-linux-x64/bin/clang
+lldb-22.1.3-linux-x64/bin/lldb
+```
+
 This is required because `extract.c` strips the first path component during installation.
 
 If an archive does not contain a top-level directory, extraction may produce an invalid layout.
 
-## 14. Release assets
+## 16. Release assets
 
-The workflow publishes assets in the same repository.
+The GNU workflow publishes assets in the same repository.
 
 Example tag:
 
@@ -368,14 +452,19 @@ Example:
 debugger.gdb.url_template=https://github.com/coffee-clang/cup/releases/download/gdb-{version}-standard/gdb-{version}-linux-x64-standard.{format}
 ```
 
-## 15. Upstream LLVM packages
+The optional LLVM workflow would publish assets with platform-based names.
 
-Clang and LLDB currently use upstream LLVM release assets.
-
-The manifest points both tools to the LLVM binary archive pattern:
+Example tag:
 
 ```text
-https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
+clang-22.1.3-linux-x64
 ```
 
-This avoids maintaining a separate LLVM build workflow for now.
+Example assets:
+
+```text
+clang-22.1.3-linux-x64.tar.gz
+clang-22.1.3-linux-x64.tar.xz
+```
+
+At the moment, Clang and LLDB can still use upstream LLVM assets in `packages.cfg`.

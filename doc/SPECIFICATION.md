@@ -192,11 +192,11 @@ The selected format replaces `{format}` in the URL template.
 
 The current manifest uses two package-source styles.
 
-### 6.1 Repository-built packages
+### 6.1 Repository-built GNU packages
 
 GCC and GDB are built by this repository from upstream source releases.
 
-Their URLs include a build mode, currently `standard`, because the package name is produced by the build workflow.
+Their URLs include a build mode, currently `standard`, because the package name is produced by the GNU build workflow.
 
 Example:
 
@@ -217,6 +217,33 @@ LLVM-<version>-Linux-X64.tar.xz
 This means the current model may duplicate the same upstream LLVM archive across `compiler.clang` and `debugger.lldb`.
 
 This is accepted for now to avoid introducing a shared LLVM-suite model.
+
+### 6.3 Optional repository-built LLVM packages
+
+The repository may also contain optional files for building separated Clang and LLDB archives.
+
+Optional structure:
+
+```text
+.github/workflows/build-llvm.yml
+docker/llvm-builder.Dockerfile
+scripts/build-llvm-package.sh
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+This path is separate from the active manifest unless the manifest is changed to point to repository-built LLVM assets.
+
+The optional LLVM package naming is platform-based rather than build-mode-based.
+
+Examples:
+
+```text
+clang-22.1.3-linux-x64.tar.xz
+lldb-22.1.3-linux-x64.tar.xz
+```
+
+For now, the platform `linux-x64` is internally mapped to the LLVM target `X86`.
 
 ## 7. State model
 
@@ -572,7 +599,43 @@ The workflow always builds and then uploads release assets. Existing assets for 
 
 This build system is separate from runtime installation. `cup` itself only downloads and installs archives referenced by the manifest.
 
-## 17. Limitations
+## 17. Optional LLVM source release builds
+
+The project can also keep an optional LLVM build workflow for separated Clang and LLDB archives.
+
+The optional structure is:
+
+```text
+.github/workflows/build-llvm.yml
+docker/llvm-builder.Dockerfile
+scripts/build-llvm-package.sh
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+The workflow is manually started and receives:
+
+```text
+tool
+version
+platform
+```
+
+The current platform option is:
+
+```text
+linux-x64
+```
+
+The scripts map this platform internally to:
+
+```text
+LLVM_TARGETS_TO_BUILD=X86
+```
+
+This workflow is optional while the manifest still points Clang and LLDB to upstream LLVM binary archives.
+
+## 18. Limitations
 
 Current limitations include:
 

@@ -24,6 +24,7 @@ The current implementation supports:
 - basic `SIGINT` handling
 - static dependency bootstrap for building `cup`
 - Docker-based GitHub Actions builds for GNU source releases such as GCC and GDB
+- optional Docker-based GitHub Actions files for building separated LLVM packages such as Clang and LLDB
 
 The current implementation does not yet provide:
 
@@ -286,6 +287,40 @@ https://github.com/llvm/llvm-project/releases/download/llvmorg-<version>/LLVM-<v
 
 This means `compiler.clang` and `debugger.lldb` can point to the same upstream archive. The project currently accepts that duplication instead of introducing a shared LLVM-suite model.
 
+### Optional separated LLVM packages
+
+The repository also contains optional build files for producing separated Clang and LLDB archives.
+
+Current optional structure:
+
+```text
+.github/workflows/build-llvm.yml
+docker/llvm-builder.Dockerfile
+scripts/build-llvm-package.sh
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+This workflow is not required by the current manifest. It is present as an alternative path if the project later decides to publish separate Clang and LLDB archives from the repository.
+
+The optional LLVM workflow uses a package platform input, currently:
+
+```text
+linux-x64
+```
+
+Internally, this is mapped to the LLVM CMake target:
+
+```text
+X86
+```
+
+If these repository-built LLVM packages are used later, the manifest URL pattern would become:
+
+```text
+https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-linux-x64/<tool>-<version>-linux-x64.<format>
+```
+
 ## 8. Local filesystem layout
 
 `cup` stores its local data under:
@@ -527,3 +562,49 @@ gdb-17.1-linux-x64-standard.tar.xz
 ```
 
 The current policy is simple: each manual run builds the package and uploads the assets, overwriting existing assets for the same release tag.
+
+## 16. Optional LLVM package builds
+
+The repository can also keep an optional LLVM build workflow.
+
+The current optional LLVM structure is:
+
+```text
+.github/workflows/build-llvm.yml
+docker/llvm-builder.Dockerfile
+scripts/build-llvm-package.sh
+scripts/build-clang.sh
+scripts/build-lldb.sh
+```
+
+This workflow is separate from the GNU workflow and is intended for producing separate Clang and LLDB archives if the project decides to stop using the upstream combined LLVM archive.
+
+The workflow is manual and takes:
+
+```text
+tool
+version
+platform
+```
+
+Current platform option:
+
+```text
+linux-x64
+```
+
+Example release tags:
+
+```text
+clang-22.1.3-linux-x64
+lldb-22.1.3-linux-x64
+```
+
+Example assets:
+
+```text
+clang-22.1.3-linux-x64.tar.xz
+lldb-22.1.3-linux-x64.tar.xz
+```
+
+At the moment, this path is optional. The active manifest can continue pointing Clang and LLDB to upstream LLVM assets.

@@ -1,0 +1,105 @@
+name: Build LLVM package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: "LLVM tool to build"
+        required: true
+        type: choice
+        options:
+          - clang
+          - lldb
+
+      version:
+        description: "LLVM version to build"
+        required: true
+        default: "22.1.3"
+
+      platform:
+        description: "Package platform"
+        required: true
+        type: choice
+        default: "linux-x64"
+        options:
+          - linux-x64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Prepare release metadata
+        id: meta
+        env:
+          TOOL: ${{ github.event.inputs.tool }}
+          VERSION: ${{ github.event.inputs.version }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+        run: |
+          set -euo pipefail
+
+          TAG="${TOOL}-${VERSION}-${PLATFORM}"
+          TITLE="${TOOL^^} ${VERSION} (${PLATFORM})"
+          PACKAGE_BASE="${TOOL}-${VERSION}-${PLATFORM}"
+          ASSET_GZ="${PACKAGE_BASE}.tar.gz"
+          ASSET_XZ="${PACKAGE_BASE}.tar.xz"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "package_base=${PACKAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "asset_gz=${ASSET_GZ}" >> "$GITHUB_OUTPUT"
+          echo "asset_xz=${ASSET_XZ}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -f docker/llvm-builder.Dockerfile \
+            -t cup-llvm-builder .
+
+      - name: Run LLVM build inside Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -e ROOT_DIR=/work \
+            cup-llvm-builder \
+            bash /work/scripts/build-llvm-package.sh \
+              "${{ github.event.inputs.tool }}" \
+              "${{ github.event.inputs.version }}" \
+              "${{ github.event.inputs.platform }}"
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TITLE: ${{ steps.meta.outputs.title }}
+          ASSET_GZ: ${{ steps.meta.outputs.asset_gz }}
+          ASSET_XZ: ${{ steps.meta.outputs.asset_xz }}
+          TOOL: ${{ github.event.inputs.tool }}
+          VERSION: ${{ github.event.inputs.version }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+        run: |
+          set -euo pipefail
+
+          NOTES="Precompiled ${TOOL} ${VERSION} for ${PLATFORM}."
+
+          if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" \
+              "out/${ASSET_GZ}" \
+              "out/${ASSET_XZ}" \
+              --repo "${TARGET_REPO}" \
+              --clobber
+          else
+            gh release create "${TAG}" \
+              "out/${ASSET_GZ}" \
+              "out/${ASSET_XZ}" \
+              --repo "${TARGET_REPO}" \
+              --title "${TITLE}" \
+              --notes "${NOTES}"
+          fi
