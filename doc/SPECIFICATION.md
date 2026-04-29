@@ -119,17 +119,17 @@ compiler.gcc.formats=tar.gz,tar.xz
 compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-standard/gcc-{version}-linux-x64-standard.{format}
 ```
 
-Example for upstream LLVM packages:
+Example for repository-built LLVM packages:
 
 ```text
 debugger.lldb.stable_version=22.1.3
-debugger.lldb.available_versions=22.1.3,22.1.2,22.1.1
+debugger.lldb.available_versions=22.1.3
 debugger.lldb.default_format=tar.xz
-debugger.lldb.formats=tar.xz
-debugger.lldb.url_template=https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
+debugger.lldb.formats=tar.gz,tar.xz
+debugger.lldb.url_template=https://github.com/coffee-clang/cup/releases/download/lldb-{version}-linux-x64/lldb-{version}-linux-x64.{format}
 ```
 
-The registry decides whether `debugger/lldb` is a valid pair. The manifest decides which versions and formats exist for that pair.
+The registry decides whether a component/tool pair is valid. The manifest decides which versions and formats exist for that pair.
 
 ## 4. Release resolution
 
@@ -190,7 +190,7 @@ The selected format replaces `{format}` in the URL template.
 
 ## 6. Package source model
 
-The current manifest uses two package-source styles.
+The current manifest points to packages built and published by this repository.
 
 ### 6.1 Repository-built GNU packages
 
@@ -204,37 +204,11 @@ Example:
 gdb-17.1-linux-x64-standard.tar.xz
 ```
 
-### 6.2 Upstream LLVM packages
+### 6.2 Repository-built LLVM packages
 
-Clang and LLDB currently use the upstream LLVM binary archive.
+Clang and LLDB are built by this repository from LLVM source releases.
 
-Both can point to:
-
-```text
-LLVM-<version>-Linux-X64.tar.xz
-```
-
-This means the current model may duplicate the same upstream LLVM archive across `compiler.clang` and `debugger.lldb`.
-
-This is accepted for now to avoid introducing a shared LLVM-suite model.
-
-### 6.3 Optional repository-built LLVM packages
-
-The repository may also contain optional files for building separated Clang and LLDB archives.
-
-Optional structure:
-
-```text
-.github/workflows/build-llvm.yml
-docker/llvm-builder.Dockerfile
-scripts/build-llvm-package.sh
-scripts/build-clang.sh
-scripts/build-lldb.sh
-```
-
-This path is separate from the active manifest unless the manifest is changed to point to repository-built LLVM assets.
-
-The optional LLVM package naming is platform-based rather than build-mode-based.
+Their URLs are platform-based rather than build-mode-based.
 
 Examples:
 
@@ -244,6 +218,10 @@ lldb-22.1.3-linux-x64.tar.xz
 ```
 
 For now, the platform `linux-x64` is internally mapped to the LLVM target `X86`.
+
+The Clang package is built with the `clang` LLVM project only. `lld` is not included in that package, so it can remain a possible separate linker tool later.
+
+The LLDB package is built with `clang;lldb`. Clang is included as a technical dependency needed by LLDB, while the package remains classified as `debugger.lldb`.
 
 ## 7. State model
 
@@ -599,11 +577,11 @@ The workflow always builds and then uploads release assets. Existing assets for 
 
 This build system is separate from runtime installation. `cup` itself only downloads and installs archives referenced by the manifest.
 
-## 17. Optional LLVM source release builds
+## 17. LLVM source release builds
 
-The project can also keep an optional LLVM build workflow for separated Clang and LLDB archives.
+The project contains a separate LLVM build workflow for Clang and LLDB archives.
 
-The optional structure is:
+The current structure is:
 
 ```text
 .github/workflows/build-llvm.yml
@@ -633,7 +611,19 @@ The scripts map this platform internally to:
 LLVM_TARGETS_TO_BUILD=X86
 ```
 
-This workflow is optional while the manifest still points Clang and LLDB to upstream LLVM binary archives.
+`build-clang.sh` builds:
+
+```text
+LLVM + Clang
+```
+
+`build-lldb.sh` builds:
+
+```text
+LLVM + Clang components + LLDB
+```
+
+LLDB uses Clang as a technical dependency, while the resulting package is still treated as the `debugger.lldb` package.
 
 ## 18. Limitations
 

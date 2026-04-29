@@ -668,6 +668,12 @@ CupError validate_install(const char *tmp_path) {
         return CUP_ERR_VALIDATION;
     }
 
+    err = validate_install_child_path(tmp_path, "share", 1);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: installed package does not contain a share directory.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
     return CUP_OK;
 }
 

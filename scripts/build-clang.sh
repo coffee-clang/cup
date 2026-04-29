@@ -100,7 +100,7 @@ cmake -S "${SOURCE_DIR}/llvm" \
       -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX="${PREFIX_DIR}" \
-      -DLLVM_ENABLE_PROJECTS="clang;lld" \
+      -DLLVM_ENABLE_PROJECTS="clang" \
       -DLLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD}" \
       -DLLVM_INCLUDE_TESTS=OFF \
       -DLLVM_INCLUDE_BENCHMARKS=OFF \

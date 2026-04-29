@@ -24,7 +24,7 @@ The current implementation supports:
 - basic `SIGINT` handling
 - static dependency bootstrap for building `cup`
 - Docker-based GitHub Actions builds for GNU source releases such as GCC and GDB
-- optional Docker-based GitHub Actions files for building separated LLVM packages such as Clang and LLDB
+- Docker-based GitHub Actions builds for LLVM source releases such as Clang and LLDB
 
 The current implementation does not yet provide:
 
@@ -202,7 +202,7 @@ It defines package metadata using keys in this form:
 <component>.<tool>.<field>=<value>
 ```
 
-Example for a package built and published by this repository:
+Example for a GNU package built and published by this repository:
 
 ```text
 compiler.gcc.stable_version=15.2.0
@@ -212,14 +212,14 @@ compiler.gcc.formats=tar.gz,tar.xz
 compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-standard/gcc-{version}-linux-x64-standard.{format}
 ```
 
-Example for an upstream LLVM package:
+Example for an LLVM package built and published by this repository:
 
 ```text
 compiler.clang.stable_version=22.1.3
-compiler.clang.available_versions=22.1.3,22.1.2,22.1.1
+compiler.clang.available_versions=22.1.3
 compiler.clang.default_format=tar.xz
-compiler.clang.formats=tar.xz
-compiler.clang.url_template=https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.{format}
+compiler.clang.formats=tar.gz,tar.xz
+compiler.clang.url_template=https://github.com/coffee-clang/cup/releases/download/clang-{version}-linux-x64/clang-{version}-linux-x64.{format}
 ```
 
 The manifest controls:
@@ -261,11 +261,11 @@ The registry validates whether a component/tool pair is supported. It does not k
 
 ## 7. Package sources
 
-The current manifest uses two package sources.
+The current manifest points to packages built and published by this repository.
 
-### Repository-built GNU packages
+### GNU packages
 
-GCC and GDB are built from upstream source releases by the repository workflow and published as GitHub Release assets.
+GCC and GDB are built from upstream source releases by the GNU workflow and published as GitHub Release assets.
 
 Current URL pattern:
 
@@ -273,53 +273,33 @@ Current URL pattern:
 https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-standard/<tool>-<version>-linux-x64-standard.<format>
 ```
 
-The `standard` build mode is part of these asset names because these packages are produced by this repository.
+The `standard` build mode is part of these asset names because these packages are produced by the GNU build workflow.
 
-### Upstream LLVM packages
+### LLVM packages
 
-Clang and LLDB currently use the upstream LLVM binary archive.
+Clang and LLDB are built from LLVM source releases by the LLVM workflow and published as GitHub Release assets.
 
 Current URL pattern:
 
 ```text
-https://github.com/llvm/llvm-project/releases/download/llvmorg-<version>/LLVM-<version>-Linux-X64.<format>
+https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-linux-x64/<tool>-<version>-linux-x64.<format>
 ```
 
-This means `compiler.clang` and `debugger.lldb` can point to the same upstream archive. The project currently accepts that duplication instead of introducing a shared LLVM-suite model.
-
-### Optional separated LLVM packages
-
-The repository also contains optional build files for producing separated Clang and LLDB archives.
-
-Current optional structure:
-
-```text
-.github/workflows/build-llvm.yml
-docker/llvm-builder.Dockerfile
-scripts/build-llvm-package.sh
-scripts/build-clang.sh
-scripts/build-lldb.sh
-```
-
-This workflow is not required by the current manifest. It is present as an alternative path if the project later decides to publish separate Clang and LLDB archives from the repository.
-
-The optional LLVM workflow uses a package platform input, currently:
+The LLVM workflow uses a package platform input, currently:
 
 ```text
 linux-x64
 ```
 
-Internally, this is mapped to the LLVM CMake target:
+Internally, this platform is mapped to the LLVM CMake target:
 
 ```text
 X86
 ```
 
-If these repository-built LLVM packages are used later, the manifest URL pattern would become:
+The Clang package is built with the `clang` LLVM project. `lld` is not included in the Clang package, because it can be treated as a separate linker tool later.
 
-```text
-https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-linux-x64/<tool>-<version>-linux-x64.<format>
-```
+The LLDB package is built with `clang;lldb`. Clang is included there as a technical dependency of LLDB, not as the main exposed tool of the package.
 
 ## 8. Local filesystem layout
 
@@ -359,7 +339,7 @@ Example:
 ~/.cup/components/compiler/gcc/linux/15.2.0/
 ```
 
-The current platform name is simple and fixed by the implementation. Complete multi-architecture support is not implemented yet.
+The current platform name used in install paths is simple and fixed by the implementation. Complete multi-architecture support is not implemented yet.
 
 ### Temporary directories
 
@@ -563,11 +543,11 @@ gdb-17.1-linux-x64-standard.tar.xz
 
 The current policy is simple: each manual run builds the package and uploads the assets, overwriting existing assets for the same release tag.
 
-## 16. Optional LLVM package builds
+## 16. Building LLVM release packages
 
-The repository can also keep an optional LLVM build workflow.
+The repository includes a separate workflow for building LLVM source releases into archives installable by `cup`.
 
-The current optional LLVM structure is:
+The current LLVM build structure is:
 
 ```text
 .github/workflows/build-llvm.yml
@@ -577,7 +557,7 @@ scripts/build-clang.sh
 scripts/build-lldb.sh
 ```
 
-This workflow is separate from the GNU workflow and is intended for producing separate Clang and LLDB archives if the project decides to stop using the upstream combined LLVM archive.
+This workflow is separate from the GNU workflow.
 
 The workflow is manual and takes:
 
@@ -585,6 +565,13 @@ The workflow is manual and takes:
 tool
 version
 platform
+```
+
+Current LLVM tools handled by this workflow are:
+
+```text
+clang
+lldb
 ```
 
 Current platform option:
@@ -606,5 +593,3 @@ Example assets:
 clang-22.1.3-linux-x64.tar.xz
 lldb-22.1.3-linux-x64.tar.xz
 ```
-
-At the moment, this path is optional. The active manifest can continue pointing Clang and LLDB to upstream LLVM assets.

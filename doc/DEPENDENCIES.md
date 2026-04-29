@@ -247,92 +247,11 @@ libexpat1-dev
 libncurses-dev
 ```
 
-## 9. Why Docker is used
+## 9. LLVM package build environment
 
-Docker does not replace GitHub Actions.
+Clang and LLDB are built from LLVM source releases and then published as prebuilt archives.
 
-The roles are:
-
-```text
-GitHub Actions:
-  orchestration
-
-Docker:
-  reproducible build environment
-```
-
-The Docker image fixes the base system and build dependencies. This avoids depending directly on changes to the `ubuntu-latest` runner image.
-
-## 10. GNU build dispatcher
-
-The dispatcher script is:
-
-```text
-scripts/build-gnu-package.sh
-```
-
-It receives:
-
-```text
-tool
-version
-build_mode
-```
-
-and calls the tool-specific build script.
-
-Examples:
-
-```sh
-bash scripts/build-gnu-package.sh gcc 15.2.0 standard
-bash scripts/build-gnu-package.sh gdb 17.1 standard
-```
-
-## 11. GCC build script
-
-The GCC build script is:
-
-```text
-scripts/build-gcc.sh
-```
-
-It downloads GCC source releases from the upstream GCC release directory, extracts them, runs GCC's `contrib/download_prerequisites`, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
-
-Supported build modes are:
-
-```text
-minimal
-standard
-full
-```
-
-The exact configure flags are defined by the script.
-
-## 12. GDB build script
-
-The GDB build script is:
-
-```text
-scripts/build-gdb.sh
-```
-
-It downloads GDB source releases from GNU FTP, extracts them, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
-
-Supported build modes are:
-
-```text
-minimal
-standard
-full
-```
-
-The exact configure flags are defined by the script.
-
-## 13. Optional LLVM package build environment
-
-The repository can also include optional files for building separated Clang and LLDB archives.
-
-The optional structure is:
+The current build structure is:
 
 ```text
 .github/workflows/build-llvm.yml
@@ -342,7 +261,9 @@ scripts/build-clang.sh
 scripts/build-lldb.sh
 ```
 
-The LLVM Dockerfile uses:
+GitHub Actions is used for orchestration. Docker is used for the build environment.
+
+The Dockerfile uses:
 
 ```text
 ubuntu:24.04
@@ -367,11 +288,50 @@ libncurses-dev
 zlib1g-dev
 ```
 
-The LLVM workflow is separate from the GNU workflow.
+## 10. Why Docker is used
 
-## 14. LLVM build dispatcher
+Docker does not replace GitHub Actions.
 
-The optional LLVM dispatcher is:
+The roles are:
+
+```text
+GitHub Actions:
+  orchestration
+
+Docker:
+  reproducible build environment
+```
+
+The Docker image fixes the base system and build dependencies. This avoids depending directly on changes to the `ubuntu-latest` runner image.
+
+## 11. GNU build dispatcher
+
+The GNU dispatcher script is:
+
+```text
+scripts/build-gnu-package.sh
+```
+
+It receives:
+
+```text
+tool
+version
+build_mode
+```
+
+and calls the tool-specific build script.
+
+Examples:
+
+```sh
+bash scripts/build-gnu-package.sh gcc 15.2.0 standard
+bash scripts/build-gnu-package.sh gdb 17.1 standard
+```
+
+## 12. LLVM build dispatcher
+
+The LLVM dispatcher script is:
 
 ```text
 scripts/build-llvm-package.sh
@@ -385,14 +345,9 @@ version
 platform
 ```
 
-and calls either:
+and calls the tool-specific build script.
 
-```text
-scripts/build-clang.sh
-scripts/build-lldb.sh
-```
-
-Example:
+Examples:
 
 ```sh
 bash scripts/build-llvm-package.sh clang 22.1.3 linux-x64
@@ -405,18 +360,94 @@ The current platform mapping is:
 linux-x64 -> LLVM_TARGETS_TO_BUILD=X86
 ```
 
-## 15. Package archive layout
+## 13. GCC build script
+
+The GCC build script is:
+
+```text
+scripts/build-gcc.sh
+```
+
+It downloads GCC source releases from the upstream GCC release directory, extracts them, runs GCC's `contrib/download_prerequisites`, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
+
+Supported build modes are:
+
+```text
+minimal
+standard
+full
+```
+
+The exact configure flags are defined by the script.
+
+## 14. GDB build script
+
+The GDB build script is:
+
+```text
+scripts/build-gdb.sh
+```
+
+It downloads GDB source releases from GNU FTP, extracts them, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
+
+Supported build modes are:
+
+```text
+minimal
+standard
+full
+```
+
+The exact configure flags are defined by the script.
+
+## 15. Clang build script
+
+The Clang build script is:
+
+```text
+scripts/build-clang.sh
+```
+
+It downloads LLVM source releases, configures an LLVM build with Clang enabled, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
+
+The Clang build enables:
+
+```text
+LLVM_ENABLE_PROJECTS=clang
+```
+
+`lld` is not included in the Clang package, so it can remain a possible separate linker tool later.
+
+## 16. LLDB build script
+
+The LLDB build script is:
+
+```text
+scripts/build-lldb.sh
+```
+
+It downloads LLVM source releases, configures an LLVM build with Clang and LLDB enabled, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
+
+The LLDB build enables:
+
+```text
+LLVM_ENABLE_PROJECTS=clang;lldb
+```
+
+Clang is included as a technical dependency of LLDB. The resulting package is still treated as the `debugger.lldb` package.
+
+## 17. Package archive layout
 
 Prebuilt package archives must contain a top-level directory.
 
-Example:
+Example GNU package:
 
 ```text
 gcc-15.2.0-linux-x64-standard/bin/gcc
 gcc-15.2.0-linux-x64-standard/lib/...
 ```
 
-For optional LLVM packages:
+Example LLVM packages:
 
 ```text
 clang-22.1.3-linux-x64/bin/clang
@@ -427,9 +458,9 @@ This is required because `extract.c` strips the first path component during inst
 
 If an archive does not contain a top-level directory, extraction may produce an invalid layout.
 
-## 16. Release assets
+## 18. Release assets
 
-The GNU workflow publishes assets in the same repository.
+The GNU workflow publishes build-mode-based assets in the same repository.
 
 Example tag:
 
@@ -444,15 +475,7 @@ gdb-17.1-linux-x64-standard.tar.gz
 gdb-17.1-linux-x64-standard.tar.xz
 ```
 
-The manifest points to these assets using the repository URL.
-
-Example:
-
-```text
-debugger.gdb.url_template=https://github.com/coffee-clang/cup/releases/download/gdb-{version}-standard/gdb-{version}-linux-x64-standard.{format}
-```
-
-The optional LLVM workflow would publish assets with platform-based names.
+The LLVM workflow publishes platform-based assets in the same repository.
 
 Example tag:
 
@@ -467,4 +490,16 @@ clang-22.1.3-linux-x64.tar.gz
 clang-22.1.3-linux-x64.tar.xz
 ```
 
-At the moment, Clang and LLDB can still use upstream LLVM assets in `packages.cfg`.
+The manifest points to these assets using the repository URL.
+
+Example GNU URL:
+
+```text
+debugger.gdb.url_template=https://github.com/coffee-clang/cup/releases/download/gdb-{version}-standard/gdb-{version}-linux-x64-standard.{format}
+```
+
+Example LLVM URL:
+
+```text
+compiler.clang.url_template=https://github.com/coffee-clang/cup/releases/download/clang-{version}-linux-x64/clang-{version}-linux-x64.{format}
+```
