@@ -227,11 +227,6 @@ static CupError get_cache_root_path(char *buffer, size_t size) {
     return err;
 }
 
-// TODO: detect or configure platform when multi-architecture support is added
-const char *get_platform_name(void) {
-    return "linux";
-}
-
 CupError get_state_file_path(char *buffer, size_t size) {
     CupError err;
     char root[MAX_PATH_LEN];
@@ -411,12 +406,12 @@ CupError ensure_cache_package_dirs(const char *component, const char *tool, cons
     return CUP_OK;
 }
 
-CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release) {
+CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *release) {
     CupError err;
     char components_root[MAX_PATH_LEN];
 
-    if (buffer == NULL || component == NULL || tool == NULL || release == NULL ||
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || release[0] == '\0') {
+    if (buffer == NULL || component == NULL || tool == NULL || platform == NULL || release == NULL ||
+        size == 0 || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || release[0] == '\0') {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -425,7 +420,7 @@ CupError build_install_path(char *buffer, size_t size, const char *component, co
         return err;
     }
 
-    err = checked_snprintf(buffer, size, "%s/%s/%s/%s/%s", components_root, component, tool, get_platform_name(), release);
+    err = checked_snprintf(buffer, size, "%s/%s/%s/%s/%s", components_root, component, tool, platform, release);
     return err;
 }
 
@@ -503,12 +498,12 @@ static CupError build_cache_package_path(char *buffer, size_t size, const char *
     return err;
 }
 
-CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *archive_format) {
+CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *platform, const char *archive_format) {
     CupError err;
     char cache_package_path[MAX_PATH_LEN];
 
-    if (buffer == NULL || component == NULL || tool == NULL || release == NULL || archive_format == NULL || 
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || release[0] == '\0' || archive_format[0] == '\0') {
+    if (buffer == NULL || component == NULL || tool == NULL || release == NULL || platform == NULL || archive_format == NULL || 
+        size == 0 || component[0] == '\0' || tool[0] == '\0' || release[0] == '\0' || platform[0] == '\0' || archive_format[0] == '\0') {
         fprintf(stderr, "Error: invalid archive format.\n");
         return CUP_ERR_INVALID_INPUT;
     }
@@ -518,7 +513,7 @@ CupError build_cache_archive_path(char *buffer, size_t size, const char *compone
         return err;
     }
 
-    err = checked_snprintf(buffer, size, "%s/package.%s", cache_package_path, archive_format);
+    err = checked_snprintf(buffer, size, "%s/%s-%s-%s.%s", cache_package_path, tool, release, platform, archive_format);
     return err;
 }
 
@@ -783,7 +778,7 @@ CupError cleanup_all_tmp(void) {
     return CUP_OK;
 }
 
-CupError write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *release) {
+CupError write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *platform, const char *release) {
     CupError err;
     FILE *file;
     char info_path[MAX_PATH_LEN];
@@ -820,7 +815,7 @@ CupError write_component_info_at_path(const char *base_path, const char *compone
         fclose(file);
         return CUP_ERR_INSTALL;
     }
-    status = fprintf(file, "platform=%s\n", get_platform_name());
+    status = fprintf(file, "platform=%s\n", platform);
     if (status < 0) {
         fclose(file);
         return CUP_ERR_INSTALL;
@@ -834,19 +829,19 @@ CupError write_component_info_at_path(const char *base_path, const char *compone
     return CUP_OK;
 }
 
-CupError installation_exists(const char *component, const char *tool, const char *release, int *exists) {
+CupError installation_exists(const char *component, const char *tool, const char *platform, const char *release, int *exists) {
     CupError err;
     struct stat info;
     char path[MAX_PATH_LEN];
 
-    if (component == NULL || tool == NULL || release == NULL || exists == NULL ||
-        component[0] == '\0' || tool[0] == '\0' || release[0] == '\0') {
+    if (component == NULL || tool == NULL || platform == NULL || release == NULL || exists == NULL ||
+        component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || release[0] == '\0') {
         return CUP_ERR_INVALID_INPUT;
     }
 
     *exists = 0;
 
-    err = build_install_path(path, sizeof(path), component, tool, release);
+    err = build_install_path(path, sizeof(path), component, tool, platform, release);
     if (err != CUP_OK) {
         return err;
     }

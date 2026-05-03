@@ -5,9 +5,6 @@
 
 #include "error.h"
 
-// PLATFORM
-const char *get_platform_name(void);
-
 // STATE PATH
 CupError get_state_file_path(char *buffer, size_t size);
 
@@ -17,8 +14,8 @@ CupError ensure_component_base_dirs(const char *component, const char *tool, con
 CupError ensure_cache_package_dirs(const char *component, const char *tool, const char *release);
 
 // PATH BUILDERS
-CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *release);
-CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *archive_format);
+CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *release);
+CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *release, const char *platform, const char *archive_format);
 
 // INSTALL FLOW
 CupError create_tmp_install_dir(char *buffer, size_t size, const char *component, const char *tool, const char *release);
@@ -31,11 +28,11 @@ CupError cleanup_tmp_install(const char *tmp_path);
 CupError cleanup_all_tmp(void);
 
 // CONSISTENCY
-CupError installation_exists(const char *component, const char *tool, const char *release, int *exists);
+CupError installation_exists(const char *component, const char *tool, const char *platform, const char *release, int *exists);
 CupError archive_exists(const char *archive_path, int *exists);
 CupError archive_is_usable(const char *archive_path, int *is_usable);
 
 // METADATA
-CupError write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *release);
+CupError write_component_info_at_path(const char *base_path, const char *component, const char *tool, const char *platform, const char *release);
 
 #endif /* CUP_FILESYSTEM_H */

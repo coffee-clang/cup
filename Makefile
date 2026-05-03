@@ -7,6 +7,7 @@ LDFLAGS = -L$(PREFIX)/lib -L$(PREFIX)/lib64
 
 SRC = \
 	src/main.c \
+	src/options.c \
 	src/commands.c \
 	src/state.c \
 	src/filesystem.c \
@@ -15,7 +16,8 @@ SRC = \
 	src/fetch.c \
 	src/extract.c \
 	src/util.c \
-	src/interrupt.c
+	src/interrupt.c \
+	src/platform.c
 
 TARGET = cup
 

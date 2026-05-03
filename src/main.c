@@ -1,5 +1,6 @@
 #include "commands.h"
 #include "filesystem.h"
+#include "options.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -11,19 +12,19 @@ static void print_usage(const char *prog_name) {
 
     fprintf(stderr,
         "Usage:\n"
-        "  %s list\n"
-        "  %s install <component> <tool>@<release> [--format <archive-format>]\n"
-        "  %s install <component> <tool>@<release> [-f <archive-format>]\n"
-        "  %s remove <component> <tool>@<release>\n"
-        "  %s default <component> <tool>@<release>\n"
-        "  %s current <component>\n",
-        prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
+        "  %s list [--platform <platform>]\n"
+        "  %s install <component> <tool>@<release> [--format|-f <archive-format>] [--platform <platform>]\n"
+        "  %s remove <component> <tool>@<release> [--platform <platform>]\n"
+        "  %s default <component> <tool>@<release> [--platform <platform>]\n"
+        "  %s current <component> [--platform <platform>]\n",
+        prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
 int main(int argc, char *argv[]) {
     CupError err;
+    CommandOptions options;
     const char *command;
-    const char *format_override = NULL;
+    int start_option;
 
     if (argc < 2) {
         print_usage(argv[0]);
@@ -38,63 +39,113 @@ int main(int argc, char *argv[]) {
     command = argv[1];
 
     if (strcmp(command, "list") == 0) {
-        if (argc != 2) {
+        start_option = 2;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
             print_usage(argv[0]);
-            return CUP_ERR_INVALID_INPUT;
+            return err;
         }
 
-        return handle_list();
+        err = validate_command_options(&options, OPT_PLATFORM);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        return handle_list(options.platform);
     }
 
     if (strcmp(command, "install") == 0) {
-        int valid_args;
-
-        valid_args = 1;
-
-        if (argc == 6) {
-            if (strcmp(argv[4], "--format") == 0 || 
-                strcmp(argv[4], "-f") == 0) {
-                format_override = argv[5];
-            } else {
-                valid_args = 0;
-            }
-        } else if (argc != 4) {
-            valid_args = 0;
-        }
-
-        if (!valid_args) {
+        if (argc < 4) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
-        return handle_install(argv[2], argv[3], format_override);
+        start_option = 4;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        err = validate_command_options(&options, OPT_FORMAT | OPT_PLATFORM);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        return handle_install(argv[2], argv[3], options.format, options.platform);
     }
 
     if (strcmp(command, "remove") == 0) {
-        if (argc != 4) {
+        if (argc < 4) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
-        return handle_remove(argv[2], argv[3]);
+        start_option = 4;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        err = validate_command_options(&options, OPT_PLATFORM);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        return handle_remove(argv[2], argv[3], options.platform);
     }
 
     if (strcmp(command, "default") == 0) {
-        if (argc != 4) {
+        if (argc < 4) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
-        return handle_default(argv[2], argv[3]);
+        start_option = 4;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        err = validate_command_options(&options, OPT_PLATFORM);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        return handle_default(argv[2], argv[3], options.platform);
     }
 
     if (strcmp(command, "current") == 0) {
-        if (argc != 3) {
+        if (argc < 3) {
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
+
+        start_option = 3;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
+
+        err = validate_command_options(&options, OPT_PLATFORM);
+        if (err != CUP_OK) {
+            print_usage(argv[0]);
+            return err;
+        }
         
-        return handle_current(argv[2]);
+        return handle_current(argv[2], options.platform);
     }
 
     fprintf(stderr, "Error: unknown command '%s'.\n", command);

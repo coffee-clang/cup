@@ -97,14 +97,14 @@ static CupError download_package(const char *url, const char *dst_path) {
     return CUP_OK;
 }
 
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *resolved_release, const char *archive_format) {
+CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *resolved_release, const char *archive_format) {
     CupError err;
     char archive_path[MAX_PATH_LEN];
     char package_url[MAX_MANIFEST_URL_LEN];
     int usable;
 
-    if (buffer == NULL || component == NULL || tool == NULL || resolved_release == NULL || archive_format == NULL ||
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || resolved_release[0] == '\0' || archive_format[0] == '\0') {
+    if (buffer == NULL || component == NULL || tool == NULL || platform == NULL || resolved_release == NULL || archive_format == NULL ||
+        size == 0 || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || resolved_release[0] == '\0' || archive_format[0] == '\0') {
         fprintf(stderr, "Error: invalid package fetch arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
@@ -114,7 +114,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
         return err;
     }
 
-    err = build_cache_archive_path(archive_path, sizeof(archive_path), component, tool, resolved_release, archive_format);
+    err = build_cache_archive_path(archive_path, sizeof(archive_path), component, tool, resolved_release, platform, archive_format);
     if (err != CUP_OK) {
         return err;
     }
@@ -125,7 +125,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
     }
 
     if (!usable) {
-        err = build_package_url_from_manifest(package_url, sizeof(package_url), component, tool, resolved_release, archive_format);
+        err = build_package_url_from_manifest(package_url, sizeof(package_url), component, tool, platform, resolved_release, archive_format);
         if (err != CUP_OK) {
             return err;
         }
