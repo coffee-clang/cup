@@ -3,6 +3,15 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+void print_step(const char *message) {
+    if (message == NULL) {
+        return;
+    }
+
+    printf("==> %s\n", message);
+    fflush(stdout);
+}
+
 CupError checked_snprintf(char *buffer, size_t size, const char *format, ...) {
     va_list args;
     int written;

@@ -5,6 +5,8 @@
 
 #include "error.h"
 
+void print_step(const char *message);
+
 CupError checked_snprintf(char *buffer, size_t size, const char *format, ...);
 
 #endif /* CUP_UTIL_H */

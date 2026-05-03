@@ -14,6 +14,6 @@ typedef struct {
 
 CupError parse_command_options(int start_option, int argc, char *argv[], CommandOptions *options);
 
-CupError validate_command_options(const CommandOptions *options, unsigned allowed_options);
+CupError validate_command_options(const CommandOptions *options, unsigned allowed_options, const char *command_name);
 
 #endif /* CUP_OPTIONS_H */

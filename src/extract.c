@@ -180,7 +180,7 @@ static void cleanup_archives(struct archive *reader, struct archive *writer) {
     }
 }
 
-CupError extract_archive_to_tmp(const char *archive_path, const char *tmp_path) {
+CupError extract_archive(const char *archive_path, const char *tmp_path) {
     CupError err;
     struct archive *reader;
     struct archive *writer;

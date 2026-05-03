@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM);
+        err = validate_command_options(&options, OPT_PLATFORM, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
@@ -58,6 +58,7 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(command, "install") == 0) {
         if (argc < 4) {
+            fprintf(stderr, "Error: missing arguments for command 'install'.\n");
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
@@ -70,7 +71,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_FORMAT | OPT_PLATFORM);
+        err = validate_command_options(&options, OPT_FORMAT | OPT_PLATFORM, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
@@ -81,6 +82,7 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(command, "remove") == 0) {
         if (argc < 4) {
+            fprintf(stderr, "Error: missing arguments for command 'remove'.\n");
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
@@ -93,7 +95,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM);
+        err = validate_command_options(&options, OPT_PLATFORM, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
@@ -104,6 +106,7 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(command, "default") == 0) {
         if (argc < 4) {
+            fprintf(stderr, "Error: missing arguments for command 'default'.\n");
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
@@ -116,7 +119,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM);
+        err = validate_command_options(&options, OPT_PLATFORM, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
@@ -127,6 +130,7 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(command, "current") == 0) {
         if (argc < 3) {
+            fprintf(stderr, "Error: missing arguments for command 'current'.\n");
             print_usage(argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
@@ -139,7 +143,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM);
+        err = validate_command_options(&options, OPT_PLATFORM, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;

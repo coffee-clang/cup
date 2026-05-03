@@ -108,15 +108,12 @@ CupError parse_command_options(int start_option, int argc, char *argv[], Command
 
     init_command_options(options);
 
-    if ((argc - start_option) % 2 != 0) {
-        fprintf(stderr, "Error: command options must be passed as '--option value'.\n");
-    }
-
     i = start_option;
     while (i < argc) {
         const char *name;
         const char *value;
         const OptionDefinition *definition;
+        const OptionDefinition *validation;
 
         name = argv[i];
         definition = find_option_definition(name);
@@ -132,8 +129,8 @@ CupError parse_command_options(int start_option, int argc, char *argv[], Command
             }
 
             value = argv[i + 1];
-
-            if (value[0] == '-') {
+            validation = find_option_definition(value);
+            if (validation != NULL) {
                 fprintf(stderr, "Error: missing value for option '%s'.\n", definition->long_name);
                 return CUP_ERR_INVALID_INPUT;
             }
@@ -158,7 +155,7 @@ CupError parse_command_options(int start_option, int argc, char *argv[], Command
     return CUP_OK;
 }
 
-CupError validate_command_options(const CommandOptions *options, unsigned allowed_options) {
+CupError validate_command_options(const CommandOptions *options, unsigned allowed_options, const char *command_name) {
     size_t count;
     size_t i;
     unsigned disallowed;
@@ -176,7 +173,8 @@ CupError validate_command_options(const CommandOptions *options, unsigned allowe
 
     for (i = 0; i < count; ++i) {
         if ((disallowed & OPTION_DEFINITIONS[i].flag) != 0) {
-            fprintf(stderr, "Error: option '%s' is not valid for this command.\n", OPTION_DEFINITIONS[i].long_name);
+            fprintf(stderr, "Error: option '%s' is not valid for command '%s'.\n", 
+                    OPTION_DEFINITIONS[i].long_name, command_name != NULL ? command_name : "<unknown>");
             return CUP_ERR_INVALID_INPUT;
         }
     }
