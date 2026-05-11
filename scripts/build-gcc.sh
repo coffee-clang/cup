@@ -90,6 +90,7 @@ build_native_gcc() {
     configure_and_build "$gcc_src" "$build_dir" \
         --prefix="$PREFIX" \
         --disable-werror \
+        --disable-multilib \
         --enable-bootstrap \
         --enable-languages=c,c++
 }
@@ -147,6 +148,7 @@ build_gcc_stage1() {
             --prefix="$PREFIX" \
             --target="$TARGET_TRIPLE" \
             --disable-werror \
+            --disable-multilib \
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
@@ -225,6 +227,7 @@ build_gcc_final() {
             --prefix="$PREFIX" \
             --target="$TARGET_TRIPLE" \
             --disable-werror \
+            --disable-multilib \
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
