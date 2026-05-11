@@ -1,27 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TOOL="${1:?missing tool}"
-VERSION="${2:?missing version}"
-BUILD_MODE="${3:?missing build mode}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+usage() {
+    cat <<USAGE
+Usage:
+  $0 <gcc|gdb> <version|stable|latest> <host_platform> <target_platform> <revision>
 
-case "${TOOL}" in
+Examples:
+  $0 gcc stable linux-x64 linux-x64 1
+  $0 gcc stable linux-x64 windows-x64 1
+  $0 gdb stable windows-x64 windows-x64 1
+USAGE
+}
+
+if [ "$#" -ne 5 ]; then
+    usage >&2
+    exit 2
+fi
+
+TOOL="$1"
+VERSION="$2"
+HOST_PLATFORM="$3"
+TARGET_PLATFORM="$4"
+REVISION="$5"
+
+case "$TOOL" in
     gcc)
-        exec bash "${ROOT_DIR}/scripts/build-gcc.sh" \
-            "${VERSION}" \
-            "${BUILD_MODE}"
+        exec "$SCRIPT_DIR/build-gcc.sh" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION"
         ;;
-
     gdb)
-        exec bash "${ROOT_DIR}/scripts/build-gdb.sh" \
-            "${VERSION}" \
-            "${BUILD_MODE}"
+        exec "$SCRIPT_DIR/build-gdb.sh" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION"
         ;;
-
     *)
-        echo "Error: unsupported GNU tool '${TOOL}'."
-        exit 1
+        printf 'Unsupported GNU tool: %s\n' "$TOOL" >&2
+        exit 2
         ;;
 esac

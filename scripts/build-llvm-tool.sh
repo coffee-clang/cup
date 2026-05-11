@@ -7,27 +7,27 @@ source "$SCRIPT_DIR/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <clang|lld|lldb> <version|stable|latest> <host_platform> <target_platform> <revision>
 
 Examples:
-  $0 stable linux-x64 linux-x64 1
-  $0 stable windows-x64 windows-x64 1
+  $0 clang stable linux-x64 linux-x64 1
+  $0 lld stable windows-x64 windows-x64 1
+  $0 lldb stable windows-x64 windows-x64 1
 USAGE
 }
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -ne 5 ]; then
     usage >&2
     exit 2
 fi
 
-REQUESTED_VERSION="$1"
-HOST_PLATFORM="$2"
-TARGET_PLATFORM="$3"
-REVISION="$4"
+TOOL="$1"
+REQUESTED_VERSION="$2"
+HOST_PLATFORM="$3"
+TARGET_PLATFORM="$4"
+REVISION="$5"
 
-TOOL="gdb"
-COMPONENT="debugger"
-VERSION="$(resolve_version gdb "$REQUESTED_VERSION")"
+VERSION="$(resolve_version llvm "$REQUESTED_VERSION")"
 PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
@@ -36,44 +36,63 @@ TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
+SOURCE_URL="$(source_url_llvm_project "$VERSION")"
+
+case "$TOOL" in
+    clang)
+        COMPONENT="compiler"
+        LLVM_PROJECTS="clang;lld"
+        CONTENTS_EXTRA=("contents.includes_lld=true")
+        ;;
+    lld)
+        COMPONENT="linker"
+        LLVM_PROJECTS="lld"
+        CONTENTS_EXTRA=()
+        ;;
+    lldb)
+        COMPONENT="debugger"
+        LLVM_PROJECTS="clang;lld;lldb"
+        CONTENTS_EXTRA=("contents.includes_clang=true" "contents.includes_lld=true")
+        ;;
+    *)
+        die "unsupported LLVM tool: $TOOL"
+        ;;
+esac
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
-SOURCE_URL="$(source_url_gdb "$VERSION")"
 
 need_common_tools() {
     need curl
     need tar
-    need make
+    need cmake
+    need ninja
     need zip
-
-    if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
-        die "a host C compiler is required"
-    fi
 }
 
-build_gdb() {
+build_llvm_tool() {
     local source_dir="$1"
-    local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local build_dir="$CUP_BUILD_DIR/llvm-$TOOL-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-        die "cross GDB is not supported by this build recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
+        die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
     fi
 
-    log "building GDB $VERSION for $HOST_PLATFORM"
+    log "building LLVM tool $TOOL $VERSION with projects: $LLVM_PROJECTS"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
 
-    (
-        cd "$build_dir"
-        "$source_dir/configure" \
-            --prefix="$PREFIX" \
-            --disable-werror
-        make -j"$CUP_JOBS"
-        make install
-    )
+    cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+        -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
+        -DLLVM_TARGETS_TO_BUILD=X86
+
+    cmake --build "$build_dir" --parallel "$CUP_JOBS"
+    cmake --install "$build_dir"
 }
 
-write_gdb_info() {
+write_llvm_info() {
     local info=(
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
@@ -90,12 +109,15 @@ write_gdb_info() {
         "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
         "build.source_policy=$SOURCE_POLICY"
-        "source.primary.name=gdb"
+        "source.primary.name=llvm-project"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
-        "config.cross=false"
+        "config.llvm_projects=$LLVM_PROJECTS"
+        "config.llvm_targets=X86"
         "contents.self_contained=true"
     )
+
+    info+=("${CONTENTS_EXTRA[@]}")
 
     write_info_file "$PREFIX" "${info[@]}"
 }
@@ -107,10 +129,10 @@ main() {
     mkdir -p "$PREFIX"
 
     local source_dir
-    source_dir="$(prepare_source_tree gdb "$VERSION" "$SOURCE_URL" "gdb-$VERSION.tar.xz")"
+    source_dir="$(prepare_source_tree llvm-project "$VERSION" "$SOURCE_URL" "llvm-project-$VERSION.src.tar.xz")"
 
-    build_gdb "$source_dir"
-    write_gdb_info
+    build_llvm_tool "$source_dir"
+    write_llvm_info
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }
 

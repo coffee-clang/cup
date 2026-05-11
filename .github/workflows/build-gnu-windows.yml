@@ -1,4 +1,4 @@
-name: Build GNU tool (Linux)
+name: Build GNU tool (Windows)
 
 on:
   workflow_dispatch:
@@ -14,13 +14,6 @@ on:
         description: Tool version, or stable/latest
         required: true
         default: stable
-      target_platform:
-        description: Target platform
-        required: true
-        type: choice
-        options:
-          - linux-x64
-          - windows-x64
       revision:
         description: Package revision for recipe-sensitive builds
         required: true
@@ -36,28 +29,48 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Build Docker image
-        run: docker build -f docker/gnu-builder.Dockerfile -t cup-gnu-builder .
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            git
+            curl
+            tar
+            gzip
+            bzip2
+            xz
+            zip
+            unzip
+            patch
+            texinfo
+            python
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-autotools
 
       - name: Build package
         run: |
-          docker run --rm \
-            -e CUP_BUILD_ENVIRONMENT=docker-gnu \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            cup-gnu-builder \
-            bash scripts/build-gnu-package.sh \
-              "${{ inputs.tool }}" \
-              "${{ inputs.version }}" \
-              linux-x64 \
-              "${{ inputs.target_platform }}" \
-              "${{ inputs.revision }}"
+          export CUP_BUILD_ENVIRONMENT=msys2-ucrt64
+          bash scripts/build-gnu-package.sh \
+            "${{ inputs.tool }}" \
+            "${{ inputs.version }}" \
+            windows-x64 \
+            windows-x64 \
+            "${{ inputs.revision }}"
 
       - name: Load release metadata
         id: release

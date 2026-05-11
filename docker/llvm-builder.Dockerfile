@@ -1,28 +1,24 @@
 FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    ca-certificates \
-    cmake \
-    curl \
-    file \
-    git \
-    gzip \
-    libedit-dev \
-    libffi-dev \
-    libgmp-dev \
-    libmpfr-dev \
-    libncurses-dev \
-    libxml2-dev \
-    libzstd-dev \
-    ninja-build \
-    patch \
-    python3 \
-    python3-dev \
-    swig \
-    tar \
-    xz-utils \
-    zlib1g-dev \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        ninja-build \
+        patch \
+        python3 \
+        tar \
+        unzip \
+        xz-utils \
+        bzip2 \
+        zip \
+        zlib1g-dev \
+        libzstd-dev \
+        libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /work
+WORKDIR /workspace
