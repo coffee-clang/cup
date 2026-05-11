@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Shared helpers for cup build scripts.
+# The build scripts create self-contained packages: installing one package should
+# provide a usable tool without dependency resolution or install-time symlinks.
+
 CUP_REPO_OWNER="${CUP_REPO_OWNER:-coffee-clang}"
 CUP_REPO_NAME="${CUP_REPO_NAME:-cup}"
 
@@ -11,6 +15,7 @@ CUP_BUILD_DIR="${CUP_BUILD_DIR:-$CUP_WORK_DIR/build}"
 CUP_STAGE_DIR="${CUP_STAGE_DIR:-$CUP_WORK_DIR/stage}"
 CUP_OUT_DIR="${CUP_OUT_DIR:-$CUP_ROOT/dist}"
 
+# Do not pass jobs as a script argument. Keep an environment override for CI/debug.
 if [ -z "${CUP_JOBS:-}" ]; then
     if [ "${RUNNER_OS:-}" = "Windows" ] && [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
         CUP_JOBS="$NUMBER_OF_PROCESSORS"
@@ -19,14 +24,14 @@ if [ -z "${CUP_JOBS:-}" ]; then
     fi
 fi
 
-DEFAULT_GCC_VERSION="${DEFAULT_GCC_VERSION:-16.1}"
+DEFAULT_GCC_VERSION="${DEFAULT_GCC_VERSION:-16.1.0}"
 DEFAULT_GDB_VERSION="${DEFAULT_GDB_VERSION:-17.1}"
 DEFAULT_BINUTILS_VERSION="${DEFAULT_BINUTILS_VERSION:-2.46}"
 DEFAULT_MINGW_VERSION="${DEFAULT_MINGW_VERSION:-14.0.0}"
 DEFAULT_LLVM_VERSION="${DEFAULT_LLVM_VERSION:-22.1.5}"
 
 log() {
-    printf '[cup-build] %s\n' "$*"
+    printf '[cup-build] %s\n' "$*" >&2
 }
 
 die() {
@@ -122,6 +127,9 @@ package_uses_revision_in_name() {
     local host_platform="$2"
     local target_platform="$3"
 
+    # Native Linux tools are simple self-contained source builds.
+    # GCC for Windows and Linux->Windows GCC embed Binutils/MinGW source builds,
+    # so revisions distinguish package recipes with the same GCC version.
     if [ "$tool" = "gcc" ] && is_windows_platform "$target_platform"; then
         return 0
     fi
@@ -212,7 +220,11 @@ fetch() {
     fi
 
     log "downloading: $url"
-    curl -L --fail --retry 3 --retry-delay 5 -o "$output" "$url"
+
+    if ! curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$output" "$url"; then
+        rm -f "$output"
+        return 1
+    fi
 }
 
 extract_archive() {
