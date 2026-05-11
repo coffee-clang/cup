@@ -25,9 +25,6 @@ if [ "$#" -eq 5 ]; then
     TARGET_PLATFORM="$4"
     REVISION="$5"
 elif [ "$#" -eq 3 ]; then
-    # Backward compatibility with the old workflow:
-    #   build-gnu-package.sh <tool> <version> <build_mode>
-    # Build mode is intentionally ignored by the new self-contained recipes.
     TOOL="$1"
     VERSION="$2"
     HOST_PLATFORM="linux-x64"

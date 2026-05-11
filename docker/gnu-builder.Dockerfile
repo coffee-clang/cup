@@ -20,6 +20,12 @@ RUN apt-get update \
         xz-utils \
         bzip2 \
         zip \
+        libgmp-dev \
+        libmpfr-dev \
+        libreadline-dev \
+        libexpat1-dev \
+        zlib1g-dev \
+        libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

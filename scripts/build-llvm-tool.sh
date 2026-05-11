@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=package-common.sh
 source "$SCRIPT_DIR/package-common.sh"
 
 usage() {
@@ -87,7 +86,13 @@ build_llvm_tool() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
-        -DLLVM_TARGETS_TO_BUILD=X86
+        -DLLVM_TARGETS_TO_BUILD=X86 \
+        -DLLVM_INCLUDE_TESTS=OFF \
+        -DLLVM_INCLUDE_BENCHMARKS=OFF \
+        -DLLDB_INCLUDE_TESTS=OFF \
+        -DLLDB_ENABLE_PYTHON=ON \
+        -DLLDB_ENABLE_LIBXML2=ON \
+        -DLLDB_ENABLE_LZMA=ON
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"

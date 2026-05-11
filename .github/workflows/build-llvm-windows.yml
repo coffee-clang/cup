@@ -63,6 +63,12 @@ jobs:
             mingw-w64-clang-x86_64-zlib
             mingw-w64-clang-x86_64-zstd
             mingw-w64-clang-x86_64-libxml2
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-swig
+            mingw-w64-clang-x86_64-libedit
+            mingw-w64-clang-x86_64-ncurses
+            mingw-w64-clang-x86_64-xz
+            mingw-w64-clang-x86_64-libffi
 
       - name: Build package
         run: |

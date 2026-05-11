@@ -61,6 +61,12 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-autotools
+            mingw-w64-ucrt-x86_64-gmp
+            mingw-w64-ucrt-x86_64-mpfr
+            mingw-w64-ucrt-x86_64-readline
+            mingw-w64-ucrt-x86_64-expat
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-ncurses
 
       - name: Build package
         run: |

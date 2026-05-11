@@ -11,6 +11,8 @@ RUN apt-get update \
         ninja-build \
         patch \
         python3 \
+        python3-dev \
+        swig \
         tar \
         unzip \
         xz-utils \
@@ -19,6 +21,10 @@ RUN apt-get update \
         zlib1g-dev \
         libzstd-dev \
         libxml2-dev \
+        libedit-dev \
+        libncurses-dev \
+        liblzma-dev \
+        libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
