@@ -56,17 +56,13 @@ static CupError remove_visited_entry(const char *path, const SystemPathInfo *inf
         return CUP_ERR_INTERRUPT;
     }
 
-    if (info->is_directory) {
-        return system_remove_directory(path);
+    if (info->is_directory || info->is_reparse_point) {
+        err = system_remove_directory(path);
+        return err;
     }
 
     err = system_remove_file(path);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not remove file '%s'.\n", path);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    return CUP_OK;
+    return err;
 }
 
 static CupError remove_directory_recursive(const char *path) {

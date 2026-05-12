@@ -36,6 +36,7 @@ static CupError system_get_path_info(const char *path, SystemPathInfo *info) {
 
     info->is_directory = S_ISDIR(stat_info.st_mode);
     info->is_regular_file = S_ISREG(stat_info.st_mode);
+    info->is_reparse_point = 0;
 
     return CUP_OK;
 }

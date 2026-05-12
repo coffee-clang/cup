@@ -7,6 +7,7 @@
 
 typedef struct {
     int is_directory;
+    int is_reparse_point;
     int is_regular_file;
 } SystemPathInfo;
 

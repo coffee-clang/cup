@@ -8,6 +8,7 @@
 #include "util.h"
 #include "interrupt.h"
 #include "platform.h"
+#include "system.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -642,6 +643,12 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
     err = build_install_path(tx.install_path, sizeof(tx.install_path), component, ctx.tool, host_platform, target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
         cleanup_tmp_transaction(&tx);
+        return err;
+    }
+
+    err = system_remove_directory(tx.tmp_path);
+    if (err != CUP_OK) {
+        clear_tmp_path(&tx);
         return err;
     }
 

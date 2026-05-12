@@ -41,11 +41,16 @@ static CupError build_search_pattern(char *buffer, size_t size, const char *path
 }
 
 static void fill_path_info_from_attributes(DWORD attributes, SystemPathInfo *info) {
+    int is_directory;
+
     if (info == NULL) {
         return;
     }
 
-    info->is_directory = ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    is_directory = ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+    info->is_reparse_point = ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+    info->is_directory = is_directory && !info->is_reparse_point;
     info->is_regular_file = !info->is_directory;
 }
 
