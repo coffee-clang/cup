@@ -72,9 +72,20 @@ need_common_tools() {
 build_llvm_tool() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/llvm-$TOOL-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local cmake_extra_args=()
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
+    fi
+
+    if [ "$TOOL" = "lldb" ]; then
+        cmake_extra_args+=(
+            -DLLDB_ENABLE_PYTHON=ON
+            -DLLDB_ENABLE_LIBXML2=ON
+            -DLLDB_ENABLE_LZMA=ON
+            -DLLDB_ENABLE_LIBEDIT=ON
+            -DLLDB_ENABLE_CURSES=ON
+        )
     fi
 
     log "building LLVM tool $TOOL $VERSION with projects: $LLVM_PROJECTS"
@@ -90,9 +101,7 @@ build_llvm_tool() {
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLDB_INCLUDE_TESTS=OFF \
-        -DLLDB_ENABLE_PYTHON=ON \
-        -DLLDB_ENABLE_LIBXML2=ON \
-        -DLLDB_ENABLE_LZMA=ON
+        "${cmake_extra_args[@]}"
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"
