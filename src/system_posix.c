@@ -112,6 +112,19 @@ CupError system_rename_path(const char *source, const char *destination) {
     return CUP_OK;
 }
 
+CupError system_remove_file(const char *path) {
+    if (is_empty_string(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (unlink(path) != 0) {
+        fprintf(stderr, "Error: could not remove file '%s': %s.\n", path, strerror(errno));
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    return CUP_OK;
+}
+
 CupError system_path_exists(const char *path, int *exists) {
     struct stat info;
 

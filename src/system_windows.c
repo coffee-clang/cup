@@ -128,6 +128,37 @@ CupError system_rename_path(const char *source, const char *destination) {
     return CUP_OK;
 }
 
+CupError system_remove_file(const char *path) {
+    DWORD attributes;
+
+    if (is_empty_string(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    attributes = GetFileAttributesA(path);
+
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            fprintf(stderr, "Error: path '%s' is a directory, not a file.\n", path);
+            return CUP_ERR_FILESYSTEM;
+        }
+
+        if ((attributes & FILE_ATTRIBUTE_READONLY) != 0) {
+            if (!SetFileAttributesA(path, attributes & ~FILE_ATTRIBUTE_READONLY)) {
+                fprintf(stderr, "Error: could not clear read-only attribute for '%s'.\n", path);
+                return CUP_ERR_FILESYSTEM;
+            }
+        }
+    }
+
+    if (!DeleteFileA(path)) {
+        fprintf(stderr, "Error: could not remove file '%s'.\n", path);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    return CUP_OK;
+}
+
 CupError system_path_exists(const char *path, int *exists) {
     DWORD attributes;
 

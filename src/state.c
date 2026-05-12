@@ -1,6 +1,7 @@
 #include "state.h"
 #include "filesystem.h"
 #include "util.h"
+#include "system.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -219,7 +220,7 @@ CupError state_save(const CupState *state, const char *filename) {
         status = fprintf(file, "installed.%s.%s.%s=%s\n", state->installed[i].component, state->installed[i].host_platform, state->installed[i].target_platform, state->installed[i].entry);
         if (status < 0) {
             fclose(file);
-            remove(tmp_filename);
+            system_remove_file(tmp_filename);
             fprintf(stderr, "Error: could not write installed state.\n");
             return CUP_ERR_STATE_SAVE;
         }
@@ -229,7 +230,7 @@ CupError state_save(const CupState *state, const char *filename) {
         status = fprintf(file, "default.%s.%s.%s=%s\n", state->defaults[i].component, state->defaults[i].host_platform, state->defaults[i].target_platform, state->defaults[i].entry);
         if (status < 0) {
             fclose(file);
-            remove(tmp_filename);
+            system_remove_file(tmp_filename);
             fprintf(stderr, "Error: could not write default state.\n");
             return CUP_ERR_STATE_SAVE;
         }
@@ -237,14 +238,14 @@ CupError state_save(const CupState *state, const char *filename) {
 
     status = fclose(file);
     if (status != 0) {
-        remove(tmp_filename);
+        system_remove_file(tmp_filename);
         fprintf(stderr, "Error: could not close temporary state file.\n");
         return CUP_ERR_STATE_SAVE;
     }
 
     err = commit_path(tmp_filename, filename);
     if (err != CUP_OK) {
-        remove(tmp_filename);
+        system_remove_file(tmp_filename);
         fprintf(stderr, "Error: could not replace state file.\n");
         return CUP_ERR_STATE_SAVE;
     }

@@ -45,6 +45,7 @@ static CupError create_directory(const char *path) {
 }
 
 static CupError remove_visited_entry(const char *path, const SystemPathInfo *info, void *userdata) {
+    CupError err;
     (void) userdata;
 
     if (info == NULL || is_empty_string(path)) {
@@ -59,7 +60,8 @@ static CupError remove_visited_entry(const char *path, const SystemPathInfo *inf
         return system_remove_directory(path);
     }
 
-    if (remove(path) != 0) {
+    err = system_remove_file(path);
+    if (err != CUP_OK) {
         fprintf(stderr, "Error: could not remove file '%s'.\n", path);
         return CUP_ERR_FILESYSTEM;
     }

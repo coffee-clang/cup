@@ -18,6 +18,7 @@ CupError system_get_process_id(char *buffer, size_t size);
 CupError system_make_directory(const char *path);
 CupError system_remove_directory(const char *path);
 CupError system_rename_path(const char *source, const char *destination);
+CupError system_remove_file(const char *path);
 
 CupError system_path_exists(const char *path, int *exists);
 CupError system_is_directory(const char *path, int *is_directory);

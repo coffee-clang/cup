@@ -4,6 +4,7 @@
 #include "manifest.h"
 #include "util.h"
 #include "interrupt.h"
+#include "system.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,7 +105,7 @@ static CupError download_package(const char *url, const char *dst_path) {
     curl = curl_easy_init();
     if (curl == NULL) {
         fclose(file);
-        remove(dst_path);
+        system_remove_file(dst_path);
         curl_global_cleanup();
         fprintf(stderr, "Error: could not create libcurl handle.\n");
         return CUP_ERR_FETCH;
@@ -146,13 +147,13 @@ static CupError download_package(const char *url, const char *dst_path) {
     curl_global_cleanup();
 
     if (res == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
-        remove(dst_path);
+        system_remove_file(dst_path);
         fprintf(stderr, "Error: download interrupted.\n");
         return CUP_ERR_INTERRUPT;
     }
 
     if (res != CURLE_OK) {
-        remove(dst_path);
+        system_remove_file(dst_path);
 
         fprintf(stderr, "Error: failed to download package from '%s': %s%s%s.\n", url, curl_easy_strerror(res), 
                 error_buffer[0] != '\0' ? " - " : "", error_buffer[0] != '\0' ? error_buffer : "");
@@ -161,7 +162,7 @@ static CupError download_package(const char *url, const char *dst_path) {
     }
 
     if (response_code >= 400) {
-        remove(dst_path);
+        system_remove_file(dst_path);
 
         fprintf(stderr, "Error: failed to download package from '%s': HTTP %ld.\n", url, response_code);
 
@@ -169,19 +170,19 @@ static CupError download_package(const char *url, const char *dst_path) {
     }
 
     if (status != 0) {
-        remove(dst_path);
+        system_remove_file(dst_path);
         fprintf(stderr, "Error: could not finalize downloaded file '%s'.\n", dst_path);
         return CUP_ERR_FETCH;
     }
 
     err = archive_is_usable(dst_path, &usable);
     if (err != CUP_OK) {
-        remove(dst_path);
+        system_remove_file(dst_path);
         return CUP_ERR_FETCH;
     }
 
     if (!usable) {
-        remove(dst_path);
+        system_remove_file(dst_path);
         fprintf(stderr, "Error: downloaded package is empty or was not created correctly.\n");
         return CUP_ERR_FETCH;
     }
