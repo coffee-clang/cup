@@ -79,6 +79,25 @@ configure_script_for_build() {
     printf '%s/configure\n' "$source_ref"
 }
 
+target_tool_path() {
+    local tool="$1"
+    local exe_suffix=""
+
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        exe_suffix=".exe"
+    fi
+
+    printf '%s/%s-%s%s\n' "$PREFIX/bin" "$TARGET_TRIPLE" "$tool" "$exe_suffix"
+}
+
+log_target_tools() {
+    log "using bundled target tools:"
+    log "  CC=$(target_tool_path gcc)"
+    log "  AR=$(target_tool_path ar)"
+    log "  RANLIB=$(target_tool_path ranlib)"
+    log "  STRIP=$(target_tool_path strip)"
+}
+
 prepare_gcc_prerequisites() {
     local gcc_src="$1"
 
@@ -244,12 +263,14 @@ build_mingw_crt() {
 
     configure_script="$(configure_script_for_build "$crt_src" "$build_dir")"
 
+    log_target_tools
+
     (
         cd "$build_dir"
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
+        CC="$(target_tool_path gcc)" \
+        AR="$(target_tool_path ar)" \
+        RANLIB="$(target_tool_path ranlib)" \
+        STRIP="$(target_tool_path strip)" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE" \
@@ -277,12 +298,14 @@ build_winpthreads() {
 
     configure_script="$(configure_script_for_build "$pthreads_src" "$build_dir")"
 
+    log_target_tools
+
     (
         cd "$build_dir"
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
+        CC="$(target_tool_path gcc)" \
+        AR="$(target_tool_path ar)" \
+        RANLIB="$(target_tool_path ranlib)" \
+        STRIP="$(target_tool_path strip)" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE"

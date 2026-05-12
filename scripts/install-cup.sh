@@ -27,6 +27,24 @@ need_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_tty() {
+    prompt="$1"
+    default_value="$2"
+
+    if has_tty; then
+        printf '%s' "$prompt" > /dev/tty
+        IFS= read -r answer < /dev/tty || answer="$default_value"
+        printf '%s\n' "$answer"
+    else
+        printf 'No interactive terminal available; using default: %s\n' "$default_value" >&2
+        printf '%s\n' "$default_value"
+    fi
+}
+
 download_file() {
     url="$1"
     output="$2"
@@ -97,8 +115,7 @@ offer_path_update_unix_shell() {
         return 0
     fi
 
-    printf '\nAdd %s to PATH in %s? [y/N] ' "$CUP_BIN_DIR" "$profile"
-    read answer || answer=""
+    answer="$(prompt_tty "Add $CUP_BIN_DIR to PATH in $profile? [y/N] " "")"
 
     case "$answer" in
         y|Y|yes|YES)
@@ -168,12 +185,12 @@ install_unix_like() {
 
     info ""
     info "You can test the installation with:"
-    info "  $cup_bin --help"
+    info "  $cup_bin list"
 
     if [ "$installed_name" = "cup.exe" ]; then
         info ""
         info "From this shell, you may also be able to run:"
-        info "  cup --help"
+        info "  cup list"
     fi
 }
 
@@ -206,8 +223,7 @@ install_windows_from_shell() {
     info "     Recommended only if you mainly use cup inside MSYS2/Git Bash/Cygwin."
     info ""
 
-    printf "Choice [1/2, default: 1]: "
-    read choice || choice=""
+    choice="$(prompt_tty "Choice [1/2, default: 1]: " "1")"
 
     case "$choice" in
         ""|1)
