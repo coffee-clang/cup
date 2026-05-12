@@ -58,10 +58,25 @@ need_common_tools() {
     need tar
     need make
     need zip
+    need realpath
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
         die "a host C compiler is required"
     fi
+}
+
+configure_script_for_build() {
+    local source_dir="$1"
+    local build_dir="$2"
+    local source_ref
+
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        source_ref="$(realpath --relative-to="$build_dir" "$source_dir")"
+    else
+        source_ref="$source_dir"
+    fi
+
+    printf '%s/configure\n' "$source_ref"
 }
 
 prepare_gcc_prerequisites() {
@@ -94,29 +109,26 @@ gcc_dependency_configure_args() {
     fi
 }
 
-configure_script_for_build() {
-    local source_dir="$1"
-    local build_dir="$2"
-    local source_ref
-
-    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
-        source_ref="$(realpath --relative-to="$build_dir" "$source_dir")"
-    else
-        source_ref="$source_dir"
+gcc_windows_target_configure_args() {
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        printf '%s\n' \
+            --with-sysroot="$PREFIX/$TARGET_TRIPLE" \
+            --with-build-sysroot="$PREFIX/$TARGET_TRIPLE" \
+            --with-native-system-header-dir=/include
     fi
-
-    printf '%s/configure\n' "$source_ref"
 }
 
 configure_and_build() {
     local source_dir="$1"
     local build_dir="$2"
     local configure_script
-    configure_script="$(configure_script_for_build "$source_dir" "$build_dir")"
+
     shift 2
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$source_dir" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -163,12 +175,13 @@ install_mingw_headers() {
     local headers_src="$mingw_src/mingw-w64-headers"
     local build_dir="$CUP_BUILD_DIR/mingw-headers-$MINGW_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_script
-    configure_script="$(configure_script_for_build "$headers_src" "$build_dir")"
 
     log "installing bundled MinGW-w64 headers $MINGW_VERSION"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$headers_src" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -184,18 +197,21 @@ install_mingw_headers() {
 build_gcc_stage1() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-stage1-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
-    local gcc_dep_args=()
     local configure_script
-    configure_script="$(configure_script_for_build "$gcc_src" "$build_dir")"
+    local gcc_dep_args=()
+    local gcc_target_args=()
 
     log "building stage-1 GCC for $TARGET_TRIPLE"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
+    mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
 
     prepare_gcc_prerequisites "$gcc_src"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$gcc_src" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -208,7 +224,8 @@ build_gcc_stage1() {
             --enable-threads=posix \
             --with-gnu-as \
             --with-gnu-ld \
-            "${gcc_dep_args[@]}"
+            "${gcc_dep_args[@]}" \
+            "${gcc_target_args[@]}"
         make -j"$CUP_JOBS" all-gcc
         make install-gcc
     )
@@ -219,12 +236,13 @@ build_mingw_crt() {
     local crt_src="$mingw_src/mingw-w64-crt"
     local build_dir="$CUP_BUILD_DIR/mingw-crt-$MINGW_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_script
-    configure_script="$(configure_script_for_build "$crt_src" "$build_dir")"
 
     log "building bundled MinGW-w64 CRT $MINGW_VERSION"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$crt_src" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -246,7 +264,6 @@ build_winpthreads() {
     local pthreads_src="$mingw_src/mingw-w64-libraries/winpthreads"
     local build_dir="$CUP_BUILD_DIR/winpthreads-$MINGW_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_script
-    configure_script="$(configure_script_for_build "$pthreads_src" "$build_dir")"
 
     if [ ! -d "$pthreads_src" ]; then
         log "winpthreads source directory not found; skipping"
@@ -257,6 +274,8 @@ build_winpthreads() {
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$pthreads_src" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -275,16 +294,19 @@ build_winpthreads() {
 build_gcc_final() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-final-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
-    local gcc_dep_args=()
     local configure_script
-    configure_script="$(configure_script_for_build "$gcc_src" "$build_dir")"
+    local gcc_dep_args=()
+    local gcc_target_args=()
 
     log "building final bundled GCC $VERSION for $TARGET_TRIPLE"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
+    mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
+
+    configure_script="$(configure_script_for_build "$gcc_src" "$build_dir")"
 
     (
         cd "$build_dir"
@@ -297,7 +319,8 @@ build_gcc_final() {
             --enable-threads=posix \
             --with-gnu-as \
             --with-gnu-ld \
-            "${gcc_dep_args[@]}"
+            "${gcc_dep_args[@]}" \
+            "${gcc_target_args[@]}"
         make -j"$CUP_JOBS"
         make install
     )
@@ -363,6 +386,13 @@ write_gcc_info() {
     else
         info+=(
             "build.gcc_prerequisites=contrib-download_prerequisites"
+        )
+    fi
+
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        info+=(
+            "config.sysroot=$TARGET_TRIPLE"
+            "config.native_system_header_dir=/include"
         )
     fi
 
