@@ -83,7 +83,6 @@ build_llvm_tool() {
             -DLLDB_ENABLE_PYTHON=ON
             -DLLDB_ENABLE_LIBXML2=ON
             -DLLDB_ENABLE_LZMA=ON
-            -DLLDB_ENABLE_LIBEDIT=ON
             -DLLDB_ENABLE_CURSES=ON
         )
     fi
