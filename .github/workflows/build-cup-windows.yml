@@ -1,6 +1,18 @@
 name: Build cup Windows
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "include/**"
+      - "Makefile"
+      - "config/packages.cfg"
+      - "scripts/bootstrap-windows-deps.sh"
+      - "scripts/install-cup-windows.ps1"
+      - ".github/workflows/build-cup-windows.yml"
+
   workflow_dispatch:
     inputs:
       publish:
@@ -69,7 +81,7 @@ jobs:
             dist/install.ps1 > dist/SHA256SUMS.windows
 
       - name: Upload workflow artifact
-        if: ${{ inputs.publish == 'false' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == 'false' }}
         uses: actions/upload-artifact@v6
         with:
           name: cup-windows-x64-assets
@@ -80,7 +92,7 @@ jobs:
             dist/SHA256SUMS.windows
 
       - name: Ensure release exists
-        if: ${{ inputs.publish == 'true' }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -93,7 +105,7 @@ jobs:
           fi
 
       - name: Upload release assets
-        if: ${{ inputs.publish == 'true' }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
