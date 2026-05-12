@@ -148,7 +148,7 @@ static CupError download_package(const char *url, const char *dst_path) {
 
     if (res == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
         system_remove_file(dst_path);
-        fprintf(stderr, "Error: download interrupted.\n");
+        fprintf(stderr, "\nError: download interrupted.");
         return CUP_ERR_INTERRUPT;
     }
 

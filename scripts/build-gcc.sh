@@ -136,7 +136,7 @@ ensure_prefixed_binutils_tools() {
 
     log "ensuring prefixed Binutils target tool names"
 
-    for tool in as ld ar ranlib strip dlltool dllwrap windres objdump objcopy; do
+    for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
         dst="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
 
         if [ -x "$dst" ]; then
@@ -155,6 +155,26 @@ ensure_prefixed_binutils_tools() {
         chmod +x "$dst"
 
         log "  created: $dst from $src"
+    done
+}
+
+remove_unprefixed_binutils_tools() {
+    local tool
+    local exe_suffix
+
+    if [ "$HOST_PLATFORM" != "windows-x64" ]; then
+        return 0
+    fi
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "removing unprefixed Binutils tools from package prefix"
+
+    for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+        if [ -e "$PREFIX/bin/$tool$exe_suffix" ]; then
+            rm -f "$PREFIX/bin/$tool$exe_suffix"
+            log "  removed: $PREFIX/bin/$tool$exe_suffix"
+        fi
     done
 }
 
@@ -195,7 +215,7 @@ require_bundled_binutils_tools() {
 
     log "checking bundled Binutils target tools"
 
-    for tool in as ld ar ranlib strip dlltool windres objdump objcopy; do
+    for tool in as ld ar ranlib strip dlltool windres nm objdump objcopy; do
         require_bundled_target_tool "$tool"
     done
 }
@@ -455,6 +475,7 @@ build_bundled_windows_gcc() {
 
     build_cross_binutils "$binutils_src"
     ensure_prefixed_binutils_tools
+    remove_unprefixed_binutils_tools
     require_bundled_binutils_tools
 
     install_mingw_headers "$mingw_src"

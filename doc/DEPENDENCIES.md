@@ -1,104 +1,244 @@
 # Dependencies
 
-This document describes the dependencies and build infrastructure used by `cup`.
+This document describes the dependencies used by `cup` itself and by the package builder scripts that produce installable tool archives.
 
-It covers:
+The dependency groups are separate:
 
-- local build dependencies for the `cup` binary
-- static dependency bootstrap
-- static linking notes
-- library roles
-- Docker/GitHub Actions dependencies for building package archives
+```text
+cup executable dependencies
+  needed to compile the cup binary
 
-## 1. C build requirements
+package builder dependencies
+  needed by CI/scripts to build tool archives
 
-The `cup` binary is written in C and is built with `gcc` and `make`.
+end-user installer dependencies
+  needed only to download the prebuilt cup executable and manifest
+```
 
-The default build uses:
+End users who install `cup` through `install.sh` or `install.ps1` do not build `libcurl`, `libarchive`, GCC, GDB, Clang, LLD, or LLDB locally.
+
+## 1. End-user installer dependencies
+
+### 1.1 Linux shell installer
+
+The Linux installer requires:
+
+```text
+sh
+curl or wget
+chmod
+mkdir
+mv
+rm
+uname
+```
+
+Command:
+
+```sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+```
+
+It downloads:
+
+```text
+cup-linux-x64
+packages.cfg
+```
+
+and installs them as:
+
+```text
+~/.cup/bin/cup
+~/.cup/config/packages.cfg
+```
+
+### 1.2 Windows PowerShell installer
+
+The Windows installer requires PowerShell and `Invoke-WebRequest`.
+
+Command:
+
+```powershell
+irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex
+```
+
+It downloads:
+
+```text
+cup-windows-x64.exe
+packages.cfg
+```
+
+and installs them as:
+
+```text
+%USERPROFILE%\.cup\bin\cup.exe
+%USERPROFILE%\.cup\config\packages.cfg
+```
+
+### 1.3 Windows cmd.exe
+
+`cmd.exe` does not provide `sh`. Use PowerShell from `cmd.exe`:
+
+```cmd
+powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex"
+```
+
+### 1.4 Windows Git Bash / MSYS2 / Cygwin
+
+The shell installer can run in Unix-like Windows shells:
+
+```sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+```
+
+On Windows, it asks whether to run the native PowerShell installer or install only inside the current Unix-like environment.
+
+## 2. Building the cup executable locally
+
+`cup` is written in C and built with `make`.
+
+Supported build targets:
+
+```text
+linux-x64
+windows-x64
+```
+
+Build outputs:
+
+```text
+build/linux-x64/bin/cup
+build/windows-x64/bin/cup.exe
+```
+
+Main source modules:
+
+```text
+src/main.c
+src/options.c
+src/commands.c
+src/state.c
+src/filesystem.c
+src/manifest.c
+src/registry.c
+src/fetch.c
+src/extract.c
+src/util.c
+src/interrupt.c
+src/platform.c
+src/system_posix.c
+src/system_windows.c
+```
+
+Headers are under:
+
+```text
+include/
+```
+
+The build is controlled by:
+
+```text
+Makefile
+```
+
+Common compiler flags include:
 
 ```text
 -Wall
 -Wextra
 -Werror
 -std=c11
+-g
+```
+
+On Linux, the build also defines:
+
+```text
 -D_POSIX_C_SOURCE=200809L
 ```
 
-The POSIX feature macro is required because the implementation uses POSIX APIs such as:
+This is needed for POSIX APIs used by the system and filesystem layers.
 
-```text
-lstat
-opendir
-readdir
-closedir
-rmdir
-getpid
-rename
-```
+## 3. cup executable libraries
 
-## 2. External libraries used by cup
-
-The main external libraries are:
+`cup` links against these main libraries:
 
 ```text
 libcurl
 libarchive
-OpenSSL
 zlib
 liblzma / xz
+OpenSSL on Linux builds
+Windows system TLS/network libraries on Windows builds
 ```
 
-### libcurl
+### 3.1 libcurl
 
-Used by the fetch module to download package archives.
+Used by `src/fetch.c` for archive downloads.
 
-The implementation uses libcurl for HTTP(S) downloads and writes the response directly into a local archive file.
+The implementation uses libcurl to:
 
-### libarchive
+- follow release asset redirects;
+- write downloads directly into local archive files;
+- report network and HTTP errors;
+- interrupt downloads through the progress callback;
+- remove partial downloads on failure or interrupt.
 
-Used by the extract module to read and extract package archives.
+### 3.2 libarchive
 
-The implementation uses libarchive instead of shelling out to `tar`.
+Used by `src/extract.c` for archive extraction.
 
-### OpenSSL, zlib, liblzma
+The project uses libarchive instead of invoking external `tar` or `unzip` commands.
 
-These are required by libcurl/libarchive and by supported archive/compression formats.
-
-## 3. Static dependency bootstrap
-
-The repository contains:
+Archive formats are controlled by the manifest. Current package formats include:
 
 ```text
-scripts/bootstrap-static-deps.sh
+tar.gz
+tar.xz
+zip
 ```
 
-The script builds static dependencies locally.
+### 3.3 Compression and TLS libraries
 
-Default prefix:
+`zlib` and `xz/liblzma` provide archive/compression support through libarchive and related tooling.
+
+Linux builds use OpenSSL through the static libcurl build.
+
+Windows builds use Schannel through the static libcurl build and link Windows system libraries instead of OpenSSL.
+
+## 4. Static dependency bootstrap for cup
+
+The repository contains platform-specific dependency bootstrap scripts:
 
 ```text
-~/deps/install
+scripts/bootstrap-linux-deps.sh
+scripts/bootstrap-windows-deps.sh
 ```
 
-The prefix can be overridden:
+These scripts are for developers and CI. They are not executed by end-user installers.
+
+### 4.1 Linux dependency bootstrap
 
 ```sh
-PREFIX=/custom/prefix bash scripts/bootstrap-static-deps.sh
+scripts/bootstrap-linux-deps.sh
 ```
 
-The script also uses source, build, and download directories, which can be overridden through environment variables.
-
-Default directories:
+Default dependency root:
 
 ```text
-~/deps/src
-~/deps/build
-~/deps/downloads
+~/deps/linux-x64
 ```
 
-## 4. Dependencies built by bootstrap-static-deps.sh
+Default install prefix:
 
-The bootstrap script builds:
+```text
+~/deps/linux-x64/install
+```
+
+The script builds static dependencies used by the Linux `cup` executable, including:
 
 ```text
 zlib
@@ -108,398 +248,256 @@ curl
 libarchive
 ```
 
-It expects common build tools to be available on the host system, including:
-
-```text
-gcc
-make
-curl
-tar
-cmake
-perl
-pkg-config
-```
-
-## 5. Makefile integration
-
-The `Makefile` expects headers and libraries under:
-
-```text
-$(PREFIX)/include
-$(PREFIX)/lib
-$(PREFIX)/lib64
-```
-
-Default:
-
-```makefile
-PREFIX = $(HOME)/deps/install
-```
-
-The link command is static and links against:
-
-```text
--lcurl
--larchive
--lssl
--lcrypto
--lz
--llzma
--ldl
-```
-
-The source list should match the current module names:
-
-```text
-main.c
-commands.c
-state.c
-filesystem.c
-manifest.c
-registry.c
-fetch.c
-extract.c
-util.c
-interrupt.c
-```
-
-A normal local build expects the bootstrap script to have already installed compatible static libraries.
-
-## 6. pkg-config and static link notes
-
-For static linking, library order and transitive dependencies matter.
-
-Useful commands when debugging dependency flags are:
+Then build `cup`:
 
 ```sh
-curl-config --static-libs
-pkg-config --static --libs libarchive
+make PLATFORM=linux-x64
 ```
 
-These commands show the dependency flags required by curl and libarchive in a static build context.
+### 4.2 Windows dependency bootstrap
 
-## 7. Editor include paths
-
-For editor support, include paths should point to the same prefix used by the build.
-
-Example include path:
-
-```text
-~/deps/install/include
+```sh
+scripts/bootstrap-windows-deps.sh
 ```
 
-This matters for headers such as:
+Default dependency root:
 
 ```text
-curl/curl.h
-archive.h
-archive_entry.h
+~/deps/windows-x64
 ```
 
-The `.vscode/c_cpp_properties.json` file can be adjusted locally if the prefix changes.
-
-## 8. GNU package build environment
-
-GCC and GDB are built from upstream source releases and then published as prebuilt archives.
-
-The current build structure is:
+Default install prefix:
 
 ```text
-.github/workflows/build-gnu.yml
-docker/gnu-builder.Dockerfile
-scripts/build-gnu-package.sh
+~/deps/windows-x64/install
+```
+
+This script prepares static dependencies for the Windows `cup.exe` build using the MinGW-w64 cross compiler. Then build:
+
+```sh
+make PLATFORM=windows-x64
+```
+
+The Makefile expects the Windows compiler as:
+
+```text
+x86_64-w64-mingw32-gcc
+```
+
+## 5. GitHub workflows for cup bootstrap assets
+
+The repository has workflows for prebuilding `cup` itself:
+
+```text
+.github/workflows/build-cup-linux.yml
+.github/workflows/build-cup-windows.yml
+```
+
+The workflows build the executable and upload assets to the `cup-bootstrap` release.
+
+Linux workflow assets:
+
+```text
+cup-linux-x64
+packages.cfg
+install.sh
+SHA256SUMS
+```
+
+Windows workflow assets:
+
+```text
+cup-windows-x64.exe
+packages.cfg
+install.ps1
+SHA256SUMS.windows
+```
+
+The release upload uses `--clobber` for the named assets. Uploading the Windows assets does not remove the Linux assets, and uploading the Linux assets does not remove the Windows assets.
+
+The workflows are intended to update the bootstrap release when the main branch changes relevant source files, build scripts, installers, or workflow files.
+
+## 6. Tool package builder scripts
+
+The builder scripts produce the package archives that `cup` later downloads and installs.
+
+They are not run by `cup install`.
+
+Main package builder scripts:
+
+```text
+scripts/package-common.sh
 scripts/build-gcc.sh
 scripts/build-gdb.sh
-```
-
-GitHub Actions is used for orchestration. Docker is used for the build environment.
-
-The Dockerfile uses:
-
-```text
-ubuntu:24.04
-```
-
-and installs common build tools and libraries for GNU source builds.
-
-Typical packages include:
-
-```text
-build-essential
-curl
-tar
-gzip
-xz-utils
-ca-certificates
-flex
-bison
-texinfo
-python3
-make
-file
-patch
-libgmp-dev
-libmpfr-dev
-libmpc-dev
-libisl-dev
-zlib1g-dev
-libexpat1-dev
-libncurses-dev
-```
-
-## 9. LLVM package build environment
-
-Clang and LLDB are built from LLVM source releases and then published as prebuilt archives.
-
-The current build structure is:
-
-```text
-.github/workflows/build-llvm.yml
-docker/llvm-builder.Dockerfile
-scripts/build-llvm-package.sh
-scripts/build-clang.sh
-scripts/build-lldb.sh
-```
-
-GitHub Actions is used for orchestration. Docker is used for the build environment.
-
-The Dockerfile uses:
-
-```text
-ubuntu:24.04
-```
-
-and installs tools and libraries needed for LLVM CMake/Ninja builds, including:
-
-```text
-build-essential
-cmake
-ninja-build
-curl
-git
-python3
-python3-dev
-swig
-libedit-dev
-libffi-dev
-libxml2-dev
-libzstd-dev
-libncurses-dev
-zlib1g-dev
-```
-
-## 10. Why Docker is used
-
-Docker does not replace GitHub Actions.
-
-The roles are:
-
-```text
-GitHub Actions:
-  orchestration
-
-Docker:
-  reproducible build environment
-```
-
-The Docker image fixes the base system and build dependencies. This avoids depending directly on changes to the `ubuntu-latest` runner image.
-
-## 11. GNU build dispatcher
-
-The GNU dispatcher script is:
-
-```text
 scripts/build-gnu-package.sh
+scripts/build-llvm-tool.sh
 ```
 
-It receives:
+Shared defaults currently used by `package-common.sh`:
 
 ```text
-tool
-version
-build_mode
+GCC:        16.1.0
+GDB:        17.1
+Binutils:   2.46.0
+MinGW-w64:  14.0.0
+LLVM:       22.1.5
 ```
 
-and calls the tool-specific build script.
-
-Examples:
-
-```sh
-bash scripts/build-gnu-package.sh gcc 15.2.0 standard
-bash scripts/build-gnu-package.sh gdb 17.1 standard
-```
-
-## 12. LLVM build dispatcher
-
-The LLVM dispatcher script is:
+Package outputs are written to:
 
 ```text
-scripts/build-llvm-package.sh
+dist/
 ```
 
-It receives:
+Intermediate source, build, and staging directories are under:
 
 ```text
-tool
-version
-platform
+.cup-build/
 ```
 
-and calls the tool-specific build script.
+The package scripts create self-contained archives and write an `info.txt` metadata file into each package root.
 
-Examples:
+## 7. GNU package builds
 
-```sh
-bash scripts/build-llvm-package.sh clang 22.1.3 linux-x64
-bash scripts/build-llvm-package.sh lldb 22.1.3 linux-x64
-```
+### 7.1 GCC
 
-The current platform mapping is:
-
-```text
-linux-x64 -> LLVM_TARGETS_TO_BUILD=X86
-```
-
-## 13. GCC build script
-
-The GCC build script is:
+Built by:
 
 ```text
 scripts/build-gcc.sh
 ```
 
-It downloads GCC source releases from the upstream GCC release directory, extracts them, runs GCC's `contrib/download_prerequisites`, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
-
-Supported build modes are:
+Supported package combinations represented by the current script/manifest include:
 
 ```text
-minimal
-standard
-full
+linux-x64 -> linux-x64
+linux-x64 -> windows-x64
+windows-x64 -> windows-x64
 ```
 
-The exact configure flags are defined by the script.
+The native Linux GCC package is built from a GCC source release and uses GCC's `contrib/download_prerequisites` flow.
 
-## 14. GDB build script
+For Windows-target GCC packages, the package recipe builds a self-contained distribution that can include:
 
-The GDB build script is:
+```text
+GCC
+Binutils
+MinGW-w64 headers/runtime
+winpthreads
+```
+
+Windows-target GCC packages use version strings with package revisions, such as:
+
+```text
+16.1.0-rev1
+```
+
+The builder intentionally packages required supporting files into the GCC archive instead of relying on install-time dependency solving inside `cup`.
+
+### 7.2 GDB
+
+Built by:
 
 ```text
 scripts/build-gdb.sh
 ```
 
-It downloads GDB source releases from GNU FTP, extracts them, configures the build, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
-
-Supported build modes are:
+The current recipe supports native builds, for example:
 
 ```text
-minimal
-standard
-full
+linux-x64 -> linux-x64
+windows-x64 -> windows-x64
 ```
 
-The exact configure flags are defined by the script.
+Cross GDB packages are not supported by the current recipe.
 
-## 15. Clang build script
+## 8. LLVM package builds
 
-The Clang build script is:
+Built by:
 
 ```text
-scripts/build-clang.sh
+scripts/build-llvm-tool.sh
 ```
 
-It downloads LLVM source releases, configures an LLVM build with Clang enabled, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
-
-The Clang build enables:
+Supported tools:
 
 ```text
-LLVM_ENABLE_PROJECTS=clang
+clang
+lld
+lldb
 ```
 
-`lld` is not included in the Clang package, so it can remain a possible separate linker tool later.
+Current recipes use the LLVM monorepo source release and native host/target combinations.
 
-## 16. LLDB build script
-
-The LLDB build script is:
+Project selections:
 
 ```text
-scripts/build-lldb.sh
+clang package:
+  LLVM_ENABLE_PROJECTS=clang;lld
+
+lld package:
+  LLVM_ENABLE_PROJECTS=lld
+
+lldb package:
+  LLVM_ENABLE_PROJECTS=clang;lld;lldb
 ```
 
-It downloads LLVM source releases, configures an LLVM build with Clang and LLDB enabled, installs into a staging directory, and creates both `.tar.gz` and `.tar.xz` archives.
+The Clang package includes LLD. The LLDB package includes Clang and LLD. The standalone LLD package is also available as the `linker/lld` component.
 
-The LLDB build enables:
+LLDB configuration currently keeps Python, libxml2, and LZMA enabled. On Windows, LibEdit and Curses are not forced because the CLANG64/MSYS2 detection for those optional terminal features is fragile; the current package recipe follows a simpler native Windows build path for LLDB.
+
+Cross LLVM package builds are not supported by the current recipe.
+
+## 9. Package archive metadata
+
+Every package builder writes `info.txt` into the package root.
+
+Common metadata fields include:
 
 ```text
-LLVM_ENABLE_PROJECTS=clang;lldb
+package.component
+package.tool
+package.version
+package.revision
+package.mode
+package.formats
+platform.host
+platform.target
+platform.host_triple
+platform.target_triple
+platform.runtime
+platform.thread_model
+build.environment
+build.source_policy
+source.primary.name
+source.primary.version
+source.primary.url
+contents.self_contained
 ```
 
-Clang is included as a technical dependency of LLDB. The resulting package is still treated as the `debugger.lldb` package.
-
-## 17. Package archive layout
-
-Prebuilt package archives must contain a top-level directory.
-
-Example GNU package:
+Tool-specific metadata may include bundled components or build configuration fields, for example:
 
 ```text
-gcc-15.2.0-linux-x64-standard/bin/gcc
-gcc-15.2.0-linux-x64-standard/lib/...
+bundle.binutils.version
+bundle.mingw-w64.version
+config.llvm_projects
+config.llvm_targets
+contents.includes_lld
+contents.includes_clang
 ```
 
-Example LLVM packages:
+`cup` currently validates only generic install structure at runtime. The metadata is primarily for inspection, traceability, and future extension.
 
-```text
-clang-22.1.3-linux-x64/bin/clang
-lldb-22.1.3-linux-x64/bin/lldb
-```
+## 10. Runtime versus build-time dependencies
 
-This is required because `extract.c` strips the first path component during installation.
+The current package strategy favors self-contained tool archives.
 
-If an archive does not contain a top-level directory, extraction may produce an invalid layout.
+This means:
 
-## 18. Release assets
+- package builders may use many dependencies while compiling tools;
+- selected runtime/support files are included in the produced package archive when needed;
+- `cup` does not install package dependencies separately;
+- `cup` does not solve dependency graphs during install;
+- end users only need the prebuilt `cup` executable, manifest, and network access to package assets.
 
-The GNU workflow publishes build-mode-based assets in the same repository.
-
-Example tag:
-
-```text
-gdb-17.1-standard
-```
-
-Example assets:
-
-```text
-gdb-17.1-linux-x64-standard.tar.gz
-gdb-17.1-linux-x64-standard.tar.xz
-```
-
-The LLVM workflow publishes platform-based assets in the same repository.
-
-Example tag:
-
-```text
-clang-22.1.3-linux-x64
-```
-
-Example assets:
-
-```text
-clang-22.1.3-linux-x64.tar.gz
-clang-22.1.3-linux-x64.tar.xz
-```
-
-The manifest points to these assets using the repository URL.
-
-Example GNU URL:
-
-```text
-debugger.gdb.url_template=https://github.com/coffee-clang/cup/releases/download/gdb-{version}-standard/gdb-{version}-linux-x64-standard.{format}
-```
-
-Example LLVM URL:
-
-```text
-compiler.clang.url_template=https://github.com/coffee-clang/cup/releases/download/clang-{version}-linux-x64/clang-{version}-linux-x64.{format}
-```
+This separation is intentional and keeps the runtime installer logic small.

@@ -172,7 +172,7 @@ static void cleanup_tmp_safely(const char *tmp_path) {
 
     err = cleanup_tmp_path(tmp_path);
     if (err == CUP_ERR_INTERRUPT) {
-        fprintf(stderr, "Warning: cleanup was interrupted.\n");
+        fprintf(stderr, "\nWarning: cleanup was interrupted.\n");
     } else if (err != CUP_OK) {
         fprintf(stderr, "Warning: temporary files could not be fully cleaned.\n");
     }
@@ -498,7 +498,18 @@ CupError handle_install(const char *component, const char *entry, const char *ta
 
     err = perform_install(tx.tmp_path, component, ctx.tool, host_platform, target_platform, ctx.resolved_release, archive_format);
     if (err != CUP_OK) {
+        if (err == CUP_ERR_INTERRUPT) {
+            fprintf(stderr, "\nCleaning temporary files...\n");
+            fflush(stderr);
+        }
+
         cleanup_tmp_transaction(&tx);
+
+        if (err == CUP_ERR_INTERRUPT) {
+            fprintf(stderr, "Cleanup completed.\n");
+            fflush(stderr);
+        }
+
         return err;
     }
 
@@ -643,6 +654,11 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
     err = build_install_path(tx.install_path, sizeof(tx.install_path), component, ctx.tool, host_platform, target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
         cleanup_tmp_transaction(&tx);
+        return err;
+    }
+
+    err = stop_if_interrupted(tx.tmp_path);
+    if (err != CUP_OK) {
         return err;
     }
 

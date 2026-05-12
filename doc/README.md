@@ -1,155 +1,238 @@
 # cup
 
-`cup` is a small local manager for development tools and toolchains.
+`cup` is a user-space manager for C development tools.
 
-The current implementation installs tools from prebuilt archives described by a manifest. It keeps a local state file, resolves symbolic releases such as `stable`, downloads package archives, extracts them into a temporary directory, validates the extracted layout, and commits the installation with a filesystem rename.
+The project installs prebuilt tool archives described by a manifest, records installed packages in a local state file, and keeps its runtime data under the user's `.cup` directory. It does not install into system directories, does not require privileged operations, and does not try to replace the operating system package manager.
 
-The project is still in development. This document describes the current behavior of the codebase.
+`cup` is intentionally small: a command selects a known component/tool pair, resolves a release through the manifest, downloads the matching archive, extracts it into a temporary staging directory, validates the extracted layout, commits the installation, and updates local state.
 
-## 1. Current scope
+## Current scope
 
-The current implementation supports:
+The current implementation provides:
 
-- command handling for `list`, `install`, `remove`, `default`, and `current`
-- supported component/tool validation through the registry module
-- manifest-driven versions, archive formats, and package URLs
-- user entries written as `<tool>@<release>`
-- canonical internal entries such as `gcc@15.2.0`
-- cached archive downloads
-- archive extraction through `libarchive`
-- first-component stripping during extraction
-- install/remove staging through temporary directories
-- atomic path commits through `rename`
-- one default entry per component
-- basic `SIGINT` handling
-- static dependency bootstrap for building `cup`
-- Docker-based GitHub Actions builds for GNU source releases such as GCC and GDB
-- Docker-based GitHub Actions builds for LLVM source releases such as Clang and LLDB
+- a fixed registry of supported C development tool components;
+- manifest-driven version, archive format, and URL resolution;
+- symbolic release resolution through `stable`;
+- canonical internal entries such as `gcc@16.1.0`, `gcc@16.1.0-rev1`, and `gdb@17.1`;
+- host/target-aware package lookup;
+- package download through `libcurl`;
+- archive extraction through `libarchive`;
+- local archive caching;
+- temporary staging for install and remove;
+- rollback when state updates fail after filesystem commits;
+- interrupt-aware download and extraction cleanup;
+- local state stored in `~/.cup/state.txt`;
+- one default entry per component/host/target pair;
+- Linux and Windows builds of the `cup` executable;
+- shell and PowerShell bootstrap installers for installing the prebuilt `cup` executable and manifest.
 
-The current implementation does not yet provide:
+## Supported components and tools
 
-- dependency solving
-- automatic state repair
-- complete multi-architecture selection
-- deep component-specific validation of extracted packages
-
-## 2. Build
-
-Before building `cup` statically, prepare the static dependencies:
-
-```sh
-bash scripts/bootstrap-static-deps.sh
-```
-
-Then build the project:
-
-```sh
-make
-```
-
-The default dependency prefix used by the `Makefile` is:
+The current registry supports:
 
 ```text
-~/deps/install
+compiler/gcc
+compiler/clang
+debugger/gdb
+debugger/lldb
+linker/lld
 ```
 
-The build uses:
+These are the component/tool pairs accepted by the command line. A tool being present in `config/packages.cfg` is not enough by itself: it must also be accepted by the internal registry.
+
+## Supported platforms
+
+The platform identifiers currently used by the code and manifest are:
 
 ```text
--Wall -Wextra -Werror -std=c11 -D_POSIX_C_SOURCE=200809L
+linux-x64
+windows-x64
 ```
 
-`_POSIX_C_SOURCE` is required because the code uses POSIX functions such as `lstat`, `opendir`, `readdir`, `rmdir`, and `getpid`.
+Each package lookup uses two platform values:
 
-## 3. Basic usage
+```text
+host_platform
+  where the installed tool runs
 
-### List installations
+target_platform
+  what the installed tool targets
+```
+
+The host platform is detected by `cup`. The target platform defaults to the host unless `--target` is passed.
+
+Examples:
 
 ```sh
-./cup list
+cup install compiler gcc@stable
+cup install compiler gcc@stable --target windows-x64
 ```
 
-Shows installations registered in the local state.
+## Installation
 
-The output may also indicate:
+Bootstrap assets are published in the GitHub release tag:
 
-- which entry is the default for a component
-- whether an installed entry matches the current `stable` version from the manifest
-- basic state/disk inconsistencies detected while listing
+```text
+cup-bootstrap
+```
+
+This release is separate from tool package releases such as `gcc-...`, `gdb-...`, `clang-...`, `lld-...`, and `lldb-...`. It contains the `cup` executable, the package manifest, and installer scripts.
+
+### Linux
+
+```sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+```
+
+The installer downloads:
+
+```text
+cup-linux-x64
+packages.cfg
+```
+
+and installs them as:
+
+```text
+~/.cup/bin/cup
+~/.cup/config/packages.cfg
+```
+
+The installer can add `~/.cup/bin` to the shell `PATH`. Interactive prompts read from `/dev/tty`, so prompts still work when the script is executed through `curl | sh`.
+
+### Windows PowerShell
+
+```powershell
+irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex
+```
+
+The installer downloads:
+
+```text
+cup-windows-x64.exe
+packages.cfg
+```
+
+and installs them as:
+
+```text
+%USERPROFILE%\.cup\bin\cup.exe
+%USERPROFILE%\.cup\config\packages.cfg
+```
+
+It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
+
+### Windows cmd.exe
+
+`cmd.exe` does not provide `sh`, so the Linux-style `curl ... | sh` command is not the native Windows command. Use PowerShell from `cmd.exe` instead:
+
+```cmd
+powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex"
+```
+
+### Windows Git Bash / MSYS2 / Cygwin
+
+```sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+```
+
+When the shell installer detects a Windows Unix-like environment, it asks whether to run the native PowerShell installer or install only inside the current shell environment.
+
+## Commands
+
+### List installed tools
+
+```sh
+cup list
+```
+
+With an explicit target:
+
+```sh
+cup list --target windows-x64
+```
+
+If nothing is installed for the selected host/target pair, `cup` prints an empty-state message.
 
 ### Install a tool
 
 ```sh
-./cup install <component> <tool>@<release>
+cup install <component> <tool>@<release>
 ```
 
 Examples:
 
 ```sh
-./cup install compiler gcc@stable
-./cup install compiler clang@stable
-./cup install debugger gdb@stable
-./cup install debugger lldb@stable
+cup install compiler gcc@stable
+cup install compiler clang@stable
+cup install debugger gdb@stable
+cup install debugger lldb@stable
+cup install linker lld@stable
 ```
 
-With an explicit archive format:
+With a target override:
 
 ```sh
-./cup install compiler gcc@stable --format tar.xz
-./cup install compiler gcc@stable -f tar.xz
+cup install compiler gcc@stable --target windows-x64
 ```
 
-If no format is provided, the manifest `default_format` is used.
+With an archive format override:
+
+```sh
+cup install compiler gcc@stable --format tar.xz
+cup install compiler gcc@stable -f tar.xz
+```
+
+If no format is provided, `cup` uses the manifest `default_format` for the selected component/tool/host/target tuple.
 
 ### Remove a tool
 
 ```sh
-./cup remove <component> <tool>@<release>
+cup remove <component> <tool>@<release>
 ```
 
-Example:
+Examples:
 
 ```sh
-./cup remove compiler gcc@15.2.0
+cup remove debugger gdb@stable
+cup remove compiler gcc@16.1.0
+cup remove linker lld@stable
 ```
 
-Removal does not directly delete the final installation directory. The directory is first moved to a temporary remove directory, the state is updated, and the temporary directory is cleaned afterwards.
+Removal is staged. `cup` first moves the installed directory to a temporary remove directory, updates the state, then deletes the temporary directory. If the state update fails, it attempts to move the installation back.
 
 ### Set a default
 
 ```sh
-./cup default <component> <tool>@<release>
+cup default <component> <tool>@<release>
 ```
 
 Example:
 
 ```sh
-./cup default compiler gcc@15.2.0
+cup default compiler gcc@stable
 ```
 
-A default can only be set if the installation exists both in the state and on disk.
+A default can only be set for an installation that exists in both state and on disk. The stored value is canonical, so `gcc@stable` is resolved before it is saved.
 
 ### Show the current default
 
 ```sh
-./cup current <component>
+cup current <component>
 ```
 
-Example:
+Examples:
 
 ```sh
-./cup current compiler
+cup current compiler
+cup current linker --target windows-x64
 ```
 
-If the stored default matches the current `stable` version from the manifest, the output may show it as an annotation while still printing the canonical version:
+If the current default matches the manifest's stable version, the output may annotate it as stable while still relying internally on the concrete version.
 
-```text
-Current compiler default: gcc@15.2.0 (stable)
-```
+## Entry model
 
-## 4. Entry model
-
-User input uses entries in this form:
+User input uses this form:
 
 ```text
 <tool>@<release>
@@ -159,437 +242,101 @@ Examples:
 
 ```text
 gcc@stable
-gcc@15.2.0
+gcc@16.1.0
+gcc@16.1.0-rev1
 gdb@17.1
-lldb@22.1.3
+lld@22.1.5
 ```
 
-`stable` is a symbolic release. It is resolved through the manifest before being stored in the state.
+`stable` is symbolic. It is resolved through the manifest before the state is changed.
 
-For example, if the manifest contains:
+The state stores canonical entries only:
 
 ```text
-compiler.gcc.stable_version=15.2.0
+gcc@stable -> gcc@16.1.0
+gcc@stable -> gcc@16.1.0-rev1
+lld@stable -> lld@22.1.5
 ```
 
-then:
+The exact version depends on the manifest entry for the selected host/target pair.
 
-```text
-gcc@stable
-```
+## Filesystem layout
 
-is resolved internally to:
-
-```text
-gcc@15.2.0
-```
-
-The state always stores canonical entries. It does not store `stable`.
-
-This distinction matters because `stable` may change later in the manifest, while an installed or default entry should continue to refer to the concrete version selected at the time.
-
-## 5. Manifest model
-
-The package manifest is:
-
-```text
-config/packages.cfg
-```
-
-It defines package metadata using keys in this form:
-
-```text
-<component>.<tool>.<field>=<value>
-```
-
-Example for a GNU package built and published by this repository:
-
-```text
-compiler.gcc.stable_version=15.2.0
-compiler.gcc.available_versions=15.2.0
-compiler.gcc.default_format=tar.gz
-compiler.gcc.formats=tar.gz,tar.xz
-compiler.gcc.url_template=https://github.com/coffee-clang/cup/releases/download/gcc-{version}-standard/gcc-{version}-linux-x64-standard.{format}
-```
-
-Example for an LLVM package built and published by this repository:
-
-```text
-compiler.clang.stable_version=22.1.3
-compiler.clang.available_versions=22.1.3
-compiler.clang.default_format=tar.xz
-compiler.clang.formats=tar.gz,tar.xz
-compiler.clang.url_template=https://github.com/coffee-clang/cup/releases/download/clang-{version}-linux-x64/clang-{version}-linux-x64.{format}
-```
-
-The manifest controls:
-
-- stable release
-- available versions
-- default archive format
-- supported archive formats
-- package URL template
-
-The URL template supports:
-
-```text
-{version}
-{format}
-```
-
-The implementation replaces these placeholders after resolving the release and selecting the archive format.
-
-## 6. Supported components and tools
-
-Supported components and tools are defined in the registry module.
-
-Current component categories are:
-
-```text
-compiler
-debugger
-```
-
-Current tools are:
-
-```text
-compiler: gcc, clang
-debugger: gdb, lldb
-```
-
-The registry validates whether a component/tool pair is supported. It does not know which versions exist and does not build URLs. Version and URL data come from the manifest.
-
-## 7. Package sources
-
-The current manifest points to packages built and published by this repository.
-
-### GNU packages
-
-GCC and GDB are built from upstream source releases by the GNU workflow and published as GitHub Release assets.
-
-Current URL pattern:
-
-```text
-https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-standard/<tool>-<version>-linux-x64-standard.<format>
-```
-
-The `standard` build mode is part of these asset names because these packages are produced by the GNU build workflow.
-
-### LLVM packages
-
-Clang and LLDB are built from LLVM source releases by the LLVM workflow and published as GitHub Release assets.
-
-Current URL pattern:
-
-```text
-https://github.com/coffee-clang/cup/releases/download/<tool>-<version>-linux-x64/<tool>-<version>-linux-x64.<format>
-```
-
-The LLVM workflow uses a package platform input, currently:
-
-```text
-linux-x64
-```
-
-Internally, this platform is mapped to the LLVM CMake target:
-
-```text
-X86
-```
-
-The Clang package is built with the `clang` LLVM project. `lld` is not included in the Clang package, because it can be treated as a separate linker tool later.
-
-The LLDB package is built with `clang;lldb`. Clang is included there as a technical dependency of LLDB, not as the main exposed tool of the package.
-
-## 8. Local filesystem layout
-
-`cup` stores its local data under:
-
-```text
-~/.cup
-```
-
-Expected layout:
+The installed runtime layout is under the user's home directory:
 
 ```text
 ~/.cup/
-├── cache/
-├── components/
-├── tmp/
-└── state.txt
+  bin/
+    cup
+    cup.exe
+  config/
+    packages.cfg
+  cache/
+  components/
+  tmp/
+  state.txt
 ```
 
-### Cache
-
-Downloaded archives are stored under `cache`.
-
-Example:
+Tool installations use this layout:
 
 ```text
-~/.cup/cache/compiler/gcc/15.2.0/gcc-15.2.0.tar.gz
+~/.cup/components/<component>/<tool>/<host_platform>/<target_platform>/<version>/
 ```
-
-### Components
-
-Installed tools are stored under `components`.
-
-Example:
-
-```text
-~/.cup/components/compiler/gcc/linux/15.2.0/
-```
-
-The current platform name used in install paths is simple and fixed by the implementation. Complete multi-architecture support is not implemented yet.
-
-### Temporary directories
-
-Install and remove operations use temporary directories.
 
 Examples:
 
 ```text
-~/.cup/tmp/install-compiler-gcc-15.2.0-12345
-~/.cup/tmp/remove-compiler-gcc-15.2.0-12345
+~/.cup/components/debugger/gdb/linux-x64/linux-x64/17.1/
+~/.cup/components/linker/lld/windows-x64/windows-x64/22.1.5/
 ```
 
-## 9. State file
+The temporary directory is used for install and remove staging. Temporary names include the operation, component, tool, version, and process-specific/random data to avoid collisions.
 
-The state file is:
+## Manifest lookup
+
+`cup` looks for the manifest in this order:
 
 ```text
-~/.cup/state.txt
+./config/packages.cfg
+~/.cup/config/packages.cfg
 ```
 
-Example:
+The first path supports development from a repository checkout. The second path supports bootstrap installations.
+
+If no manifest is found, `cup` prints an error explaining how to install the bootstrap assets.
+
+## Package archives
+
+Archives are expected to contain a usable tool directory and an `info.txt` metadata file. During extraction, `cup` normalizes the common top-level archive directory so the final installation path has the expected structure.
+
+A valid installation must include a `bin` directory. This is the current generic validation rule.
+
+## Building locally
+
+Build the static dependencies first:
+
+```sh
+scripts/bootstrap-linux-deps.sh
+```
+
+Then build `cup` for Linux:
+
+```sh
+make PLATFORM=linux-x64
+```
+
+For the Windows executable, use the Windows dependency bootstrap and the Windows platform target:
+
+```sh
+scripts/bootstrap-windows-deps.sh
+make PLATFORM=windows-x64
+```
+
+Build outputs:
 
 ```text
-installed.compiler=gcc@15.2.0
-default.compiler=gcc@15.2.0
+build/linux-x64/bin/cup
+build/windows-x64/bin/cup.exe
 ```
 
-The state contains:
-
-- installed canonical entries
-- default canonical entries per component
-
-The state is saved through a temporary file and then replaced with `rename`.
-
-## 10. Install behavior
-
-Installation follows this high-level flow:
-
-```text
-resolve entry
-check manifest availability
-choose archive format
-load state
-check state/disk consistency
-create temporary install directory
-fetch package archive
-extract archive
-write package metadata
-validate temporary installation
-create final component directories
-commit temporary directory to final path
-update state
-save state
-```
-
-The final filesystem commit is a rename:
-
-```text
-temporary install path -> final install path
-```
-
-If the final filesystem commit succeeds but updating the state fails, the code attempts to roll back the committed installation.
-
-## 11. Remove behavior
-
-Removal uses a staged model:
-
-```text
-load state
-check state/disk consistency
-create temporary remove directory
-move final install path to temporary remove path
-update state in memory
-save state
-clean temporary remove directory
-```
-
-This keeps the destructive part separated from the state update. If state saving fails after the install path has been moved, the code can attempt to move it back.
-
-## 12. Archive extraction
-
-Archives are extracted with `libarchive`.
-
-The extraction code:
-
-- rejects absolute paths
-- rejects unsafe parent references
-- rewrites archive paths under the temporary install directory
-- rewrites hardlink targets under the same temporary directory
-- does not rewrite symlink targets
-- strips the first path component
-
-Because of first-component stripping, packages are expected to contain one top-level directory.
-
-Example archive layout:
-
-```text
-gcc-15.2.0-linux-x64-standard/bin/gcc
-gcc-15.2.0-linux-x64-standard/lib/...
-```
-
-Extracted layout:
-
-```text
-tmp_path/bin/gcc
-tmp_path/lib/...
-```
-
-## 13. Installation validation
-
-After extraction and metadata writing, the temporary installation is validated.
-
-The current validation is intentionally minimal. It checks that:
-
-```text
-tmp_path exists and is a directory
-tmp_path/info.txt exists, is a regular file, and is not empty
-tmp_path/bin exists and is a directory
-```
-
-More specific checks, such as verifying `bin/<tool>` or other component-specific files, can be added later.
-
-## 14. Source layout
-
-The main source modules are:
-
-```text
-main.c
-commands.c / commands.h
-state.c / state.h
-registry.c / registry.h
-manifest.c / manifest.h
-fetch.c / fetch.h
-extract.c / extract.h
-filesystem.c / filesystem.h
-interrupt.c / interrupt.h
-util.c / util.h
-constants.h
-error.h
-```
-
-Module roles:
-
-- `main`: CLI dispatch
-- `commands`: command-level orchestration
-- `state`: local state file handling
-- `registry`: supported components and tools
-- `manifest`: package metadata lookup
-- `fetch`: download and cache handling
-- `extract`: archive extraction
-- `filesystem`: paths, directories, temporary storage, commit, cleanup
-- `interrupt`: signal flag handling
-- `util`: shared utility functions
-- `constants`: shared limits
-- `error`: project error enum
-
-## 15. Building GNU release packages
-
-The repository includes automation for building GNU source releases into archives installable by `cup`.
-
-The current build structure is:
-
-```text
-.github/workflows/build-gnu.yml
-docker/gnu-builder.Dockerfile
-scripts/build-gnu-package.sh
-scripts/build-gcc.sh
-scripts/build-gdb.sh
-```
-
-GitHub Actions orchestrates the build. Docker provides the controlled build environment.
-
-The workflow is manual and takes:
-
-```text
-tool
-version
-build_mode
-```
-
-Current GNU tools handled by this workflow are:
-
-```text
-gcc
-gdb
-```
-
-Example release tags:
-
-```text
-gcc-15.2.0-standard
-gdb-17.1-standard
-```
-
-Example assets:
-
-```text
-gcc-15.2.0-linux-x64-standard.tar.gz
-gdb-17.1-linux-x64-standard.tar.xz
-```
-
-The current policy is simple: each manual run builds the package and uploads the assets, overwriting existing assets for the same release tag.
-
-## 16. Building LLVM release packages
-
-The repository includes a separate workflow for building LLVM source releases into archives installable by `cup`.
-
-The current LLVM build structure is:
-
-```text
-.github/workflows/build-llvm.yml
-docker/llvm-builder.Dockerfile
-scripts/build-llvm-package.sh
-scripts/build-clang.sh
-scripts/build-lldb.sh
-```
-
-This workflow is separate from the GNU workflow.
-
-The workflow is manual and takes:
-
-```text
-tool
-version
-platform
-```
-
-Current LLVM tools handled by this workflow are:
-
-```text
-clang
-lldb
-```
-
-Current platform option:
-
-```text
-linux-x64
-```
-
-Example release tags:
-
-```text
-clang-22.1.3-linux-x64
-lldb-22.1.3-linux-x64
-```
-
-Example assets:
-
-```text
-clang-22.1.3-linux-x64.tar.xz
-lldb-22.1.3-linux-x64.tar.xz
-```
+More details are in `DEPENDENCIES.md`.

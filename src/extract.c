@@ -1,5 +1,6 @@
 #include "extract.h"
 #include "constants.h"
+#include "interrupt.h"
 #include "util.h"
 
 #include <archive.h>
@@ -147,6 +148,10 @@ static CupError copy_archive_data(struct archive *reader, struct archive *writer
     }
 
     for (;;) {
+        if (interrupt_requested()) {
+            return CUP_ERR_INTERRUPT;
+        }
+
         status = archive_read_data_block(reader, &buffer, &size, &offset);
         if (status == ARCHIVE_EOF) {
             return CUP_OK;
@@ -155,6 +160,10 @@ static CupError copy_archive_data(struct archive *reader, struct archive *writer
         if (status != ARCHIVE_OK) {
             fprintf(stderr, "Error: failed while reading archive data: %s.\n", archive_error_string(reader));
             return CUP_ERR_INSTALL;
+        }
+
+        if (interrupt_requested()) {
+            return CUP_ERR_INTERRUPT;
         }
 
         status = archive_write_data_block(writer, buffer, size, offset);
@@ -236,6 +245,11 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
     }
 
     for (;;) {
+        if (interrupt_requested()) {
+            cleanup_archives(reader, writer);
+            return CUP_ERR_INTERRUPT;
+        }
+
         status = archive_read_next_header(reader, &entry);
         if (status == ARCHIVE_EOF) {
             break;
@@ -247,6 +261,11 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
             return CUP_ERR_INSTALL;
         }
 
+        if (interrupt_requested()) {
+            cleanup_archives(reader, writer);
+            return CUP_ERR_INTERRUPT;
+        }
+
         err = rewrite_entry_paths(tmp_path, entry, &should_skip);
         if (err != CUP_OK) {
             cleanup_archives(reader, writer);
@@ -255,6 +274,11 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
 
         if (should_skip) {
             continue;
+        }
+
+        if (interrupt_requested()) {
+            cleanup_archives(reader, writer);
+            return CUP_ERR_INTERRUPT;
         }
 
         status = archive_write_header(writer, entry);
@@ -268,6 +292,11 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         if (err != CUP_OK) {
             cleanup_archives(reader, writer);
             return err;
+        }
+
+        if (interrupt_requested()) {
+            cleanup_archives(reader, writer);
+            return CUP_ERR_INTERRUPT;
         }
 
         status = archive_write_finish_entry(writer);
