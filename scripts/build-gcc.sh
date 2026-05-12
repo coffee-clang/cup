@@ -118,6 +118,46 @@ gcc_windows_target_configure_args() {
     fi
 }
 
+tool_exe_suffix() {
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        printf '.exe\n'
+    else
+        printf '\n'
+    fi
+}
+
+ensure_prefixed_binutils_tools() {
+    local tool
+    local src
+    local dst
+    local exe_suffix
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "ensuring prefixed Binutils target tool names"
+
+    for tool in as ld ar ranlib strip dlltool dllwrap windres objdump objcopy; do
+        dst="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+
+        if [ -x "$dst" ]; then
+            log "  existing: $dst"
+            continue
+        fi
+
+        src="$PREFIX/bin/$tool$exe_suffix"
+
+        if [ ! -x "$src" ]; then
+            log "  missing: $dst and fallback $src"
+            continue
+        fi
+
+        cp "$src" "$dst"
+        chmod +x "$dst"
+
+        log "  created: $dst from $src"
+    done
+}
+
 resolve_target_tool() {
     local tool="$1"
     command -v "$TARGET_TRIPLE-$tool" 2>/dev/null || true
@@ -414,7 +454,9 @@ build_bundled_windows_gcc() {
     log "building self-contained GCC package with bundled Binutils and MinGW-w64"
 
     build_cross_binutils "$binutils_src"
+    ensure_prefixed_binutils_tools
     require_bundled_binutils_tools
+
     install_mingw_headers "$mingw_src"
     build_gcc_stage1 "$gcc_src"
     build_mingw_crt "$mingw_src"
