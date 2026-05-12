@@ -11,10 +11,7 @@ CUP_HOME="${CUP_HOME:-"$HOME/.cup"}"
 CUP_BIN_DIR="$CUP_HOME/bin"
 CUP_CONFIG_DIR="$CUP_HOME/config"
 
-CUP_BIN="$CUP_BIN_DIR/cup"
 PACKAGES_CFG="$CUP_CONFIG_DIR/packages.cfg"
-
-CUP_ASSET="cup-linux-x64"
 PACKAGES_ASSET="packages.cfg"
 
 die() {
@@ -28,27 +25,6 @@ info() {
 
 need_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
-}
-
-detect_platform() {
-    os="$(uname -s 2>/dev/null || true)"
-    arch="$(uname -m 2>/dev/null || true)"
-
-    case "$os" in
-        Linux)
-            ;;
-        *)
-            die "unsupported operating system: $os. This installer currently supports Linux only."
-            ;;
-    esac
-
-    case "$arch" in
-        x86_64|amd64)
-            ;;
-        *)
-            die "unsupported architecture: $arch. This installer currently supports x86_64 only."
-            ;;
-    esac
 }
 
 download_file() {
@@ -106,7 +82,7 @@ path_line_exists() {
     grep -F 'export PATH="$HOME/.cup/bin:$PATH"' "$profile" >/dev/null 2>&1
 }
 
-offer_path_update() {
+offer_path_update_unix_shell() {
     profile="$(detect_shell_profile)"
 
     if printf '%s' ":$PATH:" | grep -F ":$CUP_BIN_DIR:" >/dev/null 2>&1; then
@@ -143,8 +119,24 @@ offer_path_update() {
     esac
 }
 
-main() {
-    detect_platform
+detect_arch_x64() {
+    arch="$(uname -m 2>/dev/null || true)"
+
+    case "$arch" in
+        x86_64|amd64)
+            return 0
+            ;;
+        *)
+            die "unsupported architecture: $arch. This installer currently supports x86_64 only."
+            ;;
+    esac
+}
+
+install_unix_like() {
+    cup_asset="$1"
+    installed_name="$2"
+
+    cup_bin="$CUP_BIN_DIR/$installed_name"
 
     need_command chmod
     need_command mkdir
@@ -152,29 +144,98 @@ main() {
     need_command rm
     need_command uname
 
+    detect_arch_x64
+
     info "Installing cup into $CUP_HOME"
 
     mkdir -p "$CUP_BIN_DIR"
     mkdir -p "$CUP_CONFIG_DIR"
 
     info "Downloading cup binary..."
-    download_file "$BASE_URL/$CUP_ASSET" "$CUP_BIN"
-    chmod +x "$CUP_BIN"
+    download_file "$BASE_URL/$cup_asset" "$cup_bin"
+    chmod +x "$cup_bin"
 
     info "Downloading package manifest..."
     download_file "$BASE_URL/$PACKAGES_ASSET" "$PACKAGES_CFG"
 
     info ""
     info "cup installed successfully."
-    info "Binary:   $CUP_BIN"
+    info "Binary:   $cup_bin"
     info "Manifest: $PACKAGES_CFG"
     info ""
 
-    offer_path_update
+    offer_path_update_unix_shell
 
     info ""
     info "You can test the installation with:"
-    info "  $CUP_BIN --help"
+    info "  $cup_bin --help"
+
+    if [ "$installed_name" = "cup.exe" ]; then
+        info ""
+        info "From this shell, you may also be able to run:"
+        info "  cup --help"
+    fi
+}
+
+run_powershell_installer() {
+    ps_command="irm https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/install.ps1 | iex"
+
+    if command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ps_command"
+        exit $?
+    fi
+
+    if command -v pwsh.exe >/dev/null 2>&1; then
+        pwsh.exe -NoProfile -Command "$ps_command"
+        exit $?
+    fi
+
+    die "PowerShell was not found. Run the Windows installer manually from PowerShell: irm $BASE_URL/install.ps1 | iex"
+}
+
+install_windows_from_shell() {
+    info "Windows shell detected."
+    info ""
+    info "Choose installation mode:"
+    info "  1) Native Windows installation via PowerShell"
+    info "     Installs to: C:\\Users\\<user>\\.cup"
+    info "     Recommended if you want cup available from normal Windows terminals."
+    info ""
+    info "  2) Current Unix-like shell environment"
+    info "     Installs to: $HOME/.cup"
+    info "     Recommended only if you mainly use cup inside MSYS2/Git Bash/Cygwin."
+    info ""
+
+    printf "Choice [1/2, default: 1]: "
+    read choice || choice=""
+
+    case "$choice" in
+        ""|1)
+            run_powershell_installer
+            ;;
+        2)
+            install_unix_like "cup-windows-x64.exe" "cup.exe"
+            ;;
+        *)
+            die "invalid choice"
+            ;;
+    esac
+}
+
+main() {
+    os="$(uname -s 2>/dev/null || true)"
+
+    case "$os" in
+        Linux)
+            install_unix_like "cup-linux-x64" "cup"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            install_windows_from_shell
+            ;;
+        *)
+            die "unsupported operating system: $os"
+            ;;
+    esac
 }
 
 main "$@"

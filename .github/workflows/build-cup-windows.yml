@@ -1,4 +1,4 @@
-name: Build cup Linux
+name: Build cup Windows
 
 on:
   workflow_dispatch:
@@ -16,12 +16,12 @@ permissions:
   contents: write
 
 jobs:
-  build-cup-linux:
-    name: Build cup for linux-x64
+  build-cup-windows:
+    name: Build cup for windows-x64
     runs-on: ubuntu-latest
 
     env:
-      PLATFORM: linux-x64
+      PLATFORM: windows-x64
       RELEASE_TAG: cup-bootstrap
 
     steps:
@@ -37,16 +37,17 @@ jobs:
             curl \
             file \
             make \
+            mingw-w64 \
             perl \
             pkg-config \
             tar \
             xz-utils \
-            zlib1g-dev
+            zip
 
-      - name: Bootstrap static dependencies
+      - name: Bootstrap Windows static dependencies
         run: |
-          chmod +x scripts/bootstrap-linux-deps.sh
-          scripts/bootstrap-linux-deps.sh
+          chmod +x scripts/bootstrap-windows-deps.sh
+          scripts/bootstrap-windows-deps.sh
 
       - name: Build cup
         run: |
@@ -56,26 +57,27 @@ jobs:
         run: |
           mkdir -p dist
 
-          cp "build/$PLATFORM/bin/cup" dist/cup-linux-x64
-          chmod +x dist/cup-linux-x64
+          cp "build/$PLATFORM/bin/cup.exe" dist/cup-windows-x64.exe
 
           cp config/packages.cfg dist/packages.cfg
 
-          cp scripts/install-cup.sh dist/install.sh
-          chmod +x dist/install.sh
+          cp scripts/install-cup-windows.ps1 dist/install.ps1
 
-          sha256sum dist/cup-linux-x64 dist/packages.cfg dist/install.sh > dist/SHA256SUMS
+          sha256sum \
+            dist/cup-windows-x64.exe \
+            dist/packages.cfg \
+            dist/install.ps1 > dist/SHA256SUMS.windows
 
       - name: Upload workflow artifact
         if: ${{ inputs.publish == 'false' }}
         uses: actions/upload-artifact@v6
         with:
-          name: cup-linux-x64-assets
+          name: cup-windows-x64-assets
           path: |
-            dist/cup-linux-x64
+            dist/cup-windows-x64.exe
             dist/packages.cfg
-            dist/install.sh
-            dist/SHA256SUMS
+            dist/install.ps1
+            dist/SHA256SUMS.windows
 
       - name: Ensure release exists
         if: ${{ inputs.publish == 'true' }}
@@ -96,8 +98,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$RELEASE_TAG" \
-            dist/cup-linux-x64 \
+            dist/cup-windows-x64.exe \
             dist/packages.cfg \
-            dist/install.sh \
-            dist/SHA256SUMS \
+            dist/install.ps1 \
+            dist/SHA256SUMS.windows \
             --clobber
