@@ -28,8 +28,10 @@ REVISION="$4"
 
 TOOL="gcc"
 COMPONENT="compiler"
+
 VERSION="$(resolve_version gcc "$REQUESTED_VERSION")"
 PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+
 BINUTILS_VERSION="$(resolve_version binutils stable)"
 MINGW_VERSION="$(resolve_version mingw stable)"
 
@@ -41,7 +43,9 @@ THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+
 GCC_SOURCE_URL="$(source_url_gcc "$VERSION")"
 BINUTILS_SOURCE_URL="$(source_url_binutils "$BINUTILS_VERSION")"
 MINGW_SOURCE_URL="$(source_url_mingw "$MINGW_VERSION")"
@@ -57,6 +61,36 @@ need_common_tools() {
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
         die "a host C compiler is required"
+    fi
+}
+
+prepare_gcc_prerequisites() {
+    local gcc_src="$1"
+
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        log "using MSYS2 packaged GCC prerequisites on Windows host"
+        return 0
+    fi
+
+    log "downloading GCC prerequisites with contrib/download_prerequisites"
+
+    (
+        cd "$gcc_src"
+        ./contrib/download_prerequisites
+    )
+}
+
+gcc_dependency_configure_args() {
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        if [ -z "${MINGW_PREFIX:-}" ]; then
+            die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
+        fi
+
+        printf '%s\n' \
+            --with-gmp="$MINGW_PREFIX" \
+            --with-mpfr="$MINGW_PREFIX" \
+            --with-mpc="$MINGW_PREFIX" \
+            --with-isl="$MINGW_PREFIX"
     fi
 }
 
@@ -79,20 +113,21 @@ configure_and_build() {
 build_native_gcc() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local gcc_dep_args=()
 
     log "building native GCC $VERSION for $HOST_PLATFORM"
 
-    (
-        cd "$gcc_src"
-        ./contrib/download_prerequisites
-    )
+    mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
+
+    prepare_gcc_prerequisites "$gcc_src"
 
     configure_and_build "$gcc_src" "$build_dir" \
         --prefix="$PREFIX" \
         --disable-werror \
         --disable-multilib \
         --enable-bootstrap \
-        --enable-languages=c,c++
+        --enable-languages=c,c++ \
+        "${gcc_dep_args[@]}"
 }
 
 build_cross_binutils() {
@@ -131,13 +166,13 @@ install_mingw_headers() {
 build_gcc_stage1() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-stage1-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local gcc_dep_args=()
 
     log "building stage-1 GCC for $TARGET_TRIPLE"
 
-    (
-        cd "$gcc_src"
-        ./contrib/download_prerequisites
-    )
+    mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
+
+    prepare_gcc_prerequisites "$gcc_src"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -152,7 +187,8 @@ build_gcc_stage1() {
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
-            --with-gnu-ld
+            --with-gnu-ld \
+            "${gcc_dep_args[@]}"
         make -j"$CUP_JOBS" all-gcc
         make install-gcc
     )
@@ -215,8 +251,11 @@ build_winpthreads() {
 build_gcc_final() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-final-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local gcc_dep_args=()
 
     log "building final bundled GCC $VERSION for $TARGET_TRIPLE"
+
+    mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -231,7 +270,8 @@ build_gcc_final() {
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
-            --with-gnu-ld
+            --with-gnu-ld \
+            "${gcc_dep_args[@]}"
         make -j"$CUP_JOBS"
         make install
     )
@@ -285,9 +325,20 @@ write_gcc_info() {
         "source.primary.version=$VERSION"
         "source.primary.url=$GCC_SOURCE_URL"
         "config.languages=c,c++"
+        "config.multilib=false"
         "config.bootstrap=$bootstrap"
         "contents.self_contained=true"
     )
+
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        info+=(
+            "build.gcc_prerequisites=msys2"
+        )
+    else
+        info+=(
+            "build.gcc_prerequisites=contrib-download_prerequisites"
+        )
+    fi
 
     if [ -n "$bundle_components" ]; then
         info+=(
@@ -306,12 +357,14 @@ write_gcc_info() {
 }
 
 main() {
+    local gcc_src
+
     make_dirs
     need_common_tools
+
     rm -rf "$PREFIX"
     mkdir -p "$PREFIX"
 
-    local gcc_src
     gcc_src="$(prepare_source_tree gcc "$VERSION" "$GCC_SOURCE_URL" "gcc-$VERSION.tar.xz")"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
@@ -320,6 +373,7 @@ main() {
 
         binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
         mingw_src="$(prepare_source_tree mingw-w64 "$MINGW_VERSION" "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2")"
+
         build_bundled_windows_gcc "$gcc_src" "$binutils_src" "$mingw_src"
     else
         if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
