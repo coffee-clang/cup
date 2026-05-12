@@ -87,7 +87,7 @@ static CupError get_manifest_path(char *buffer, size_t size) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_path_exists("config/packages.cfg", exists);
+    err = system_path_exists("config/packages.cfg", &exists);
     if (err != CUP_OK) {
         return err;
     }
@@ -108,7 +108,7 @@ static CupError get_manifest_path(char *buffer, size_t size) {
         return err;
     }
 
-    err = system_path_exists(user_manifest, exists);
+    err = system_path_exists(user_manifest, &exists);
     if (err != CUP_OK) {
         return err;
     }
