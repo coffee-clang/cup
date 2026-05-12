@@ -22,7 +22,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     size_t count;
     size_t i;
 
-    if (os == NULL || os[0] == '\0') {
+    if (is_empty_string(os)) {
         return NULL;
     }
 
@@ -35,41 +35,6 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     }
 
     return NULL;
-}
-
-static CupError split_platform(const char *platform, char *os, size_t os_size, char *arch, size_t arch_size) {
-    const char *at;
-    size_t os_len;
-    size_t arch_len;
-
-    if (platform == NULL || os == NULL || arch == NULL ||
-        platform[0] == '\0' || os_size == 0 || arch_size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    at = strchr(platform, '-');
-    if (at == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    os_len = (size_t)(at - platform);
-    arch_len = strlen(at + 1);
-
-    if (os_len == 0 || arch_len == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (os_len >= os_size || arch_len >= arch_size) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    memcpy(os, platform, os_len);
-    os[os_len] = '\0';
-
-    memcpy(arch, at + 1, arch_len);
-    arch[arch_len] = '\0';
-
-    return CUP_OK;
 }
 
 CupError get_host_platform(char *buffer, size_t size) {
@@ -110,11 +75,11 @@ CupError validate_platform(const char *platform) {
     char arch[MAX_NAME_LEN];
     size_t i;
 
-    if (platform == NULL || platform[0] == '\0') {
+    if (is_empty_string(platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = split_platform(platform, os, sizeof(os), arch, sizeof(arch));
+    err = split_once(platform, '-', os, sizeof(os), arch, sizeof(arch));
     if (err != CUP_OK) {
         fprintf(stderr, "Error: invalid platform '%s'. Expected format '<os>-<arch>'.\n", platform);
         return err;

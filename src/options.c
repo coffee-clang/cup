@@ -1,4 +1,5 @@
 #include "options.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +11,7 @@ typedef enum {
 
 typedef enum {
     OPTION_ID_FORMAT = 0,
-    OPTION_ID_PLATFORM
+    OPTION_ID_TARGET
 } OptionId;
 
 typedef struct {
@@ -30,10 +31,10 @@ static const OptionDefinition OPTION_DEFINITIONS[] = {
         OPTION_VALUE_REQUIRED
     },
     {
-        "--platform",
+        "--target",
         NULL,
-        OPTION_ID_PLATFORM,
-        OPT_PLATFORM,
+        OPTION_ID_TARGET,
+        OPT_TARGET,
         OPTION_VALUE_REQUIRED
     }
 };
@@ -44,7 +45,7 @@ static void init_command_options(CommandOptions *options) {
     }
 
     options->format = NULL;
-    options->platform = NULL;
+    options->target = NULL;
     options->seen = 0;
 }
 
@@ -52,7 +53,7 @@ static const OptionDefinition *find_option_definition(const char *name) {
     size_t count;
     size_t i;
 
-    if (name == NULL) {
+    if (is_empty_string(name)) {
         return NULL;
     }
 
@@ -73,7 +74,7 @@ static const OptionDefinition *find_option_definition(const char *name) {
 }
 
 static CupError set_option_value(CommandOptions *options, const OptionDefinition *definition, const char *value) {
-    if (options == NULL || definition == NULL) {
+    if (options == NULL || definition == NULL || is_empty_string(value)) {
         return CUP_ERR_INVALID_INPUT;
     }
     
@@ -89,8 +90,8 @@ static CupError set_option_value(CommandOptions *options, const OptionDefinition
             options->format = value;
             return CUP_OK;
 
-        case OPTION_ID_PLATFORM:
-            options->platform = value;
+        case OPTION_ID_TARGET:
+            options->target = value;
             return CUP_OK;
 
         default:
@@ -160,7 +161,7 @@ CupError validate_command_options(const CommandOptions *options, unsigned allowe
     size_t i;
     unsigned disallowed;
 
-    if (options == NULL) {
+    if (options == NULL || is_empty_string(command_name)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -174,7 +175,7 @@ CupError validate_command_options(const CommandOptions *options, unsigned allowe
     for (i = 0; i < count; ++i) {
         if ((disallowed & OPTION_DEFINITIONS[i].flag) != 0) {
             fprintf(stderr, "Error: option '%s' is not valid for command '%s'.\n", 
-                    OPTION_DEFINITIONS[i].long_name, command_name != NULL ? command_name : "<unknown>");
+                    OPTION_DEFINITIONS[i].long_name, command_name);
             return CUP_ERR_INVALID_INPUT;
         }
     }

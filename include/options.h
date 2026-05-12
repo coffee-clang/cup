@@ -5,12 +5,12 @@
 
 typedef struct {
     const char *format;
-    const char *platform;
+    const char *target;
     unsigned seen;
 } CommandOptions;
 
 #define OPT_FORMAT (1u << 0)
-#define OPT_PLATFORM (1u << 1)
+#define OPT_TARGET (1u << 1)
 
 CupError parse_command_options(int start_option, int argc, char *argv[], CommandOptions *options);
 

@@ -1,11 +1,12 @@
-CC = gcc
-PREFIX = $(HOME)/deps/install
-PROJECT_ROOT = $(CURDIR)
+PROJECT_ROOT := $(CURDIR)
 
-CFLAGS = -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L -I$(PREFIX)/include -I$(PROJECT_ROOT)/include
-LDFLAGS = -L$(PREFIX)/lib -L$(PREFIX)/lib64
+PLATFORM ?= linux-x64
 
-SRC = \
+BUILD_DIR := build
+OBJ_DIR := $(BUILD_DIR)/$(PLATFORM)/obj
+BIN_DIR := $(BUILD_DIR)/$(PLATFORM)/bin
+
+COMMON_SRC := \
 	src/main.c \
 	src/options.c \
 	src/commands.c \
@@ -19,18 +20,59 @@ SRC = \
 	src/interrupt.c \
 	src/platform.c
 
-TARGET = cup
+ifeq ($(PLATFORM),linux-x64)
+	CC = gcc
+	TARGET := $(BIN_DIR)/cup
+	SYSTEM_SRC := src/system_posix.c
+	DEPS_PREFIX ?= $(HOME)/deps/linux-x64/install
 
-LDLIBS = -lcurl -larchive -lssl -lcrypto -lz -llzma -ldl
+	CPPFLAGS += -I$(DEPS_PREFIX)/include -I$(PROJECT_ROOT)/include
+	CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L
+	LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64 -static
+
+	CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
+	ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)
+	LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS) -ldl -pthread
+endif
+
+ifeq ($(PLATFORM),windows-x64)
+	CC = x86_64-w64-mingw32-gcc
+	TARGET := $(BIN_DIR)/cup.exe
+	SYSTEM_SRC := src/system_windows.c
+	DEPS_PREFIX ?= $(HOME)/deps/windows-x64/install
+
+	CPPFLAGS += -I$(DEPS_PREFIX)/include -I$(PROJECT_ROOT)/include -DCURL_STATICLIB
+	CFLAGS += -Wall -Wextra -Werror -std=c11 -g
+	LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64 -static
+
+	CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
+	ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)
+	LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS) -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -liphlpapi -lsecur32
+endif
+
+ifndef CC
+$(error Unsupported PLATFORM '$(PLATFORM)'. Supported values: linux-x64 windows-x64)
+endif
+
+SRC := $(COMMON_SRC) $(SYSTEM_SRC)
+OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC))
+
+.PHONY: all clean dev-clean
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) -static $(LDFLAGS) $(LDLIBS)
+$(TARGET): $(OBJ)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
 
-clean:
-	rm -f $(TARGET)
+$(OBJ_DIR)/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
+clean: 
+	rm -rf $(BUILD_DIR)
+	
 dev-clean: clean
 	rm -rf ~/.cup
+	rm -rf ./error-output.txt
 	clear

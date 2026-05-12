@@ -45,7 +45,7 @@ static int path_has_parent_reference(const char *path) {
 static const char *strip_first_path_component(const char *path) {
     const char *slash;
 
-    if (path == NULL || path[0] == '\0') {
+    if (is_empty_string(path)) {
         return NULL;
     }
 
@@ -60,8 +60,7 @@ static const char *strip_first_path_component(const char *path) {
 static CupError build_output_path(char *buffer, size_t size, const char *root, const char *entry_path) {
     CupError err;
 
-    if (buffer == NULL || root == NULL || entry_path == NULL ||
-        size == 0 || root[0] == '\0' || entry_path[0] == '\0') {
+    if (buffer == NULL || size == 0 || is_empty_string(root) || is_empty_string(entry_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -92,8 +91,7 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
     char output_hardlink[MAX_PATH_LEN];
     char output_path[MAX_PATH_LEN];
 
-    if (tmp_path == NULL || entry == NULL || should_skip == NULL ||
-        tmp_path[0] == '\0') {
+    if (entry == NULL || should_skip == NULL || is_empty_string(tmp_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -137,7 +135,6 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
 
     return CUP_OK;
 }
-
 
 static CupError copy_archive_data(struct archive *reader, struct archive *writer) {
     const void *buffer;
@@ -188,8 +185,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
     int should_skip;
     int status;
 
-    if (archive_path == NULL || tmp_path == NULL || 
-        archive_path[0] == '\0' || tmp_path[0] == '\0') {
+    if (is_empty_string(archive_path) || is_empty_string(tmp_path)) {
         fprintf(stderr, "Error: invalid archive extraction arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }

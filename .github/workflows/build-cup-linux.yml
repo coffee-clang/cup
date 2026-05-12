@@ -1,0 +1,103 @@
+name: Build cup Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload assets to the cup-bootstrap GitHub Release"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cup-linux:
+    name: Build cup for linux-x64
+    runs-on: ubuntu-latest
+
+    env:
+      PLATFORM: linux-x64
+      RELEASE_TAG: cup-bootstrap
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install system build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            make \
+            perl \
+            pkg-config \
+            tar \
+            xz-utils \
+            zlib1g-dev
+
+      - name: Bootstrap static dependencies
+        run: |
+          chmod +x scripts/bootstrap-linux-deps.sh
+          scripts/bootstrap-linux-deps.sh
+
+      - name: Build cup
+        run: |
+          make PLATFORM="$PLATFORM"
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p dist
+
+          cp "build/$PLATFORM/bin/cup" dist/cup-linux-x64
+          chmod +x dist/cup-linux-x64
+
+          cp config/packages.cfg dist/packages.cfg
+
+          cp scripts/install-cup-linux.sh dist/install.sh
+          chmod +x dist/install.sh
+
+          sha256sum dist/cup-linux-x64 dist/packages.cfg dist/install.sh > dist/SHA256SUMS
+
+      - name: Upload workflow artifact
+        if: ${{ inputs.publish == 'false' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: cup-linux-x64-assets
+          path: |
+            dist/cup-linux-x64
+            dist/packages.cfg
+            dist/install.sh
+            dist/SHA256SUMS
+
+      - name: Ensure release exists
+        if: ${{ inputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "cup bootstrap" \
+              --notes "Bootstrap assets for installing cup."
+          fi
+
+      - name: Upload release assets
+        if: ${{ inputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist/cup-linux-x64 \
+            dist/packages.cfg \
+            dist/install.sh \
+            dist/SHA256SUMS \
+            --clobber

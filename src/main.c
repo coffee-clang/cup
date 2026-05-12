@@ -12,11 +12,11 @@ static void print_usage(const char *prog_name) {
 
     fprintf(stderr,
         "Usage:\n"
-        "  %s list [--platform <platform>]\n"
-        "  %s install <component> <tool>@<release> [--format|-f <archive-format>] [--platform <platform>]\n"
-        "  %s remove <component> <tool>@<release> [--platform <platform>]\n"
-        "  %s default <component> <tool>@<release> [--platform <platform>]\n"
-        "  %s current <component> [--platform <platform>]\n",
+        "  %s list [--target <target-platform>]\n"
+        "  %s install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]\n"
+        "  %s remove <component> <tool>@<release> [--target <target-platform>]\n"
+        "  %s default <component> <tool>@<release> [--target <target-platform>]\n"
+        "  %s current <component> [--target <target-platform>]\n",
         prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
@@ -47,13 +47,13 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM, command);
+        err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
         }
 
-        return handle_list(options.platform);
+        return handle_list(options.target);
     }
 
     if (strcmp(command, "install") == 0) {
@@ -71,13 +71,13 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_FORMAT | OPT_PLATFORM, command);
+        err = validate_command_options(&options, OPT_FORMAT | OPT_TARGET, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
         }
 
-        return handle_install(argv[2], argv[3], options.format, options.platform);
+        return handle_install(argv[2], argv[3], options.target, options.format);
     }
 
     if (strcmp(command, "remove") == 0) {
@@ -95,13 +95,13 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM, command);
+        err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
         }
 
-        return handle_remove(argv[2], argv[3], options.platform);
+        return handle_remove(argv[2], argv[3], options.target);
     }
 
     if (strcmp(command, "default") == 0) {
@@ -119,13 +119,13 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM, command);
+        err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
         }
 
-        return handle_default(argv[2], argv[3], options.platform);
+        return handle_default(argv[2], argv[3], options.target);
     }
 
     if (strcmp(command, "current") == 0) {
@@ -143,13 +143,13 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = validate_command_options(&options, OPT_PLATFORM, command);
+        err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
             print_usage(argv[0]);
             return err;
         }
         
-        return handle_current(argv[2], options.platform);
+        return handle_current(argv[2], options.target);
     }
 
     fprintf(stderr, "Error: unknown command '%s'.\n", command);

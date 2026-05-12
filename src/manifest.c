@@ -1,6 +1,7 @@
 #include "manifest.h"
 #include "constants.h"
 #include "util.h"
+#include "system.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -38,8 +39,7 @@ static CupError replace_placeholder(char *buffer, size_t size, const char *templ
     size_t value_len;
     size_t written;
 
-    if (buffer == NULL || template_str == NULL || placeholder == NULL || value == NULL ||
-        size == 0 || placeholder[0] == '\0') {
+    if (buffer == NULL || size == 0 || is_empty_string(template_str) || is_empty_string(placeholder) || is_empty_string(value)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -78,35 +78,82 @@ static CupError replace_placeholder(char *buffer, size_t size, const char *templ
 }
 
 static CupError get_manifest_path(char *buffer, size_t size) {
+    CupError err;
+    char home[MAX_PATH_LEN];
+    char user_manifest[MAX_PATH_LEN];
+    int exists;
+
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    return checked_snprintf(buffer, size, "config/packages.cfg");
+    err = system_path_exists("config/packages.cfg", exists);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (exists) {
+        err = checked_snprintf(buffer, size, "%s", "config/packages.cfg");
+        return err;
+    }
+
+    err = system_get_home_dir(home, sizeof(home));
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: package manifest not found at './config/packages.cfg' and home directory could not be resolved.\n");
+        return err;
+    }
+
+    err = checked_snprintf(user_manifest, sizeof(user_manifest), "%s/.cup/config/packages.cfg", home);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = system_path_exists(user_manifest, exists);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (exists) {
+        err = checked_snprintf(buffer, size, "%s", user_manifest);
+        return err;
+    }
+
+    fprintf(stderr,
+        "Error: package manifest not found.\n"
+        "Expected one of:\n"
+        "  ./config/packages.cfg\n"
+        "  %s\n\n"
+        "Install cup with:\n"
+        "  curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh\n",
+        user_manifest
+    );
+
+    return CUP_ERR_FETCH;
 }
 
-static CupError build_manifest_key(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *field) {
+static CupError build_manifest_key(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *field) {
     CupError err;
     
-    if (buffer == NULL || component == NULL || tool == NULL || platform == NULL || field == NULL ||
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || field[0] == '\0') {
+    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(field)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(buffer, size, "%s.%s.%s.%s", component, tool, platform, field);
+    err = checked_snprintf(buffer, size, "%s.%s.%s.%s.%s", component, tool, host_platform, target_platform, field);
     return err;
 }
 
-static CupError read_manifest_value(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *field) {
+static CupError read_manifest_value(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *field) {
     CupError err;
     FILE *file;
     char manifest_path[MAX_PATH_LEN];
     char line[MAX_MANIFEST_LINE_LEN];
     char key[MAX_MANIFEST_KEY_LEN];
-    size_t key_len;
 
-    if (buffer == NULL || component == NULL || tool == NULL || platform == NULL || field == NULL ||
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || field[0] == '\0') {
+    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(field)) {
         fprintf(stderr, "Error: invalid manifest lookup arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
@@ -122,20 +169,17 @@ static CupError read_manifest_value(char *buffer, size_t size, const char *compo
         return CUP_ERR_FETCH;
     }
 
-    err = build_manifest_key(key, sizeof(key), component, tool, platform, field);
+    err = build_manifest_key(key, sizeof(key), component, tool, host_platform, target_platform, field);
     if (err != CUP_OK) {
         fclose(file);
         return CUP_ERR_FETCH;
     }
 
-    key_len = strlen(key);
-
     while (fgets(line, sizeof(line), file) != NULL) {
+        char *equals;
+        char *line_key;
+        char *line_value;
         size_t len;
-
-        if (strncmp(line, key, key_len) != 0 || line[key_len] != '=') {
-            continue;
-        }
 
         len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
@@ -143,30 +187,49 @@ static CupError read_manifest_value(char *buffer, size_t size, const char *compo
             len--;
         }
 
-        err = checked_snprintf(buffer, size, "%s", line + key_len + 1);
-        fclose(file);
-        return err;
+        line_key = trim_spaces(line);
+
+        if (line_key[0] == '\0' || line_key[0] == '#') {
+            continue;
+        }
+
+        equals = strchr(line_key, '=');
+        if (equals == NULL) {
+            continue;
+        }
+
+        *equals = '\0';
+
+        line_key = trim_spaces(line_key);
+        line_value = trim_spaces(equals + 1);
+
+        if (strcmp(line_key, key) == 0) {
+            err = checked_snprintf(buffer, size, "%s", line_value);
+            fclose(file);
+            return err;
+        }
     }
 
     fclose(file);
-    fprintf(stderr, "Error: tool '%s' for component '%s' is not configured for platform '%s' (missing field '%s').\n", 
-            tool, component, platform, field);
+    fprintf(stderr, "Error: tool '%s' for component '%s' is not configured for host '%s', target '%s' (missing field '%s').\n", 
+            tool, component, host_platform, target_platform, field);
     return CUP_ERR_FETCH;
 }
 
-static CupError manifest_list_contains(const char *component, const char *tool, const char *platform, const char *field, const char *needle, int *contains) {
+static CupError manifest_list_contains(const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *field, const char *needle, int *contains) {
     CupError err;
     char value[MAX_MANIFEST_VALUE_LEN];
     char *token;
 
-    if (component == NULL || tool == NULL || platform == NULL || field == NULL ||  needle == NULL || contains == NULL ||
-        component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || field[0] == '\0' || needle[0] == '\0') {
+    if (contains == NULL || is_empty_string(component) || is_empty_string(tool) || is_empty_string(host_platform) || 
+        is_empty_string(target_platform) || is_empty_string(field) || is_empty_string(needle)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     *contains = 0;
 
-    err = read_manifest_value(value, sizeof(value), component, tool, platform, field);
+    err = read_manifest_value(value, sizeof(value), component, tool, host_platform, target_platform, field);
     if (err != CUP_OK) {
         return err;
     }
@@ -186,17 +249,18 @@ static CupError manifest_list_contains(const char *component, const char *tool, 
     return CUP_OK;
 }
 
-CupError resolve_release(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *release) {
+CupError resolve_release(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *release) {
     CupError err;
 
-    if (buffer == NULL || component == NULL || tool == NULL || release == NULL || 
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || release[0] == '\0') {
+    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(release)) {
         fprintf(stderr, "Error: invalid release resolution arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
 
     if (strcmp(release, "stable") == 0) {
-        err = read_manifest_value(buffer, size, component, tool, platform, "stable_version");
+        err = read_manifest_value(buffer, size, component, tool, host_platform, target_platform, "stable_version");
         if (err != CUP_OK) {
             return err;
         }
@@ -208,68 +272,78 @@ CupError resolve_release(char *buffer, size_t size, const char *component, const
     return err;
 }
 
-CupError is_stable_release(const char *component, const char *tool, const char *platform, const char *release, int *is_stable) {
+CupError is_stable_version(const char *component, const char *tool, const char *host_platform, const char *target_platform, 
+    const char *version, int *is_stable) {
     CupError err;
-    char stable_release[MAX_NAME_LEN];
+    char stable_version[MAX_NAME_LEN];
 
-    if (component == NULL || tool == NULL || platform == NULL || release == NULL || is_stable == NULL ||
-        component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || release[0] == '\0') {
+    if (is_stable == NULL || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(version)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     *is_stable = 0;
 
-    err = resolve_release(stable_release, sizeof(stable_release), component, tool, platform, "stable");
+    err = resolve_release(stable_version, sizeof(stable_version), component, tool, host_platform, target_platform, "stable");
     if (err != CUP_OK) {
         return err;
     }
 
-    if (strcmp(stable_release, release) == 0) {
+    if (strcmp(stable_version, version) == 0) {
         *is_stable = 1;
     }
 
     return CUP_OK;
 }
 
-CupError is_version_available(const char *component, const char *tool, const char *platform, const char *version, int *is_available) {
-    return manifest_list_contains(component, tool, platform, "available_versions", version, is_available);
+CupError is_version_available(const char *component, const char *tool, const char *host_platform, const char *target_platform, 
+    const char *version, int *is_available) {
+    return manifest_list_contains(component, tool, host_platform, target_platform, "available_versions", version, is_available);
 }
 
-CupError get_default_format(char *buffer, size_t size, const char *component, const char *tool, const char *platform) {
-    return read_manifest_value(buffer, size, component, tool, platform, "default_format");
+CupError get_default_format(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform) {
+    return read_manifest_value(buffer, size, component, tool, host_platform, target_platform, "default_format");
 }
 
-CupError is_format_supported(const char *component, const char *tool, const char *platform, const char *format, int *is_supported) {
-    return manifest_list_contains(component, tool, platform, "formats", format, is_supported);
+CupError is_format_supported(const char *component, const char *tool, const char *host_platform, const char *target_platform, 
+    const char *format, int *is_supported) {
+    return manifest_list_contains(component, tool, host_platform, target_platform, "formats", format, is_supported);
 }
 
-CupError build_package_url_from_manifest(char *buffer, size_t size, const char *component, const char *tool, const char *platform, const char *release, const char *format) {
+CupError build_download_url(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *version, const char *format) {
     CupError err;
     char url_template[MAX_MANIFEST_URL_LEN];
-    char tmp1[MAX_MANIFEST_URL_LEN];
-    char tmp2[MAX_MANIFEST_URL_LEN];
+    char step1[MAX_MANIFEST_URL_LEN];
+    char step2[MAX_MANIFEST_URL_LEN];
+    char step3[MAX_MANIFEST_URL_LEN];
 
-    if (buffer == NULL || component == NULL || tool == NULL || platform == NULL || release == NULL || format == NULL ||
-        size == 0 || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || release[0] == '\0' || format[0] == '\0') {
-        fprintf(stderr, "Error: invalid manifest lookup arguments.\n");
+    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(version) || is_empty_string(format)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = read_manifest_value(url_template, sizeof(url_template), component, tool, platform, "url_template");
+    err = read_manifest_value(url_template, sizeof(url_template), component, tool, host_platform, target_platform, "url_template");
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(tmp1, sizeof(tmp1), url_template, "{platform}", platform);
+    err = replace_placeholder(step1, sizeof(step1), url_template, "{host_platform}", host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(tmp2, sizeof(tmp2), tmp1, "{version}", release);
+    err = replace_placeholder(step2, sizeof(step2), step1, "{target_platform}", target_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(buffer, size, tmp2, "{format}", format);
+    err = replace_placeholder(step3, sizeof(step3), step2, "{version}", version);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = replace_placeholder(buffer, size, step3, "{format}", format);
     return err;
 }

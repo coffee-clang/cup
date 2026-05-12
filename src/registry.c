@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,14 +13,15 @@ typedef struct {
 
 static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "compiler", { "gcc", "clang", NULL } },
-    { "debugger", { "gdb", "lldb", NULL } }
+    { "debugger", { "gdb", "lldb", NULL } },
+    { "linker",   { "lld", NULL} }
 };
 
 static const SupportedComponent *find_supported_component(const char *component) {
     size_t count;
     size_t i;
 
-    if (component == NULL || component[0] == '\0') {
+    if (is_empty_string(component)) {
         return NULL;
     }
 
@@ -37,7 +39,7 @@ static const SupportedComponent *find_supported_component(const char *component)
 CupError validate_component(const char *component) {
     const SupportedComponent *supported;
 
-    if (component == NULL || component[0] == '\0') {
+    if (is_empty_string(component)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -54,8 +56,7 @@ CupError validate_tool_for_component(const char *component, const char *tool) {
     const SupportedComponent *supported;
     size_t i;
 
-    if (component == NULL || tool == NULL ||
-        component[0] == '\0' || tool[0] == '\0') {
+    if (is_empty_string(component) || is_empty_string(tool)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

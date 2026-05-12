@@ -12,6 +12,16 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef enum {
+    MOVE_TMP_TO_INSTALL,
+    MOVE_INSTALL_TO_TMP
+} InstallMoveDirection;
+
+typedef struct {
+    char install_path[MAX_PATH_LEN];
+    char tmp_path[MAX_PATH_LEN];
+} InstallTransaction;
+
 typedef struct {
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
@@ -33,100 +43,31 @@ static void print_entry_resolution(FILE *stream, const EntryContext *ctx) {
     fprintf(stream, "%s -> %s", ctx->input_entry, ctx->canonical_entry);
 }
 
-static int is_valid_entry(const char *entry) {
-    const char *at;
-
-    if (entry == NULL || entry[0] == '\0') {
-        return 0;
-    }
-
-    at = strchr(entry, '@');
-    if (at == NULL) {
-        return 0;
-    }
-
-    if (at == entry) {
-        return 0;
-    }
-
-    if (*(at + 1) == '\0') {
-        return 0;
-    }
-
-    if (strchr(at + 1, '@') != NULL) {
-        return 0;
-    }
-
-    return 1;
-}
-
-static CupError split_entry(const char *entry, char *tool, size_t tool_size, char *release, size_t release_size) {
-    const char *at;
-    size_t tool_len;
-    size_t release_len;
-
-    if (entry == NULL || tool == NULL || release == NULL ||
-        entry[0] == '\0' || tool_size == 0 || release_size == 0) {
+static CupError build_canonical_entry(char *buffer, size_t size, const char *tool, const char *version) {
+    if (buffer == NULL || size == 0 || is_empty_string(tool) || is_empty_string(version)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    at = strchr(entry, '@');
-    if (at == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    tool_len = (size_t)(at - entry);
-    release_len = strlen(at + 1);
-
-    if (tool_len == 0 || release_len == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (tool_len >= tool_size || release_len >= release_size) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    memcpy(tool, entry, tool_len);
-    tool[tool_len] = '\0';
-
-    memcpy(release, at + 1, release_len);
-    release[release_len] = '\0';
-
-    return CUP_OK;
-}
-
-static CupError build_canonical_entry(char *buffer, size_t size, const char *tool, const char *resolved_release) {
-    if (buffer == NULL || tool == NULL || resolved_release == NULL ||
-        size == 0 || tool[0] == '\0' || resolved_release[0] == '\0') {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    return checked_snprintf(buffer, size, "%s@%s", tool, resolved_release);
+    return checked_snprintf(buffer, size, "%s@%s", tool, version);
 }
 
 static CupError parse_entry_context(const char *component, const char *entry, EntryContext *ctx) {
     CupError err;
 
-    if (component == NULL || entry == NULL || ctx == NULL ||
-        component[0] == '\0' || entry[0] == '\0') {
+    if (ctx == NULL || is_empty_string(component) || is_empty_string(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     memset(ctx, 0, sizeof(*ctx));
-
-    if (!is_valid_entry(entry)) {
-        fprintf(stderr, "Error: invalid entry format. Use <tool>@<release>.\n");
-        return CUP_ERR_INVALID_INPUT;
-    }
 
     err = checked_snprintf(ctx->input_entry, sizeof(ctx->input_entry), "%s", entry);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = split_entry(entry, ctx->tool, sizeof(ctx->tool), ctx->release, sizeof(ctx->release));
+    err = split_once(ctx->input_entry, '@', ctx->tool, sizeof(ctx->tool), ctx->release, sizeof(ctx->release));
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'.\n", entry);
+        fprintf(stderr, "Error: invalid entry '%s'. Expected format '<tool>@<release>'.\n", ctx->input_entry);
         return err;
     }
 
@@ -143,44 +84,43 @@ static CupError parse_entry_context(const char *component, const char *entry, En
     return CUP_OK;
 }
 
-static CupError resolve_entry_release(const char *component, const char *platform, EntryContext *ctx) {
+static CupError resolve_entry_release(const char *component, const char *host_platform, const char *target_platform, 
+    EntryContext *ctx) {
     CupError err;
 
-    if (component == NULL || platform == NULL || ctx == NULL ||
-        component[0] == '\0' || platform[0] == '\0' || ctx->tool[0] == '\0' || ctx->release[0] == '\0') {
+    if (ctx == NULL || is_empty_string(component) || is_empty_string(host_platform) || 
+        is_empty_string(target_platform) || is_empty_string(ctx->tool) || is_empty_string(ctx->release)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = resolve_release(ctx->resolved_release, sizeof(ctx->resolved_release), component, ctx->tool, platform, ctx->release);
+    err = resolve_release(ctx->resolved_release, sizeof(ctx->resolved_release), component, ctx->tool, host_platform, target_platform, ctx->release);
     if (err != CUP_OK) {
         return err;
     }
 
     err = build_canonical_entry(ctx->canonical_entry, sizeof(ctx->canonical_entry), ctx->tool, ctx->resolved_release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return CUP_OK;
+    return err;
 }
 
-static CupError resolve_command_format(char *buffer, size_t size, const char *component, const char *platform, const char *format_override, EntryContext *ctx) {
+static CupError resolve_command_format(char *buffer, size_t size, const char *component, const char *host_platform, 
+    const char *target_platform, const char *format_override, EntryContext *ctx) {
     CupError err;
     int format_supported;
 
-    if (buffer == NULL || component == NULL || ctx == NULL ||
-        size == 0 || component[0] == '\0') {
+    if (buffer == NULL || size == 0 || 
+        is_empty_string(component) || is_empty_string(host_platform) || is_empty_string(target_platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (format_override != NULL && format_override[0] != '\0') {
-        err = is_format_supported(component, ctx->tool, platform, format_override, &format_supported);
+    if (!is_empty_string(format_override)) {
+        err = is_format_supported(component, ctx->tool, host_platform, target_platform, format_override, &format_supported);
         if (err != CUP_OK) {
             return err;
         }
 
         if (!format_supported) {
-            fprintf(stderr, "Error: archive format '%s' is not supported for tool '%s' on platform '%s'.\n", format_override, ctx->tool, platform);
+            fprintf(stderr, "Error: archive format '%s' is not supported for tool '%s' on host '%s', target '%s'.\n", 
+                format_override, ctx->tool, host_platform, target_platform);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -188,50 +128,48 @@ static CupError resolve_command_format(char *buffer, size_t size, const char *co
         return err;
     }
 
-    err = get_default_format(buffer, size, component, ctx->tool, platform);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return CUP_OK;
+    err = get_default_format(buffer, size, component, ctx->tool, host_platform, target_platform);
+    return err;
 }
 
-static CupError resolve_command_platform(char *buffer, size_t size, const char *platform_override) {
+static CupError resolve_command_platforms(char *host_platform, size_t host_size, char *target_platform, size_t target_size, 
+    const char *target_override) {
     CupError err;
 
-    if (buffer == NULL || size == 0) {
+    if (host_platform == NULL || target_platform == NULL ||
+        host_size == 0 || target_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (platform_override != NULL && platform_override[0] != '\0') {
-        err = validate_platform(platform_override);
-        if (err != CUP_OK) {
-            return err;
-        }
+    err = get_host_platform(host_platform, host_size);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-        err = checked_snprintf(buffer, size, "%s", platform_override);
+    if (is_empty_string(target_override)) {
+        err = checked_snprintf(target_platform, target_size, "%s", host_platform);
         return err;
     }
     
-    err = get_host_platform(buffer, size);
+    err = validate_platform(target_override);
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not detect host platform.\n");
         return err;
     }
 
-    return CUP_OK;
+    err = checked_snprintf(target_platform, target_size, "%s", target_override);
+    return err;
 }
 
 static void cleanup_tmp_safely(const char *tmp_path) {
     CupError err;
 
-    if (tmp_path == NULL || tmp_path[0] == '\0') {
+    if (is_empty_string(tmp_path)) {
         return;
     }
 
     interrupt_reset();
 
-    err = cleanup_tmp_install(tmp_path);
+    err = cleanup_tmp_path(tmp_path);
     if (err == CUP_ERR_INTERRUPT) {
         fprintf(stderr, "Warning: cleanup was interrupted.\n");
     } else if (err != CUP_OK) {
@@ -248,131 +186,132 @@ static CupError stop_if_interrupted(const char *tmp_path) {
     return CUP_ERR_INTERRUPT;
 }
 
-static CupError check_install_presence(const CupState *state, const char *component, const char *platform, const EntryContext *ctx, int *in_state, int *on_disk) {
+static CupError check_install_presence(const CupState *state, const char *component, const char *host_platform, 
+    const char *target_platform, const EntryContext *ctx, int *in_state, int *on_disk) {
     CupError err;
 
-    if (state == NULL || component == NULL || platform == NULL || ctx == NULL || 
-        in_state == NULL || component[0] == '\0' || platform[0] == '\0' || on_disk == NULL) {
+    if (state == NULL || ctx == NULL || in_state == NULL || on_disk == NULL ||
+        is_empty_string(component) || is_empty_string(host_platform) || is_empty_string(target_platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    *in_state = (state_find_installed(state, component, platform, ctx->canonical_entry) != -1);
+    *in_state = (state_find_installed(state, component, host_platform, target_platform, ctx->canonical_entry) != -1);
 
-    err = installation_exists(component, ctx->tool, platform, ctx->resolved_release, on_disk);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return CUP_OK;
+    err = installation_exists(component, ctx->tool, host_platform, target_platform, ctx->resolved_release, on_disk);
+    return err;
 }
 
-static CupError require_consistent_installed(const char *component, const char *platform, const EntryContext *ctx, int in_state, int on_disk) {
+static CupError require_consistent_installed(const char *component, const char *host_platform, const char *target_platform, 
+    const EntryContext *ctx, int in_state, int on_disk) {
     if (!in_state && !on_disk) {
         fprintf(stderr, "Error: '%s:", component);
         print_entry_resolution(stderr, ctx);
-        fprintf(stderr, "' is not installed for platform '%s'.\n", platform);
+        fprintf(stderr, "' is not installed for host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_NOT_INSTALLED;
     }
 
     if (in_state != on_disk) {
         fprintf(stderr, "Error: inconsistent install state detected for '%s:", component);
         print_entry_resolution(stderr, ctx);
-        fprintf(stderr, "' on platform '%s'.\n", platform);
+        fprintf(stderr, "' on host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
     return CUP_OK;
 }
 
-static CupError require_not_installed(const char *component, const char *platform, const EntryContext *ctx, int in_state, int on_disk) {
+static CupError require_not_installed(const char *component, const char *host_platform, const char *target_platform, 
+    const EntryContext *ctx, int in_state, int on_disk) {
     if (in_state && on_disk) {
         fprintf(stderr, "Error: '%s:", component);
         print_entry_resolution(stderr, ctx);
-        fprintf(stderr, "' is already installed for platform '%s'.\n", platform);
+        fprintf(stderr, "' is already installed for host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_ALREADY_INSTALLED;
     }
 
     if (in_state != on_disk) {
         fprintf(stderr, "Error: inconsistent install state detected for '%s:", component);
         print_entry_resolution(stderr, ctx);
-        fprintf(stderr, "' on platform '%s'.\n", platform);
+        fprintf(stderr, "' on host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
     return CUP_OK;
 }
 
-static CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *platform, const char *release, const char *archive_format) {
+static CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *host_platform, 
+    const char *target_platform, const char *version, const char *archive_format) {
     CupError err;
     char package_path[MAX_PATH_LEN];
 
-    if (tmp_path == NULL || component == NULL || tool == NULL || platform == NULL || release == NULL || archive_format == NULL ||
-        tmp_path[0] == '\0' || component[0] == '\0' || tool[0] == '\0' || platform[0] == '\0' || release[0] == '\0' || archive_format[0] == '\0'){
+    if (is_empty_string(tmp_path) || is_empty_string(component) || is_empty_string(tool) || is_empty_string(host_platform) || 
+        is_empty_string(target_platform) || is_empty_string(version) || is_empty_string(archive_format)){
         return CUP_ERR_INVALID_INPUT;
     }
 
     print_step("Fetching package...");
-    err = fetch_package(package_path, sizeof(package_path), component, tool, platform, release, archive_format);
+    err = fetch_package(package_path, sizeof(package_path), component, tool, host_platform, target_platform, version, archive_format);
     if (err != CUP_OK) {
         return err;
     }
 
     print_step("Extracting package...");
     err = extract_archive(package_path, tmp_path);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = write_component_info_at_path(tmp_path, component, tool, platform, release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return CUP_OK;
+    return err;
 }
 
-static CupError rollback_committed_install(const char *component, const char *platform, const EntryContext *ctx) {
+static CupError move_install_transaction(InstallTransaction *tx, InstallMoveDirection direction) {
     CupError err;
-    char install_path[MAX_PATH_LEN];
-    char tmp_path[MAX_PATH_LEN];
 
-    if (component == NULL || platform == NULL || ctx == NULL || 
-        component[0] == '\0' || platform[0] == '\0') {
+    if (tx == NULL || is_empty_string(tx->install_path) || is_empty_string(tx->tmp_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = build_install_path(install_path, sizeof(install_path), component, ctx->tool, platform, ctx->resolved_release);
-    if (err != CUP_OK) {
+    if (direction == MOVE_TMP_TO_INSTALL) {
+        err = commit_path(tx->tmp_path, tx->install_path);
         return err;
     }
 
-    err = create_tmp_remove_dir(tmp_path, sizeof(tmp_path), component, ctx->tool, ctx->resolved_release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = commit_path(install_path, tmp_path);
-    if (err != CUP_OK) {
-        cleanup_tmp_safely(tmp_path);
-        return err;
-    }
-
-    cleanup_tmp_safely(tmp_path);
-    return CUP_OK;
+    err = commit_path(tx->install_path, tx->tmp_path);
+    return err;
 }
 
-CupError handle_list(const char *platform_override) {
+static void clear_tmp_path(InstallTransaction *tx) {
+    if (tx == NULL) {
+        return;
+    }
+
+    tx->tmp_path[0] = '\0';
+}
+
+static void cleanup_tmp_transaction(InstallTransaction *tx) {
+    if (tx == NULL || is_empty_string(tx->tmp_path)) {
+        return;
+    }
+
+    cleanup_tmp_safely(tx->tmp_path);
+    clear_tmp_path(tx);
+}
+
+CupError handle_list(const char *target_override) {
     EntryContext ctx;
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-    char platform[MAX_PLATFORM_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    char target_platform[MAX_PLATFORM_LEN];
     int printed = 0;
     int has_annotation;
     int is_default;
     int is_stable;
+    int manifest_available;
     int on_disk;
     size_t i;
+
+    err = resolve_command_platforms(host_platform, sizeof(host_platform), target_platform, sizeof(target_platform), target_override);
+    if (err != CUP_OK) {
+        return err;
+    }
 
     err = get_state_file_path(state_file, sizeof(state_file));
     if (err != CUP_OK) {
@@ -384,64 +323,58 @@ CupError handle_list(const char *platform_override) {
         return err;
     }
 
-    err = resolve_command_platform(platform, sizeof(platform), platform_override);
-    if (err != CUP_OK) {
-        return err;
-    }
-
     for (i = 0; i < state.installed_count; ++i) {
         const char *default_entry;
 
-        if (strcmp(state.installed[i].platform, platform) != 0) {
+        if (strcmp(state.installed[i].host_platform, host_platform) != 0 ||
+            strcmp(state.installed[i].target_platform, target_platform) != 0) {
             continue;
         }
 
         if (!printed) {
-            printf("Installed components for '%s':\n", platform);
+            printf("Installed components for host '%s', target '%s':\n", host_platform, target_platform);
             printed = 1;
         }
         
         printf("- %s:%s", state.installed[i].component, state.installed[i].entry);
 
-
         err = parse_entry_context(state.installed[i].component, state.installed[i].entry, &ctx);
         if (err != CUP_OK) {
-            printf(" (invalid)");
-            printf("\n");
+            printf(" (invalid)\n");
             continue;
         }
 
-        err = resolve_entry_release(state.installed[i].component, platform, &ctx);
+        err = build_canonical_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
         if (err != CUP_OK) {
-            printf(" (manifest unavailable)");
-            printf("\n");
+            printf(" (invalid)\n");
             continue;
         }
 
-        err = installation_exists(state.installed[i].component, ctx.tool, platform, ctx.resolved_release, &on_disk);
+        err = installation_exists(state.installed[i].component, ctx.tool, host_platform, target_platform, ctx.release, &on_disk);
         if (err != CUP_OK) {
-            printf(" (could not inspect)");
-            printf("\n");
+            printf(" (could not inspect)\n");
             continue;
         }
 
         if (!on_disk) {
-            printf(" (missing on disk)");
-            printf("\n");
+            printf(" (missing on disk)\n");
             continue;
         }
 
-        default_entry = state_get_default(&state, state.installed[i].component, platform);
-        is_default = (default_entry != NULL && strcmp(default_entry, ctx.input_entry) == 0);
+        default_entry = state_get_default(&state, state.installed[i].component, host_platform, target_platform);
+        is_default = (default_entry != NULL && strcmp(default_entry, ctx.canonical_entry) == 0);
+        manifest_available = 1;
+        is_stable = 0;
 
-        err = is_stable_release(state.installed[i].component, ctx.tool, platform, ctx.resolved_release, &is_stable);
+        err = is_stable_version(state.installed[i].component, ctx.tool, host_platform, target_platform, ctx.release, &is_stable);
         if (err != CUP_OK) {
+            manifest_available = 0;
             is_stable = 0;
         }
 
         has_annotation = 0;
 
-        if (is_default || is_stable) {
+        if (is_default || is_stable || !manifest_available) {
             printf(" (");
 
             if (is_default) {
@@ -455,6 +388,15 @@ CupError handle_list(const char *platform_override) {
                 }
 
                 printf("stable");
+                has_annotation = 1;
+            }
+
+            if (!manifest_available) {
+                if (has_annotation) {
+                    printf(", ");
+                }
+
+                printf("manifest unavailable");
             }
 
             printf(")");
@@ -464,31 +406,31 @@ CupError handle_list(const char *platform_override) {
     }
 
     if (!printed) {
-        printf("No components installed for platform '%s'.\n", platform);
+        printf("No components installed for host '%s', target '%s'.\n", host_platform, target_platform);
     }
 
     return CUP_OK;
 }
 
-CupError handle_install(const char *component, const char *entry, const char *format_override, const char *platform_override) {
+CupError handle_install(const char *component, const char *entry, const char *target_override, const char *format_override) {
     EntryContext ctx;
     CupState state;
     CupError err;
     CupError rollback_err;
+    InstallTransaction tx;
     char state_file[MAX_PATH_LEN];
     char archive_format[MAX_NAME_LEN];
-    char platform[MAX_PLATFORM_LEN];
-    char tmp_path[MAX_PATH_LEN];
-    char install_path[MAX_PATH_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    char target_platform[MAX_PLATFORM_LEN];
     int version_available;
     int in_state;
     int on_disk;
 
-    tmp_path[0] = '\0';
+    memset(&tx, 0, sizeof(tx));
     interrupt_setup();
 
     print_step("Validating request...");
-    err = resolve_command_platform(platform, sizeof(platform), platform_override);
+    err = resolve_command_platforms(host_platform, sizeof(host_platform), target_platform, sizeof(target_platform), target_override);
     if (err != CUP_OK) {
         return err;
     }
@@ -499,23 +441,24 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     }
 
     print_step("Resolving release...");
-    err = resolve_entry_release(component, platform, &ctx);
+    err = resolve_entry_release(component, host_platform, target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = is_version_available(component, ctx.tool, platform, ctx.resolved_release, &version_available);
+    err = is_version_available(component, ctx.tool, host_platform, target_platform, ctx.resolved_release, &version_available);
     if (err != CUP_OK) {
         return err;
     }
 
     if (!version_available) {
-        fprintf(stderr, "Error: version '%s' is not available for tool '%s' on platform '%s'.\n", ctx.resolved_release, ctx.tool, platform);
+        fprintf(stderr, "Error: version '%s' is not available for tool '%s' on host '%s', target '%s'.\n",
+            ctx.resolved_release, ctx.tool, host_platform, target_platform);
         return CUP_ERR_INVALID_RELEASE;
     }
 
     print_step("Resolving package format...");
-    err = resolve_command_format(archive_format, sizeof(archive_format), component, platform, format_override, &ctx);
+    err = resolve_command_format(archive_format, sizeof(archive_format), component, host_platform, target_platform, format_override, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -532,82 +475,84 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     }
 
     print_step("Checking existing installation...");
-    err = check_install_presence(&state, component, platform, &ctx, &in_state, &on_disk);
+    err = check_install_presence(&state, component, host_platform, target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = require_not_installed(component, platform, &ctx, in_state, on_disk);
+    err = require_not_installed(component, host_platform, target_platform, &ctx, in_state, on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_tmp_install_dir(tmp_path, sizeof(tmp_path), component, ctx.tool, ctx.resolved_release);
+    err = create_tmp_dir(tx.tmp_path, sizeof(tx.tmp_path), "install", component, ctx.tool, ctx.resolved_release);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = stop_if_interrupted(tmp_path);
+    err = stop_if_interrupted(tx.tmp_path);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = perform_install(tmp_path, component, ctx.tool, platform, ctx.resolved_release, archive_format);
+    err = perform_install(tx.tmp_path, component, ctx.tool, host_platform, target_platform, ctx.resolved_release, archive_format);
     if (err != CUP_OK) {
-        cleanup_tmp_safely(tmp_path);
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
-    err = stop_if_interrupted(tmp_path);
+    err = stop_if_interrupted(tx.tmp_path);
     if (err != CUP_OK) {
         return err;
     }
 
     print_step("Validating installation...");
-    err = validate_install(tmp_path);
+    err = validate_install(tx.tmp_path);
     if (err != CUP_OK) {
-        cleanup_tmp_safely(tmp_path);
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
-    err = stop_if_interrupted(tmp_path);
+    err = stop_if_interrupted(tx.tmp_path);
     if (err != CUP_OK) {
         return err;
     }
 
     print_step("Preparing final installation directories...");
-    err = ensure_component_base_dirs(component, ctx.tool, platform);
+    err = ensure_component_base_dirs(component, ctx.tool, host_platform, target_platform);
     if (err != CUP_OK) {
-        cleanup_tmp_safely(tmp_path);
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
-    err = stop_if_interrupted(tmp_path);
+    err = stop_if_interrupted(tx.tmp_path);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = build_install_path(install_path, sizeof(install_path), component, ctx.tool, platform, ctx.resolved_release);
+    err = build_install_path(tx.install_path, sizeof(tx.install_path), component, ctx.tool, host_platform, target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
     print_step("Committing installation...");
-    err = commit_path(tmp_path, install_path);
+    err = move_install_transaction(&tx, MOVE_TMP_TO_INSTALL);
     if (err != CUP_OK) {
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
-    tmp_path[0] = '\0';
-
-    err = state_add_installed(&state, component, platform, ctx.canonical_entry);
+    err = state_add_installed(&state, component, host_platform, target_platform, ctx.canonical_entry);
     if (err != CUP_OK) {
-        rollback_err = rollback_committed_install(component, platform, &ctx);
+        rollback_err = move_install_transaction(&tx, MOVE_INSTALL_TO_TMP);
         if (rollback_err != CUP_OK) {
+            cleanup_tmp_transaction(&tx);
             fprintf(stderr, "Error: failed to add install to state and rollback failed for '%s:%s'.\n", component, ctx.input_entry);
             return CUP_ERR_ROLLBACK;
         }
 
+        cleanup_tmp_transaction(&tx);
         fprintf(stderr, "Error: failed to add install to state. Installation rolled back.\n");
         return err;
     }
@@ -615,39 +560,43 @@ CupError handle_install(const char *component, const char *entry, const char *fo
     print_step("Saving state...");
     err = state_save(&state, state_file);
     if (err != CUP_OK) {
-        rollback_err = rollback_committed_install(component, platform, &ctx);
+        rollback_err = move_install_transaction(&tx, MOVE_INSTALL_TO_TMP);
         if (rollback_err != CUP_OK) {
+            cleanup_tmp_transaction(&tx);
             fprintf(stderr, "Error: state save failed and rollback failed for '%s:%s'.\n", component, ctx.input_entry);
             return CUP_ERR_ROLLBACK;
         }
 
+        cleanup_tmp_transaction(&tx);
         fprintf(stderr, "Error: state save failed. Installation rolled back.\n");
         return CUP_ERR_STATE_SAVE;
     }
 
+    clear_tmp_path(&tx);
+
     printf("Installed %s ", component);
     print_entry_resolution(stdout, &ctx);
-    printf(" for platform '%s' successfully.\n", platform);
+    printf(" for host '%s', target '%s' successfully.\n", host_platform, target_platform);
     return CUP_OK;
 }
 
-CupError handle_remove(const char *component, const char *entry, const char *platform_override) {
+CupError handle_remove(const char *component, const char *entry, const char *target_override) {
     EntryContext ctx;
     CupState state;
     CupError err;
     CupError rollback_err;
+    InstallTransaction tx;
     char state_file[MAX_PATH_LEN];
-    char install_path[MAX_PATH_LEN];
-    char tmp_path[MAX_PATH_LEN];
-    char platform[MAX_PLATFORM_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    char target_platform[MAX_PLATFORM_LEN];
     int in_state;
     int on_disk;
 
-    tmp_path[0] = '\0';
+    memset(&tx, 0, sizeof(tx));
     interrupt_setup();
 
     print_step("Validating request...");
-    err = resolve_command_platform(platform, sizeof(platform), platform_override);
+    err = resolve_command_platforms(host_platform, sizeof(host_platform), target_platform, sizeof(target_platform), target_override);
     if (err != CUP_OK) {
         return err;
     }
@@ -658,7 +607,7 @@ CupError handle_remove(const char *component, const char *entry, const char *pla
     }
 
     print_step("Resolving release...");
-    err = resolve_entry_release(component, platform, &ctx);
+    err = resolve_entry_release(component, host_platform, target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -675,96 +624,93 @@ CupError handle_remove(const char *component, const char *entry, const char *pla
     }
 
     print_step("Checking installed package...");
-    err = check_install_presence(&state, component, platform, &ctx, &in_state, &on_disk);
+    err = check_install_presence(&state, component, host_platform, target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = require_consistent_installed(component, platform, &ctx, in_state, on_disk);
+    err = require_consistent_installed(component, host_platform, target_platform, &ctx, in_state, on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_tmp_remove_dir(tmp_path, sizeof(tmp_path), component, ctx.tool, ctx.resolved_release);
+    err = create_tmp_dir(tx.tmp_path, sizeof(tx.tmp_path), "remove", component, ctx.tool, ctx.resolved_release);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = stop_if_interrupted(tmp_path);
+    err = build_install_path(tx.install_path, sizeof(tx.install_path), component, ctx.tool, host_platform, target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
-        return err;
-    }
-
-    err = ensure_component_base_dirs(component, ctx.tool, platform);
-    if (err != CUP_OK) {
-        cleanup_tmp_safely(tmp_path);
-        return err;
-    }
-
-    err = stop_if_interrupted(tmp_path);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = build_install_path(install_path, sizeof(install_path), component, ctx.tool, platform, ctx.resolved_release);
-    if (err != CUP_OK) {
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
     print_step("Staging removal...");
-    err = commit_path(install_path, tmp_path);
+    err = move_install_transaction(&tx, MOVE_INSTALL_TO_TMP);
     if (err != CUP_OK) {
+        cleanup_tmp_transaction(&tx);
         return err;
     }
 
-    err = state_remove_installed(&state, component, platform, ctx.canonical_entry);
+    err = state_remove_installed(&state, component, host_platform, target_platform, ctx.canonical_entry);
     if (err != CUP_OK) {
+        rollback_err = move_install_transaction(&tx, MOVE_TMP_TO_INSTALL);
+        if (rollback_err != CUP_OK) {
+            fprintf(stderr, "Error: remove rollback failed for '%s:%s'.\n", component, ctx.input_entry);
+            return CUP_ERR_ROLLBACK;
+        }
+
+        clear_tmp_path(&tx);
         return err;
     }
 
-    err = state_remove_default_if_matches(&state, component, platform, ctx.canonical_entry);
+    err = state_remove_default_if_matches(&state, component, host_platform, target_platform, ctx.canonical_entry);
     if (err != CUP_OK) {
+        rollback_err = move_install_transaction(&tx, MOVE_TMP_TO_INSTALL);
+        if (rollback_err != CUP_OK) {
+            fprintf(stderr, "Error: remove rollback failed for '%s:%s'.\n", component, ctx.input_entry);
+            return CUP_ERR_ROLLBACK;
+        }
+
+        clear_tmp_path(&tx);
         return err;
     }
 
     print_step("Saving state...");
     err = state_save(&state, state_file);
     if (err != CUP_OK) {
-        rollback_err = commit_path(tmp_path, install_path);
+        rollback_err = move_install_transaction(&tx, MOVE_TMP_TO_INSTALL);
         if (rollback_err != CUP_OK) {
             fprintf(stderr, "Error: remove rollback failed for '%s:%s'.\n", component, ctx.input_entry);
             return CUP_ERR_ROLLBACK;
         }
 
-        tmp_path[0] = '\0';
-
+        clear_tmp_path(&tx);
         fprintf(stderr, "Error: could not save state after remove.\n");
         return err;
     }
 
-    install_path[0] = '\0';
-
     print_step("Cleaning temporary files...");
-    cleanup_tmp_safely(tmp_path);
-    tmp_path[0] = '\0';
+    cleanup_tmp_transaction(&tx);
 
     printf("Removed %s ", component);
     print_entry_resolution(stdout, &ctx);
-    printf(" for platform '%s' successfully.\n", platform);
+    printf(" for host '%s', target '%s' successfully.\n", host_platform, target_platform);
     return CUP_OK;
 }
 
-CupError handle_default(const char *component, const char *entry, const char *platform_override) {
+CupError handle_default(const char *component, const char *entry, const char *target_override) {
     EntryContext ctx;
     CupState state;
     CupError err;
     char state_file[MAX_PATH_LEN];
-    char platform[MAX_PLATFORM_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    char target_platform[MAX_PLATFORM_LEN];
     int in_state;
     int on_disk;
 
     print_step("Validating request...");
-    err = resolve_command_platform(platform, sizeof(platform), platform_override);
+    err = resolve_command_platforms(host_platform, sizeof(host_platform), target_platform, sizeof(target_platform), target_override);
     if (err != CUP_OK) {
         return err;
     }
@@ -775,7 +721,7 @@ CupError handle_default(const char *component, const char *entry, const char *pl
     }
 
     print_step("Resolving release...");
-    err = resolve_entry_release(component, platform, &ctx);
+    err = resolve_entry_release(component, host_platform, target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -792,17 +738,17 @@ CupError handle_default(const char *component, const char *entry, const char *pl
     }
 
     print_step("Checking installed package...");
-    err = check_install_presence(&state, component, platform, &ctx, &in_state, &on_disk);
+    err = check_install_presence(&state, component, host_platform, target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = require_consistent_installed(component, platform, &ctx, in_state, on_disk);
+    err = require_consistent_installed(component, host_platform, target_platform, &ctx, in_state, on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = state_set_default(&state, component, platform, ctx.canonical_entry);
+    err = state_set_default(&state, component, host_platform, target_platform, ctx.canonical_entry);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not set default for component '%s'.\n", component);
         return err;
@@ -814,24 +760,30 @@ CupError handle_default(const char *component, const char *entry, const char *pl
         return err;
     }
 
-    printf("Default %s for platform '%s' set to ", component, platform);
+    printf("Default %s for host '%s', target '%s' set to ", component, host_platform, target_platform);
     print_entry_resolution(stdout, &ctx);
     printf(".\n");
     return CUP_OK;
 }
 
-CupError handle_current(const char *component, const char *platform_override) {
+CupError handle_current(const char *component, const char *target_override) {
     EntryContext ctx;
     CupState state;
     CupError err;
     const char *default_entry;
     char state_file[MAX_PATH_LEN];
-    char platform[MAX_PLATFORM_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    char target_platform[MAX_PLATFORM_LEN];
     int is_stable;
     int in_state;
     int on_disk;
 
     err = validate_component(component);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = resolve_command_platforms(host_platform, sizeof(host_platform), target_platform, sizeof(target_platform), target_override);
     if (err != CUP_OK) {
         return err;
     }
@@ -846,14 +798,9 @@ CupError handle_current(const char *component, const char *platform_override) {
         return err;
     }
 
-    err = resolve_command_platform(platform, sizeof(platform), platform_override);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    default_entry = state_get_default(&state, component, platform);
+    default_entry = state_get_default(&state, component, host_platform, target_platform);
     if (default_entry == NULL) {
-        printf("No default set for component '%s' on platform '%s'.\n", component, platform);
+        printf("No default set for component '%s' on host '%s', target '%s'.\n", component, host_platform, target_platform);
         return CUP_OK;
     }
 
@@ -863,18 +810,18 @@ CupError handle_current(const char *component, const char *platform_override) {
     }
 
     print_step("Resolving release...");
-    err = resolve_entry_release(component, platform, &ctx);
+    err = resolve_entry_release(component, host_platform, target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = check_install_presence(&state, component, platform, &ctx, &in_state, &on_disk);
+    err = check_install_presence(&state, component, host_platform, target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
 
     if (!in_state || !on_disk) {
-        fprintf(stderr, "Error: default for component '%s' on platform '%s' points to an inconsistent installation '", component, platform);
+        fprintf(stderr, "Error: default for component '%s' on host '%s', target '%s' points to an inconsistent installation '", component, host_platform, target_platform);
         print_entry_resolution(stderr, &ctx);
         fprintf(stderr, "'.\n");
         return CUP_ERR_INCONSISTENT_STATE;
@@ -882,12 +829,12 @@ CupError handle_current(const char *component, const char *platform_override) {
 
     is_stable = 0;
 
-    err = is_stable_release(component, ctx.tool, platform, ctx.resolved_release, &is_stable);
+    err = is_stable_version(component, ctx.tool, host_platform, target_platform, ctx.resolved_release, &is_stable);
     if (err != CUP_OK) {
         is_stable = 0;
     }
 
-    printf("Current %s default for %s: %s", component, platform, ctx.input_entry);
+    printf("Current %s default for host '%s', target '%s': %s", component, host_platform, target_platform, ctx.input_entry);
     if (is_stable) {
         printf(" (stable)");
     }
