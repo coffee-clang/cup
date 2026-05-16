@@ -1,0 +1,248 @@
+/* Style for cup - The C toolchain installer */
+/* Visual identity from coffee-clang.github.io/recipes */
+* {box-sizing:border-box;}
+
+@media screen and (max-width: 800px){
+  body {margin: 2px;}
+}
+
+body {
+  margin-top: 0;
+  font-family: Verdana, sans-serif;
+  background-color: #f5e6d3;
+  color: #4a2c2a;
+}
+
+a {
+  color: #6b4438;
+}
+a:visited {
+  color: #4a2c2a;
+}
+
+/* Logo header area */
+.logo-container {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  background-color: #f5e6d3;
+}
+
+.logo {
+  float: left;
+  margin: 10px;
+  width: 120px;
+  height: 120px;
+  flex-shrink: 0;
+}
+
+.tagline {
+  text-align: left;
+  margin: 15px;
+  margin-top: 25px;
+}
+
+.tagline h1 {
+  margin: 0;
+  font-size: 32px;
+  color: #4a2c2a;
+  font-weight: bold;
+}
+
+.tagline p {
+  margin: 5px 0 0 0;
+  font-size: 18px;
+  color: #6b4438;
+}
+
+/* Navigation menu - same style as recipes site */
+.menu::before {
+  content: "";
+  clear: both;
+  display: block;
+}
+
+.menu ul {
+  margin: 0;
+  list-style-type: none;
+  padding: 0;
+}
+
+.menu ul li {
+  color: #f5e6d3;
+}
+
+.menu ul li a {
+  display: block;
+  color: #f5e6d3;
+  text-align: center;
+  padding: 0.7ex 1.4ex;
+  text-decoration: none;
+}
+
+.mainmenu ul {
+  background-color: #4a2c2a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mainmenu ul li {
+  float: left;
+}
+
+.mainmenu ul li.search {
+  float: right;
+}
+
+/* Content area */
+.content {
+  margin: 5%;
+}
+
+.content h1 {
+  border-bottom: 1px solid #4a2c2a;
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+  font-size: 1.5em;
+  color: #4a2c2a;
+}
+
+.content h2 {
+  color: #4a2c2a;
+  font-weight: normal;
+}
+
+/* Install instructions styling */
+.instructions {
+  margin: 0 auto;
+  text-align: center;
+  border: 1px solid #4a2c2a;
+  border-radius: 8px;
+  background-color: #e8dcc8;
+  padding: 1.5em;
+  margin-bottom: 2em;
+}
+
+.instructions p {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+.copy-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 1em 0;
+}
+
+.cup-command {
+  color: #2d1810;
+  background-color: #f5e6d3;
+  padding: 1rem 1.5rem;
+  margin: 0;
+  text-align: left;
+  border: 2px solid #4a2c2a;
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  overflow-x: auto;
+  font-size: 14px;
+  white-space: nowrap;
+  font-family: monospace;
+  flex: 1;
+  max-width: 100%;
+  line-height: 1.5;
+}
+
+.copy-container button.copy-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  height: auto;
+  min-height: 44px;
+  margin: 0;
+  border: 2px solid #4a2c2a;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  cursor: pointer;
+  background-color: #d4a574;
+  padding: 1rem;
+}
+
+.copy-container button.copy-button:hover {
+  background-color: #c49564;
+}
+
+div.copy-icon svg {
+  fill: #2d1810;
+  display: block;
+}
+
+.copy-button-text {
+  transition: opacity 0.2s ease-in-out;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  color: #4a2c2a;
+  font-size: 14px;
+  opacity: 0;
+  white-space: nowrap;
+  background: #f5e6d3;
+  padding: 2px 8px;
+  border: 1px solid #4a2c2a;
+  border-radius: 4px;
+}
+
+/* Help and footer */
+#help {
+  font-size: 16px;
+  text-align: center;
+  color: #6b4438;
+}
+
+#about {
+  font-size: 14px;
+  text-align: center;
+  color: #6b4438;
+  border-top: 2px solid #4a2c2a;
+  padding-top: 1em;
+  margin-top: 2em;
+}
+
+/* Utility classes */
+.display-none {
+  display: none;
+}
+
+.display-block {
+  display: block;
+}
+
+.display-inline {
+  display: inline;
+}
+
+/* Responsive */
+@media screen and (max-width: 600px) {
+  .logo-container {
+    flex-direction: column;
+    text-align: center;
+  }
+  .tagline {
+    text-align: center;
+    margin-top: 5px;
+  }
+  .cup-command {
+    font-size: 12px;
+    white-space: normal;
+    word-break: break-all;
+  }
+  .mainmenu ul li {
+    float: none;
+  }
+  .mainmenu ul li a {
+    text-align: left;
+  }
+}

@@ -2,101 +2,130 @@
 
 <head>
   <meta charset="utf-8">
-  <title>cup - The C toolchain installer</title>
+  <title>Cup - The C toolchain installer</title>
   <meta name="keywords" content="C, C programming language, cup, coffee">
   <meta name="description" content="The C toolchain installer">
   <link rel="stylesheet" href="normalize.css">
   <link rel="stylesheet" href="cup.css">
-  <link rel="icon" type="image/png" sizes="32x32" href="https://coffee-clang.github.io/recipes/logo.svg">
-  <link rel="icon" type="image/svg+xml" href="https://coffee-clang.github.io/recipes/logo.svg">
-
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
 </head>
 
-<body id="idx">
+<body>
 
-<main>
-<header>
-  <div>
-    <h1>Cup</h1>
-    <h2>An installer for the systems programming language C</a></h2>
+<!-- Header with logo - same style as coffee-clang.github.io/recipes -->
+<div class="logo-container">
+  <div class="logo">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+      <defs>
+        <linearGradient id="cupGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#4a2c2a;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#2d1810;stop-opacity:1" />
+        </linearGradient>
+        <linearGradient id="steamGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+          <stop offset="0%" style="stop-color:#d4a574;stop-opacity:0.8" />
+          <stop offset="100%" style="stop-color:#d4a574;stop-opacity:0" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="120" height="120" rx="12" fill="#f5e6d3" stroke="#4a2c2a" stroke-width="3"/>
+      <path d="M25 55 L28 95 Q28 105 38 105 L82 105 Q92 105 92 95 L95 55 Z" fill="url(#cupGrad)" stroke="#2d1810" stroke-width="2"/>
+      <path d="M95 62 Q110 62 110 77 Q110 92 95 92" fill="none" stroke="#2d1810" stroke-width="5" stroke-linecap="round"/>
+      <ellipse cx="60" cy="55" rx="35" ry="8" fill="#5d3a30"/>
+      <ellipse cx="60" cy="55" rx="32" ry="7" fill="#6b4438"/>
+      <path d="M40 35 Q44 27 40 20" fill="none" stroke="url(#steamGrad)" stroke-width="3" stroke-linecap="round">
+        <animate attributeName="d" values="M40 35 Q44 27 40 20;M40 32 Q36 24 40 17;M40 35 Q44 27 40 20" dur="3s" repeatCount="indefinite"/>
+      </path>
+      <path d="M60 30 Q64 20 60 13" fill="none" stroke="url(#steamGrad)" stroke-width="3" stroke-linecap="round">
+        <animate attributeName="d" values="M60 30 Q64 20 60 13;M60 27 Q56 17 60 10;M60 30 Q64 20 60 13" dur="3s" repeatCount="indefinite" begin="0.5s"/>
+      </path>
+      <path d="M80 35 Q84 27 80 20" fill="none" stroke="url(#steamGrad)" stroke-width="3" stroke-linecap="round">
+        <animate attributeName="d" values="M80 35 Q84 27 80 20;M80 32 Q76 24 80 17;M80 35 Q84 27 80 20" dur="3s" repeatCount="indefinite" begin="1s"/>
+      </path>
+      <g transform="translate(60, 80)" fill="#f5e6d3" font-family="monospace" font-weight="bold" font-size="20" text-anchor="middle">
+        <text x="-20" y="5">&lt;</text>
+        <text x="0" y="5">/</text>
+        <text x="18" y="5">&gt;</text>
+      </g>
+    </svg>
   </div>
-</header>
+  <div class="tagline">
+    <h1>Cup</h1>
+    <p>C Package Manager &mdash; Toolchain Installer</p>
+  </div>
+</div>
 
-<div id="platform-instructions-unix">
-  <p>Run the following in your terminal, then follow the onscreen instructions.</p>
+<!-- Navigation -->
+<nav class="menu mainmenu">
+  <ul>
+    <li><a href="https://coffee-clang.github.io/cup/">Home</a></li>
+    <li><a href="https://github.com/coffee-clang/cup">GitHub</a></li>
+  </ul>
+</nav>
+
+<div class="content">
+
+  <h1>Install Cup</h1>
+
+  <div class="instructions" id="platform-instructions-unix">
+    <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
       <pre class="cup-command">curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh</pre>
-      <button id="copy-button-unix" class="copy-button" title="Copy curl command to clipboard to download Cup" type="button">
+      <button id="copy-button-unix" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
-          <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg" alt="Copy curl command to clipboard to download Cup">
+          <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
             <path d="M18 20h2v3c0 1-1 2-2 2H2c-.998 0-2-1-2-2V5c0-.911.755-1.667 1.667-1.667h5A3.323 3.323 0 0110 0a3.323 3.323 0 013.333 3.333h5C19.245 3.333 20 4.09 20 5v8.333h-2V9H2v14h16v-3zM3 7h14c0-.911-.793-1.667-1.75-1.667H13.5c-.957 0-1.75-.755-1.75-1.666C11.75 2.755 10.957 2 10 2s-1.75.755-1.75 1.667c0 .911-.793 1.666-1.75 1.666H4.75C3.793 5.333 3 6.09 3 7z"></path><path d="M4 19h6v2H4zM12 11H4v2h8zM4 17h4v-2H4zM15 15v-3l-4.5 4.5L15 21v-3l8.027-.032L23 15z"></path>
           </svg>
         </div>
         <div id="copy-status-message-unix" class="copy-button-text">Copied!</div>
       </button>
     </div>
-</div>
+  </div>
 
-<div id="platform-instructions-win32">
-  <p>Run the following in your terminal, then follow the onscreen instructions.</p>
+  <div class="instructions" id="platform-instructions-win32">
+    <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
       <pre class="cup-command">irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex</pre>
-      <button id="copy-button-win32" class="copy-button" title="Copy curl command to clipboard to download Rustup" type="button">
-      <div class="copy-icon">
-        <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg" alt="Copy curl command to clipboard to download Rustup">
-          <path d="M18 20h2v3c0 1-1 2-2 2H2c-.998 0-2-1-2-2V5c0-.911.755-1.667 1.667-1.667h5A3.323 3.323 0 0110 0a3.323 3.323 0 013.333 3.333h5C19.245 3.333 20 4.09 20 5v8.333h-2V9H2v14h16v-3zM3 7h14c0-.911-.793-1.667-1.75-1.667H13.5c-.957 0-1.75-.755-1.75-1.666C11.75 2.755 10.957 2 10 2s-1.75.755-1.75 1.667c0 .911-.793 1.666-1.75 1.666H4.75C3.793 5.333 3 6.09 3 7z"></path><path d="M4 19h6v2H4zM12 11H4v2h8zM4 17h4v-2H4zM15 15v-3l-4.5 4.5L15 21v-3l8.027-.032L23 15z"></path>
-        </svg>
-      </div>
-      <div id="copy-status-message-win32" class="copy-button-text">Copied!</div>
-    </button>
-  </div>
-</div>
-
-<div id="platform-instructions-win64">
-  <p>Run the following in your terminal, then follow the onscreen instructions.</p>
-    <div class="copy-container">
-      <pre class="cup-command">irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex</pre>
-      <button id="copy-button-win64" class="copy-button" title="Copy curl command to clipboard to download Rustup" type="button">
-      <div class="copy-icon">
-        <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg" alt="Copy curl command to clipboard to download Rustup">
-          <path d="M18 20h2v3c0 1-1 2-2 2H2c-.998 0-2-1-2-2V5c0-.911.755-1.667 1.667-1.667h5A3.323 3.323 0 0110 0a3.323 3.323 0 013.333 3.333h5C19.245 3.333 20 4.09 20 5v8.333h-2V9H2v14h16v-3zM3 7h14c0-.911-.793-1.667-1.75-1.667H13.5c-.957 0-1.75-.755-1.75-1.666C11.75 2.755 10.957 2 10 2s-1.75.755-1.75 1.667c0 .911-.793 1.666-1.75 1.666H4.75C3.793 5.333 3 6.09 3 7z"></path><path d="M4 19h6v2H4zM12 11H4v2h8zM4 17h4v-2H4zM15 15v-3l-4.5 4.5L15 21v-3l8.027-.032L23 15z"></path>
-        </svg>
-      </div>
-      <div id="copy-status-message-win64" class="copy-button-text">Copied!</div>
-    </button>
-  </div>
-</div>
-
-
-<!-- duplicate the default cross-platform instructions -->
-    <p>If you are running Unix,<br/>run the following in your terminal, then follow the onscreen instructions.</p>
-    <div class="copy-container">
-      <pre class="rustup-command">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</pre>
-      <button id="copy-button-unknown" class="copy-button" title="Copy curl command to clipboard to download Rustup" type="button">
+      <button id="copy-button-win32" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
-          <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg" alt="Copy curl command to clipboard to download Rustup">
+          <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
             <path d="M18 20h2v3c0 1-1 2-2 2H2c-.998 0-2-1-2-2V5c0-.911.755-1.667 1.667-1.667h5A3.323 3.323 0 0110 0a3.323 3.323 0 013.333 3.333h5C19.245 3.333 20 4.09 20 5v8.333h-2V9H2v14h16v-3zM3 7h14c0-.911-.793-1.667-1.75-1.667H13.5c-.957 0-1.75-.755-1.75-1.666C11.75 2.755 10.957 2 10 2s-1.75.755-1.75 1.667c0 .911-.793 1.666-1.75 1.666H4.75C3.793 5.333 3 6.09 3 7z"></path><path d="M4 19h6v2H4zM12 11H4v2h8zM4 17h4v-2H4zM15 15v-3l-4.5 4.5L15 21v-3l8.027-.032L23 15z"></path>
           </svg>
         </div>
-        <div id="copy-status-message-unknown" class="copy-button-text">Copied!</div>
+        <div id="copy-status-message-win32" class="copy-button-text">Copied!</div>
       </button>
     </div>
+  </div>
 
-  <hr/>
+  <div class="instructions" id="platform-instructions-win64">
+    <p>Run the following in your terminal, then follow the onscreen instructions.</p>
+    <div class="copy-container">
+      <pre class="cup-command">irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex</pre>
+      <button id="copy-button-win64" class="copy-button" type="button" title="Copy install command">
+        <div class="copy-icon">
+          <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
+            <path d="M18 20h2v3c0 1-1 2-2 2H2c-.998 0-2-1-2-2V5c0-.911.755-1.667 1.667-1.667h5A3.323 3.323 0 0110 0a3.323 3.323 0 013.333 3.333h5C19.245 3.333 20 4.09 20 5v8.333h-2V9H2v14h16v-3zM3 7h14c0-.911-.793-1.667-1.75-1.667H13.5c-.957 0-1.75-.755-1.75-1.666C11.75 2.755 10.957 2 10 2s-1.75.755-1.75 1.666c0 .911-.793 1.666-1.75 1.666H4.75C3.793 5.333 3 6.09 3 7z"></path><path d="M4 19h6v2H4zM12 11H4v2h8zM4 17h4v-2H4zM15 15v-3l-4.5 4.5L15 21v-3l8.027-.032L23 15z"></path>
+          </svg>
+        </div>
+        <div id="copy-status-message-win64" class="copy-button-text">Copied!</div>
+      </button>
+    </div>
+  </div>
 
-<p id="help">
-  Need help?<br>
-  Please wait: the project is still pre-alpha!
-</p>
+  <hr class="xhr">
 
-<p id="about">
-  <img class="rust-logo" src="https://rust-lang.org/logos/rust-logo-blk.svg" alt="" />
-  Cup is heavily inspired by <a href="https://rustus.sh">Rustup</a>.
-  <a href="https://rust-lang.github.io/rustup-components-history/">component availability</a>
-  &nbsp;&middot;&nbsp;
-  <a href="https://rust-lang.github.io/rustup/">about rustup</a>
-</p>
-</main>
+  <p id="help">
+    Need help?<br>
+    Please wait: the project is still pre-alpha!
+  </p>
 
-<script src="rustup.js"></script>
+  <p id="about">
+    Cup is a <a href="https://coffee-clang.github.io/">Coffee</a> project.
+    &nbsp;&middot;&nbsp;
+    <a href="https://github.com/coffee-clang/cup">GitHub</a>
+    &nbsp;&middot;&nbsp;
+    Inspired by <a href="https://rustup.rs">Rustup</a>
+  </p>
+
+</div>
+
 </body>
+</html>
