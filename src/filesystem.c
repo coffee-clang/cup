@@ -193,6 +193,23 @@ static CupError get_cache_root_path(char *buffer, size_t size) {
     return err;
 }
 
+static CupError get_config_root_path(char *buffer, size_t size) {
+    CupError err;
+    char root[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = get_cup_root_path(root, sizeof(root));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = path_join(buffer, size, root, "config");
+    return err;
+}
+
 CupError get_state_file_path(char *buffer, size_t size) {
     CupError err;
     char root[MAX_PATH_LEN];
@@ -296,7 +313,7 @@ CupError check_cup_structure(size_t *missing_count) {
         return err;
     }
 
-    err = path_join(config_root, sizeof(config_root), cup_root, "config");
+    err = get_config_root_path(config_root, sizeof(config_root));
     if (err != CUP_OK) {
         return err;
     }
@@ -331,47 +348,58 @@ CupError check_cup_structure(size_t *missing_count) {
 
 CupError ensure_cup_structure(void) {
     CupError err;
-    char root[MAX_PATH_LEN];
-    char components[MAX_PATH_LEN];
-    char tmp[MAX_PATH_LEN];
-    char cache[MAX_PATH_LEN];
+    char cup_root[MAX_PATH_LEN];
+    char components_root[MAX_PATH_LEN];
+    char tmp_root[MAX_PATH_LEN];
+    char cache_root[MAX_PATH_LEN];
+    char config_root[MAX_PATH_LEN];
 
-    err = get_cup_root_path(root, sizeof(root));
+    err = get_cup_root_path(cup_root, sizeof(cup_root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_components_root_path(components, sizeof(components));
+    err = get_components_root_path(components_root, sizeof(components_root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_tmp_root_path(tmp, sizeof(tmp));
+    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_cache_root_path(cache, sizeof(cache));
+    err = get_cache_root_path(cache_root, sizeof(cache_root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_directory(root);
+    err = get_config_root_path(config_root, sizeof(config_root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_directory(components);
+    err = create_directory(cup_root);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_directory(tmp);
+    err = create_directory(components_root);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = create_directory(cache);
+    err = create_directory(tmp_root);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = create_directory(cache_root);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = create_directory(config_root);
     if (err != CUP_OK) {
         return err;
     }

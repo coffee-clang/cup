@@ -1260,6 +1260,9 @@ CupError handle_uninstall(void) {
         return err;
     }
 
-    printf("Uninstall started. cup will now exit.\n");
+    printf("Uninstall started.\n");
+    printf("cup will remove '%s' shortly and then exit.\n", cup_root);
+    printf("The PATH entry was not removed. This is safe to leave in place.\n");
+    printf("Open a new terminal if your shell still finds the old cup command.\n");
     return CUP_OK;
 }

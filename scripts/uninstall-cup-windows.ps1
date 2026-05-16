@@ -6,7 +6,6 @@ param(
 Start-Sleep -Seconds 1
 
 if ([string]::IsNullOrWhiteSpace($CupRoot)) {
-    Write-Error "Missing cup root."
     exit 1
 }
 
@@ -16,5 +15,4 @@ if (-not [string]::IsNullOrWhiteSpace($SelfPath)) {
     Remove-Item -LiteralPath $SelfPath -Force -ErrorAction SilentlyContinue
 }
 
-Write-Output "cup has been uninstalled."
-Write-Output "Note: PATH entries were not removed."
+exit 0
