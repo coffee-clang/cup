@@ -24,6 +24,8 @@ $CupAsset = "cup-windows-x64.exe"
 $PackagesAsset = "packages.cfg"
 $UninstallAsset = "uninstall.ps1"
 
+$CupAvailableInPath = $false
+
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
@@ -73,20 +75,35 @@ function Download-File {
     }
 }
 
-function Add-CupToUserPath {
+function Test-CupBinInUserPath {
     $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
     if ($null -eq $currentUserPath) {
-        $currentUserPath = ""
+        return $false
     }
 
     $pathEntries = $currentUserPath -split ";"
 
     foreach ($entry in $pathEntries) {
         if ($entry.TrimEnd("\") -ieq $CupBinDir.TrimEnd("\")) {
-            Write-Info "cup bin directory is already in the user PATH."
-            return
+            return $true
         }
+    }
+
+    return $false
+}
+
+function Add-CupToUserPath {
+    if (Test-CupBinInUserPath) {
+        $script:CupAvailableInPath = $true
+        Write-Info "cup bin directory is already in the user PATH."
+        return
+    }
+
+    $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+
+    if ($null -eq $currentUserPath) {
+        $currentUserPath = ""
     }
 
     $answer = Read-Host "Add $CupBinDir to your user PATH? [y/N]"
@@ -100,12 +117,29 @@ function Add-CupToUserPath {
 
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
 
+        $script:CupAvailableInPath = $true
+
         Write-Info "User PATH updated."
         Write-Info "Open a new terminal to use cup from PATH."
     } else {
+        $script:CupAvailableInPath = $false
+
         Write-Info "PATH not modified."
         Write-Info "To use cup without the full path, add this directory to your user PATH:"
         Write-Info "  $CupBinDir"
+    }
+}
+
+function Write-InstallTestHint {
+    Write-Info ""
+    Write-Info "You can test the installation with:"
+
+    if ($CupAvailableInPath) {
+        Write-Info "  cup help"
+        Write-Info ""
+        Write-Info "If 'cup' is not found yet, open a new terminal."
+    } else {
+        Write-Info "  & `"$CupExe`" help"
     }
 }
 
@@ -132,13 +166,9 @@ function Main {
     Write-Info "Binary:    $CupExe"
     Write-Info "Manifest:  $PackagesCfg"
     Write-Info "Uninstall: $UninstallScript"
-    Write-Info ""
 
     Add-CupToUserPath
-
-    Write-Info ""
-    Write-Info "You can test the installation with:"
-    Write-Info "  `"$CupExe`" help"
+    Write-InstallTestHint
 }
 
 Main

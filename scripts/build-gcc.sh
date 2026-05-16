@@ -41,6 +41,12 @@ TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 
+if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ]; then
+    IS_NATIVE_BUILD=1
+else
+    IS_NATIVE_BUILD=0
+fi
+
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
 
@@ -118,6 +124,12 @@ gcc_windows_target_configure_args() {
     fi
 }
 
+configure_target_args() {
+    if [ "$IS_NATIVE_BUILD" = "0" ]; then
+        printf '%s\n' --target="$TARGET_TRIPLE"
+    fi
+}
+
 tool_exe_suffix() {
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
         printf '.exe\n'
@@ -126,11 +138,62 @@ tool_exe_suffix() {
     fi
 }
 
+target_tool_name() {
+    local tool="$1"
+
+    if [ "$IS_NATIVE_BUILD" = "1" ]; then
+        printf '%s\n' "$tool"
+    else
+        printf '%s-%s\n' "$TARGET_TRIPLE" "$tool"
+    fi
+}
+
+resolve_target_tool() {
+    local tool="$1"
+    local tool_name
+
+    tool_name="$(target_tool_name "$tool")"
+    command -v "$tool_name" 2>/dev/null || true
+}
+
+require_bundled_target_tool() {
+    local tool="$1"
+    local tool_name
+    local resolved
+    local resolved_dir
+    local resolved_real
+    local prefix_bin
+
+    tool_name="$(target_tool_name "$tool")"
+    resolved="$(resolve_target_tool "$tool")"
+
+    if [ -z "$resolved" ]; then
+        die "target tool not found: $tool_name"
+    fi
+
+    resolved_dir="$(cd "$(dirname "$resolved")" && pwd -P)"
+    resolved_real="$resolved_dir/$(basename "$resolved")"
+    prefix_bin="$(cd "$PREFIX/bin" && pwd -P)"
+
+    case "$resolved_real" in
+        "$prefix_bin"/*)
+            log "  $tool_name -> $resolved_real"
+            ;;
+        *)
+            die "target tool '$tool_name' resolved outside package prefix: $resolved_real"
+            ;;
+    esac
+}
+
 ensure_prefixed_binutils_tools() {
     local tool
     local src
     local dst
     local exe_suffix
+
+    if [ "$IS_NATIVE_BUILD" = "1" ]; then
+        return 0
+    fi
 
     exe_suffix="$(tool_exe_suffix)"
 
@@ -162,7 +225,7 @@ remove_unprefixed_binutils_tools() {
     local tool
     local exe_suffix
 
-    if [ "$HOST_PLATFORM" != "windows-x64" ]; then
+    if [ "$HOST_PLATFORM" != "windows-x64" ] || [ "$IS_NATIVE_BUILD" = "1" ]; then
         return 0
     fi
 
@@ -176,38 +239,6 @@ remove_unprefixed_binutils_tools() {
             log "  removed: $PREFIX/bin/$tool$exe_suffix"
         fi
     done
-}
-
-resolve_target_tool() {
-    local tool="$1"
-    command -v "$TARGET_TRIPLE-$tool" 2>/dev/null || true
-}
-
-require_bundled_target_tool() {
-    local tool="$1"
-    local resolved
-    local resolved_dir
-    local resolved_real
-    local prefix_bin
-
-    resolved="$(resolve_target_tool "$tool")"
-
-    if [ -z "$resolved" ]; then
-        die "target tool not found: $TARGET_TRIPLE-$tool"
-    fi
-
-    resolved_dir="$(cd "$(dirname "$resolved")" && pwd -P)"
-    resolved_real="$resolved_dir/$(basename "$resolved")"
-    prefix_bin="$(cd "$PREFIX/bin" && pwd -P)"
-
-    case "$resolved_real" in
-        "$prefix_bin"/*)
-            log "  $TARGET_TRIPLE-$tool -> $resolved_real"
-            ;;
-        *)
-            die "target tool '$TARGET_TRIPLE-$tool' resolved outside package prefix: $resolved_real"
-            ;;
-    esac
 }
 
 require_bundled_binutils_tools() {
@@ -232,17 +263,19 @@ require_bundled_crt_tools() {
 
 log_target_tools_for_crt() {
     local tool
+    local tool_name
     local resolved
 
     log "target tools resolved for CRT/winpthreads:"
 
     for tool in gcc ar ranlib strip dlltool; do
+        tool_name="$(target_tool_name "$tool")"
         resolved="$(resolve_target_tool "$tool")"
 
         if [ -n "$resolved" ]; then
-            log "  $TARGET_TRIPLE-$tool -> $resolved"
+            log "  $tool_name -> $resolved"
         else
-            log "  missing: $TARGET_TRIPLE-$tool"
+            log "  missing: $tool_name"
         fi
     done
 }
@@ -280,6 +313,8 @@ build_native_gcc() {
 
     configure_and_build "$gcc_src" "$build_dir" \
         --prefix="$PREFIX" \
+        --build="$HOST_TRIPLE" \
+        --host="$HOST_TRIPLE" \
         --disable-werror \
         --disable-multilib \
         --enable-bootstrap \
@@ -287,15 +322,20 @@ build_native_gcc() {
         "${gcc_dep_args[@]}"
 }
 
-build_cross_binutils() {
+build_bundled_binutils() {
     local binutils_src="$1"
     local build_dir="$CUP_BUILD_DIR/binutils-$BINUTILS_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local target_args=()
 
-    log "building bundled Binutils $BINUTILS_VERSION for $TARGET_TRIPLE"
+    log "building bundled Binutils $BINUTILS_VERSION for $TARGET_PLATFORM"
+
+    mapfile -t target_args < <(configure_target_args)
 
     configure_and_build "$binutils_src" "$build_dir" \
         --prefix="$PREFIX" \
-        --target="$TARGET_TRIPLE" \
+        --build="$HOST_TRIPLE" \
+        --host="$HOST_TRIPLE" \
+        "${target_args[@]}" \
         --disable-werror \
         --disable-nls \
         --enable-ld \
@@ -332,11 +372,13 @@ build_gcc_stage1() {
     local configure_script
     local gcc_dep_args=()
     local gcc_target_args=()
+    local target_args=()
 
-    log "building stage-1 GCC for $TARGET_TRIPLE"
+    log "building stage-1 GCC for $TARGET_PLATFORM"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
+    mapfile -t target_args < <(configure_target_args)
 
     prepare_gcc_prerequisites "$gcc_src"
 
@@ -349,7 +391,9 @@ build_gcc_stage1() {
         cd "$build_dir"
         "$configure_script" \
             --prefix="$PREFIX" \
-            --target="$TARGET_TRIPLE" \
+            --build="$HOST_TRIPLE" \
+            --host="$HOST_TRIPLE" \
+            "${target_args[@]}" \
             --disable-werror \
             --disable-multilib \
             --enable-languages=c,c++ \
@@ -368,11 +412,22 @@ build_mingw_crt() {
     local crt_src="$mingw_src/mingw-w64-crt"
     local build_dir="$CUP_BUILD_DIR/mingw-crt-$MINGW_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_script
+    local cc_tool
+    local ar_tool
+    local ranlib_tool
+    local strip_tool
+    local dlltool_tool
 
     log "building bundled MinGW-w64 CRT $MINGW_VERSION"
 
     require_bundled_crt_tools
     log_target_tools_for_crt
+
+    cc_tool="$(target_tool_name gcc)"
+    ar_tool="$(target_tool_name ar)"
+    ranlib_tool="$(target_tool_name ranlib)"
+    strip_tool="$(target_tool_name strip)"
+    dlltool_tool="$(target_tool_name dlltool)"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -381,11 +436,11 @@ build_mingw_crt() {
 
     (
         cd "$build_dir"
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
-        DLLTOOL="$TARGET_TRIPLE-dlltool" \
+        CC="$cc_tool" \
+        AR="$ar_tool" \
+        RANLIB="$ranlib_tool" \
+        STRIP="$strip_tool" \
+        DLLTOOL="$dlltool_tool" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE" \
@@ -400,6 +455,11 @@ build_winpthreads() {
     local pthreads_src="$mingw_src/mingw-w64-libraries/winpthreads"
     local build_dir="$CUP_BUILD_DIR/winpthreads-$MINGW_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_script
+    local cc_tool
+    local ar_tool
+    local ranlib_tool
+    local strip_tool
+    local dlltool_tool
 
     if [ ! -d "$pthreads_src" ]; then
         log "winpthreads source directory not found; skipping"
@@ -411,6 +471,12 @@ build_winpthreads() {
     require_bundled_crt_tools
     log_target_tools_for_crt
 
+    cc_tool="$(target_tool_name gcc)"
+    ar_tool="$(target_tool_name ar)"
+    ranlib_tool="$(target_tool_name ranlib)"
+    strip_tool="$(target_tool_name strip)"
+    dlltool_tool="$(target_tool_name dlltool)"
+
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
 
@@ -418,11 +484,11 @@ build_winpthreads() {
 
     (
         cd "$build_dir"
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
-        DLLTOOL="$TARGET_TRIPLE-dlltool" \
+        CC="$cc_tool" \
+        AR="$ar_tool" \
+        RANLIB="$ranlib_tool" \
+        STRIP="$strip_tool" \
+        DLLTOOL="$dlltool_tool" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE"
@@ -437,11 +503,34 @@ build_gcc_final() {
     local configure_script
     local gcc_dep_args=()
     local gcc_target_args=()
+    local target_args=()
+    local cc_tool
+    local cxx_tool
+    local ar_tool
+    local as_tool
+    local ld_tool
+    local nm_tool
+    local ranlib_tool
+    local strip_tool
+    local dlltool_tool
+    local windres_tool
 
-    log "building final bundled GCC $VERSION for $TARGET_TRIPLE"
+    log "building final bundled GCC $VERSION for $TARGET_PLATFORM"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
+    mapfile -t target_args < <(configure_target_args)
+
+    cc_tool="$(target_tool_name gcc)"
+    cxx_tool="$(target_tool_name g++)"
+    ar_tool="$(target_tool_name ar)"
+    as_tool="$(target_tool_name as)"
+    ld_tool="$(target_tool_name ld)"
+    nm_tool="$(target_tool_name nm)"
+    ranlib_tool="$(target_tool_name ranlib)"
+    strip_tool="$(target_tool_name strip)"
+    dlltool_tool="$(target_tool_name dlltool)"
+    windres_tool="$(target_tool_name windres)"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -450,9 +539,21 @@ build_gcc_final() {
 
     (
         cd "$build_dir"
+        CC="$cc_tool" \
+        CXX="$cxx_tool" \
+        AR="$ar_tool" \
+        AS="$as_tool" \
+        LD="$ld_tool" \
+        NM="$nm_tool" \
+        RANLIB="$ranlib_tool" \
+        STRIP="$strip_tool" \
+        DLLTOOL="$dlltool_tool" \
+        WINDRES="$windres_tool" \
         "$configure_script" \
             --prefix="$PREFIX" \
-            --target="$TARGET_TRIPLE" \
+            --build="$HOST_TRIPLE" \
+            --host="$HOST_TRIPLE" \
+            "${target_args[@]}" \
             --disable-werror \
             --disable-multilib \
             --enable-languages=c,c++ \
@@ -473,7 +574,13 @@ build_bundled_windows_gcc() {
 
     log "building self-contained GCC package with bundled Binutils and MinGW-w64"
 
-    build_cross_binutils "$binutils_src"
+    if [ "$IS_NATIVE_BUILD" = "1" ]; then
+        log "using native MinGW-w64 build mode for $HOST_PLATFORM -> $TARGET_PLATFORM"
+    else
+        log "using cross MinGW-w64 build mode for $HOST_PLATFORM -> $TARGET_PLATFORM"
+    fi
+
+    build_bundled_binutils "$binutils_src"
     ensure_prefixed_binutils_tools
     remove_unprefixed_binutils_tools
     require_bundled_binutils_tools
@@ -490,12 +597,17 @@ write_gcc_info() {
     local includes_binutils="false"
     local includes_mingw="false"
     local bootstrap="true"
+    local tool_naming="native"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils,mingw-w64"
         includes_binutils="true"
         includes_mingw="true"
         bootstrap="false"
+    fi
+
+    if [ "$IS_NATIVE_BUILD" = "0" ]; then
+        tool_naming="target-prefixed"
     fi
 
     local info=(
@@ -520,6 +632,7 @@ write_gcc_info() {
         "config.languages=c,c++"
         "config.multilib=false"
         "config.bootstrap=$bootstrap"
+        "config.tool_naming=$tool_naming"
         "contents.self_contained=true"
     )
 

@@ -18,6 +18,8 @@ UNINSTALL_SCRIPT="$CUP_SCRIPTS_DIR/uninstall.sh"
 PACKAGES_ASSET="packages.cfg"
 UNINSTALL_ASSET="uninstall.sh"
 
+CUP_AVAILABLE_IN_PATH=0
+
 die() {
     printf 'Error: %s\n' "$*" >&2
     exit 1
@@ -104,15 +106,21 @@ path_line_exists() {
     grep -F 'export PATH="$HOME/.cup/bin:$PATH"' "$profile" >/dev/null 2>&1
 }
 
+cup_bin_in_current_path() {
+    printf '%s' ":$PATH:" | grep -F ":$CUP_BIN_DIR:" >/dev/null 2>&1
+}
+
 offer_path_update_unix_shell() {
     profile="$(detect_shell_profile)"
 
-    if printf '%s' ":$PATH:" | grep -F ":$CUP_BIN_DIR:" >/dev/null 2>&1; then
+    if cup_bin_in_current_path; then
+        CUP_AVAILABLE_IN_PATH=1
         info "cup bin directory is already available in PATH for this shell."
         return 0
     fi
 
     if path_line_exists "$profile"; then
+        CUP_AVAILABLE_IN_PATH=1
         info "PATH entry already exists in $profile."
         info "Restart your shell or run:"
         info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
@@ -128,11 +136,13 @@ offer_path_update_unix_shell() {
                 printf 'export PATH="$HOME/.cup/bin:$PATH"\n'
             } >> "$profile"
 
+            CUP_AVAILABLE_IN_PATH=1
             info "PATH updated in $profile."
             info "Restart your shell or run:"
             info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
             ;;
         *)
+            CUP_AVAILABLE_IN_PATH=0
             info "PATH not modified."
             info "To use cup without the full path, add this line to your shell profile:"
             info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
@@ -151,6 +161,22 @@ detect_arch_x64() {
             die "unsupported architecture: $arch. This installer currently supports x86_64 only."
             ;;
     esac
+}
+
+print_install_test_hint() {
+    cup_bin="$1"
+
+    info ""
+    info "You can test the installation with:"
+
+    if [ "$CUP_AVAILABLE_IN_PATH" = "1" ]; then
+        info "  cup help"
+        info ""
+        info "If 'cup' is not found yet, restart your shell or run:"
+        info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
+    else
+        info "  $cup_bin help"
+    fi
 }
 
 install_unix_like() {
@@ -189,19 +215,9 @@ install_unix_like() {
     info "Binary:    $cup_bin"
     info "Manifest:  $PACKAGES_CFG"
     info "Uninstall: $UNINSTALL_SCRIPT"
-    info ""
 
     offer_path_update_unix_shell
-
-    info ""
-    info "You can test the installation with:"
-    info "  $cup_bin help"
-
-    if [ "$installed_name" = "cup.exe" ]; then
-        info ""
-        info "From this shell, you may also be able to run:"
-        info "  cup help"
-    fi
+    print_install_test_hint "$cup_bin"
 }
 
 run_powershell_installer() {
