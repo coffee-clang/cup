@@ -1,23 +1,55 @@
 #include "commands.h"
+
 #include "filesystem.h"
 #include "options.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static void print_usage(const char *prog_name) {
+static void print_usage(FILE *stream, const char *prog_name) {
     if (prog_name == NULL) {
-        prog_name = "./cup";
+        prog_name = "cup";
     }
 
-    fprintf(stderr,
+    fprintf(stream,
         "Usage:\n"
+        "  %s help\n"
         "  %s list [--target <target-platform>]\n"
         "  %s install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]\n"
         "  %s remove <component> <tool>@<release> [--target <target-platform>]\n"
         "  %s default <component> <tool>@<release> [--target <target-platform>]\n"
-        "  %s current <component> [--target <target-platform>]\n",
-        prog_name, prog_name, prog_name, prog_name, prog_name);
+        "  %s current <component> [--target <target-platform>]\n"
+        "  %s doctor\n"
+        "  %s repair\n"
+        "  %s uninstall\n",
+        prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
+}
+
+static void print_help(const char *prog_name) {
+    print_usage(stdout, prog_name);
+
+    fprintf(stdout,
+        "\n"
+        "Commands:\n"
+        "  help       Show this help message.\n"
+        "  list       List installed components for the current host and selected target.\n"
+        "  install    Install a tool release for a component.\n"
+        "  remove     Remove an installed tool release.\n"
+        "  default    Set the default installed tool release for a component.\n"
+        "  current    Show the current default for a component.\n"
+        "  doctor     Check cup state and installation consistency without modifying files.\n"
+        "  repair     Repair safe cup state inconsistencies and clean temporary files.\n"
+        "  uninstall  Remove cup itself and all cup-managed data.\n"
+        "\n"
+        "Entry format:\n"
+        "  <tool>@<release>\n"
+        "\n"
+        "Examples:\n"
+        "  %s install compiler gcc@stable\n"
+        "  %s install compiler gcc@stable --target windows-x64\n"
+        "  %s default compiler gcc@stable\n"
+        "  %s current compiler\n",
+        prog_name, prog_name, prog_name, prog_name);
 }
 
 int main(int argc, char *argv[]) {
@@ -27,39 +59,46 @@ int main(int argc, char *argv[]) {
     int start_option;
 
     if (argc < 2) {
-        print_usage(argv[0]);
+        print_usage(stderr, argv[0]);
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = cleanup_all_tmp();
-    if (err != CUP_OK) {
-        fprintf(stderr, "Warning: could not clean temporary installation directories.\n");
-    }
-
     command = argv[1];
+
+    if (strcmp(command, "help") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Error: command 'help' does not accept arguments.\n");
+            print_usage(stderr, argv[0]);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        print_help(argv[0]);
+        return CUP_OK;
+    }
 
     if (strcmp(command, "list") == 0) {
         start_option = 2;
 
         err = parse_command_options(start_option, argc, argv, &options);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
         err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
-        return handle_list(options.target);
+        err = handle_list(options.target);
+        return err;
     }
 
     if (strcmp(command, "install") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: missing arguments for command 'install'.\n");
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -67,23 +106,24 @@ int main(int argc, char *argv[]) {
 
         err = parse_command_options(start_option, argc, argv, &options);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
         err = validate_command_options(&options, OPT_FORMAT | OPT_TARGET, command);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
-        return handle_install(argv[2], argv[3], options.target, options.format);
+        err = handle_install(argv[2], argv[3], options.target, options.format);
+        return err;
     }
 
     if (strcmp(command, "remove") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: missing arguments for command 'remove'.\n");
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -91,23 +131,24 @@ int main(int argc, char *argv[]) {
 
         err = parse_command_options(start_option, argc, argv, &options);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
         err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
-        return handle_remove(argv[2], argv[3], options.target);
+        err = handle_remove(argv[2], argv[3], options.target);
+        return err;
     }
 
     if (strcmp(command, "default") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: missing arguments for command 'default'.\n");
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -115,23 +156,24 @@ int main(int argc, char *argv[]) {
 
         err = parse_command_options(start_option, argc, argv, &options);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
         err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
-        return handle_default(argv[2], argv[3], options.target);
+        err = handle_default(argv[2], argv[3], options.target);
+        return err;
     }
 
     if (strcmp(command, "current") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Error: missing arguments for command 'current'.\n");
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return CUP_ERR_INVALID_INPUT;
         }
 
@@ -139,20 +181,54 @@ int main(int argc, char *argv[]) {
 
         err = parse_command_options(start_option, argc, argv, &options);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
 
         err = validate_command_options(&options, OPT_TARGET, command);
         if (err != CUP_OK) {
-            print_usage(argv[0]);
+            print_usage(stderr, argv[0]);
             return err;
         }
         
-        return handle_current(argv[2], options.target);
+        err = handle_current(argv[2], options.target);
+        return err;
+    }
+
+    if (strcmp(command, "doctor") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Error: command 'doctor' does not accept arguments.\n");
+            print_usage(stderr, argv[0]);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = handle_doctor();
+        return err;
+    }
+
+    if (strcmp(command, "repair") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Error: command 'repair' does not accept arguments.\n");
+            print_usage(stderr, argv[0]);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = handle_repair();
+        return err;
+    }
+
+    if (strcmp(command, "uninstall") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Error: command 'uninstall' does not accept arguments.\n");
+            print_usage(stderr, argv[0]);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = handle_uninstall();
+        return err;
     }
 
     fprintf(stderr, "Error: unknown command '%s'.\n", command);
-    print_usage(argv[0]);
+    print_usage(stderr, argv[0]);
     return CUP_ERR_INVALID_INPUT;
 }

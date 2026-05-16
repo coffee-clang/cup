@@ -1,48 +1,17 @@
 #include "extract.h"
+
 #include "constants.h"
 #include "interrupt.h"
+#include "package_archive.h"
+#include "path.h"
 #include "util.h"
 
 #include <archive.h>
 #include <archive_entry.h>
-
 #include <stdio.h>
 #include <string.h>
 
-static int path_has_parent_reference(const char *path) {
-    const char *start;
-    const char *slash;
-    size_t len;
-
-    if (path == NULL) {
-        return 1;
-    }
-
-    start = path;
-
-    while (*start != '\0') {
-        slash = strchr(start, '/');
-
-        if (slash == NULL) {
-            len = strlen(start);
-        } else {
-            len = (size_t)(slash - start);
-        }
-
-        if (len == 2 && start[0] == '.' && start[1] == '.') {
-            return 1;
-        }
-
-        if (slash == NULL) {
-            break;
-        }
-
-        start = slash + 1;
-    }
-
-    return 0;
-}
-
+// PATH REWRITING
 static const char *strip_first_path_component(const char *path) {
     const char *slash;
 
@@ -67,17 +36,17 @@ static CupError build_output_path(char *buffer, size_t size, const char *root, c
 
     if (entry_path[0] == '/') {
         fprintf(stderr, "Error: archive contains an absolute path '%s'.\n", entry_path);
-        return CUP_ERR_INSTALL;
+        return CUP_ERR_EXTRACT;
     }
 
-    if (path_has_parent_reference(entry_path)) {
+    if (path_has_parent_ref(entry_path)) {
         fprintf(stderr, "Error: archive contains an unsafe path '%s'.\n", entry_path);
-        return CUP_ERR_INSTALL;
+        return CUP_ERR_EXTRACT;
     }
 
-    err = checked_snprintf(buffer, size, "%s/%s", root, entry_path);
+    err = path_join(buffer, size, root, entry_path);
     if (err != CUP_OK) {
-        return CUP_ERR_INSTALL;
+        return CUP_ERR_EXTRACT;
     }
 
     return CUP_OK;
@@ -101,7 +70,7 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
     entry_path = archive_entry_pathname(entry);
     if (entry_path == NULL || entry_path[0] == '\0') {
         fprintf(stderr, "Error: archive entry has no pathname.\n");
-        return CUP_ERR_INSTALL;
+        return CUP_ERR_EXTRACT;
     }
 
     stripped_path = strip_first_path_component(entry_path);
@@ -123,7 +92,7 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
         stripped_hardlink = strip_first_path_component(hardlink_path);
         if (stripped_hardlink == NULL) {
             fprintf(stderr, "Error: archive contains invalid hardlink target '%s'.\n", hardlink_path);
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
 
         err = build_output_path(output_hardlink, sizeof(output_hardlink), tmp_path, stripped_hardlink);
@@ -137,6 +106,7 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
     return CUP_OK;
 }
 
+// DATA COPY
 static CupError copy_archive_data(struct archive *reader, struct archive *writer) {
     const void *buffer;
     size_t size;
@@ -159,7 +129,7 @@ static CupError copy_archive_data(struct archive *reader, struct archive *writer
 
         if (status != ARCHIVE_OK) {
             fprintf(stderr, "Error: failed while reading archive data: %s.\n", archive_error_string(reader));
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
 
         if (interrupt_requested()) {
@@ -169,11 +139,12 @@ static CupError copy_archive_data(struct archive *reader, struct archive *writer
         status = archive_write_data_block(writer, buffer, size, offset);
         if (status != ARCHIVE_OK) {
             fprintf(stderr, "Error: failed while writing archive data: %s.\n", archive_error_string(writer));
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
     }
 }
 
+// CLEANUP
 static void cleanup_archives(struct archive *reader, struct archive *writer) {
     if (reader != NULL) {
         archive_read_close(reader);
@@ -186,6 +157,7 @@ static void cleanup_archives(struct archive *reader, struct archive *writer) {
     }
 }
 
+// PUBLIC API
 CupError extract_archive(const char *archive_path, const char *tmp_path) {
     CupError err;
     struct archive *reader;
@@ -199,30 +171,17 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    reader = archive_read_new();
-    if (reader == NULL) {
-        fprintf(stderr, "Error: could not create libarchive reader.\n");
-        return CUP_ERR_INSTALL;
+    err = package_archive_open_reader(&reader, archive_path);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: failed to open archive '%s'.\n", archive_path);
+        return CUP_ERR_EXTRACT;
     }
 
     writer = archive_write_disk_new();
     if (writer == NULL) {
-        cleanup_archives(reader, NULL);
         fprintf(stderr, "Error: could not create libarchive writer.\n");
-        return CUP_ERR_INSTALL;
-    }
-
-    status = archive_read_support_filter_all(reader);
-    if (status != ARCHIVE_OK) {
-        fprintf(stderr, "Error: could not enable archive filters: %s", archive_error_string(reader));
-        cleanup_archives(reader, writer);
-        return CUP_ERR_INSTALL;
-    }
-    status = archive_read_support_format_all(reader);
-    if (status != ARCHIVE_OK) {
-        fprintf(stderr, "Error: could not enable archive formats: %s", archive_error_string(reader));
-        cleanup_archives(reader, writer);
-        return CUP_ERR_INSTALL;
+        cleanup_archives(reader, NULL);
+        return CUP_ERR_EXTRACT;
     }
 
     status = archive_write_disk_set_options(writer,
@@ -234,14 +193,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
     if (status != ARCHIVE_OK) {
         fprintf(stderr, "Error: could not configure archive writer: %s", archive_error_string(writer));
         cleanup_archives(reader, writer);
-        return CUP_ERR_INSTALL;
-    }
-
-    status = archive_read_open_filename(reader, archive_path, 10240);
-    if (status != ARCHIVE_OK) {
-        fprintf(stderr, "Error: failed to open archive '%s': %s.\n", archive_path, archive_error_string(reader));
-        cleanup_archives(reader, writer);
-        return CUP_ERR_INSTALL;
+        return CUP_ERR_EXTRACT;
     }
 
     for (;;) {
@@ -258,7 +210,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         if (status != ARCHIVE_OK) {
             fprintf(stderr, "Error: failed to read archive header: %s.\n", archive_error_string(reader));
             cleanup_archives(reader, writer);
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
 
         if (interrupt_requested()) {
@@ -283,9 +235,10 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
 
         status = archive_write_header(writer, entry);
         if (status != ARCHIVE_OK) {
-            fprintf(stderr, "Error: failed to write archive entry '%s': %s.\n", archive_entry_pathname(entry), archive_error_string(writer));
+            fprintf(stderr, "Error: failed to write archive entry '%s': %s.\n", 
+                archive_entry_pathname(entry), archive_error_string(writer));
             cleanup_archives(reader, writer);
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
 
         err = copy_archive_data(reader, writer);
@@ -301,9 +254,10 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
 
         status = archive_write_finish_entry(writer);
         if (status != ARCHIVE_OK) {
-            fprintf(stderr, "Error: failed to finalize archive entry '%s': %s.\n", archive_entry_pathname(entry), archive_error_string(writer));
+            fprintf(stderr, "Error: failed to finalize archive entry '%s': %s.\n", 
+                archive_entry_pathname(entry), archive_error_string(writer));
             cleanup_archives(reader, writer);
-            return CUP_ERR_INSTALL;
+            return CUP_ERR_EXTRACT;
         }
     }
 

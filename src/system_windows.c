@@ -1,5 +1,8 @@
 #include "system.h"
+
 #include "constants.h"
+#include "filesystem.h"
+#include "path.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -11,22 +14,16 @@ static void print_windows_error(const char *message, const char *path) {
 
     error_code = GetLastError();
 
-    if (!is_empty_string(message) || !is_empty_string(path)) {
-        fprintf(stderr, "Error: %s '%s' failed with Windows error code %lu.\n", message, path, (unsigned long)error_code);
-    } else {
+    if (is_empty_string(message)) {
+        message = "Windows operation";
+    }
+
+    if (is_empty_string(path)) {
         fprintf(stderr, "Error: %s failed with Windows error code %lu.\n", message, (unsigned long)error_code);
-    }
-}
-
-static CupError build_child_path(char *buffer, size_t size, const char *parent, const char *name) {
-    CupError err;
-
-    if (buffer == NULL || size == 0 || is_empty_string(parent) || is_empty_string(name)) {
-        return CUP_ERR_INVALID_INPUT;
+        return;
     }
 
-    err = checked_snprintf(buffer, size, "%s/%s", parent, name);
-    return err;
+    fprintf(stderr, "Error: %s '%s' failed with Windows error code %lu.\n", message, path, (unsigned long)error_code);
 }
 
 static CupError build_search_pattern(char *buffer, size_t size, const char *path) {
@@ -40,18 +37,26 @@ static CupError build_search_pattern(char *buffer, size_t size, const char *path
     return err;
 }
 
-static void fill_path_info_from_attributes(DWORD attributes, SystemPathInfo *info) {
-    int is_directory;
+static int attributes_is_directory(DWORD attributes) {
+    return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
 
+static int attributes_is_reparse_point(DWORD attributes) {
+    return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
+static int attributes_is_regular_file(DWORD attributes) {
+    return !attributes_is_directory(attributes) && !attributes_is_reparse_point(attributes);
+}
+
+static void fill_path_info_from_attributes(DWORD attributes, SystemPathInfo *info) {
     if (info == NULL) {
         return;
     }
 
-    is_directory = ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
-
-    info->is_reparse_point = ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
-    info->is_directory = is_directory && !info->is_reparse_point;
-    info->is_regular_file = !info->is_directory;
+    info->is_directory = attributes_is_directory(attributes);
+    info->is_reparse_point = attributes_is_reparse_point(attributes);
+    info->is_regular_file = attributes_is_regular_file(attributes);
 }
 
 CupError system_get_home_dir(char *buffer, size_t size) {
@@ -84,6 +89,83 @@ CupError system_get_process_id(char *buffer, size_t size) {
 
     err = checked_snprintf(buffer, size, "%lu", (unsigned long)GetCurrentProcessId());
     return err;
+}
+
+CupError system_start_uninstall(const char *cup_root, const char *uninstall_script) {
+    CupError err;
+    char tmp_path[MAX_PATH_LEN];
+    char pid_suffix[MAX_NAME_LEN];
+    char script_name[MAX_NAME_LEN];
+    char tmp_script[MAX_PATH_LEN];
+    char command[MAX_PATH_LEN * 4];
+    DWORD length;
+    BOOL success;
+    STARTUPINFOA startup_info;
+    PROCESS_INFORMATION process_info;
+
+    if (is_empty_string(cup_root) || is_empty_string(uninstall_script)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    length = GetTempPathA(sizeof(tmp_path), tmp_path);
+    if (length == 0 || length >= sizeof(tmp_path)) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = system_get_process_id(pid_suffix, sizeof(pid_suffix));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = checked_snprintf(script_name, sizeof(script_name), "cup-uninstall-%s.ps1", pid_suffix);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = checked_snprintf(tmp_script, sizeof(tmp_script), "%s%s", tmp_path, script_name);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = copy_file(uninstall_script, tmp_script);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = checked_snprintf(command, sizeof(command),
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%s\" -CupRoot \"%s\" -SelfPath \"%s\"",
+        tmp_script, cup_root, tmp_script);
+    if (err != CUP_OK) {
+        system_remove_file(tmp_script);
+        return err;
+    }
+
+    ZeroMemory(&startup_info, sizeof(startup_info));
+    startup_info.cb = sizeof(startup_info);
+    ZeroMemory(&process_info, sizeof(process_info));
+
+    success = CreateProcessA(
+        NULL,
+        command,
+        NULL,
+        NULL,
+        FALSE,
+        0,
+        NULL,
+        NULL,
+        &startup_info,
+        &process_info
+    );
+
+    if (!success) {
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+
+    return CUP_OK;
 }
 
 CupError system_make_directory(const char *path) {
@@ -210,7 +292,7 @@ CupError system_is_directory(const char *path, int *is_directory) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    *is_directory = ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    *is_directory = attributes_is_directory(attributes);
     return CUP_OK;
 }
 
@@ -235,7 +317,7 @@ CupError system_is_regular_file(const char *path, int *is_regular_file) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    *is_regular_file = ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0);
+    *is_regular_file = attributes_is_regular_file(attributes);
     return CUP_OK;
 }
 
@@ -302,7 +384,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
             continue;
         }
 
-        err = build_child_path(child_path, sizeof(child_path), path, find_data.cFileName);
+        err = path_join(child_path, sizeof(child_path), path, find_data.cFileName);
         if (err != CUP_OK) {
             FindClose(find_handle);
             return err;
@@ -310,7 +392,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
 
         fill_path_info_from_attributes(find_data.dwFileAttributes, &info);
 
-        if (info.is_directory) {
+        if (info.is_directory && !info.is_reparse_point) {
             err = system_walk_directory(child_path, callback, userdata);
             if (err != CUP_OK) {
                 FindClose(find_handle);

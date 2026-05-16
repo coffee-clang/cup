@@ -8,4 +8,4 @@
 CupError get_host_platform(char *buffer, size_t size);
 CupError validate_platform(const char *platform);
 
-#endif
+#endif /* CUP_PLATFORM_H */

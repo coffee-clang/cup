@@ -3,17 +3,16 @@
 
 #include "error.h"
 
+#define OPT_FORMAT (1u << 0)
+#define OPT_TARGET (1u << 1)
+
 typedef struct {
     const char *format;
     const char *target;
     unsigned seen;
 } CommandOptions;
 
-#define OPT_FORMAT (1u << 0)
-#define OPT_TARGET (1u << 1)
-
 CupError parse_command_options(int start_option, int argc, char *argv[], CommandOptions *options);
-
 CupError validate_command_options(const CommandOptions *options, unsigned allowed_options, const char *command_name);
 
 #endif /* CUP_OPTIONS_H */

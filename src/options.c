@@ -1,9 +1,11 @@
 #include "options.h"
+
 #include "util.h"
 
 #include <stdio.h>
 #include <string.h>
 
+// TYPES
 typedef enum {
     OPTION_VALUE_NONE = 0,
     OPTION_VALUE_REQUIRED
@@ -22,6 +24,7 @@ typedef struct {
     OptionValueMode value_mode;
 } OptionDefinition;
 
+// DEFINITIONS
 static const OptionDefinition OPTION_DEFINITIONS[] = {
     {
         "--format",
@@ -39,6 +42,7 @@ static const OptionDefinition OPTION_DEFINITIONS[] = {
     }
 };
 
+// INTERNAL HELPERS
 static void init_command_options(CommandOptions *options) {
     if (options == NULL) {
         return;
@@ -74,10 +78,20 @@ static const OptionDefinition *find_option_definition(const char *name) {
 }
 
 static CupError set_option_value(CommandOptions *options, const OptionDefinition *definition, const char *value) {
-    if (options == NULL || definition == NULL || is_empty_string(value)) {
+    if (options == NULL || definition == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    
+
+    if (definition->value_mode == OPTION_VALUE_REQUIRED && is_empty_string(value)) {
+        fprintf(stderr, "Error: missing value for option '%s'.\n", definition->long_name);
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (definition->value_mode == OPTION_VALUE_NONE && value != NULL) {
+        fprintf(stderr, "Error: option '%s' does not accept a value.\n", definition->long_name);
+        return CUP_ERR_INVALID_INPUT;
+    }
+
     if ((options->seen & definition->flag) != 0) {
         fprintf(stderr, "Error: duplicate option '%s'.\n", definition->long_name);
         return CUP_ERR_INVALID_INPUT;
@@ -99,6 +113,7 @@ static CupError set_option_value(CommandOptions *options, const OptionDefinition
     }
 }
 
+// PUBLIC API
 CupError parse_command_options(int start_option, int argc, char *argv[], CommandOptions *options) {
     CupError err;
     int i;

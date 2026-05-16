@@ -15,6 +15,7 @@ typedef CupError (*SystemDirectoryCallback)(const char *path, const SystemPathIn
 
 CupError system_get_home_dir(char *buffer, size_t size);
 CupError system_get_process_id(char *buffer, size_t size);
+CupError system_start_uninstall(const char *cup_root, const char *uninstall_script);
 
 CupError system_make_directory(const char *path);
 CupError system_remove_directory(const char *path);

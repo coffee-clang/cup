@@ -1,17 +1,19 @@
 #include "fetch.h"
-#include "filesystem.h"
-#include "constants.h"
-#include "manifest.h"
-#include "util.h"
-#include "interrupt.h"
-#include "system.h"
 
+#include "constants.h"
+#include "filesystem.h"
+#include "interrupt.h"
+#include "manifest.h"
+#include "package_archive.h"
+#include "system.h"
+#include "util.h"
+
+#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <curl/curl.h>
-
+// CALLBACKS
 static size_t write_file_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
     FILE *file;
 
@@ -33,6 +35,7 @@ static int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow
     return interrupt_requested() ? 1 : 0;
 }
 
+// URL HELPERS
 static CupError get_archive_name(char *buffer, size_t size, const char *url) {
     CupError err;
     const char *slash;
@@ -75,6 +78,7 @@ static CupError get_archive_name(char *buffer, size_t size, const char *url) {
     return err;
 }
 
+// DOWNLOAD
 static CupError download_package(const char *url, const char *dst_path) {
     CURL *curl;
     CURLcode res;
@@ -175,23 +179,23 @@ static CupError download_package(const char *url, const char *dst_path) {
         return CUP_ERR_FETCH;
     }
 
-    err = archive_is_usable(dst_path, &usable);
+    err = package_archive_is_usable(dst_path, &usable);
     if (err != CUP_OK) {
         system_remove_file(dst_path);
-        return CUP_ERR_FETCH;
+        return err;
     }
 
     if (!usable) {
         system_remove_file(dst_path);
-        fprintf(stderr, "Error: downloaded package is empty or was not created correctly.\n");
-        return CUP_ERR_FETCH;
+        fprintf(stderr, "Error: downloaded package is empty or is not a readable archive.\n");
+        return CUP_ERR_ARCHIVE;
     }
 
     return CUP_OK;
 }
 
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, 
-    const char *target_platform, const char *version, const char *archive_format) {
+// PUBLIC API
+CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version, const char *archive_format) {
     CupError err;
     char archive_path[MAX_PATH_LEN];
     char archive_name[MAX_PATH_LEN];
@@ -224,7 +228,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
         return err;
     }
 
-    err = archive_is_usable(archive_path, &usable);
+    err = package_archive_is_usable(archive_path, &usable);
     if (err != CUP_OK) {
         return err;
     }

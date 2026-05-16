@@ -9,8 +9,8 @@ on:
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
-      - "scripts/bootstrap-linux-deps.sh"
       - "scripts/install-cup.sh"
+      - "scripts/uninstall-cup.sh"
       - ".github/workflows/build-cup-linux.yml"
 
   workflow_dispatch:
@@ -34,6 +34,7 @@ jobs:
 
     env:
       PLATFORM: linux-x64
+      LINK_MODE: static
       RELEASE_TAG: cup-bootstrap
 
     steps:
@@ -62,7 +63,7 @@ jobs:
 
       - name: Build cup
         run: |
-          make PLATFORM="$PLATFORM"
+          make PLATFORM="$PLATFORM" LINK_MODE="$LINK_MODE"
 
       - name: Prepare release assets
         run: |
@@ -76,10 +77,14 @@ jobs:
           cp scripts/install-cup.sh dist/install.sh
           chmod +x dist/install.sh
 
+          cp scripts/uninstall-cup.sh dist/uninstall.sh
+          chmod +x dist/uninstall.sh
+
           sha256sum \
             dist/cup-linux-x64 \
             dist/packages.cfg \
-            dist/install.sh > dist/SHA256SUMS
+            dist/install.sh \
+            dist/uninstall.sh > dist/SHA256SUMS
 
       - name: Upload workflow artifact
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == 'false' }}
@@ -90,6 +95,7 @@ jobs:
             dist/cup-linux-x64
             dist/packages.cfg
             dist/install.sh
+            dist/uninstall.sh
             dist/SHA256SUMS
 
       - name: Ensure release exists
@@ -114,5 +120,6 @@ jobs:
             dist/cup-linux-x64 \
             dist/packages.cfg \
             dist/install.sh \
+            dist/uninstall.sh \
             dist/SHA256SUMS \
             --clobber

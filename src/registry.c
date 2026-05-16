@@ -1,4 +1,5 @@
 #include "registry.h"
+
 #include "util.h"
 
 #include <stdio.h>
@@ -14,7 +15,7 @@ typedef struct {
 static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "compiler", { "gcc", "clang", NULL } },
     { "debugger", { "gdb", "lldb", NULL } },
-    { "linker",   { "lld", NULL} }
+    { "linker", { "lld", NULL } }
 };
 
 static const SupportedComponent *find_supported_component(const char *component) {

@@ -1,4 +1,5 @@
 #include "platform.h"
+
 #include "constants.h"
 #include "util.h"
 
@@ -13,9 +14,8 @@ typedef struct {
 } SupportedPlatform;
 
 static const SupportedPlatform SUPPORTED_PLATFORM[] = {
-    { "linux", { "x64", "arm64", NULL } },
-    { "windows", { "x64", "arm64", NULL } },
-    { "macos", { "x64", "arm64", NULL } }
+    { "linux", { "x64", NULL } },
+    { "windows", { "x64", NULL } }
 };
 
 static const SupportedPlatform *find_supported_os(const char *os) {

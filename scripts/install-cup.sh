@@ -10,9 +10,13 @@ BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELE
 CUP_HOME="${CUP_HOME:-"$HOME/.cup"}"
 CUP_BIN_DIR="$CUP_HOME/bin"
 CUP_CONFIG_DIR="$CUP_HOME/config"
+CUP_SCRIPTS_DIR="$CUP_HOME/scripts"
 
 PACKAGES_CFG="$CUP_CONFIG_DIR/packages.cfg"
+UNINSTALL_SCRIPT="$CUP_SCRIPTS_DIR/uninstall.sh"
+
 PACKAGES_ASSET="packages.cfg"
+UNINSTALL_ASSET="uninstall.sh"
 
 die() {
     printf 'Error: %s\n' "$*" >&2
@@ -167,6 +171,7 @@ install_unix_like() {
 
     mkdir -p "$CUP_BIN_DIR"
     mkdir -p "$CUP_CONFIG_DIR"
+    mkdir -p "$CUP_SCRIPTS_DIR"
 
     info "Downloading cup binary..."
     download_file "$BASE_URL/$cup_asset" "$cup_bin"
@@ -175,22 +180,27 @@ install_unix_like() {
     info "Downloading package manifest..."
     download_file "$BASE_URL/$PACKAGES_ASSET" "$PACKAGES_CFG"
 
+    info "Downloading uninstall script..."
+    download_file "$BASE_URL/$UNINSTALL_ASSET" "$UNINSTALL_SCRIPT"
+    chmod +x "$UNINSTALL_SCRIPT"
+
     info ""
     info "cup installed successfully."
-    info "Binary:   $cup_bin"
-    info "Manifest: $PACKAGES_CFG"
+    info "Binary:    $cup_bin"
+    info "Manifest:  $PACKAGES_CFG"
+    info "Uninstall: $UNINSTALL_SCRIPT"
     info ""
 
     offer_path_update_unix_shell
 
     info ""
     info "You can test the installation with:"
-    info "  $cup_bin list"
+    info "  $cup_bin help"
 
     if [ "$installed_name" = "cup.exe" ]; then
         info ""
         info "From this shell, you may also be able to run:"
-        info "  cup list"
+        info "  cup help"
     fi
 }
 

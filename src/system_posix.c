@@ -1,26 +1,18 @@
 #include "system.h"
+
 #include "constants.h"
+#include "filesystem.h"
+#include "path.h"
 #include "util.h"
 
+#include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <dirent.h>
-
-static CupError build_child_path(char *buffer, size_t size, const char *parent, const char *name) {
-    CupError err;
-
-    if (buffer == NULL || size == 0 || is_empty_string(parent) || is_empty_string(name)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = checked_snprintf(buffer, size, "%s/%s", parent, name);
-    return err;
-}
 
 static CupError system_get_path_info(const char *path, SystemPathInfo *info) {
     struct stat stat_info;
@@ -35,8 +27,8 @@ static CupError system_get_path_info(const char *path, SystemPathInfo *info) {
     }
 
     info->is_directory = S_ISDIR(stat_info.st_mode);
+    info->is_reparse_point = S_ISLNK(stat_info.st_mode);
     info->is_regular_file = S_ISREG(stat_info.st_mode);
-    info->is_reparse_point = 0;
 
     return CUP_OK;
 }
@@ -68,6 +60,50 @@ CupError system_get_process_id(char *buffer, size_t size) {
 
     err = checked_snprintf(buffer, size, "%ld", (long)getpid());
     return err;
+}
+
+CupError system_start_uninstall(const char *cup_root, const char *uninstall_script) {
+    CupError err;
+    char pid_suffix[MAX_NAME_LEN];
+    char tmp_script[MAX_PATH_LEN];
+    pid_t pid;
+
+    if (is_empty_string(cup_root) || is_empty_string(uninstall_script)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = system_get_process_id(pid_suffix, sizeof(pid_suffix));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = checked_snprintf(tmp_script, sizeof(tmp_script), "/tmp/cup-uninstall-%s.sh", pid_suffix);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = copy_file(uninstall_script, tmp_script);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (chmod(tmp_script, S_IRUSR | S_IWUSR | S_IXUSR) != 0) {
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if (pid == 0) {
+        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script, (char *) NULL);
+        _exit(127);
+    }
+
+    return CUP_OK;
 }
 
 CupError system_make_directory(const char *path) {
@@ -233,7 +269,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
             continue;
         }
 
-        err = build_child_path(child_path, sizeof(child_path), path, entry->d_name);
+        err = path_join(child_path, sizeof(child_path), path, entry->d_name);
         if (err != CUP_OK) {
             closedir(directory);
             return err;
@@ -245,7 +281,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
             return err;
         }
 
-        if (info.is_directory) {
+        if (info.is_directory && !info.is_reparse_point) {
             err = system_walk_directory(child_path, callback, userdata);
             if (err != CUP_OK) {
                 closedir(directory);

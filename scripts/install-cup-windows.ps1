@@ -14,12 +14,15 @@ $CupHome = if ($env:CUP_HOME) {
 
 $CupBinDir = Join-Path $CupHome "bin"
 $CupConfigDir = Join-Path $CupHome "config"
+$CupScriptsDir = Join-Path $CupHome "scripts"
 
 $CupExe = Join-Path $CupBinDir "cup.exe"
 $PackagesCfg = Join-Path $CupConfigDir "packages.cfg"
+$UninstallScript = Join-Path $CupScriptsDir "uninstall.ps1"
 
 $CupAsset = "cup-windows-x64.exe"
 $PackagesAsset = "packages.cfg"
+$UninstallAsset = "uninstall.ps1"
 
 function Write-Info {
     param([string]$Message)
@@ -113,6 +116,7 @@ function Main {
 
     New-Item -ItemType Directory -Force -Path $CupBinDir | Out-Null
     New-Item -ItemType Directory -Force -Path $CupConfigDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $CupScriptsDir | Out-Null
 
     Write-Info "Downloading cup binary..."
     Download-File "$BaseUrl/$CupAsset" $CupExe
@@ -120,17 +124,21 @@ function Main {
     Write-Info "Downloading package manifest..."
     Download-File "$BaseUrl/$PackagesAsset" $PackagesCfg
 
+    Write-Info "Downloading uninstall script..."
+    Download-File "$BaseUrl/$UninstallAsset" $UninstallScript
+
     Write-Info ""
     Write-Info "cup installed successfully."
-    Write-Info "Binary:   $CupExe"
-    Write-Info "Manifest: $PackagesCfg"
+    Write-Info "Binary:    $CupExe"
+    Write-Info "Manifest:  $PackagesCfg"
+    Write-Info "Uninstall: $UninstallScript"
     Write-Info ""
 
     Add-CupToUserPath
 
     Write-Info ""
     Write-Info "You can test the installation with:"
-    Write-Info "  `"$CupExe`" --help"
+    Write-Info "  `"$CupExe`" help"
 }
 
 Main
