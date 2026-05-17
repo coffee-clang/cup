@@ -7,12 +7,15 @@ source "$SCRIPT_DIR/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <clang|lld|lldb> <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <clang|lld|lldb|clangd|clang-format|clang-tidy> <version|stable|latest> <host_platform> <target_platform> <revision>
 
 Examples:
   $0 clang stable linux-x64 linux-x64 1
   $0 lld stable windows-x64 windows-x64 1
   $0 lldb stable windows-x64 windows-x64 1
+  $0 clangd stable linux-x64 linux-x64 1
+  $0 clang-format stable linux-x64 linux-x64 1
+  $0 clang-tidy stable windows-x64 windows-x64 1
 USAGE
 }
 
@@ -52,7 +55,22 @@ case "$TOOL" in
     lldb)
         COMPONENT="debugger"
         LLVM_PROJECTS="clang;lld;lldb"
-        CONTENTS_EXTRA=("contents.includes_clang=true" "contents.includes_lld=true")
+        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true")
+        ;;
+    clangd)
+        COMPONENT="language-server"
+        LLVM_PROJECTS="clang;clang-tools-extra"
+        CONTENTS_EXTRA=("contents.uses_clang=true")
+        ;;
+    clang-format)
+        COMPONENT="formatter"
+        LLVM_PROJECTS="clang"
+        CONTENTS_EXTRA=()
+        ;;
+    clang-tidy)
+        COMPONENT="linter"
+        LLVM_PROJECTS="clang;clang-tools-extra"
+        CONTENTS_EXTRA=("contents.uses_clang=true")
         ;;
     *)
         die "unsupported LLVM tool: $TOOL"
@@ -67,6 +85,79 @@ need_common_tools() {
     need cmake
     need ninja
     need zip
+}
+
+is_kept_bin_tool() {
+    local base="$1"
+    shift
+
+    local tool
+    for tool in "$@"; do
+        case "$base" in
+            "$tool"|"$tool.exe"|"$tool.cmd"|"$tool.bat")
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+prune_bin_except() {
+    local bin_dir="$PREFIX/bin"
+    local keep_tools=("$@")
+    local entry
+    local base
+
+    [ -d "$bin_dir" ] || return 0
+
+    for entry in "$bin_dir"/*; do
+        [ -e "$entry" ] || continue
+
+        base="$(basename "$entry")"
+
+        if is_kept_bin_tool "$base" "${keep_tools[@]}"; then
+            continue
+        fi
+
+        if [ -f "$entry" ] || [ -L "$entry" ]; then
+            rm -f "$entry"
+        fi
+    done
+}
+
+prune_llvm_package_bins() {
+    case "$TOOL" in
+        clang)
+            # Keep clang frontends, the bundled LLD frontends, and LLVM toolchain
+            # companions that are commonly needed for a usable C toolchain.
+            prune_bin_except \
+                clang clang++ clang-cpp clang-cl clang-scan-deps \
+                lld ld.lld lld-link wasm-ld \
+                llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-objdump llvm-readelf \
+                llvm-strip llvm-size llvm-strings llvm-lib llvm-dlltool llvm-rc
+            ;;
+        lld)
+            prune_bin_except \
+                lld ld.lld lld-link wasm-ld
+            ;;
+        lldb)
+            prune_bin_except \
+                lldb lldb-server lldb-dap lldb-vscode
+            ;;
+        clangd)
+            prune_bin_except \
+                clangd clangd-indexer
+            ;;
+        clang-format)
+            prune_bin_except \
+                clang-format git-clang-format
+            ;;
+        clang-tidy)
+            prune_bin_except \
+                clang-tidy clang-apply-replacements run-clang-tidy clang-tidy-diff
+            ;;
+    esac
 }
 
 build_llvm_tool() {
@@ -110,6 +201,8 @@ build_llvm_tool() {
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"
+
+    prune_llvm_package_bins
 }
 
 write_llvm_info() {

@@ -166,6 +166,7 @@ function Main {
     Write-Info "Binary:    $CupExe"
     Write-Info "Manifest:  $PackagesCfg"
     Write-Info "Uninstall: $UninstallScript"
+    Write-Info ""
 
     Add-CupToUserPath
     Write-InstallTestHint

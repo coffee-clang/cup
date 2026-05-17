@@ -1,19 +1,8 @@
-name: Build LLVM tool (Linux)
+name: Build Valgrind (Linux)
 
 on:
   workflow_dispatch:
     inputs:
-      tool:
-        description: LLVM tool to build
-        required: true
-        type: choice
-        options:
-          - clang
-          - lld
-          - lldb
-          - clangd
-          - clang-format
-          - clang-tidy
       version:
         description: Tool version, or stable/latest
         required: true
@@ -40,17 +29,16 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Docker image
-        run: docker build -f docker/llvm-builder.Dockerfile -t cup-llvm-builder .
+        run: docker build -f docker/gnu-builder.Dockerfile -t cup-gnu-builder .
 
       - name: Build package
         run: |
           docker run --rm \
-            -e CUP_BUILD_ENVIRONMENT=docker-llvm \
+            -e CUP_BUILD_ENVIRONMENT=docker-gnu \
             -v "$PWD:/workspace" \
             -w /workspace \
-            cup-llvm-builder \
-            bash scripts/build-llvm-tool.sh \
-              "${{ inputs.tool }}" \
+            cup-gnu-builder \
+            bash scripts/build-valgrind.sh \
               "${{ inputs.version }}" \
               linux-x64 \
               linux-x64 \

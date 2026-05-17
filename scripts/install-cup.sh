@@ -215,6 +215,7 @@ install_unix_like() {
     info "Binary:    $cup_bin"
     info "Manifest:  $PACKAGES_CFG"
     info "Uninstall: $UNINSTALL_SCRIPT"
+    info ""
 
     offer_path_update_unix_shell
     print_install_test_hint "$cup_bin"

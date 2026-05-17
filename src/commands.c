@@ -290,13 +290,13 @@ static CupError perform_install(const char *tmp_path, const char *component, con
         return CUP_ERR_INVALID_INPUT;
     }
 
-    printf("==> Fetching package...");
+    printf("==> Fetching package...\n");
     err = fetch_package(package_path, sizeof(package_path), component, tool, host_platform, target_platform, version, archive_format);
     if (err != CUP_OK) {
         return err;
     }
 
-    printf("==> Extracting package...");
+    printf("==> Extracting package...\n");
     err = extract_archive(package_path, tmp_path);
     return err;
 }
@@ -708,7 +708,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     memset(&tx, 0, sizeof(tx));
     interrupt_setup();
 
-    printf("==> Validating request...");
+    printf("==> Validating request...\n");
     err = load_command_context(&command, target_override);
     if (err != CUP_OK) {
         return err;
@@ -719,7 +719,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Resolving release...");
+    printf("==> Resolving release...\n");
     err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
@@ -737,14 +737,14 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return CUP_ERR_NOT_AVAILABLE;
     }
 
-    printf("==> Resolving package format...");
+    printf("==> Resolving package format...\n");
     err = resolve_command_format(archive_format, sizeof(archive_format), component, command.host_platform, 
     command.target_platform, format_override, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    printf("==> Checking existing installation...");
+    printf("==> Checking existing installation...\n");
     err = check_install_presence(&command.state, component, command.host_platform, command.target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
@@ -788,7 +788,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Validating installation...");
+    printf("==> Validating installation...\n");
     err = validate_install(tx.tmp_path, component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
@@ -800,7 +800,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Preparing final installation directories...");
+    printf("==> Preparing final installation directories...\n");
     err = ensure_component_base_dirs(component, ctx.tool, command.host_platform, command.target_platform);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
@@ -819,7 +819,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Committing installation...");
+    printf("==> Committing installation...\n");
     err = move_transaction(&tx, MOVE_TMP_TO_INSTALL);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
@@ -841,7 +841,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Saving state...");
+    printf("==> Saving state...\n");
     err = state_save(&command.state, command.state_file);
     if (err != CUP_OK) {
         rollback_err = move_transaction(&tx, MOVE_INSTALL_TO_TMP);
@@ -876,7 +876,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
     memset(&tx, 0, sizeof(tx));
     interrupt_setup();
 
-    printf("==> Validating request...");
+    printf("==> Validating request...\n");
     err = load_command_context(&command, target_override);
     if (err != CUP_OK) {
         return err;
@@ -887,13 +887,13 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    printf("==> Resolving release...");
+    printf("==> Resolving release...\n");
     err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    printf("==> Checking installed package...");
+    printf("==> Checking installed package...\n");
     err = check_install_presence(&command.state, component, command.host_platform, command.target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
@@ -927,7 +927,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    printf("==> Staging removal...");
+    printf("==> Staging removal...\n");
     err = move_transaction(&tx, MOVE_INSTALL_TO_TMP);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
@@ -958,7 +958,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    printf("==> Saving state...");
+    printf("==> Saving state...\n");
     err = state_save(&command.state, command.state_file);
     if (err != CUP_OK) {
         rollback_err = move_transaction(&tx, MOVE_TMP_TO_INSTALL);
@@ -972,7 +972,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    printf("==> Cleaning temporary files...");
+    printf("==> Cleaning temporary files...\n");
     cleanup_transaction(&tx);
 
     printf("Removed %s ", component);
@@ -988,7 +988,7 @@ CupError handle_default(const char *component, const char *entry, const char *ta
     int in_state;
     int on_disk;
 
-    printf("==> Validating request...");
+    printf("==> Validating request...\n");
     err = load_command_context(&command, target_override);
     if (err != CUP_OK) {
         return err;
@@ -999,13 +999,13 @@ CupError handle_default(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Resolving release...");
+    printf("==> Resolving release...\n");
     err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    printf("==> Checking installed package...");
+    printf("==> Checking installed package...\n");
     err = check_install_presence(&command.state, component, command.host_platform, command.target_platform, &ctx, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
@@ -1022,7 +1022,7 @@ CupError handle_default(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    printf("==> Saving state...");
+    printf("==> Saving state...\n");
     err = state_save(&command.state, command.state_file);
     if (err != CUP_OK) {
         return err;

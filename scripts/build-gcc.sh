@@ -50,8 +50,6 @@ GCC_SOURCE_URL="$(source_url_gcc "$VERSION")"
 BINUTILS_SOURCE_URL="$(source_url_binutils "$BINUTILS_VERSION")"
 MINGW_SOURCE_URL="$(source_url_mingw "$MINGW_VERSION")"
 
-PATH="$PREFIX/bin:$PATH"
-export PATH
 
 need_common_tools() {
     need curl
@@ -60,9 +58,7 @@ need_common_tools() {
     need zip
     need realpath
 
-    if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
-        die "a host C compiler is required"
-    fi
+    require_host_compilers
 }
 
 configure_script_for_build() {
@@ -166,9 +162,14 @@ remove_unprefixed_binutils_tools() {
         return 0
     fi
 
+    if ! is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
+        log "keeping unprefixed Binutils tools for native Windows package"
+        return 0
+    fi
+
     exe_suffix="$(tool_exe_suffix)"
 
-    log "removing unprefixed Binutils tools from package prefix"
+    log "removing unprefixed Binutils tools from cross package prefix"
 
     for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
         if [ -e "$PREFIX/bin/$tool$exe_suffix" ]; then
@@ -178,125 +179,111 @@ remove_unprefixed_binutils_tools() {
     done
 }
 
-use_final_native_tool_shims() {
-    [ "$HOST_PLATFORM" = "windows-x64" ] && [ "$TARGET_PLATFORM" = "windows-x64" ]
-}
+create_native_windows_aliases() {
+    local tool
+    local exe_suffix
+    local prefixed
+    local plain
 
-write_tool_forwarder() {
-    local output_path="$1"
-    local target_path="$2"
-
-    cat > "$output_path" <<EOF_FORWARDER
-#!/usr/bin/env sh
-exec "$target_path" "\$@"
-EOF_FORWARDER
-
-    chmod +x "$output_path"
-}
-
-copy_required_tool() {
-    local source_path="$1"
-    local destination_path="$2"
-
-    if [ ! -x "$source_path" ]; then
-        die "required staged tool not found: $source_path"
-    fi
-
-    cp -f "$source_path" "$destination_path"
-    chmod +x "$destination_path" 2>/dev/null || true
-}
-
-copy_optional_tool() {
-    local source_path="$1"
-    local destination_path="$2"
-
-    if [ ! -x "$source_path" ]; then
+    if [ "$HOST_PLATFORM" != "windows-x64" ] || [ "$TARGET_PLATFORM" != "windows-x64" ]; then
         return 0
     fi
 
-    cp -f "$source_path" "$destination_path"
-    chmod +x "$destination_path" 2>/dev/null || true
-}
-
-prepare_final_native_tool_shims() {
-    local shim_dir="$1"
-    local tool_bin_dir="$2"
-    local target_triplet="$3"
-    local exe_suffix
-    local tool
-
     exe_suffix="$(tool_exe_suffix)"
 
-    rm -rf "$shim_dir"
-    mkdir -p "$shim_dir"
+    log "ensuring native Windows tool aliases"
 
-    log "preparing final native tool shims in $shim_dir"
+    for tool in gcc g++ c++ cpp gcov gcov-dump gcov-tool ar as ld nm ranlib strip dlltool dllwrap windres windmc objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+        prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        plain="$PREFIX/bin/$tool$exe_suffix"
 
-    write_tool_forwarder "$shim_dir/gcc" "$tool_bin_dir/$target_triplet-gcc$exe_suffix"
-    write_tool_forwarder "$shim_dir/g++" "$tool_bin_dir/$target_triplet-g++$exe_suffix"
-    write_tool_forwarder "$shim_dir/c++" "$tool_bin_dir/$target_triplet-g++$exe_suffix"
-
-    for tool in as ld ar ranlib strip dlltool windres nm objdump objcopy; do
-        copy_required_tool \
-            "$tool_bin_dir/$target_triplet-$tool$exe_suffix" \
-            "$shim_dir/$tool$exe_suffix"
-    done
-
-    for tool in dllwrap windmc readelf size strings addr2line c++filt elfedit gprof; do
-        copy_optional_tool \
-            "$tool_bin_dir/$target_triplet-$tool$exe_suffix" \
-            "$shim_dir/$tool$exe_suffix"
-    done
-}
-
-log_final_native_tool_resolution() {
-    local tool
-    local resolved
-
-    log "final native tool resolution:"
-
-    for tool in gcc g++ c++ as ld ar ranlib strip dlltool windres nm objdump objcopy; do
-        resolved="$(command -v "$tool" 2>/dev/null || true)"
-
-        if [ -n "$resolved" ]; then
-            log "  $tool -> $resolved"
-        else
-            log "  missing: $tool"
+        if [ -x "$plain" ]; then
+            log "  existing: $plain"
+            continue
         fi
+
+        if [ ! -x "$prefixed" ]; then
+            log "  missing prefixed tool for alias: $prefixed"
+            continue
+        fi
+
+        cp "$prefixed" "$plain"
+        chmod +x "$plain"
+        log "  created: $plain from $prefixed"
     done
-
-    log "  CC=${CC:-}"
-    log "  CXX=${CXX:-}"
-    log "  AR=${AR:-}"
-    log "  AS=${AS:-}"
-    log "  LD=${LD:-}"
-    log "  NM=${NM:-}"
-    log "  RANLIB=${RANLIB:-}"
-    log "  STRIP=${STRIP:-}"
-    log "  DLLTOOL=${DLLTOOL:-}"
-    log "  WINDRES=${WINDRES:-}"
 }
 
-test_staged_native_compiler() {
-    local cc_path="$1"
-    local work_dir="$2"
+host_c_compiler() {
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        if [ -z "${MINGW_PREFIX:-}" ]; then
+            die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
+        fi
 
-    rm -rf "$work_dir"
-    mkdir -p "$work_dir"
-
-    cat > "$work_dir/conftest.c" <<'EOF_CONFTEST'
-int main(void) {
-    return 0;
-}
-EOF_CONFTEST
-
-    log "testing final native compiler: $cc_path"
-
-    "$cc_path" "$work_dir/conftest.c" -o "$work_dir/conftest.exe" -v
-
-    if [ ! -f "$work_dir/conftest.exe" ]; then
-        die "final native compiler did not produce conftest.exe"
+        printf '%s/bin/gcc.exe
+' "$MINGW_PREFIX"
+        return 0
     fi
+
+    command -v gcc 2>/dev/null || command -v cc 2>/dev/null || true
+}
+
+host_cxx_compiler() {
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        if [ -z "${MINGW_PREFIX:-}" ]; then
+            die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
+        fi
+
+        printf '%s/bin/g++.exe
+' "$MINGW_PREFIX"
+        return 0
+    fi
+
+    command -v g++ 2>/dev/null || command -v c++ 2>/dev/null || true
+}
+
+require_host_compilers() {
+    local cc
+    local cxx
+
+    cc="$(host_c_compiler)"
+    cxx="$(host_cxx_compiler)"
+
+    if [ -z "$cc" ] || [ ! -x "$cc" ]; then
+        die "host C compiler not found"
+    fi
+
+    if [ -z "$cxx" ] || [ ! -x "$cxx" ]; then
+        die "host C++ compiler not found"
+    fi
+
+    log "host compiler: CC=$cc"
+    log "host compiler: CXX=$cxx"
+}
+
+require_target_gcc_tools() {
+    local tool
+
+    log "checking bundled GCC target tools"
+
+    for tool in gcc g++ ar as ld nm ranlib strip dlltool windres; do
+        require_bundled_target_tool "$tool"
+    done
+}
+
+log_final_gcc_tools() {
+    log "final GCC host tools:"
+    log "  CC=$CC"
+    log "  CXX=$CXX"
+
+    log "final GCC target binutils:"
+    log "  AR_FOR_TARGET=$AR_FOR_TARGET"
+    log "  AS_FOR_TARGET=$AS_FOR_TARGET"
+    log "  LD_FOR_TARGET=$LD_FOR_TARGET"
+    log "  NM_FOR_TARGET=$NM_FOR_TARGET"
+    log "  RANLIB_FOR_TARGET=$RANLIB_FOR_TARGET"
+    log "  STRIP_FOR_TARGET=$STRIP_FOR_TARGET"
+    log "  DLLTOOL_FOR_TARGET=$DLLTOOL_FOR_TARGET"
+    log "  WINDRES_FOR_TARGET=$WINDRES_FOR_TARGET"
 }
 
 resolve_target_tool() {
@@ -388,6 +375,90 @@ configure_and_build() {
     )
 }
 
+
+build_native_binutils() {
+    local binutils_src="$1"
+    local build_dir="$CUP_BUILD_DIR/binutils-$BINUTILS_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+
+    log "building bundled native Binutils $BINUTILS_VERSION for $HOST_PLATFORM"
+
+    configure_and_build "$binutils_src" "$build_dir" \
+        --prefix="$PREFIX" \
+        --disable-werror \
+        --disable-nls \
+        --enable-ld \
+        --enable-plugins
+}
+
+native_gcc_target_aliases() {
+    printf '%s\n' "$TARGET_TRIPLE"
+
+    if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+        printf '%s\n' "x86_64-pc-linux-gnu"
+    fi
+}
+
+install_native_binutils_target_layout() {
+    local target_alias
+    local tool
+    local src
+    local dst_dir
+    local dst
+    local exe_suffix
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "installing bundled native Binutils into GCC target search directories"
+
+    for target_alias in $(native_gcc_target_aliases | sort -u); do
+        dst_dir="$PREFIX/$target_alias/bin"
+        mkdir -p "$dst_dir"
+
+        for tool in as ld ar ranlib strip nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+            src="$PREFIX/bin/$tool$exe_suffix"
+            dst="$dst_dir/$tool$exe_suffix"
+
+            if [ ! -x "$src" ]; then
+                log "  missing native Binutils tool: $src"
+                continue
+            fi
+
+            cp "$src" "$dst"
+            chmod +x "$dst"
+            log "  installed: $dst"
+        done
+    done
+}
+
+require_bundled_native_binutils_tools() {
+    local tool
+    local target_alias
+    local found
+    local exe_suffix
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "checking bundled native Binutils tools"
+
+    for tool in as ld ar ranlib strip nm objdump objcopy readelf; do
+        if [ ! -x "$PREFIX/bin/$tool$exe_suffix" ]; then
+            die "bundled native Binutils tool missing: $PREFIX/bin/$tool$exe_suffix"
+        fi
+
+        found=0
+        for target_alias in $(native_gcc_target_aliases | sort -u); do
+            if [ -x "$PREFIX/$target_alias/bin/$tool$exe_suffix" ]; then
+                found=1
+                break
+            fi
+        done
+
+        if [ "$found" = "0" ]; then
+            die "bundled native Binutils target-layout tool missing: $tool"
+        fi
+    done
+}
+
 build_native_gcc() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -398,14 +469,27 @@ build_native_gcc() {
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
 
     prepare_gcc_prerequisites "$gcc_src"
+    require_bundled_native_binutils_tools
 
-    configure_and_build "$gcc_src" "$build_dir" \
-        --prefix="$PREFIX" \
-        --disable-werror \
-        --disable-multilib \
-        --enable-bootstrap \
-        --enable-languages=c,c++ \
-        "${gcc_dep_args[@]}"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+
+    (
+        cd "$build_dir"
+        export PATH="$PREFIX/bin:$PATH"
+
+        "$(configure_script_for_build "$gcc_src" "$build_dir")" \
+            --prefix="$PREFIX" \
+            --disable-werror \
+            --disable-multilib \
+            --enable-bootstrap \
+            --enable-languages=c,c++ \
+            --with-gnu-as \
+            --with-gnu-ld \
+            "${gcc_dep_args[@]}"
+        make -j"$CUP_JOBS"
+        make install
+    )
 }
 
 build_cross_binutils() {
@@ -502,6 +586,8 @@ build_mingw_crt() {
 
     (
         cd "$build_dir"
+        export PATH="$PREFIX/bin:$PATH"
+
         CC="$TARGET_TRIPLE-gcc" \
         AR="$TARGET_TRIPLE-ar" \
         RANLIB="$TARGET_TRIPLE-ranlib" \
@@ -539,6 +625,8 @@ build_winpthreads() {
 
     (
         cd "$build_dir"
+        export PATH="$PREFIX/bin:$PATH"
+
         CC="$TARGET_TRIPLE-gcc" \
         AR="$TARGET_TRIPLE-ar" \
         RANLIB="$TARGET_TRIPLE-ranlib" \
@@ -558,8 +646,26 @@ build_gcc_final() {
     local configure_script
     local gcc_dep_args=()
     local gcc_target_args=()
+    local exe_suffix
+    local host_cc
+    local host_cxx
 
     log "building final bundled GCC $VERSION for $TARGET_TRIPLE"
+
+    require_bundled_binutils_tools
+    require_target_gcc_tools
+
+    exe_suffix="$(tool_exe_suffix)"
+    host_cc="$(host_c_compiler)"
+    host_cxx="$(host_cxx_compiler)"
+
+    if [ -z "$host_cc" ] || [ ! -x "$host_cc" ]; then
+        die "host C compiler not found"
+    fi
+
+    if [ -z "$host_cxx" ] || [ ! -x "$host_cxx" ]; then
+        die "host C++ compiler not found"
+    fi
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
@@ -572,26 +678,24 @@ build_gcc_final() {
     (
         cd "$build_dir"
 
-        if use_final_native_tool_shims; then
-            local native_shim_dir="$CUP_BUILD_DIR/native-tools-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+        export PATH="$PREFIX/bin:$PATH"
 
-            prepare_final_native_tool_shims "$native_shim_dir" "$PREFIX/bin" "$TARGET_TRIPLE"
+        export CC="$host_cc"
+        export CXX="$host_cxx"
 
-            export PATH="$native_shim_dir:$PREFIX/bin:$PATH"
-            export CC="$native_shim_dir/gcc"
-            export CXX="$native_shim_dir/g++"
-            export AR="$native_shim_dir/ar$(tool_exe_suffix)"
-            export AS="$native_shim_dir/as$(tool_exe_suffix)"
-            export LD="$native_shim_dir/ld$(tool_exe_suffix)"
-            export NM="$native_shim_dir/nm$(tool_exe_suffix)"
-            export RANLIB="$native_shim_dir/ranlib$(tool_exe_suffix)"
-            export STRIP="$native_shim_dir/strip$(tool_exe_suffix)"
-            export DLLTOOL="$native_shim_dir/dlltool$(tool_exe_suffix)"
-            export WINDRES="$native_shim_dir/windres$(tool_exe_suffix)"
+        unset CC_FOR_TARGET
+        unset CXX_FOR_TARGET
 
-            log_final_native_tool_resolution
-            test_staged_native_compiler "$CC" "$build_dir/final-compiler-test"
-        fi
+        export AR_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ar$exe_suffix"
+        export AS_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-as$exe_suffix"
+        export LD_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ld$exe_suffix"
+        export NM_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-nm$exe_suffix"
+        export RANLIB_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ranlib$exe_suffix"
+        export STRIP_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-strip$exe_suffix"
+        export DLLTOOL_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-dlltool$exe_suffix"
+        export WINDRES_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-windres$exe_suffix"
+
+        log_final_gcc_tools
 
         "$configure_script" \
             --prefix="$PREFIX" \
@@ -607,6 +711,21 @@ build_gcc_final() {
         make -j"$CUP_JOBS"
         make install
     )
+
+    create_native_windows_aliases
+}
+
+
+build_bundled_native_gcc() {
+    local gcc_src="$1"
+    local binutils_src="$2"
+
+    log "building self-contained native GCC package with bundled Binutils"
+
+    build_native_binutils "$binutils_src"
+    install_native_binutils_target_layout
+    require_bundled_native_binutils_tools
+    build_native_gcc "$gcc_src"
 }
 
 build_bundled_windows_gcc() {
@@ -633,12 +752,22 @@ write_gcc_info() {
     local includes_binutils="false"
     local includes_mingw="false"
     local bootstrap="true"
+    local tool_naming="native"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils,mingw-w64"
         includes_binutils="true"
         includes_mingw="true"
         bootstrap="false"
+
+        if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
+            tool_naming="target-prefixed"
+        else
+            tool_naming="native-and-target-prefixed"
+        fi
+    elif [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+        bundle_components="binutils"
+        includes_binutils="true"
     fi
 
     local info=(
@@ -663,6 +792,7 @@ write_gcc_info() {
         "config.languages=c,c++"
         "config.multilib=false"
         "config.bootstrap=$bootstrap"
+        "config.tool_naming=$tool_naming"
         "contents.self_contained=true"
     )
 
@@ -688,12 +818,17 @@ write_gcc_info() {
             "bundle.components=$bundle_components"
             "bundle.binutils.version=$BINUTILS_VERSION"
             "bundle.binutils.url=$BINUTILS_SOURCE_URL"
-            "bundle.mingw-w64.version=$MINGW_VERSION"
-            "bundle.mingw-w64.url=$MINGW_SOURCE_URL"
             "contents.includes_binutils=$includes_binutils"
             "contents.includes_mingw=$includes_mingw"
-            "features.winpthreads=true"
         )
+
+        if is_windows_platform "$TARGET_PLATFORM"; then
+            info+=(
+                "bundle.mingw-w64.version=$MINGW_VERSION"
+                "bundle.mingw-w64.url=$MINGW_SOURCE_URL"
+                "features.winpthreads=true"
+            )
+        fi
     fi
 
     write_info_file "$PREFIX" "${info[@]}"
@@ -723,7 +858,9 @@ main() {
             die "unsupported GCC target: $HOST_PLATFORM -> $TARGET_PLATFORM"
         fi
 
-        build_native_gcc "$gcc_src"
+        local binutils_src
+        binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
+        build_bundled_native_gcc "$gcc_src" "$binutils_src"
     fi
 
     write_gcc_info

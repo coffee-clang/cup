@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shared helpers for cup build scripts.
-# The build scripts create self-contained packages: installing one package should
-# provide a usable tool without dependency resolution or install-time symlinks.
-
 CUP_REPO_OWNER="${CUP_REPO_OWNER:-coffee-clang}"
 CUP_REPO_NAME="${CUP_REPO_NAME:-cup}"
 
@@ -15,7 +11,6 @@ CUP_BUILD_DIR="${CUP_BUILD_DIR:-$CUP_WORK_DIR/build}"
 CUP_STAGE_DIR="${CUP_STAGE_DIR:-$CUP_WORK_DIR/stage}"
 CUP_OUT_DIR="${CUP_OUT_DIR:-$CUP_ROOT/dist}"
 
-# Do not pass jobs as a script argument. Keep an environment override for CI/debug.
 if [ -z "${CUP_JOBS:-}" ]; then
     if [ "${RUNNER_OS:-}" = "Windows" ] && [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
         CUP_JOBS="$NUMBER_OF_PROCESSORS"
@@ -29,6 +24,7 @@ DEFAULT_GDB_VERSION="${DEFAULT_GDB_VERSION:-17.1}"
 DEFAULT_BINUTILS_VERSION="${DEFAULT_BINUTILS_VERSION:-2.46.0}"
 DEFAULT_MINGW_VERSION="${DEFAULT_MINGW_VERSION:-14.0.0}"
 DEFAULT_LLVM_VERSION="${DEFAULT_LLVM_VERSION:-22.1.5}"
+DEFAULT_VALGRIND_VERSION="${DEFAULT_VALGRIND_VERSION:-3.27.0}"
 
 log() {
     printf '[cup-build] %s\n' "$*" >&2
@@ -61,7 +57,8 @@ resolve_version() {
         gdb) printf '%s\n' "$DEFAULT_GDB_VERSION" ;;
         binutils) printf '%s\n' "$DEFAULT_BINUTILS_VERSION" ;;
         mingw|mingw-w64) printf '%s\n' "$DEFAULT_MINGW_VERSION" ;;
-        clang|lld|lldb|llvm) printf '%s\n' "$DEFAULT_LLVM_VERSION" ;;
+        clang|lld|lldb|clangd|clang-format|clang-tidy|llvm) printf '%s\n' "$DEFAULT_LLVM_VERSION" ;;
+        valgrind) printf '%s\n' "$DEFAULT_VALGRIND_VERSION" ;;
         *) die "cannot resolve default version for tool: $tool" ;;
     esac
 }
@@ -127,10 +124,7 @@ package_uses_revision_in_name() {
     local host_platform="$2"
     local target_platform="$3"
 
-    # Native Linux tools are simple self-contained source builds.
-    # GCC for Windows and Linux->Windows GCC embed Binutils/MinGW source builds,
-    # so revisions distinguish package recipes with the same GCC version.
-    if [ "$tool" = "gcc" ] && is_windows_platform "$target_platform"; then
+    if [ "$tool" = "gcc" ]; then
         return 0
     fi
 
@@ -195,6 +189,11 @@ source_url_mingw() {
 source_url_llvm_project() {
     local version="$1"
     printf 'https://github.com/llvm/llvm-project/releases/download/llvmorg-%s/llvm-project-%s.src.tar.xz\n' "$version" "$version"
+}
+
+source_url_valgrind() {
+    local version="$1"
+    printf 'https://sourceware.org/pub/valgrind/valgrind-%s.tar.bz2\n' "$version"
 }
 
 archive_name_from_url() {

@@ -11,6 +11,9 @@ on:
           - clang
           - lld
           - lldb
+          - clangd
+          - clang-format
+          - clang-tidy
       version:
         description: Tool version, or stable/latest
         required: true

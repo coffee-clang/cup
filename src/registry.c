@@ -15,7 +15,11 @@ typedef struct {
 static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "compiler", { "gcc", "clang", NULL } },
     { "debugger", { "gdb", "lldb", NULL } },
-    { "linker", { "lld", NULL } }
+    { "linker", { "lld", NULL } },
+    { "formatter", { "clang-format", NULL } },
+    { "linter", { "clang-tidy", NULL } },
+    { "language-server", { "clangd", NULL } },
+    { "analyzer", { "valgrind", NULL } }
 };
 
 static const SupportedComponent *find_supported_component(const char *component) {
