@@ -9,6 +9,7 @@ on:
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
+      - "scripts/bootstrap-linux-deps.sh"
       - "scripts/install-cup.sh"
       - "scripts/uninstall-cup.sh"
       - ".github/workflows/build-cup-linux.yml"

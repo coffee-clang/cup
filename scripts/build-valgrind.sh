@@ -27,8 +27,6 @@ REVISION="$4"
 
 TOOL="valgrind"
 COMPONENT="analyzer"
-DEFAULT_VALGRIND_VERSION="${DEFAULT_VALGRIND_VERSION:-3.27.0}"
-
 VERSION="$(resolve_version valgrind "$REQUESTED_VERSION")"
 PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
@@ -105,6 +103,16 @@ resolve_self() {
 }
 
 self_path="$(resolve_self)"
+
+if command -v realpath >/dev/null 2>&1; then
+    self_path="$(realpath "$self_path")"
+elif command -v readlink >/dev/null 2>&1; then
+    resolved_path="$(readlink -f "$self_path" 2>/dev/null || true)"
+    if [ -n "$resolved_path" ]; then
+        self_path="$resolved_path"
+    fi
+fi
+
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$self_path")" && pwd)"
 prefix="$(CDPATH= cd -- "$bin_dir/.." && pwd)"
 

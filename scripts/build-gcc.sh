@@ -158,12 +158,8 @@ remove_unprefixed_binutils_tools() {
     local tool
     local exe_suffix
 
-    if [ "$HOST_PLATFORM" != "windows-x64" ]; then
-        return 0
-    fi
-
     if ! is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-        log "keeping unprefixed Binutils tools for native Windows package"
+        log "keeping unprefixed Binutils tools for native package"
         return 0
     fi
 
@@ -390,7 +386,7 @@ build_native_binutils() {
         --enable-plugins
 }
 
-native_gcc_target_aliases() {
+gcc_native_target_names() {
     printf '%s\n' "$TARGET_TRIPLE"
 
     if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
@@ -398,7 +394,7 @@ native_gcc_target_aliases() {
     fi
 }
 
-install_native_binutils_target_layout() {
+install_native_binutils_for_gcc() {
     local target_alias
     local tool
     local src
@@ -408,9 +404,9 @@ install_native_binutils_target_layout() {
 
     exe_suffix="$(tool_exe_suffix)"
 
-    log "installing bundled native Binutils into GCC target search directories"
+    log "installing bundled native Binutils where GCC searches for target tools"
 
-    for target_alias in $(native_gcc_target_aliases | sort -u); do
+    for target_alias in $(gcc_native_target_names | sort -u); do
         dst_dir="$PREFIX/$target_alias/bin"
         mkdir -p "$dst_dir"
 
@@ -446,7 +442,7 @@ require_bundled_native_binutils_tools() {
         fi
 
         found=0
-        for target_alias in $(native_gcc_target_aliases | sort -u); do
+        for target_alias in $(gcc_native_target_names | sort -u); do
             if [ -x "$PREFIX/$target_alias/bin/$tool$exe_suffix" ]; then
                 found=1
                 break
@@ -723,7 +719,7 @@ build_bundled_native_gcc() {
     log "building self-contained native GCC package with bundled Binutils"
 
     build_native_binutils "$binutils_src"
-    install_native_binutils_target_layout
+    install_native_binutils_for_gcc
     require_bundled_native_binutils_tools
     build_native_gcc "$gcc_src"
 }

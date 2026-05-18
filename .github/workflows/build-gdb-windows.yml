@@ -1,21 +1,14 @@
-name: Build GNU tool (Windows)
+name: Build GDB (Windows)
 
 on:
   workflow_dispatch:
     inputs:
-      tool:
-        description: GNU tool to build
-        required: true
-        type: choice
-        options:
-          - gcc
-          - gdb
       version:
-        description: Tool version, or stable/latest
+        description: GDB version, or stable/latest
         required: true
         default: stable
       revision:
-        description: Package revision for recipe-sensitive builds
+        description: Package revision metadata
         required: true
         default: '1'
       publish:
@@ -58,13 +51,7 @@ jobs:
             python
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-autotools
-            mingw-w64-ucrt-x86_64-gmp
-            mingw-w64-ucrt-x86_64-mpfr
-            mingw-w64-ucrt-x86_64-mpc
-            mingw-w64-ucrt-x86_64-isl
             mingw-w64-ucrt-x86_64-readline
             mingw-w64-ucrt-x86_64-expat
             mingw-w64-ucrt-x86_64-zlib
@@ -73,8 +60,7 @@ jobs:
       - name: Build package
         run: |
           export CUP_BUILD_ENVIRONMENT=msys2-ucrt64
-          bash scripts/build-gnu-package.sh \
-            "${{ inputs.tool }}" \
+          bash scripts/build-gdb.sh \
             "${{ inputs.version }}" \
             windows-x64 \
             windows-x64 \
