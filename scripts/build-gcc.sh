@@ -126,6 +126,7 @@ ensure_prefixed_binutils_tools() {
     local tool
     local src
     local dst
+    local tmp
     local exe_suffix
 
     exe_suffix="$(tool_exe_suffix)"
@@ -133,21 +134,29 @@ ensure_prefixed_binutils_tools() {
     log "ensuring prefixed Binutils target tool names"
 
     for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+        src="$PREFIX/bin/$tool$exe_suffix"
         dst="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        tmp="$dst.tmp"
 
         if [ -x "$dst" ]; then
-            log "  existing: $dst"
+            if [ -L "$dst" ]; then
+                cp -L "$dst" "$tmp"
+                mv -f "$tmp" "$dst"
+                chmod +x "$dst"
+                log "  materialized symlink: $dst"
+            else
+                log "  existing: $dst"
+            fi
+
             continue
         fi
-
-        src="$PREFIX/bin/$tool$exe_suffix"
 
         if [ ! -x "$src" ]; then
             log "  missing: $dst and fallback $src"
             continue
         fi
 
-        cp "$src" "$dst"
+        cp -f "$src" "$dst"
         chmod +x "$dst"
 
         log "  created: $dst from $src"
@@ -156,6 +165,7 @@ ensure_prefixed_binutils_tools() {
 
 remove_unprefixed_binutils_tools() {
     local tool
+    local path
     local exe_suffix
 
     if ! is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
@@ -168,9 +178,11 @@ remove_unprefixed_binutils_tools() {
     log "removing unprefixed Binutils tools from cross package prefix"
 
     for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
-        if [ -e "$PREFIX/bin/$tool$exe_suffix" ]; then
-            rm -f "$PREFIX/bin/$tool$exe_suffix"
-            log "  removed: $PREFIX/bin/$tool$exe_suffix"
+        path="$PREFIX/bin/$tool$exe_suffix"
+
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            rm -f "$path"
+            log "  removed: $path"
         fi
     done
 }
@@ -395,34 +407,55 @@ gcc_native_target_names() {
 }
 
 install_native_binutils_for_gcc() {
-    local target_alias
+    local target_name
     local tool
-    local src
-    local dst_dir
-    local dst
+    local source_path
+    local target_dir
+    local target_path
     local exe_suffix
+
+    if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
+        return 0
+    fi
+
+    if [ "$TOOL" != "gcc" ]; then
+        return 0
+    fi
 
     exe_suffix="$(tool_exe_suffix)"
 
+    copy_native_binutils_tool() {
+        source_path="$1"
+        target_path="$2"
+
+        if [ ! -e "$source_path" ]; then
+            return 0
+        fi
+
+        mkdir -p "$(dirname "$target_path")"
+
+        if [ -e "$target_path" ] && [ "$source_path" -ef "$target_path" ]; then
+            log "  already installed: $target_path"
+            return 0
+        fi
+
+        cp -f "$source_path" "$target_path"
+        chmod +x "$target_path" 2>/dev/null || true
+        log "  installed: $target_path"
+    }
+
     log "installing bundled native Binutils where GCC searches for target tools"
 
-    for target_alias in $(gcc_native_target_names | sort -u); do
-        dst_dir="$PREFIX/$target_alias/bin"
-        mkdir -p "$dst_dir"
+    for target_name in $(gcc_native_target_names | sort -u); do
+        target_dir="$PREFIX/$target_name/bin"
 
         for tool in as ld ar ranlib strip nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
-            src="$PREFIX/bin/$tool$exe_suffix"
-            dst="$dst_dir/$tool$exe_suffix"
-
-            if [ ! -x "$src" ]; then
-                log "  missing native Binutils tool: $src"
-                continue
-            fi
-
-            cp "$src" "$dst"
-            chmod +x "$dst"
-            log "  installed: $dst"
+            copy_native_binutils_tool "$PREFIX/bin/$tool$exe_suffix" "$target_dir/$tool$exe_suffix"
         done
+
+        if [ -e "$PREFIX/bin/ld.bfd$exe_suffix" ]; then
+            copy_native_binutils_tool "$PREFIX/bin/ld.bfd$exe_suffix" "$target_dir/ld.bfd$exe_suffix"
+        fi
     done
 }
 
