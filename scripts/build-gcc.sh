@@ -140,7 +140,7 @@ ensure_prefixed_binutils_tools() {
 
         if [ -x "$dst" ]; then
             if [ -L "$dst" ]; then
-                cp -L "$dst" "$tmp"
+                cp -f -L "$dst" "$tmp"
                 mv -f "$tmp" "$dst"
                 chmod +x "$dst"
                 log "  materialized symlink: $dst"
@@ -294,45 +294,61 @@ log_final_gcc_tools() {
     log "  WINDRES_FOR_TARGET=$WINDRES_FOR_TARGET"
 }
 
+target_tool_path() {
+    local tool="$1"
+    local exe_suffix
+
+    exe_suffix="$(tool_exe_suffix)"
+    printf '%s
+' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+}
+
 resolve_target_tool() {
     local tool="$1"
-    command -v "$TARGET_TRIPLE-$tool" 2>/dev/null || true
+    local path
+
+    path="$(target_tool_path "$tool")"
+
+    if [ -x "$path" ]; then
+        printf '%s
+' "$path"
+    fi
 }
 
 require_bundled_target_tool() {
     local tool="$1"
-    local resolved
-    local resolved_dir
-    local resolved_real
-    local prefix_bin
+    local path
 
-    resolved="$(resolve_target_tool "$tool")"
+    path="$(target_tool_path "$tool")"
 
-    if [ -z "$resolved" ]; then
-        die "target tool not found: $TARGET_TRIPLE-$tool"
+    if [ ! -x "$path" ]; then
+        die "target tool not found: $path"
     fi
 
-    resolved_dir="$(cd "$(dirname "$resolved")" && pwd -P)"
-    resolved_real="$resolved_dir/$(basename "$resolved")"
-    prefix_bin="$(cd "$PREFIX/bin" && pwd -P)"
-
-    case "$resolved_real" in
-        "$prefix_bin"/*)
-            log "  $TARGET_TRIPLE-$tool -> $resolved_real"
-            ;;
-        *)
-            die "target tool '$TARGET_TRIPLE-$tool' resolved outside package prefix: $resolved_real"
-            ;;
-    esac
+    log "  $TARGET_TRIPLE-$tool -> $path"
 }
 
 require_bundled_binutils_tools() {
     local tool
+    local tool_path
+    local exe_suffix
+
+    exe_suffix="$(tool_exe_suffix)"
 
     log "checking bundled Binutils target tools"
 
-    for tool in as ld ar ranlib strip dlltool windres nm objdump objcopy; do
-        require_bundled_target_tool "$tool"
+    for tool in as ld ar ranlib strip nm objdump objcopy readelf; do
+        if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
+            tool_path="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        else
+            tool_path="$PREFIX/bin/$tool$exe_suffix"
+        fi
+
+        if [ ! -x "$tool_path" ]; then
+            die "target tool not found: $tool_path"
+        fi
+
+        log "  $tool -> $tool_path"
     done
 }
 
@@ -358,7 +374,7 @@ log_target_tools_for_crt() {
         if [ -n "$resolved" ]; then
             log "  $TARGET_TRIPLE-$tool -> $resolved"
         else
-            log "  missing: $TARGET_TRIPLE-$tool"
+            log "  missing: $(target_tool_path "$tool")"
         fi
     done
 }
@@ -450,11 +466,11 @@ install_native_binutils_for_gcc() {
         target_dir="$PREFIX/$target_name/bin"
 
         for tool in as ld ar ranlib strip nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
-            copy_native_binutils_tool "$PREFIX/bin/$tool$exe_suffix" "$target_dir/$tool$exe_suffix"
+            copy_native_binutils_tool                 "$PREFIX/bin/$tool$exe_suffix"                 "$target_dir/$tool$exe_suffix"
         done
 
         if [ -e "$PREFIX/bin/ld.bfd$exe_suffix" ]; then
-            copy_native_binutils_tool "$PREFIX/bin/ld.bfd$exe_suffix" "$target_dir/ld.bfd$exe_suffix"
+            copy_native_binutils_tool                 "$PREFIX/bin/ld.bfd$exe_suffix"                 "$target_dir/ld.bfd$exe_suffix"
         fi
     done
 }
