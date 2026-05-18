@@ -114,6 +114,14 @@ gcc_windows_target_configure_args() {
     fi
 }
 
+gcc_bootstrap_configure_args() {
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        printf '%s\n' --disable-bootstrap
+    else
+        printf '%s\n' --enable-bootstrap
+    fi
+}
+
 tool_exe_suffix() {
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
         printf '.exe\n'
@@ -597,6 +605,8 @@ build_gcc_stage1() {
 
     (
         cd "$build_dir"
+        export PATH="$PREFIX/bin:$PATH"
+
         "$configure_script" \
             --prefix="$PREFIX" \
             --target="$TARGET_TRIPLE" \
@@ -691,6 +701,7 @@ build_gcc_final() {
     local configure_script
     local gcc_dep_args=()
     local gcc_target_args=()
+    local gcc_bootstrap_args=()
     local exe_suffix
     local host_cc
     local host_cxx
@@ -714,6 +725,7 @@ build_gcc_final() {
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
+    mapfile -t gcc_bootstrap_args < <(gcc_bootstrap_configure_args)
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -747,6 +759,7 @@ build_gcc_final() {
             --target="$TARGET_TRIPLE" \
             --disable-werror \
             --disable-multilib \
+            "${gcc_bootstrap_args[@]}" \
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
