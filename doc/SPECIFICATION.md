@@ -2,33 +2,35 @@
 
 This document describes the implemented model of `cup` and the main architectural choices reflected in the current codebase.
 
-This file documents the current system: what it accepts, how it resolves packages, where it writes data, and why the implementation intentionally stays simple.
+`cup` is a user-space toolchain manager for C development tools. It installs prebuilt archives, records local state, and keeps runtime data under the user's `.cup` directory.
 
 ## 1. Purpose
 
-`cup` manages local user-space installations of C development tools.
+`cup` is designed as a toolchain manager for C. Its purpose is to provide a small command-line interface for installing, tracking, selecting, checking and removing prebuilt C development tools without writing into system locations.
 
-The implemented install flow is:
+The current implementation manages toolchain components such as compilers, debuggers, linkers, formatters, linters, language servers and analyzers. Package archives are produced by the project build infrastructure, published as component release assets, and then installed locally by `cup` according to the manifest.
+
+The basic install flow is:
 
 ```text
 parse command
-validate component/tool
+validate component and tool
 resolve host and target platform
 resolve symbolic release through the manifest
 validate selected version and archive format
 build package URL
 fetch archive into cache
 extract into temporary staging directory
-validate extracted layout
+validate extracted package layout
 commit installation with filesystem rename
 update local state
 ```
 
-The implemented remove flow is:
+The basic remove flow is:
 
 ```text
 parse command
-validate component/tool
+validate component and tool
 resolve host and target platform
 resolve release through the manifest
 load local state
@@ -40,39 +42,82 @@ save state
 clean temporary staged directory
 ```
 
-The system deliberately avoids privileged writes. It does not install into `/usr`, `Program Files`, or other system locations. All runtime data belongs to the user.
+The system deliberately avoids privileged writes. It does not install into `/usr`, `Program Files`, or other system locations. All mutable runtime data belongs to the user.
 
-## 2. Current design boundaries
+## 2. Implemented scope
 
-`cup` is not implemented as a general package manager.
+The current implementation is intentionally centered on the concrete toolchain-management flow implemented in the codebase:
 
-The active boundaries are:
+- supported component/tool pairs are defined by the internal registry;
+- available packages are described by a simple text manifest;
+- installable packages are downloaded as release archives;
+- package archives are validated after extraction before being committed into the local `.cup` tree;
+- installed entries and defaults are recorded in local state;
+- `doctor` checks the local installation and reports inconsistencies;
+- `repair` performs safe state and filesystem repairs;
+- `uninstall` removes cup-managed data through the installed uninstall script.
 
-- packages are selected from a text manifest;
-- the registry accepts only known component/tool pairs;
-- packages are downloaded as archives;
-- package archives are expected to be self-contained enough to work after extraction;
-- the state file stores installed entries and defaults;
-- the code detects state/disk inconsistencies but does not perform automatic repair;
-- dependency resolution is handled outside `cup`, at package build time.
+Component build workflows produce the archives that `cup` installs. At runtime, `cup` consumes the published assets and the manifest; it does not build GCC, LLVM, GDB, Valgrind or other component packages on the user's machine.
 
-## 3. Architectural choices
+The current package model uses self-contained component archives where practical. More advanced dependency graph management between component packages is considered a possible future extension, but the implemented model prioritizes a reliable install/remove/state flow.
 
-### 3.1 Text manifest instead of embedded package index
+## 3. Supported command line
 
-The package index is stored in `config/packages.cfg` and installed to `~/.cup/config/packages.cfg` by the bootstrap installers.
+The executable supports:
 
-The manifest is a simple text file because the current project needs predictable lookup rules more than a flexible metadata database. The code reads exact keys based on component, tool, host platform, target platform, and field name.
+```text
+cup help
+cup list [--target <target-platform>]
+cup install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]
+cup remove <component> <tool>@<release> [--target <target-platform>]
+cup default <component> <tool>@<release> [--target <target-platform>]
+cup current <component> [--target <target-platform>]
+cup doctor
+cup repair
+cup uninstall
+```
 
-This keeps the resolver easy to inspect and easy to update during development.
+The entry format accepted by commands that take a tool release is:
 
-### 3.2 Registry plus manifest
+```text
+<tool>@<release>
+```
 
-The manifest alone does not define what the CLI accepts.
+Examples:
 
-The code first validates the component/tool pair through the internal registry, then reads the package metadata from the manifest. This prevents arbitrary manifest keys from silently becoming supported commands.
+```text
+gcc@stable
+gcc@16.1.0-rev1
+gdb@17.1
+clang@22.1.5
+valgrind@3.27.0
+```
 
-Current registry pairs:
+## 4. Domain model
+
+### 4.1 Component
+
+A component is a category of C development tool.
+
+Current components are:
+
+```text
+compiler
+debugger
+linker
+formatter
+linter
+language-server
+analyzer
+```
+
+The component name is part of the CLI, state model, manifest lookup, and install path.
+
+### 4.2 Tool
+
+A tool is an implementation inside a component.
+
+Current registry pairs are:
 
 ```text
 compiler/gcc
@@ -80,70 +125,185 @@ compiler/clang
 debugger/gdb
 debugger/lldb
 linker/lld
+formatter/clang-format
+linter/clang-tidy
+language-server/clangd
+analyzer/valgrind
 ```
 
-### 3.3 Self-contained packages instead of install-time dependency solving
+The manifest alone does not define supported tools. A component/tool pair must also be accepted by the internal registry.
 
-A modular dependency solver was considered earlier in the project. The idea was to publish smaller packages and let `cup` install internal dependencies such as runtime files, Binutils, MinGW pieces, or related tools on demand.
+### 4.3 Platform
 
-That design was not adopted in the current implementation.
+A platform identifies where a package runs and what it targets.
 
-The reasons were practical:
-
-- dependency resolution would make the installer significantly more complex;
-- cross-target toolchains often need tightly coordinated files, search paths, and target prefixes;
-- moving runtime pieces through symlinks or generated target directories is fragile, especially on Windows;
-- it is easy to produce installations that are modular on paper but hard to validate;
-- the project currently needs a reliable install/remove/state flow more than a minimal package graph.
-
-The current choice is therefore:
+Current platform identifiers are:
 
 ```text
-Build package archives as self-contained tool distributions.
-Let cup install one selected package archive.
-Do not resolve package dependencies at install time.
+linux-x64
+windows-x64
 ```
 
-This means a package may internally include supporting files required by the selected tool. For example, a GCC package targeting Windows may include Binutils and MinGW-w64 files inside the same archive instead of asking `cup` to install those pieces separately.
-
-### 3.4 User-space installation only
-
-All mutable runtime data is kept under:
+A command has two platform values:
 
 ```text
-~/.cup
+host_platform
+  where the installed tool runs
+
+target_platform
+  what the installed tool targets
 ```
 
-The project avoids system package manager behavior. It does not write into system directories and does not require `sudo` or administrator privileges for normal operation.
+The host platform is detected by `cup`. The target platform defaults to the host unless `--target` is passed.
 
-### 3.5 Staged filesystem operations
-
-Install and remove operations are staged through `~/.cup/tmp`.
-
-For install:
+Examples represented by the current manifest and build scripts include:
 
 ```text
-extract archive into tmp
-validate tmp
-rename tmp -> final install path
-update state
+linux-x64 -> linux-x64
+linux-x64 -> windows-x64
+windows-x64 -> windows-x64
 ```
 
-If the state update fails after the filesystem commit, `cup` attempts to roll the install back by moving the final install path back into tmp and cleaning it.
+Cross-target support is meaningful mainly for compilers and toolchains. Other tools are normally published as native host packages only.
 
-For remove:
+### 4.4 Release
+
+A release is the version string requested by the user.
+
+Examples:
 
 ```text
-rename final install path -> tmp
-update state
-clean tmp
+stable
+17.1
+16.1.0
+16.1.0-rev1
+22.1.5
+3.27.0
 ```
 
-If the state update fails after staging the remove, `cup` attempts to roll the tmp directory back into the final install path.
+`stable` is symbolic and must be resolved before any state change is written.
 
-The goal is not to implement full transactional storage. The goal is to avoid the most common inconsistent states during normal failures.
+### 4.5 Entry and canonical entry
 
-### 3.6 Concrete version strings include package revisions
+A user entry has this form:
+
+```text
+<tool>@<release>
+```
+
+A canonical entry stores the resolved concrete release:
+
+```text
+gcc@stable       -> gcc@16.1.0-rev1
+gdb@stable       -> gdb@17.1
+clang@stable     -> clang@22.1.5
+valgrind@stable  -> valgrind@3.27.0
+```
+
+State uses canonical entries. User-facing output may still indicate when the canonical version is the manifest's current stable version.
+
+### 4.6 Archive format
+
+The manifest declares available archive formats and a default format for each component/tool/host/target tuple.
+
+Current formats are:
+
+```text
+tar.xz
+tar.gz
+zip
+```
+
+If `--format` or `-f` is not provided, `cup` uses the tuple's `default_format`.
+
+## 5. Manifest model
+
+The manifest is installed as:
+
+```text
+~/.cup/config/packages.cfg
+```
+
+The repository source copy is:
+
+```text
+config/packages.cfg
+```
+
+It is a text file made of keys in this form:
+
+```text
+<component>.<tool>.<host_platform>.<target_platform>.<field>=<value>
+```
+
+Common fields are:
+
+```text
+stable_version
+available_versions
+default_format
+formats
+url_template
+```
+
+Example:
+
+```text
+compiler.gcc.linux-x64.windows-x64.stable_version=16.1.0-rev1
+compiler.gcc.linux-x64.windows-x64.available_versions=16.1.0-rev1
+compiler.gcc.linux-x64.windows-x64.default_format=tar.gz
+compiler.gcc.linux-x64.windows-x64.formats=tar.xz,tar.gz,zip
+compiler.gcc.linux-x64.windows-x64.url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/gcc-{version}-{host_platform}-{target_platform}.{format}
+```
+
+The URL template supports these placeholders:
+
+```text
+{version}
+{host_platform}
+{target_platform}
+{format}
+```
+
+The manifest is intentionally simple. The resolver performs exact key lookup rather than general package-query behavior.
+
+## 6. Registry plus manifest
+
+The registry and manifest serve different purposes.
+
+The registry defines what commands are accepted:
+
+```text
+compiler/gcc
+compiler/clang
+...
+```
+
+The manifest defines which archives exist for each accepted tuple.
+
+A tool present only in the manifest is not automatically accepted by the CLI. This avoids silently enabling arbitrary component names through manifest edits.
+
+## 7. Package release model
+
+`cup` itself and the installable tool packages are released separately.
+
+`cup` bootstrap assets are released from:
+
+```text
+coffee-clang/cup
+```
+
+Component package assets are released from:
+
+```text
+coffee-clang/cup-components
+```
+
+The manifest points to the component repository for tool archives.
+
+This separation keeps the `cup` repository focused on the toolchain manager itself while component assets are published from a dedicated repository.
+
+## 8. Package version revisions
 
 Package revisions are represented directly in the version string:
 
@@ -166,387 +326,319 @@ The suffix is `-revN`, not `-rN`, to avoid conflicting with upstream version str
 
 Revisions are used when the upstream version is unchanged but the package recipe, bundled runtime, archive contents, or metadata has changed.
 
-## 4. Domain model
+## 9. Filesystem layout
 
-### 4.1 Component
-
-A component is a category of C development tools.
-
-Currently implemented components:
-
-```text
-compiler
-debugger
-linker
-```
-
-### 4.2 Tool
-
-A tool is an implementation inside a component.
-
-Currently implemented registry pairs:
-
-```text
-compiler/gcc
-compiler/clang
-debugger/gdb
-debugger/lldb
-linker/lld
-```
-
-### 4.3 Platform
-
-A platform identifies where a package runs and what it targets.
-
-Current platform identifiers:
-
-```text
-linux-x64
-windows-x64
-```
-
-A command has two platform values:
-
-```text
-host_platform
-  detected from the executable environment
-
-target_platform
-  defaults to host_platform unless --target is passed
-```
-
-Examples currently represented by the manifest/build scripts include:
-
-```text
-linux-x64 -> linux-x64
-linux-x64 -> windows-x64
-windows-x64 -> windows-x64
-```
-
-The manifest is keyed by both host and target.
-
-### 4.4 Release
-
-A release is the version string requested by the user.
-
-Examples:
-
-```text
-stable
-17.1
-16.1.0
-16.1.0-rev1
-22.1.5
-```
-
-`stable` is symbolic and must be resolved before state changes.
-
-### 4.5 Entry
-
-A user entry has this form:
-
-```text
-<tool>@<release>
-```
-
-Examples:
-
-```text
-gcc@stable
-gdb@17.1
-clang@22.1.5
-lld@22.1.5
-gcc@16.1.0-rev1
-```
-
-### 4.6 Canonical entry
-
-A canonical entry is the resolved internal form.
-
-Examples:
-
-```text
-gdb@stable -> gdb@17.1
-gcc@stable -> gcc@16.1.0-rev1
-lld@stable -> lld@22.1.5
-```
-
-The state stores canonical entries only. It does not store `stable`.
-
-This avoids ambiguity when the manifest changes. An installation made when `stable` resolved to one version must continue to refer to that concrete version.
-
-## 5. Manifest model
-
-### 5.1 Location
-
-Manifest lookup order:
-
-```text
-./config/packages.cfg
-~/.cup/config/packages.cfg
-```
-
-The repository path supports development. The home path supports bootstrap installations.
-
-### 5.2 Key format
-
-Manifest keys are scoped by component, tool, host, and target:
-
-```text
-<component>.<tool>.<host_platform>.<target_platform>.<field>=<value>
-```
-
-Example:
-
-```text
-debugger.gdb.linux-x64.linux-x64.stable_version=17.1
-```
-
-### 5.3 Required fields
-
-For an installable tuple, the manifest should provide:
-
-```text
-stable_version
-available_versions
-default_format
-formats
-url_template
-```
-
-Meaning:
-
-```text
-stable_version
-  concrete version used when the user requests stable
-
-available_versions
-  comma-separated allow-list of concrete versions
-
-default_format
-  archive format used when --format is not provided
-
-formats
-  comma-separated allow-list of accepted archive formats
-
-url_template
-  template used to build the package URL
-```
-
-### 5.4 URL placeholders
-
-The current URL templates use placeholders such as:
-
-```text
-{version}
-{host_platform}
-{target_platform}
-{format}
-```
-
-Example:
-
-```text
-https://github.com/coffee-clang/cup/releases/download/gdb-{version}-{host_platform}-{target_platform}/gdb-{version}-{host_platform}-{target_platform}.{format}
-```
-
-The URL is resolved after the release and archive format have been validated.
-
-## 6. State model
-
-The state file is stored at:
-
-```text
-~/.cup/state.txt
-```
-
-It stores two kinds of records:
-
-```text
-installed.<component>.<host_platform>.<target_platform>=<canonical_entry>
-default.<component>.<host_platform>.<target_platform>=<canonical_entry>
-```
-
-Examples:
-
-```text
-installed.debugger.linux-x64.linux-x64=gdb@17.1
-default.compiler.linux-x64.windows-x64=gcc@16.1.0-rev1
-```
-
-The state is loaded into fixed-size arrays in memory and written back atomically through a temporary state file followed by a rename.
-
-Installed entries and defaults are scoped by component, host platform, and target platform. This allows separate defaults for different targets.
-
-## 7. Filesystem model
-
-Runtime root:
+All runtime data is kept below:
 
 ```text
 ~/.cup
 ```
 
-Main subdirectories:
+Current structure:
 
 ```text
-~/.cup/cache
-~/.cup/components
-~/.cup/tmp
-~/.cup/config
+~/.cup/
+  bin/
+    cup
+    cup.exe
+    uninstall.sh
+    uninstall.ps1
+  cache/
+  components/
+  config/
+    packages.cfg
+  tmp/
+  state.txt
 ```
 
-Installed package layout:
+Installed packages are stored under:
 
 ```text
 ~/.cup/components/<component>/<tool>/<host_platform>/<target_platform>/<version>/
 ```
 
-Examples:
+Example:
 
 ```text
-~/.cup/components/compiler/gcc/linux-x64/linux-x64/16.1.0/
 ~/.cup/components/compiler/gcc/linux-x64/windows-x64/16.1.0-rev1/
-~/.cup/components/linker/lld/windows-x64/windows-x64/22.1.5/
 ```
 
-Cache layout is built from the requested package information and archive format. The cache stores downloaded archives so repeated installs do not always need to download again.
+The package archive itself contains a top-level package directory. Extraction normalizes the layout so validation can check the extracted root consistently.
 
-Temporary install/remove directories are created under `~/.cup/tmp` and are cleaned on normal command startup and after staged operations.
+## 10. Package archive layout
 
-## 8. Archive model
-
-Supported package formats are described by the manifest. The current packages use:
+A package archive is expected to contain a usable extracted tree with at least:
 
 ```text
-tar.gz
-tar.xz
-zip
-```
-
-Archives are extracted with `libarchive`; external `tar` or `unzip` commands are not used by `cup` itself.
-
-During extraction, the implementation normalizes the common top-level archive directory. Package archives are expected to include:
-
-```text
-info.txt
 bin/
+info.txt
 ```
 
-The current generic install validation requires a `bin` directory in the extracted root.
-
-## 9. Command model
-
-Implemented commands:
+Typical packages may also contain:
 
 ```text
-cup list [--target <target-platform>]
-cup install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]
-cup remove <component> <tool>@<release> [--target <target-platform>]
-cup default <component> <tool>@<release> [--target <target-platform>]
-cup current <component> [--target <target-platform>]
+lib/
+libexec/
+include/
+share/
 ```
 
-Supported options:
+`info.txt` describes the package that was built. It is produced by the build scripts and is useful for inspection and tests. It does not replace the manifest.
+
+Windows packages include required runtime DLLs in `bin/` when the tool depends on MSYS2/UCRT64 or CLANG64 libraries. This makes the package usable outside the build environment.
+
+Valgrind packages use a small generated launcher script for `bin/valgrind`. The real executable is `bin/valgrind.bin`. The launcher sets `VALGRIND_LIB` to the package's installed Valgrind runtime directory and then executes the real binary. This is used because Valgrind needs to locate internal tools such as Memcheck after the package has been moved under `.cup`.
+
+## 11. State model
+
+The state file is:
 
 ```text
---target <target-platform>
---format <archive-format>
--f <archive-format>
+~/.cup/state.txt
 ```
 
-`--format` is valid only for `install`.
-
-## 10. Error handling and consistency
-
-The implementation checks both state and disk before install/remove/default operations.
-
-Examples of detected inconsistencies:
+It records:
 
 ```text
-state says an entry is installed, but the installation directory is missing
-installation directory exists, but the state does not list it
+installed entries
+default entries per component/host/target
 ```
 
-The current implementation reports these cases and stops. It does not attempt automatic repair.
+State stores canonical entries. For example, after installing `gcc@stable`, the state stores the resolved concrete version.
 
-Install rollback:
+Defaults are scoped by:
 
 ```text
-if tmp -> install succeeds but state update/save fails:
-  install -> tmp
-  cleanup tmp
+component
+host_platform
+target_platform
 ```
 
-Remove rollback:
+This allows one default compiler for `linux-x64 -> linux-x64` and a different default compiler for `linux-x64 -> windows-x64`.
+
+## 12. State and disk consistency
+
+`cup` checks consistency between state and disk before operations that depend on installed entries.
+
+Examples of inconsistent states:
 
 ```text
-if install -> tmp succeeds but state update/save fails:
-  tmp -> install
+state says an entry is installed but the install directory is missing
+a default points to an entry that is no longer installed
+a manifest no longer contains a version recorded in state
 ```
 
-Windows-specific remove behavior includes avoiding directory rename over an already-created destination directory during remove staging.
+The current behavior is conservative:
 
-## 11. Interrupt behavior
+- `doctor` reports inconsistencies without modifying files;
+- `repair` removes stale state entries/defaults only when it can do so safely;
+- invalid state syntax is not automatically repaired.
 
-Interrupt handling is implemented for long-running operations.
+Unknown, malformed, or duplicate state/manifest content is treated as an error rather than being silently ignored.
 
-Current behavior:
+## 13. Install flow
 
-- downloads are interrupted through the libcurl progress callback;
-- interrupted downloads remove the partial archive;
-- extraction checks the interrupt flag during header and data loops;
-- interrupted extraction returns an interrupt error;
-- the install command cleans the temporary installation directory after an interrupted extraction;
-- remove avoids voluntarily stopping after the critical staging step has begun.
-
-The cleanup after interrupted extraction may take time for large packages because many partially extracted files may need to be deleted.
-
-## 12. Windows filesystem behavior
-
-The Windows system layer implements platform-specific filesystem operations.
-
-Current Windows-specific points:
-
-- file removal uses a platform function instead of C `remove()`;
-- read-only file attributes are cleared before deletion;
-- directory removal uses the Windows directory API;
-- rename/commit uses Windows rename behavior through the system layer;
-- reparse points are identified so recursive removal does not traverse junctions or symlink-like directory entries.
-
-Wide-character Windows APIs are not yet implemented. The current Windows implementation still uses narrow WinAPI calls.
-
-## 13. Build and package scripts
-
-The repository contains two categories of build scripts.
-
-Scripts for the `cup` executable:
+Install uses these major steps:
 
 ```text
-scripts/bootstrap-linux-deps.sh
-scripts/bootstrap-windows-deps.sh
-Makefile
+validate input
+load manifest
+resolve host and target
+resolve release
+resolve archive format
+check existing installation
+fetch archive into cache
+extract archive into temporary install directory
+validate extracted package
+rename temporary install directory to final install path
+load/update/save state
+cleanup temporary files
 ```
 
-Scripts for tool packages:
+The final install path is:
 
 ```text
-scripts/package-common.sh
-scripts/build-gcc.sh
-scripts/build-gdb.sh
-scripts/build-gnu-package.sh
-scripts/build-llvm-tool.sh
+~/.cup/components/<component>/<tool>/<host>/<target>/<version>
 ```
 
-Tool package scripts publish archives whose names match the manifest URL templates. `cup` itself does not build these tools during install.
+If state saving fails after the filesystem commit, `cup` attempts to roll the filesystem change back.
 
-## 14. Current limitations
+## 14. Remove flow
 
-Current known limitations:
+Remove uses staging rather than directly deleting the final install directory.
 
-- supported platforms are limited to `linux-x64` and `windows-x64`;
-- package metadata is read from a local text manifest, not from a remote index service;
-- package validation is generic and currently requires only a `bin` directory;
-- automatic repair of inconsistent state/disk situations is not implemented;
-- install-time dependency solving is not implemented;
-- Windows wide-character path support is not implemented yet;
-- LLVM package recipes currently support native host/target combinations only.
+The main steps are:
+
+```text
+validate input
+resolve release
+load state
+check installed entry
+rename final install path into tmp
+remove installed entry from state
+remove matching default if needed
+save state
+clean tmp staged directory
+```
+
+If the state update fails after the install directory has been moved to tmp, `cup` attempts to move it back.
+
+## 15. Default and current
+
+`cup default` sets the default installed tool for a component/host/target tuple.
+
+Example:
+
+```sh
+cup default compiler gcc@stable --target windows-x64
+```
+
+The selected entry must exist both in state and on disk.
+
+`cup current` prints the default for a component and selected target:
+
+```sh
+cup current compiler
+cup current compiler --target windows-x64
+```
+
+If the stored canonical entry matches the manifest's stable version, the output may annotate it as stable.
+
+## 16. List
+
+`cup list` lists installed entries for the current host and selected target:
+
+```sh
+cup list
+cup list --target windows-x64
+```
+
+If nothing is installed, it prints an explicit empty-state message.
+
+## 17. Doctor
+
+`cup doctor` checks the local installation without modifying files.
+
+It checks:
+
+```text
+.cup directory structure
+state file validity
+installed entries recorded in state
+manifest availability for installed entries
+temporary directory leftovers
+```
+
+Warnings are used for non-blocking issues such as missing directories or temporary leftovers. Blocking inconsistencies return an error and suggest running `cup repair` after review.
+
+## 18. Repair
+
+`cup repair` performs safe repairs only.
+
+It currently:
+
+```text
+creates missing cup directories
+cleans temporary files
+loads state
+removes stale installed entries whose directories are missing
+removes stale defaults that point to missing installations
+saves state only if it changed
+```
+
+It does not try to infer a correct state from arbitrary invalid content. If the state file is malformed, repair stops and reports that automatic repair is not available.
+
+## 19. Uninstall
+
+`cup uninstall` removes `cup` itself and all cup-managed data under `.cup`.
+
+The uninstall command does not directly delete the running executable. Instead, it starts the installed uninstall script and exits. The uninstall script removes the `.cup` tree externally.
+
+The PATH entry is not removed. This is intentional: it is safe to leave in place and will be reused if `cup` is installed again.
+
+## 20. Cache and temporary data
+
+Downloaded archives are stored in:
+
+```text
+~/.cup/cache
+```
+
+Temporary install/remove/extraction data is stored in:
+
+```text
+~/.cup/tmp
+```
+
+Interrupted downloads and extractions are cleaned up where possible. Temporary leftovers can also be removed with:
+
+```sh
+cup repair
+```
+
+## 21. Interrupt handling
+
+The implementation has interrupt-aware paths for long operations such as download, extraction, install staging, and cleanup.
+
+The goal is to avoid leaving partial installs in the final component directory. Temporary data may remain after some failures, but it is isolated under `.cup/tmp` and can be cleaned by `cup repair`.
+
+## 22. Package self-containment
+
+A modular dependency solver was considered earlier in the project. The idea was to publish smaller packages and let `cup` install internal dependencies such as runtime files, Binutils, MinGW pieces, or related LLVM runtime files on demand.
+
+That design is not part of the current implementation.
+
+The current choice is:
+
+```text
+build archives as self-contained tool distributions
+let cup install one selected archive
+do not resolve package dependencies during install
+```
+
+This means a package may internally include supporting files required by the selected tool. For example:
+
+- GCC packages can include Binutils;
+- Windows-target GCC packages include MinGW-w64 runtime pieces;
+- Windows packages include runtime DLLs next to executables;
+- Valgrind includes its internal runtime and uses a launcher for relocation.
+
+This keeps the runtime installer simple and makes package correctness a build/test responsibility.
+
+## 23. Build infrastructure in the repository
+
+The repository contains scripts and workflows that build component packages. They are grouped by purpose:
+
+```text
+scripts/build/
+scripts/package/
+scripts/test/
+scripts/install/
+scripts/bootstrap/
+```
+
+The build infrastructure is not part of the runtime package resolver. It exists to produce and validate archives referenced by the manifest.
+
+Current package tests extract the produced archive and run tool-specific checks before publish. Component workflow publish mode uploads release assets to `coffee-clang/cup-components`. Non-publish mode uploads workflow artifacts for inspection.
+
+## 24. Current limitations and planned extensions
+
+Current limitations:
+
+- supported platforms are only `linux-x64` and `windows-x64`;
+- 32-bit platforms are not implemented yet;
+- macOS support is not implemented yet;
+- install-time dependency solving is intentionally not implemented;
+- state repair is conservative and does not repair arbitrary malformed files;
+- `cup uninstall` does not remove PATH entries;
+- only known registry pairs are accepted.
+
+Possible future extensions:
+
+- macOS host packages;
+- 32-bit platform support;
+- richer package metadata;
+- optional dependency/runtime packages;
+- generated environment or symlink handling for shared runtimes;
+- additional C development tools;
+- stronger package verification.
