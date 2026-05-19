@@ -49,7 +49,7 @@ jobs:
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-llvm-builder \
-            bash scripts/build-llvm-tool.sh \
+            bash scripts/build/build-llvm-tool.sh \
               "${{ inputs.tool }}" \
               "${{ inputs.version }}" \
               linux-x64 \
@@ -59,67 +59,10 @@ jobs:
       - name: Test packaged LLVM tool
         run: |
           docker run --rm \
-            -e LLVM_TOOL="${{ inputs.tool }}" \
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-llvm-builder \
-            bash -lc '
-              set -euo pipefail
-              source dist/release.env
-
-              rm -rf dist/package-test
-              mkdir -p dist/package-test
-              tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
-
-              root="dist/package-test/$package_base"
-
-              case "$LLVM_TOOL" in
-                clang)
-                  "$root/bin/clang" --version
-                  printf "%s\n" \
-                    "#include <stdio.h>" \
-                    "" \
-                    "int main(void) {" \
-                    "    printf(\"hello clang\\n\");" \
-                    "    return 0;" \
-                    "}" > /tmp/cup-clang-test.c
-                  "$root/bin/clang" /tmp/cup-clang-test.c -o /tmp/cup-clang-test
-                  /tmp/cup-clang-test | grep "hello clang"
-                  ;;
-                lld)
-                  "$root/bin/lld" --version
-                  "$root/bin/ld.lld" --version
-                  ;;
-                lldb)
-                  "$root/bin/lldb" --version
-                  ;;
-                clangd)
-                  "$root/bin/clangd" --version
-                  printf "%s\n" \
-                    "int main(void) {" \
-                    "    return 0;" \
-                    "}" > /tmp/cup-clangd-test.c
-                  "$root/bin/clangd" --check=/tmp/cup-clangd-test.c
-                  ;;
-                clang-format)
-                  "$root/bin/clang-format" --version
-                  printf "%s\n" "int main( void ){return 0;}" > /tmp/cup-format-test.c
-                  "$root/bin/clang-format" /tmp/cup-format-test.c | grep "int main"
-                  ;;
-                clang-tidy)
-                  "$root/bin/clang-tidy" --version
-                  printf "%s\n" \
-                    "int main(void) {" \
-                    "    return 0;" \
-                    "}" > /tmp/cup-tidy-test.c
-                  "$root/bin/clang-tidy" /tmp/cup-tidy-test.c -- -std=c11
-                  ;;
-                *)
-                  echo "unsupported tool: $LLVM_TOOL" >&2
-                  exit 2
-                  ;;
-              esac
-            '
+            bash scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
 
       - name: Load release metadata
         id: release

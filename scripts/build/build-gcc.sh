@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/package-common.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/scripts/package/package-common.sh"
 
 usage() {
     cat <<USAGE
@@ -235,8 +236,7 @@ host_c_compiler() {
             die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
         fi
 
-        printf '%s/bin/gcc.exe
-' "$MINGW_PREFIX"
+        printf '%s/bin/gcc.exe\n' "$MINGW_PREFIX"
         return 0
     fi
 
@@ -249,8 +249,7 @@ host_cxx_compiler() {
             die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
         fi
 
-        printf '%s/bin/g++.exe
-' "$MINGW_PREFIX"
+        printf '%s/bin/g++.exe\n' "$MINGW_PREFIX"
         return 0
     fi
 

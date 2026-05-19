@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/package-common.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/scripts/package/package-common.sh"
 
 usage() {
     cat <<USAGE
@@ -117,6 +118,13 @@ prune_bin_except() {
         base="$(basename "$entry")"
 
         if is_kept_bin_tool "$base" "${keep_tools[@]}"; then
+            if [ -L "$entry" ]; then
+                local tmp
+                tmp="$entry.tmp"
+                cp -f -L "$entry" "$tmp"
+                mv -f "$tmp" "$entry"
+                chmod +x "$entry"
+            fi
             continue
         fi
 

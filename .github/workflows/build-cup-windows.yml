@@ -9,9 +9,9 @@ on:
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
-      - "scripts/bootstrap-windows-deps.sh"
-      - "scripts/install-cup-windows.ps1"
-      - "scripts/uninstall-cup-windows.ps1"
+      - "scripts/bootstrap/bootstrap-windows-deps.sh"
+      - "scripts/install/install-cup-windows.ps1"
+      - "scripts/install/uninstall-cup-windows.ps1"
       - ".github/workflows/build-cup-windows.yml"
 
   workflow_dispatch:
@@ -60,8 +60,8 @@ jobs:
 
       - name: Bootstrap Windows static dependencies
         run: |
-          chmod +x scripts/bootstrap-windows-deps.sh
-          scripts/bootstrap-windows-deps.sh
+          chmod +x scripts/bootstrap/bootstrap-windows-deps.sh
+          scripts/bootstrap/bootstrap-windows-deps.sh
 
       - name: Build cup
         run: |
@@ -75,9 +75,9 @@ jobs:
 
           cp config/packages.cfg dist/packages.cfg
 
-          cp scripts/install-cup-windows.ps1 dist/install.ps1
+          cp scripts/install/install-cup-windows.ps1 dist/install.ps1
 
-          cp scripts/uninstall-cup-windows.ps1 dist/uninstall.ps1
+          cp scripts/install/uninstall-cup-windows.ps1 dist/uninstall.ps1
 
           sha256sum \
             dist/cup-windows-x64.exe \

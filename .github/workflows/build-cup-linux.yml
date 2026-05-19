@@ -9,9 +9,9 @@ on:
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
-      - "scripts/bootstrap-linux-deps.sh"
-      - "scripts/install-cup.sh"
-      - "scripts/uninstall-cup.sh"
+      - "scripts/bootstrap/bootstrap-linux-deps.sh"
+      - "scripts/install/install-cup.sh"
+      - "scripts/install/uninstall-cup.sh"
       - ".github/workflows/build-cup-linux.yml"
 
   workflow_dispatch:
@@ -59,8 +59,8 @@ jobs:
 
       - name: Bootstrap static dependencies
         run: |
-          chmod +x scripts/bootstrap-linux-deps.sh
-          scripts/bootstrap-linux-deps.sh
+          chmod +x scripts/bootstrap/bootstrap-linux-deps.sh
+          scripts/bootstrap/bootstrap-linux-deps.sh
 
       - name: Build cup
         run: |
@@ -75,10 +75,10 @@ jobs:
 
           cp config/packages.cfg dist/packages.cfg
 
-          cp scripts/install-cup.sh dist/install.sh
+          cp scripts/install/install-cup.sh dist/install.sh
           chmod +x dist/install.sh
 
-          cp scripts/uninstall-cup.sh dist/uninstall.sh
+          cp scripts/install/uninstall-cup.sh dist/uninstall.sh
           chmod +x dist/uninstall.sh
 
           sha256sum \

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/package-common.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/scripts/package/package-common.sh"
 
 usage() {
     cat <<USAGE
@@ -77,18 +78,6 @@ gdb_linux_feature_configure_args() {
         --with-intel-pt
 }
 
-gdb_windows_feature_configure_args() {
-    return 0
-}
-
-gdb_feature_configure_args() {
-    if is_windows_platform "$HOST_PLATFORM"; then
-        gdb_windows_feature_configure_args
-    else
-        gdb_linux_feature_configure_args
-    fi
-}
-
 build_gdb() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -100,7 +89,9 @@ build_gdb() {
     fi
 
     python_cmd="$(python_command)"
-    mapfile -t feature_args < <(gdb_feature_configure_args)
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        mapfile -t feature_args < <(gdb_linux_feature_configure_args)
+    fi
 
     log "building GDB $VERSION for $HOST_PLATFORM"
 
