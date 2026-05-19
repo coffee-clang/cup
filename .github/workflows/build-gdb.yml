@@ -96,6 +96,7 @@ jobs:
               "$root/bin/gdb" -q -batch \
                 -ex "file /tmp/cup-gdb-test" \
                 -ex "break add" \
+                -ex "set debuginfod enabled off" \
                 -ex "run" \
                 -ex "print a" \
                 -ex "print b" \
