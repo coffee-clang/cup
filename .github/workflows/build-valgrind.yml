@@ -61,7 +61,7 @@ jobs:
               root="dist/package-test/$package_base"
               "$root/bin/valgrind" --version
               "$root/bin/valgrind" --tool=memcheck --help >/tmp/cup-valgrind-help.txt
-              grep "available tools" /tmp/cup-valgrind-help.txt
+              grep -A3 "available tools are:" /tmp/cup-valgrind-help.txt
               grep -F "contents.mpi=true" "$root/info.txt"
               find "$root" -type f -name "libmpiwrap-*" | grep .
 
