@@ -26,10 +26,12 @@ function Invoke-NativeCapture {
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
     $output = & $FilePath @ArgumentList 2>&1
+    $exitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        $output | ForEach-Object { Write-Host $_ }
-        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
+    $output | ForEach-Object { Write-Host $_ }
+
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: $FilePath $($ArgumentList -join ' ')"
     }
 
     return $output
@@ -52,13 +54,12 @@ function Assert-OutputContains {
         [string] $Pattern
     )
 
-    $matched = $Output | Select-String -Pattern $Pattern
-    if (-not $matched) {
-        Write-Host 'Captured output:'
-        $Output | ForEach-Object { Write-Host $_ }
-        throw "Expected output to contain pattern: $Pattern"
+    $text = ($Output | Out-String)
+    if ($text -notmatch $Pattern) {
+        throw "Expected output to match pattern: $Pattern"
     }
 }
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -109,25 +110,29 @@ Get-Content "$root\info.txt" | Select-String 'config.zlib=true'
 Get-Content "$root\info.txt" | Select-String 'config.lzma=true'
 Get-Content "$root\info.txt" | Select-String 'config.zstd=true'
 
-$gdbPythonOutput = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
+$output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
     '-q',
     '-batch',
     '-ex',
     'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
 )
-$gdbPythonOutput | Tee-Object -FilePath "$env:TEMP\cup-gdb-python-output.txt"
-Assert-OutputContains -Output $gdbPythonOutput -Pattern 'python-ok'
+Assert-OutputContains -Output $output -Pattern 'python-ok'
 
-$gdbOutput = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
+$output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
     '-q',
     '-batch',
-    '-ex', "file $gdbTestExe",
-    '-ex', 'break add',
-    '-ex', 'run',
-    '-ex', 'print a',
-    '-ex', 'print b',
-    '-ex', 'backtrace'
+    '-ex',
+    "file $gdbTestExe",
+    '-ex',
+    'break add',
+    '-ex',
+    'run',
+    '-ex',
+    'print a',
+    '-ex',
+    'print b',
+    '-ex',
+    'backtrace'
 )
-$gdbOutput | Tee-Object -FilePath "$env:TEMP\cup-gdb-output.txt"
-Assert-OutputContains -Output $gdbOutput -Pattern '\$1 = 20'
-Assert-OutputContains -Output $gdbOutput -Pattern '\$2 = 22'
+Assert-OutputContains -Output $output -Pattern '\$1 = 20'
+Assert-OutputContains -Output $output -Pattern '\$2 = 22'

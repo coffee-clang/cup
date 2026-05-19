@@ -26,10 +26,12 @@ function Invoke-NativeCapture {
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
     $output = & $FilePath @ArgumentList 2>&1
+    $exitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        $output | ForEach-Object { Write-Host $_ }
-        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
+    $output | ForEach-Object { Write-Host $_ }
+
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: $FilePath $($ArgumentList -join ' ')"
     }
 
     return $output
@@ -52,13 +54,12 @@ function Assert-OutputContains {
         [string] $Pattern
     )
 
-    $matched = $Output | Select-String -Pattern $Pattern
-    if (-not $matched) {
-        Write-Host 'Captured output:'
-        $Output | ForEach-Object { Write-Host $_ }
-        throw "Expected output to contain pattern: $Pattern"
+    $text = ($Output | Out-String)
+    if ($text -notmatch $Pattern) {
+        throw "Expected output to match pattern: $Pattern"
     }
 }
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -93,8 +94,8 @@ Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     "$env:TEMP\cup-gcc-windows-c-test.exe"
 )
 Assert-FileExists "$env:TEMP\cup-gcc-windows-c-test.exe"
-$cOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-c-test.exe"
-Assert-OutputContains -Output $cOutput -Pattern 'hello gcc windows c'
+$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-c-test.exe"
+Assert-OutputContains -Output $output -Pattern 'hello gcc windows c'
 
 @'
 #include <iostream>
@@ -113,8 +114,8 @@ Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @(
     "$env:TEMP\cup-gcc-windows-cpp-test.exe"
 )
 Assert-FileExists "$env:TEMP\cup-gcc-windows-cpp-test.exe"
-$cppOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-cpp-test.exe"
-Assert-OutputContains -Output $cppOutput -Pattern '42'
+$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+Assert-OutputContains -Output $output -Pattern '42'
 
 @'
 #include <pthread.h>
@@ -148,8 +149,8 @@ Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-pthread'
 )
 Assert-FileExists "$env:TEMP\cup-gcc-windows-pthread-test.exe"
-$pthreadOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-pthread-test.exe"
-Assert-OutputContains -Output $pthreadOutput -Pattern 'pthread 42'
+$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-pthread-test.exe"
+Assert-OutputContains -Output $output -Pattern 'pthread 42'
 
 @'
 static int add(int a, int b) {
