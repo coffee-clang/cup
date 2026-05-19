@@ -307,8 +307,7 @@ target_tool_path() {
     local exe_suffix
 
     exe_suffix="$(tool_exe_suffix)"
-    printf '%s
-' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+    printf '%s\n' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
 }
 
 resolve_target_tool() {
@@ -318,8 +317,7 @@ resolve_target_tool() {
     path="$(target_tool_path "$tool")"
 
     if [ -x "$path" ]; then
-        printf '%s
-' "$path"
+        printf '%s\n' "$path"
     fi
 }
 
@@ -474,11 +472,15 @@ install_native_binutils_for_gcc() {
         target_dir="$PREFIX/$target_name/bin"
 
         for tool in as ld ar ranlib strip nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
-            copy_native_binutils_tool                 "$PREFIX/bin/$tool$exe_suffix"                 "$target_dir/$tool$exe_suffix"
+            copy_native_binutils_tool \
+                "$PREFIX/bin/$tool$exe_suffix" \
+                "$target_dir/$tool$exe_suffix"
         done
 
         if [ -e "$PREFIX/bin/ld.bfd$exe_suffix" ]; then
-            copy_native_binutils_tool                 "$PREFIX/bin/ld.bfd$exe_suffix"                 "$target_dir/ld.bfd$exe_suffix"
+            copy_native_binutils_tool \
+                "$PREFIX/bin/ld.bfd$exe_suffix" \
+                "$target_dir/ld.bfd$exe_suffix"
         fi
     done
 }
@@ -771,6 +773,7 @@ build_gcc_final() {
     )
 
     create_native_windows_aliases
+    copy_windows_runtime_dlls "$PREFIX/bin"
 }
 
 

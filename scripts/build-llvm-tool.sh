@@ -203,6 +203,7 @@ build_llvm_tool() {
     cmake --install "$build_dir"
 
     prune_llvm_package_bins
+    copy_windows_runtime_dlls "$PREFIX/bin"
 }
 
 write_llvm_info() {

@@ -277,17 +277,134 @@ package_formats_for_host() {
     local host_platform="$1"
 
     if is_windows_platform "$host_platform"; then
-        printf '%s
-' "zip tar.xz tar.gz"
+        printf '%s\n' "zip tar.xz tar.gz"
     else
-        printf '%s
-' "tar.xz tar.gz zip"
+        printf '%s\n' "tar.xz tar.gz zip"
     fi
 }
 
 package_formats_csv() {
     local host_platform="$1"
     package_formats_for_host "$host_platform" | paste -sd, -
+}
+
+
+windows_runtime_dll_allowed_path() {
+    local dll_path="$1"
+
+    case "$dll_path" in
+        /ucrt64/bin/*|/mingw64/bin/*|/clang64/bin/*|/clangarm64/bin/*|/mingw32/bin/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+windows_runtime_dll_is_system_path() {
+    local dll_path="$1"
+    local lower
+
+    lower="$(printf '%s\n' "$dll_path" | tr '[:upper:]' '[:lower:]')"
+
+    case "$lower" in
+        /c/windows/*|/c/windows/system32/*|/c/windows/syswow64/*|c:\\windows\\*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+extract_windows_dll_path_from_ldd_line() {
+    local line="$1"
+    local path
+
+    path="$(printf '%s\n' "$line" | sed -nE 's/.*=>[[:space:]]+([^[:space:]]+\.[dD][lL][lL]).*/\1/p')"
+    if [ -n "$path" ]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    path="$(printf '%s\n' "$line" | sed -nE 's/^[[:space:]]*([^[:space:]]+\.[dD][lL][lL]).*/\1/p')"
+    if [ -n "$path" ]; then
+        printf '%s\n' "$path"
+    fi
+}
+
+copy_windows_runtime_dlls() {
+    local bin_dir="$1"
+    local item
+    local current
+    local line
+    local dll_path
+    local dll_name
+    local destination
+    local copied_count=0
+    local index=0
+    local queue=()
+    local seen=()
+
+    if [ "${HOST_PLATFORM:-}" != "windows-x64" ]; then
+        return 0
+    fi
+
+    [ -d "$bin_dir" ] || return 0
+
+    if ! command -v ldd >/dev/null 2>&1; then
+        die "ldd is required to collect Windows runtime DLLs"
+    fi
+
+    shopt -s nullglob
+    for item in "$bin_dir"/*.exe "$bin_dir"/*.dll; do
+        [ -f "$item" ] || continue
+        queue+=("$item")
+    done
+    shopt -u nullglob
+
+    log "collecting Windows runtime DLLs for $bin_dir"
+
+    while [ "$index" -lt "${#queue[@]}" ]; do
+        current="${queue[$index]}"
+        index=$((index + 1))
+
+        case " ${seen[*]} " in
+            *" $current "*)
+                continue
+                ;;
+        esac
+        seen+=("$current")
+
+        while IFS= read -r line; do
+            dll_path="$(extract_windows_dll_path_from_ldd_line "$line")"
+            [ -n "$dll_path" ] || continue
+            [ -f "$dll_path" ] || continue
+
+            if windows_runtime_dll_is_system_path "$dll_path"; then
+                continue
+            fi
+
+            if ! windows_runtime_dll_allowed_path "$dll_path"; then
+                log "  skipping non-package DLL dependency: $dll_path"
+                continue
+            fi
+
+            dll_name="$(basename "$dll_path")"
+            destination="$bin_dir/$dll_name"
+
+            if [ ! -f "$destination" ]; then
+                cp -f "$dll_path" "$destination"
+                chmod +x "$destination" 2>/dev/null || true
+                copied_count=$((copied_count + 1))
+                log "  copied: $dll_name"
+                queue+=("$destination")
+            fi
+        done < <(ldd "$current" 2>/dev/null || true)
+    done
+
+    log "Windows runtime DLL collection completed: $copied_count copied"
 }
 
 create_archive() {

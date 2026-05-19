@@ -110,6 +110,7 @@ main() {
     source_dir="$(prepare_source_tree gdb "$VERSION" "$SOURCE_URL" "gdb-$VERSION.tar.xz")"
 
     build_gdb "$source_dir"
+    copy_windows_runtime_dlls "$PREFIX/bin"
     write_gdb_info
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }

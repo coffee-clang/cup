@@ -51,6 +51,55 @@ jobs:
               "${{ inputs.target_platform }}" \
               "${{ inputs.revision }}"
 
+      - name: Test packaged GCC
+        run: |
+          docker run --rm \
+            -e TARGET_PLATFORM="${{ inputs.target_platform }}" \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            cup-gnu-builder \
+            bash -lc '
+              set -euo pipefail
+              source dist/release.env
+
+              rm -rf dist/package-test
+              mkdir -p dist/package-test
+              tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
+
+              root="dist/package-test/$package_base"
+
+              if [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+                "$root/bin/gcc" --version
+                "$root/bin/gcc" -print-libgcc-file-name
+                "$root/bin/gcc" -print-prog-name=cc1
+
+                printf "%s\n" \
+                  "#include <stdio.h>" \
+                  "" \
+                  "int main(void) {" \
+                  "    printf(\"hello gcc\\n\");" \
+                  "    return 0;" \
+                  "}" > /tmp/cup-gcc-test.c
+
+                "$root/bin/gcc" /tmp/cup-gcc-test.c -o /tmp/cup-gcc-test
+                /tmp/cup-gcc-test | grep "hello gcc"
+              elif [ "$TARGET_PLATFORM" = "windows-x64" ]; then
+                "$root/bin/x86_64-w64-mingw32-gcc" --version
+
+                printf "%s\n" \
+                  "int main(void) {" \
+                  "    return 0;" \
+                  "}" > /tmp/cup-gcc-windows-test.c
+
+                "$root/bin/x86_64-w64-mingw32-gcc" /tmp/cup-gcc-windows-test.c -o /tmp/cup-gcc-windows-test.exe
+                test -s /tmp/cup-gcc-windows-test.exe
+                file /tmp/cup-gcc-windows-test.exe | grep -i "PE"
+              else
+                echo "unsupported target platform: $TARGET_PLATFORM" >&2
+                exit 2
+              fi
+            '
+
       - name: Load release metadata
         id: release
         shell: bash

@@ -72,6 +72,35 @@ jobs:
             windows-x64 \
             "${{ inputs.revision }}"
 
+      - name: Test packaged GCC
+        shell: pwsh
+        run: |
+          $packageBase = (Get-Content dist/release.env | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
+          if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
+
+          Remove-Item -Recurse -Force dist/package-test -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force dist/package-test | Out-Null
+          Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
+
+          $root = Join-Path (Resolve-Path dist/package-test) $packageBase
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+
+          & "$root\bin\gcc.exe" --version
+          & "$root\bin\x86_64-w64-mingw32-gcc.exe" --version
+
+          $testSource = @(
+            '#include <stdio.h>',
+            '',
+            'int main(void) {',
+            '    printf("hello gcc windows\n");',
+            '    return 0;',
+            '}'
+          )
+          $testSource | Set-Content "$env:TEMP\cup-gcc-windows-test.c"
+
+          & "$root\bin\gcc.exe" "$env:TEMP\cup-gcc-windows-test.c" -o "$env:TEMP\cup-gcc-windows-test.exe"
+          & "$env:TEMP\cup-gcc-windows-test.exe"
+
       - name: Load release metadata
         id: release
         shell: bash
