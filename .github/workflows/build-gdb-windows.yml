@@ -110,7 +110,7 @@ jobs:
           & "$root\bin\gdb.exe" --configuration
 
           & "$root\bin\gdb.exe" -q -batch `
-            -ex 'python import sys; print("python-ok", sys.version_info[0], sys.version_info[1])' |
+            -ex 'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])' |
             Tee-Object -FilePath "$env:TEMP\cup-gdb-python-output.txt"
           Select-String -Path "$env:TEMP\cup-gdb-python-output.txt" -Pattern 'python-ok'
 
