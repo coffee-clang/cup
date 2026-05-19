@@ -62,6 +62,10 @@ jobs:
               "$root/bin/gdb" --version
               "$root/bin/gdb" --configuration
 
+              "$root/bin/gdb" -q -batch \
+                -ex "python import sys; print(\"python-ok\", sys.version_info[0], sys.version_info[1])" | tee /tmp/cup-gdb-python-output.txt
+              grep -F "python-ok" /tmp/cup-gdb-python-output.txt
+
               printf "%s\n" \
                 "#include <stdio.h>" \
                 "" \
@@ -84,8 +88,8 @@ jobs:
                 -ex "print b" \
                 -ex "backtrace" | tee /tmp/cup-gdb-output.txt
 
-              grep "\\$1 = 20" /tmp/cup-gdb-output.txt
-              grep "\\$2 = 22" /tmp/cup-gdb-output.txt
+              grep -F '\''$1 = 20'\'' /tmp/cup-gdb-output.txt
+              grep -F '\''$2 = 22'\'' /tmp/cup-gdb-output.txt
             '
 
       - name: Load release metadata

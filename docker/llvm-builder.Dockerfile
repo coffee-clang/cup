@@ -8,8 +8,10 @@ RUN apt-get update \
         ca-certificates \
         cmake \
         curl \
+        file \
         ninja-build \
         patch \
+        pkg-config \
         python3 \
         python3-dev \
         swig \

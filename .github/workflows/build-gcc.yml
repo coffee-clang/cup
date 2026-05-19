@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Docker image
-        run: docker build -f docker/gnu-builder.Dockerfile -t cup-gnu-builder .
+        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-gnu-builder .
 
       - name: Build package
         run: |

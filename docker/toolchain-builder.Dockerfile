@@ -7,6 +7,7 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         curl \
+        wget \
         file \
         flex \
         bison \
@@ -14,18 +15,23 @@ RUN apt-get update \
         patch \
         perl \
         python3 \
+        python3-dev \
         tar \
         texinfo \
         unzip \
         xz-utils \
         bzip2 \
         zip \
+        pkg-config \
         libgmp-dev \
         libmpfr-dev \
         libreadline-dev \
         libexpat1-dev \
         zlib1g-dev \
         libncurses-dev \
+        liblzma-dev \
+        libzstd-dev \
+        libc6-dbg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

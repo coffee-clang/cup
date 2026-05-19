@@ -290,10 +290,10 @@ package_formats_csv() {
 
 
 windows_runtime_dll_allowed_path() {
-    local dll_path="$1"
+    local path="$1"
 
-    case "$dll_path" in
-        /ucrt64/bin/*|/mingw64/bin/*|/clang64/bin/*|/clangarm64/bin/*|/mingw32/bin/*)
+    case "$path" in
+        /ucrt64/bin/*.dll|/mingw64/bin/*.dll|/mingw32/bin/*.dll|/clang64/bin/*.dll|/clangarm64/bin/*.dll)
             return 0
             ;;
         *)
@@ -303,13 +303,13 @@ windows_runtime_dll_allowed_path() {
 }
 
 windows_runtime_dll_is_system_path() {
-    local dll_path="$1"
+    local path="$1"
     local lower
 
-    lower="$(printf '%s\n' "$dll_path" | tr '[:upper:]' '[:lower:]')"
+    lower="$(printf '%s\n' "$path" | tr '[:upper:]' '[:lower:]')"
 
     case "$lower" in
-        /c/windows/*|/c/windows/system32/*|/c/windows/syswow64/*|c:\\windows\\*)
+        /c/windows/*|/windows/*|c:/*)
             return 0
             ;;
         *)
@@ -318,67 +318,54 @@ windows_runtime_dll_is_system_path() {
     esac
 }
 
-extract_windows_dll_path_from_ldd_line() {
-    local line="$1"
-    local path
+windows_runtime_dll_extract_paths() {
+    local file="$1"
 
-    path="$(printf '%s\n' "$line" | sed -nE 's/.*=>[[:space:]]+([^[:space:]]+\.[dD][lL][lL]).*/\1/p')"
-    if [ -n "$path" ]; then
-        printf '%s\n' "$path"
-        return 0
-    fi
-
-    path="$(printf '%s\n' "$line" | sed -nE 's/^[[:space:]]*([^[:space:]]+\.[dD][lL][lL]).*/\1/p')"
-    if [ -n "$path" ]; then
-        printf '%s\n' "$path"
-    fi
+    ldd "$file" 2>/dev/null | while IFS= read -r line; do
+        printf '%s\n' "$line" | sed -n 's/.*=> \([^ ]*\.dll\).*/\1/p'
+        printf '%s\n' "$line" | sed -n 's/^\([^ ]*\.dll\).*/\1/p'
+    done | sed '/^$/d' | sort -u
 }
 
 copy_windows_runtime_dlls() {
     local bin_dir="$1"
-    local item
+    local queue_file
+    local seen_file
     local current
-    local line
     local dll_path
     local dll_name
-    local destination
-    local copied_count=0
-    local index=0
-    local queue=()
-    local seen=()
 
-    if [ "${HOST_PLATFORM:-}" != "windows-x64" ]; then
+    if ! is_windows_platform "$HOST_PLATFORM"; then
         return 0
     fi
-
-    [ -d "$bin_dir" ] || return 0
 
     if ! command -v ldd >/dev/null 2>&1; then
         die "ldd is required to collect Windows runtime DLLs"
     fi
 
-    shopt -s nullglob
-    for item in "$bin_dir"/*.exe "$bin_dir"/*.dll; do
-        [ -f "$item" ] || continue
-        queue+=("$item")
-    done
-    shopt -u nullglob
+    if [ ! -d "$bin_dir" ]; then
+        return 0
+    fi
 
-    log "collecting Windows runtime DLLs for $bin_dir"
+    log "copying Windows runtime DLLs for binaries in $bin_dir"
 
-    while [ "$index" -lt "${#queue[@]}" ]; do
-        current="${queue[$index]}"
-        index=$((index + 1))
+    queue_file="$(mktemp)"
+    seen_file="$(mktemp)"
 
-        case " ${seen[*]} " in
-            *" $current "*)
-                continue
-                ;;
-        esac
-        seen+=("$current")
+    find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f | sort > "$queue_file"
+    : > "$seen_file"
 
-        while IFS= read -r line; do
-            dll_path="$(extract_windows_dll_path_from_ldd_line "$line")"
+    while [ -s "$queue_file" ]; do
+        current="$(head -n 1 "$queue_file")"
+        tail -n +2 "$queue_file" > "$queue_file.next"
+        mv "$queue_file.next" "$queue_file"
+
+        if grep -Fx -- "$current" "$seen_file" >/dev/null 2>&1; then
+            continue
+        fi
+        printf '%s\n' "$current" >> "$seen_file"
+
+        while IFS= read -r dll_path; do
             [ -n "$dll_path" ] || continue
             [ -f "$dll_path" ] || continue
 
@@ -392,19 +379,58 @@ copy_windows_runtime_dlls() {
             fi
 
             dll_name="$(basename "$dll_path")"
-            destination="$bin_dir/$dll_name"
 
-            if [ ! -f "$destination" ]; then
-                cp -f "$dll_path" "$destination"
-                chmod +x "$destination" 2>/dev/null || true
-                copied_count=$((copied_count + 1))
-                log "  copied: $dll_name"
-                queue+=("$destination")
+            if [ -f "$bin_dir/$dll_name" ]; then
+                continue
             fi
-        done < <(ldd "$current" 2>/dev/null || true)
+
+            cp -f "$dll_path" "$bin_dir/$dll_name"
+            log "  copied: $dll_name"
+            printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
+        done < <(windows_runtime_dll_extract_paths "$current")
     done
 
-    log "Windows runtime DLL collection completed: $copied_count copied"
+    rm -f "$queue_file" "$seen_file"
+}
+
+copy_windows_python_runtime() {
+    local version
+    local stdlib
+    local dst
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    if ! command -v python >/dev/null 2>&1; then
+        die "python is required to package GDB Python support"
+    fi
+
+    version="$(python - <<'PYSCRIPT'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PYSCRIPT
+)"
+    stdlib="$(python - <<'PYSCRIPT'
+import sysconfig
+print(sysconfig.get_paths().get('stdlib', ''))
+PYSCRIPT
+)"
+
+    if [ -z "$version" ] || [ -z "$stdlib" ] || [ ! -d "$stdlib" ]; then
+        die "could not locate Python standard library for Windows GDB package"
+    fi
+
+    dst="$PREFIX/lib/python$version"
+
+    log "copying Python runtime library: $stdlib -> $dst"
+
+    rm -rf "$dst"
+    mkdir -p "$(dirname "$dst")"
+    cp -a "$stdlib" "$dst"
+
+    find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
+    find "$dst" -type d \( -name test -o -name tests \) -prune -exec rm -rf {} +
 }
 
 create_archive() {

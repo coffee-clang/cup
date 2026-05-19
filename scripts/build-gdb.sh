@@ -44,6 +44,7 @@ need_common_tools() {
     need tar
     need make
     need zip
+    need python
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
         die "a host C compiler is required"
@@ -67,10 +68,21 @@ build_gdb() {
         cd "$build_dir"
         "$source_dir/configure" \
             --prefix="$PREFIX" \
-            --disable-werror
+            --disable-werror \
+            --with-python=python3 \
+            --with-expat \
+            --with-system-readline \
+            --with-zlib \
+            --with-lzma \
+            --with-zstd
         make -j"$CUP_JOBS"
         make install
     )
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        copy_windows_python_runtime
+        copy_windows_runtime_dlls "$PREFIX/bin"
+    fi
 }
 
 write_gdb_info() {
@@ -95,6 +107,12 @@ write_gdb_info() {
         "source.primary.url=$SOURCE_URL"
         "config.cross=false"
         "contents.self_contained=true"
+        "contents.uses_python=true"
+        "contents.uses_readline=true"
+        "contents.uses_expat=true"
+        "contents.uses_zlib=true"
+        "contents.uses_lzma=true"
+        "contents.uses_zstd=true"
     )
 
     write_info_file "$PREFIX" "${info[@]}"
@@ -110,7 +128,6 @@ main() {
     source_dir="$(prepare_source_tree gdb "$VERSION" "$SOURCE_URL" "gdb-$VERSION.tar.xz")"
 
     build_gdb "$source_dir"
-    copy_windows_runtime_dlls "$PREFIX/bin"
     write_gdb_info
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }
