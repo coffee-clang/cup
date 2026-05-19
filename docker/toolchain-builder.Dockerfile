@@ -32,6 +32,8 @@ RUN apt-get update \
         liblzma-dev \
         libzstd-dev \
         libc6-dbg \
+        openmpi-bin \
+        libopenmpi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

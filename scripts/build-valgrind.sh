@@ -46,6 +46,7 @@ need_valgrind_tools() {
     need gcc
     need perl
     need zip
+    need mpicc
 }
 
 validate_platforms() {
@@ -70,6 +71,22 @@ find_valgrind_lib_dir() {
     fi
 
     die "could not find installed Valgrind runtime directory under $PREFIX"
+}
+
+valgrind_has_mpi_wrapper() {
+    local runtime_dir
+
+    runtime_dir="$(find_valgrind_lib_dir)"
+
+    find "$runtime_dir" -maxdepth 1 -type f -name 'libmpiwrap-*' | grep -q .
+}
+
+valgrind_mpi_metadata_value() {
+    if valgrind_has_mpi_wrapper; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
 }
 
 make_valgrind_relocatable() {
@@ -179,10 +196,15 @@ write_valgrind_info() {
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
         "config.configure=--enable-only64bit"
+        "config.only64bit=true"
+        "config.mpi=auto"
         "contents.self_contained=true"
         "contents.relocatable_wrapper=true"
         "contents.runtime_dir=${runtime_dir#$PREFIX/}"
-        "contents.tools=memcheck,cachegrind,callgrind,massif,helgrind,drd,dhat"
+        "contents.tools=memcheck,cachegrind,callgrind,massif,helgrind,drd,dhat,lackey"
+        "contents.experimental_tools=exp-bbv"
+        "contents.internal_tools=none"
+        "contents.mpi=$(valgrind_mpi_metadata_value)"
     )
 
     write_info_file "$PREFIX" "${info[@]}"

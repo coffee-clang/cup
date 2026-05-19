@@ -62,6 +62,8 @@ jobs:
               "$root/bin/valgrind" --version
               "$root/bin/valgrind" --tool=memcheck --help >/tmp/cup-valgrind-help.txt
               grep "available tools" /tmp/cup-valgrind-help.txt
+              grep "contents.mpi=true" "$root/info.txt"
+              find "$root" -type f -name "libmpiwrap-*" | grep .
 
               printf "%s\n" \
                 "#include <stdlib.h>" \
