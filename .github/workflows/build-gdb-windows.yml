@@ -54,13 +54,13 @@ jobs:
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-readline
             mingw-w64-ucrt-x86_64-expat
             mingw-w64-ucrt-x86_64-zlib
             mingw-w64-ucrt-x86_64-ncurses
             mingw-w64-ucrt-x86_64-xz
             mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-python
 
       - name: Build package
         run: |
@@ -101,6 +101,9 @@ jobs:
           $gcc = (Get-Command gcc.exe -ErrorAction Stop).Source
           & $gcc -g -O0 -static "$env:TEMP\cup-gdb-test.c" -o "$env:TEMP\cup-gdb-test.exe"
 
+          $gdbTestExe = "$env:TEMP\cup-gdb-test.exe".Replace('\', '/')
+
+          # From here on, test the package without relying on MSYS2 runtime PATH.
           $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
 
           & "$root\bin\gdb.exe" --version
@@ -112,7 +115,7 @@ jobs:
           Select-String -Path "$env:TEMP\cup-gdb-python-output.txt" -Pattern 'python-ok'
 
           & "$root\bin\gdb.exe" -q -batch `
-            -ex "file $env:TEMP\cup-gdb-test.exe" `
+            -ex "file $gdbTestExe" `
             -ex "break add" `
             -ex "run" `
             -ex "print a" `

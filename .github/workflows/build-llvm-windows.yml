@@ -69,9 +69,6 @@ jobs:
             mingw-w64-clang-x86_64-zlib
             mingw-w64-clang-x86_64-zstd
             mingw-w64-clang-x86_64-libxml2
-            mingw-w64-clang-x86_64-libedit
-            mingw-w64-clang-x86_64-ncurses
-            mingw-w64-clang-x86_64-libffi
             mingw-w64-clang-x86_64-xz
 
       - name: Build package
@@ -96,6 +93,7 @@ jobs:
           Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 
           $root = Join-Path (Resolve-Path dist/package-test) $packageBase
+          Get-Content "$root\info.txt"
           $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
 
           switch ($tool) {
@@ -110,6 +108,15 @@ jobs:
 
           & "$root\bin\$testExe" --version
 
+          if ($tool -eq 'clang') {
+              'int main(void) { return 0; }' | Set-Content "$env:TEMP\cup-clang-test.c"
+              & "$root\bin\clang.exe" -c "$env:TEMP\cup-clang-test.c" -o "$env:TEMP\cup-clang-test.o"
+          }
+
+          if ($tool -eq 'lld') {
+              & "$root\bin\ld.lld.exe" --version
+          }
+
           if ($tool -eq 'clang-format') {
               'int main( void ){return 0;}' | Set-Content "$env:TEMP\cup-format-test.c"
               & "$root\bin\clang-format.exe" "$env:TEMP\cup-format-test.c"
@@ -118,6 +125,11 @@ jobs:
           if ($tool -eq 'clangd') {
               'int main(void) { return 0; }' | Set-Content "$env:TEMP\cup-clangd-test.c"
               & "$root\bin\clangd.exe" --check="$env:TEMP\cup-clangd-test.c"
+          }
+
+          if ($tool -eq 'clang-tidy') {
+              'int main(void) { return 0; }' | Set-Content "$env:TEMP\cup-tidy-test.c"
+              & "$root\bin\clang-tidy.exe" "$env:TEMP\cup-tidy-test.c" -- -std=c11
           }
 
       - name: Load release metadata

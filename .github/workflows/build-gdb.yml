@@ -29,15 +29,15 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Docker image
-        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-gnu-builder .
+        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-toolchain-builder .
 
       - name: Build package
         run: |
           docker run --rm \
-            -e CUP_BUILD_ENVIRONMENT=docker-gnu \
+            -e CUP_BUILD_ENVIRONMENT=docker-toolchain \
             -v "$PWD:/workspace" \
             -w /workspace \
-            cup-gnu-builder \
+            cup-toolchain-builder \
             bash scripts/build-gdb.sh \
               "${{ inputs.version }}" \
               linux-x64 \
@@ -49,7 +49,7 @@ jobs:
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
-            cup-gnu-builder \
+            cup-toolchain-builder \
             bash -lc '
               set -euo pipefail
               source dist/release.env
@@ -61,6 +61,19 @@ jobs:
               root="dist/package-test/$package_base"
               "$root/bin/gdb" --version
               "$root/bin/gdb" --configuration
+              ldd "$root/bin/gdb" | tee /tmp/cup-gdb-ldd.txt
+
+              grep -F "config.python=true" "$root/info.txt"
+              grep -F "config.readline=system" "$root/info.txt"
+              grep -F "config.expat=true" "$root/info.txt"
+              grep -F "config.zlib=true" "$root/info.txt"
+              grep -F "config.lzma=true" "$root/info.txt"
+              grep -F "config.zstd=true" "$root/info.txt"
+              grep -F "config.debuginfod=true" "$root/info.txt"
+              grep -F "config.source_highlight=true" "$root/info.txt"
+              grep -F "config.xxhash=true" "$root/info.txt"
+              grep -F "config.babeltrace=true" "$root/info.txt"
+              grep -F "config.intel_pt=true" "$root/info.txt"
 
               "$root/bin/gdb" -q -batch \
                 -ex "python import sys; print(\"python-ok\", sys.version_info[0], sys.version_info[1])" | tee /tmp/cup-gdb-python-output.txt

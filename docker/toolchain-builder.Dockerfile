@@ -31,9 +31,14 @@ RUN apt-get update \
         libncurses-dev \
         liblzma-dev \
         libzstd-dev \
-        libc6-dbg \
+        libdebuginfod-dev \
+        libsource-highlight-dev \
+        libxxhash-dev \
+        libbabeltrace-dev \
+        libipt-dev \
         openmpi-bin \
         libopenmpi-dev \
+        libc6-dbg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

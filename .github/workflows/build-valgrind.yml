@@ -29,15 +29,15 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Docker image
-        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-valgrind-builder .
+        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-toolchain-builder .
 
       - name: Build package
         run: |
           docker run --rm \
-            -e CUP_BUILD_ENVIRONMENT=docker-gnu \
+            -e CUP_BUILD_ENVIRONMENT=docker-toolchain \
             -v "$PWD:/workspace" \
             -w /workspace \
-            cup-valgrind-builder \
+            cup-toolchain-builder \
             bash scripts/build-valgrind.sh \
               "${{ inputs.version }}" \
               linux-x64 \
@@ -49,7 +49,7 @@ jobs:
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
-            cup-valgrind-builder \
+            cup-toolchain-builder \
             bash -lc '
               set -euo pipefail
               source dist/release.env
@@ -62,7 +62,7 @@ jobs:
               "$root/bin/valgrind" --version
               "$root/bin/valgrind" --tool=memcheck --help >/tmp/cup-valgrind-help.txt
               grep "available tools" /tmp/cup-valgrind-help.txt
-              grep "contents.mpi=true" "$root/info.txt"
+              grep -F "contents.mpi=true" "$root/info.txt"
               find "$root" -type f -name "libmpiwrap-*" | grep .
 
               printf "%s\n" \

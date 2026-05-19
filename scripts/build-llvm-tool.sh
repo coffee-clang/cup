@@ -55,7 +55,7 @@ case "$TOOL" in
     lldb)
         COMPONENT="debugger"
         LLVM_PROJECTS="clang;lld;lldb"
-        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true")
+        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true" "config.python=true" "config.libxml2=true" "config.lzma=true")
         ;;
     clangd)
         COMPONENT="language-server"
@@ -129,8 +129,6 @@ prune_bin_except() {
 prune_llvm_package_bins() {
     case "$TOOL" in
         clang)
-            # Keep clang frontends, the bundled LLD frontends, and LLVM toolchain
-            # companions that are commonly needed for a usable C toolchain.
             prune_bin_except \
                 clang clang++ clang-cpp clang-cl clang-scan-deps \
                 lld ld.lld lld-link wasm-ld \
@@ -176,7 +174,12 @@ build_llvm_tool() {
             -DLLDB_ENABLE_LZMA=ON
         )
 
-        if [ "$HOST_PLATFORM" != "windows-x64" ]; then
+        if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+            cmake_extra_args+=(
+                -DLLDB_ENABLE_LIBEDIT=OFF
+                -DLLDB_ENABLE_CURSES=OFF
+            )
+        else
             cmake_extra_args+=(
                 -DLLDB_ENABLE_LIBEDIT=ON
                 -DLLDB_ENABLE_CURSES=ON
@@ -189,6 +192,13 @@ build_llvm_tool() {
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
 
+    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+        cmake_extra_args+=(
+            -DCMAKE_C_COMPILER=clang
+            -DCMAKE_CXX_COMPILER=clang++
+        )
+    fi
+
     cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
@@ -198,6 +208,11 @@ build_llvm_tool() {
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLDB_INCLUDE_TESTS=OFF \
         "${cmake_extra_args[@]}"
+
+    log "selected LLVM CMake cache entries:"
+    if [ -f "$build_dir/CMakeCache.txt" ]; then
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
+    fi
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"
@@ -232,6 +247,14 @@ write_llvm_info() {
     )
 
     info+=("${CONTENTS_EXTRA[@]}")
+
+    if [ "$TOOL" = "lldb" ]; then
+        if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+            info+=("config.libedit=false" "config.curses=false")
+        else
+            info+=("config.libedit=true" "config.curses=true")
+        fi
+    fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }

@@ -39,25 +39,68 @@ SOURCE_POLICY="source-release"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 SOURCE_URL="$(source_url_gdb "$VERSION")"
 
+python_command() {
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' python3
+        return 0
+    fi
+
+    if command -v python >/dev/null 2>&1; then
+        printf '%s\n' python
+        return 0
+    fi
+
+    return 1
+}
+
 need_common_tools() {
     need curl
     need tar
     need make
     need zip
-    need python3
+
+    if ! python_command >/dev/null 2>&1; then
+        die "python3 or python is required to build GDB with Python support"
+    fi
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
         die "a host C compiler is required"
     fi
 }
 
+gdb_linux_feature_configure_args() {
+    printf '%s\n' \
+        --with-debuginfod \
+        --enable-source-highlight \
+        --with-xxhash \
+        --with-babeltrace \
+        --with-intel-pt
+}
+
+gdb_windows_feature_configure_args() {
+    return 0
+}
+
+gdb_feature_configure_args() {
+    if is_windows_platform "$HOST_PLATFORM"; then
+        gdb_windows_feature_configure_args
+    else
+        gdb_linux_feature_configure_args
+    fi
+}
+
 build_gdb() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local python_cmd
+    local feature_args=()
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross GDB is not supported by this build recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
     fi
+
+    python_cmd="$(python_command)"
+    mapfile -t feature_args < <(gdb_feature_configure_args)
 
     log "building GDB $VERSION for $HOST_PLATFORM"
 
@@ -69,12 +112,13 @@ build_gdb() {
         "$source_dir/configure" \
             --prefix="$PREFIX" \
             --disable-werror \
-            --with-python=python3 \
+            --with-python="$python_cmd" \
             --with-expat \
             --with-system-readline \
             --with-zlib \
             --with-lzma \
-            --with-zstd
+            --with-zstd \
+            "${feature_args[@]}"
         make -j"$CUP_JOBS"
         make install
     )
@@ -86,6 +130,20 @@ build_gdb() {
 }
 
 write_gdb_info() {
+    local debuginfod=false
+    local source_highlight=false
+    local xxhash=false
+    local babeltrace=false
+    local intel_pt=false
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        debuginfod=true
+        source_highlight=true
+        xxhash=true
+        babeltrace=true
+        intel_pt=true
+    fi
+
     local info=(
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
@@ -106,6 +164,17 @@ write_gdb_info() {
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
         "config.cross=false"
+        "config.python=true"
+        "config.readline=system"
+        "config.expat=true"
+        "config.zlib=true"
+        "config.lzma=true"
+        "config.zstd=true"
+        "config.debuginfod=$debuginfod"
+        "config.source_highlight=$source_highlight"
+        "config.xxhash=$xxhash"
+        "config.babeltrace=$babeltrace"
+        "config.intel_pt=$intel_pt"
         "contents.self_contained=true"
         "contents.uses_python=true"
         "contents.uses_readline=true"
@@ -113,6 +182,11 @@ write_gdb_info() {
         "contents.uses_zlib=true"
         "contents.uses_lzma=true"
         "contents.uses_zstd=true"
+        "contents.uses_debuginfod=$debuginfod"
+        "contents.uses_source_highlight=$source_highlight"
+        "contents.uses_xxhash=$xxhash"
+        "contents.uses_babeltrace=$babeltrace"
+        "contents.uses_intel_pt=$intel_pt"
     )
 
     write_info_file "$PREFIX" "${info[@]}"

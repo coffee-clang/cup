@@ -59,7 +59,7 @@ validate_platforms() {
     fi
 }
 
-find_valgrind_lib_dir() {
+find_valgrind_runtime_dir() {
     if [ -d "$PREFIX/libexec/valgrind" ]; then
         printf '%s\n' "$PREFIX/libexec/valgrind"
         return 0
@@ -73,19 +73,32 @@ find_valgrind_lib_dir() {
     die "could not find installed Valgrind runtime directory under $PREFIX"
 }
 
-valgrind_has_mpi_wrapper() {
-    local runtime_dir
+find_valgrind_mpi_library() {
+    find "$PREFIX" \
+        \( -path "$PREFIX/libexec/valgrind/libmpiwrap-*" -o -path "$PREFIX/lib/valgrind/libmpiwrap-*" \) \
+        -type f -print -quit
+}
 
-    runtime_dir="$(find_valgrind_lib_dir)"
-
-    find "$runtime_dir" -maxdepth 1 -type f -name 'libmpiwrap-*' | grep -q .
+valgrind_has_mpi_support() {
+    [ -n "$(find_valgrind_mpi_library)" ]
 }
 
 valgrind_mpi_metadata_value() {
-    if valgrind_has_mpi_wrapper; then
+    if valgrind_has_mpi_support; then
         printf '%s\n' true
     else
         printf '%s\n' false
+    fi
+}
+
+valgrind_mpi_library_metadata_value() {
+    local mpi_library
+    mpi_library="$(find_valgrind_mpi_library)"
+
+    if [ -n "$mpi_library" ]; then
+        printf '%s\n' "${mpi_library#$PREFIX/}"
+    else
+        printf '%s\n' ""
     fi
 }
 
@@ -99,7 +112,7 @@ make_valgrind_relocatable() {
         die "expected Valgrind binary not found: $valgrind_bin"
     fi
 
-    runtime_dir="$(find_valgrind_lib_dir)"
+    runtime_dir="$(find_valgrind_runtime_dir)"
     runtime_name="$(basename "$runtime_dir")"
 
     mv "$valgrind_bin" "$real_bin"
@@ -174,7 +187,10 @@ build_valgrind() {
 
 write_valgrind_info() {
     local runtime_dir
-    runtime_dir="$(find_valgrind_lib_dir)"
+    local mpi_library
+
+    runtime_dir="$(find_valgrind_runtime_dir)"
+    mpi_library="$(valgrind_mpi_library_metadata_value)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -206,6 +222,10 @@ write_valgrind_info() {
         "contents.internal_tools=none"
         "contents.mpi=$(valgrind_mpi_metadata_value)"
     )
+
+    if [ -n "$mpi_library" ]; then
+        info+=("contents.mpi_library=$mpi_library")
+    fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }
