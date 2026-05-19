@@ -3,25 +3,62 @@ $ErrorActionPreference = 'Stop'
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$FilePath,
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Arguments
+        [string] $FilePath,
+
+        [string[]] $ArgumentList = @()
     )
 
-    & $FilePath @Arguments
+    Write-Host "==> $FilePath $($ArgumentList -join ' ')"
+    & $FilePath @ArgumentList
+
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
     }
 }
 
+function Invoke-NativeCapture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+
+        [string[]] $ArgumentList = @()
+    )
+
+    Write-Host "==> $FilePath $($ArgumentList -join ' ')"
+    $output = & $FilePath @ArgumentList 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        $output | ForEach-Object { Write-Host $_ }
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
+    }
+
+    return $output
+}
+
 function Assert-FileExists {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)][string] $Path)
 
     if (-not (Test-Path $Path)) {
         throw "Expected file was not created: $Path"
     }
 }
 
+function Assert-OutputContains {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]] $Output,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Pattern
+    )
+
+    $matched = $Output | Select-String -Pattern $Pattern
+    if (-not $matched) {
+        Write-Host 'Captured output:'
+        $Output | ForEach-Object { Write-Host $_ }
+        throw "Expected output to contain pattern: $Pattern"
+    }
+}
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -32,15 +69,14 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 
-# Test the package without relying on MSYS2 runtime PATH.
 $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
 
-Invoke-Native "$root\bin\gcc.exe" --version
-Invoke-Native "$root\bin\g++.exe" --version
-Invoke-Native "$root\bin\x86_64-w64-mingw32-gcc.exe" --version
-Invoke-Native "$root\bin\x86_64-w64-mingw32-g++.exe" --version
-Invoke-Native "$root\bin\as.exe" --version
-Invoke-Native "$root\bin\ld.exe" --version
+Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$root\bin\x86_64-w64-mingw32-gcc.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$root\bin\x86_64-w64-mingw32-g++.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$root\bin\as.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$root\bin\ld.exe" -ArgumentList @('--version')
 
 @'
 #include <stdio.h>
@@ -50,9 +86,15 @@ int main(void) {
     return 0;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-c-test.c"
-Invoke-Native "$root\bin\gcc.exe" -static "$env:TEMP\cup-gcc-windows-c-test.c" -o "$env:TEMP\cup-gcc-windows-c-test.exe"
+Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+    '-static',
+    "$env:TEMP\cup-gcc-windows-c-test.c",
+    '-o',
+    "$env:TEMP\cup-gcc-windows-c-test.exe"
+)
 Assert-FileExists "$env:TEMP\cup-gcc-windows-c-test.exe"
-Invoke-Native "$env:TEMP\cup-gcc-windows-c-test.exe" | Select-String 'hello gcc windows c'
+$cOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-c-test.exe"
+Assert-OutputContains -Output $cOutput -Pattern 'hello gcc windows c'
 
 @'
 #include <iostream>
@@ -64,9 +106,15 @@ int main() {
     return 0;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-cpp-test.cpp"
-Invoke-Native "$root\bin\g++.exe" -static "$env:TEMP\cup-gcc-windows-cpp-test.cpp" -o "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @(
+    '-static',
+    "$env:TEMP\cup-gcc-windows-cpp-test.cpp",
+    '-o',
+    "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+)
 Assert-FileExists "$env:TEMP\cup-gcc-windows-cpp-test.exe"
-Invoke-Native "$env:TEMP\cup-gcc-windows-cpp-test.exe" | Select-String '42'
+$cppOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+Assert-OutputContains -Output $cppOutput -Pattern '42'
 
 @'
 #include <pthread.h>
@@ -92,9 +140,16 @@ int main(void) {
     return result == (void *)42 ? 0 : 1;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-pthread-test.c"
-Invoke-Native "$root\bin\gcc.exe" -static "$env:TEMP\cup-gcc-windows-pthread-test.c" -o "$env:TEMP\cup-gcc-windows-pthread-test.exe" -pthread
+Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+    '-static',
+    "$env:TEMP\cup-gcc-windows-pthread-test.c",
+    '-o',
+    "$env:TEMP\cup-gcc-windows-pthread-test.exe",
+    '-pthread'
+)
 Assert-FileExists "$env:TEMP\cup-gcc-windows-pthread-test.exe"
-Invoke-Native "$env:TEMP\cup-gcc-windows-pthread-test.exe" | Select-String 'pthread 42'
+$pthreadOutput = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-pthread-test.exe"
+Assert-OutputContains -Output $pthreadOutput -Pattern 'pthread 42'
 
 @'
 static int add(int a, int b) {
@@ -105,6 +160,12 @@ int main(void) {
     return add(20, 22) == 42 ? 0 : 1;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-lto-test.c"
-Invoke-Native "$root\bin\gcc.exe" -static -flto "$env:TEMP\cup-gcc-windows-lto-test.c" -o "$env:TEMP\cup-gcc-windows-lto-test.exe"
+Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+    '-static',
+    '-flto',
+    "$env:TEMP\cup-gcc-windows-lto-test.c",
+    '-o',
+    "$env:TEMP\cup-gcc-windows-lto-test.exe"
+)
 Assert-FileExists "$env:TEMP\cup-gcc-windows-lto-test.exe"
-Invoke-Native "$env:TEMP\cup-gcc-windows-lto-test.exe"
+Invoke-Native -FilePath "$env:TEMP\cup-gcc-windows-lto-test.exe"
