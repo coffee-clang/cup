@@ -44,7 +44,7 @@ need_common_tools() {
     need tar
     need make
     need zip
-    need python
+    need python3
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
         die "a host C compiler is required"
