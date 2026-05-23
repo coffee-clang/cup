@@ -83,7 +83,9 @@ endif
 SRC := $(COMMON_SRC) $(SYSTEM_SRC)
 OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC))
 
-.PHONY: all clean dev-clean
+MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
+
+.PHONY: all clean dev-clean docs-assets docs serve
 
 all: $(TARGET)
 
@@ -102,3 +104,15 @@ dev-clean: clean
 	rm -rf ~/.cup
 	rm -rf ./error-output.txt
 	clear
+
+docs-assets:
+	@echo "Fetching remote docs theme assets..."
+	@./scripts/fetch-docs-assets.sh
+
+docs: docs-assets
+	@echo "Building docs website..."
+	@$(MDBOOK) build
+	@echo "Docs built to book/"
+
+serve: docs-assets
+	$(MDBOOK) serve

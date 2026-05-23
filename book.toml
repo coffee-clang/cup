@@ -1,0 +1,26 @@
+[book]
+title = "Cup"
+description = "The C toolchain installer"
+authors = ["Gianluca Della Vedova"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+no-section-label = true
+default-theme = "light"
+preferred-dark-theme = "light"
+# Search is enabled — see the search toggle in the menu-bar
+theme = "docs/theme"
+additional-css = ["docs/theme/cup.css"]
+
+[output.html.playground]
+editable = false
+runnable = false
+line-numbers = false
+
+# Brand styles, fonts, and icons are loaded remotely from coffee-clang.github.io
+# at page-load time. The local mdbook default CSS provides fallback styling.

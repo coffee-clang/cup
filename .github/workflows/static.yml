@@ -1,5 +1,8 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Sample workflow for building and deploying a mdBook site to GitHub Pages
+#
+# To get started with mdBook see: https://rust-lang.github.io/mdBook/index.html
+#
+name: Deploy mdBook site to Pages
 
 on:
   # Runs on pushes targeting the default branch
@@ -22,22 +25,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
+  # Build job
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: 0.4.36
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mdBook
+        run: |
+          curl -s https://api.github.com/repos/rust-lang/mdBook/releases/latest \
+            | grep "browser_download_url.*linux" \
+            | cut -d : -f 2,3 \
+            | tr -d \" | grep unknown-linux-gnu.tar.gz | wget -qi -
+          tar xf mdbook-v*.tar.gz
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Fetch remote assets (CSS, logo, fonts) for offline docs build
+        run: make docs-assets
+
+      - name: Build with mdBook
+        run: ./mdbook build
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./book
+
+  # Deployment job
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    needs: build
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          # Upload entire repository
-          path: 'www'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
