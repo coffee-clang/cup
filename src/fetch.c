@@ -15,11 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// CONFIGURE
-static void configure_tls_runtime(void) {
-    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
-}
-
 // CALLBACKS
 static size_t write_file_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
     FILE *file;
@@ -101,7 +96,9 @@ static CupError download_package(const char *url, const char *dst_path) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    configure_tls_runtime();
+#if defined(__linux__)
+    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
+#endif
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "Error: could not initialize libcurl.\n");
