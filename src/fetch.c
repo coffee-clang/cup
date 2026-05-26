@@ -8,9 +8,15 @@
 #include "util.h"
 
 #include <curl/curl.h>
+#include <openssl/ssl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// CONFIGURE
+static void configure_tls_runtime(void) {
+    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
+}
 
 // CALLBACKS
 static size_t write_file_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -92,6 +98,8 @@ static CupError download_package(const char *url, const char *dst_path) {
         fprintf(stderr, "Error: invalid download arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
+
+    configure_tls_runtime();
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "Error: could not initialize libcurl.\n");

@@ -107,7 +107,7 @@ build_openssl() {
         no-shared \
         no-tests \
         --prefix="$PREFIX" \
-        --openssldir="$PREFIX/ssl"
+        --openssldir="/etc/ssl"
 
     make -j"$JOBS"
     make install_sw
