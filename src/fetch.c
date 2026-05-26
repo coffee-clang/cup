@@ -8,7 +8,9 @@
 #include "util.h"
 
 #include <curl/curl.h>
+#if defined(__linux__)
 #include <openssl/ssl.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
