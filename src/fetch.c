@@ -3,7 +3,6 @@
 #include "constants.h"
 #include "filesystem.h"
 #include "interrupt.h"
-#include "manifest.h"
 #include "package_archive.h"
 #include "system.h"
 #include "util.h"
@@ -125,7 +124,7 @@ static CupError download_package(const char *url, const char *dst_path) {
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "cup/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "cup");
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 
@@ -152,14 +151,14 @@ static CupError download_package(const char *url, const char *dst_path) {
 
     if (res == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
         system_remove_file(dst_path);
-        fprintf(stderr, "\nError: download interrupted.");
+        fprintf(stderr, "\nError: download interrupted.\n");
         return CUP_ERR_INTERRUPT;
     }
 
     if (res != CURLE_OK) {
         system_remove_file(dst_path);
 
-        fprintf(stderr, "Error: failed to download package from '%s': %s%s%s.\n", url, curl_easy_strerror(res), 
+        fprintf(stderr, "Error: failed to download package from '%s': %s%s%s.\n", url, curl_easy_strerror(res),
                 error_buffer[0] != '\0' ? " - " : "", error_buffer[0] != '\0' ? error_buffer : "");
 
         return CUP_ERR_FETCH;
@@ -167,9 +166,7 @@ static CupError download_package(const char *url, const char *dst_path) {
 
     if (response_code >= 400) {
         system_remove_file(dst_path);
-
         fprintf(stderr, "Error: failed to download package from '%s': HTTP %ld.\n", url, response_code);
-
         return CUP_ERR_FETCH;
     }
 
@@ -195,22 +192,15 @@ static CupError download_package(const char *url, const char *dst_path) {
 }
 
 // PUBLIC API
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version, const char *archive_format) {
+CupError fetch_package(char *archive_path, size_t archive_path_size, const char *package_url, const char *component, const char *tool, const char *version) {
     CupError err;
-    char archive_path[MAX_PATH_LEN];
     char archive_name[MAX_PATH_LEN];
-    char package_url[MAX_MANIFEST_URL_LEN];
     int usable;
 
-    if (buffer == NULL || size == 0 || is_empty_string(component) ||  is_empty_string(tool) || is_empty_string(host_platform) ||  
-        is_empty_string(target_platform) || is_empty_string(version) || is_empty_string(archive_format)) {
+    if (archive_path == NULL || archive_path_size == 0 || is_empty_string(package_url) || 
+        is_empty_string(component) || is_empty_string(tool) || is_empty_string(version)) {
         fprintf(stderr, "Error: invalid package fetch arguments.\n");
         return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = build_download_url(package_url, sizeof(package_url), component, tool, host_platform, target_platform, version, archive_format);
-    if (err != CUP_OK) {
-        return err;
     }
 
     err = get_archive_name(archive_name, sizeof(archive_name), package_url);
@@ -223,7 +213,7 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
         return err;
     }
 
-    err = build_cache_archive_path(archive_path, sizeof(archive_path), component, tool, version, archive_name);
+    err = build_cache_archive_path(archive_path, archive_path_size, component, tool, version, archive_name);
     if (err != CUP_OK) {
         return err;
     }
@@ -238,11 +228,6 @@ CupError fetch_package(char *buffer, size_t size, const char *component, const c
         if (err != CUP_OK) {
             return err;
         }
-    }
-
-    err = checked_snprintf(buffer, size, "%s", archive_path);
-    if (err != CUP_OK) {
-        return err;
     }
 
     return CUP_OK;

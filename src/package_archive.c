@@ -6,6 +6,8 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#define ARCHIVE_READ_BLOCK_SIZE 10240
+
 // READER
 CupError package_archive_open_reader(struct archive **reader, const char *archive_path) {
     struct archive *archive_reader;
@@ -34,7 +36,7 @@ CupError package_archive_open_reader(struct archive **reader, const char *archiv
         return CUP_ERR_ARCHIVE;
     }
 
-    status = archive_read_open_filename(archive_reader, archive_path, 10240);
+    status = archive_read_open_filename(archive_reader, archive_path, ARCHIVE_READ_BLOCK_SIZE);
     if (status != ARCHIVE_OK) {
         archive_read_free(archive_reader);
         return CUP_ERR_ARCHIVE;

@@ -27,31 +27,6 @@ static const char *strip_first_path_component(const char *path) {
     return slash + 1;
 }
 
-static CupError build_output_path(char *buffer, size_t size, const char *root, const char *entry_path) {
-    CupError err;
-
-    if (buffer == NULL || size == 0 || is_empty_string(root) || is_empty_string(entry_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (entry_path[0] == '/') {
-        fprintf(stderr, "Error: archive contains an absolute path '%s'.\n", entry_path);
-        return CUP_ERR_EXTRACT;
-    }
-
-    if (path_has_parent_ref(entry_path)) {
-        fprintf(stderr, "Error: archive contains an unsafe path '%s'.\n", entry_path);
-        return CUP_ERR_EXTRACT;
-    }
-
-    err = path_join(buffer, size, root, entry_path);
-    if (err != CUP_OK) {
-        return CUP_ERR_EXTRACT;
-    }
-
-    return CUP_OK;
-}
-
 static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *entry, int *should_skip) {
     CupError err;
     const char *entry_path;
@@ -79,9 +54,10 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
         return CUP_OK;
     }
 
-    err = build_output_path(output_path, sizeof(output_path), tmp_path, stripped_path);
+    err = path_join_safe_relative(output_path, sizeof(output_path), tmp_path, stripped_path);
     if (err != CUP_OK) {
-        return err;
+        fprintf(stderr, "Error: archive contains an unsafe path '%s'.\n", stripped_path);
+        return CUP_ERR_EXTRACT;
     }
 
     archive_entry_set_pathname(entry, output_path);
@@ -95,9 +71,10 @@ static CupError rewrite_entry_paths(const char *tmp_path, struct archive_entry *
             return CUP_ERR_EXTRACT;
         }
 
-        err = build_output_path(output_hardlink, sizeof(output_hardlink), tmp_path, stripped_hardlink);
+        err = path_join_safe_relative(output_hardlink, sizeof(output_hardlink), tmp_path, stripped_hardlink);
         if (err != CUP_OK) {
-            return err;
+            fprintf(stderr, "Error: archive contains an unsafe hardlink target '%s'.\n", hardlink_path);
+            return CUP_ERR_EXTRACT;
         }
 
         archive_entry_set_hardlink(entry, output_hardlink);
@@ -191,7 +168,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         ARCHIVE_EXTRACT_SECURE_NODOTDOT |
         ARCHIVE_EXTRACT_SECURE_SYMLINKS);
     if (status != ARCHIVE_OK) {
-        fprintf(stderr, "Error: could not configure archive writer: %s", archive_error_string(writer));
+        fprintf(stderr, "Error: could not configure archive writer: %s.\n", archive_error_string(writer));
         cleanup_archives(reader, writer);
         return CUP_ERR_EXTRACT;
     }
@@ -235,7 +212,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
 
         status = archive_write_header(writer, entry);
         if (status != ARCHIVE_OK) {
-            fprintf(stderr, "Error: failed to write archive entry '%s': %s.\n", 
+            fprintf(stderr, "Error: failed to write archive entry '%s': %s.\n",
                 archive_entry_pathname(entry), archive_error_string(writer));
             cleanup_archives(reader, writer);
             return CUP_ERR_EXTRACT;
@@ -254,7 +231,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
 
         status = archive_write_finish_entry(writer);
         if (status != ARCHIVE_OK) {
-            fprintf(stderr, "Error: failed to finalize archive entry '%s': %s.\n", 
+            fprintf(stderr, "Error: failed to finalize archive entry '%s': %s.\n",
                 archive_entry_pathname(entry), archive_error_string(writer));
             cleanup_archives(reader, writer);
             return CUP_ERR_EXTRACT;

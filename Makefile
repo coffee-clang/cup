@@ -5,7 +5,7 @@ override PLATFORM := linux-x64
 endif
 
 PLATFORM ?= linux-x64
-SUPPORTED_PLATFORM := linux-x64 windows-x64
+SUPPORTED_PLATFORM := linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
 
 LINK_MODE ?= dynamic
 SUPPORTED_LINK_MODE := dynamic static
@@ -24,11 +24,13 @@ BIN_DIR := $(BUILD_DIR)/$(PLATFORM)/bin
 
 COMMON_SRC := \
 	src/main.c \
+	src/entry.c \
 	src/options.c \
 	src/commands.c \
 	src/state.c \
 	src/filesystem.c \
 	src/manifest.c \
+	src/info.c \
 	src/registry.c \
 	src/fetch.c \
 	src/package_archive.c \
@@ -38,25 +40,46 @@ COMMON_SRC := \
 	src/interrupt.c \
 	src/platform.c
 
-ifeq ($(PLATFORM),linux-x64)
-	CC = gcc
-	TARGET := $(BIN_DIR)/cup
-	SYSTEM_SRC := src/system_posix.c
-	DEPS_PREFIX ?= $(HOME)/deps/linux-x64/install
+ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64),)
+    CC = gcc
+    TARGET := $(BIN_DIR)/cup
+    SYSTEM_SRC := src/system_posix.c
+    DEPS_PREFIX ?= $(HOME)/deps/$(PLATFORM)/install
 
-	CPPFLAGS += -I$(PROJECT_ROOT)/include
-	CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L
+    CPPFLAGS += -I$(PROJECT_ROOT)/include
+    CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L
 
-	ifeq ($(LINK_MODE),static)
-		CPPFLAGS += -I$(DEPS_PREFIX)/include
-		LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64 -static
+    ifeq ($(LINK_MODE),static)
+        CPPFLAGS += -I$(DEPS_PREFIX)/include
+        LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64 -static
 
-		CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
-		ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)
-		LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS) -ldl -pthread
-	else
-		LDLIBS += -lcurl -larchive
-	endif
+        CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
+        ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)
+        LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS) -ldl -pthread
+    else
+        LDLIBS += -lcurl -larchive
+    endif
+endif
+
+ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
+    CC = clang
+    TARGET := $(BIN_DIR)/cup
+    SYSTEM_SRC := src/system_posix.c
+    DEPS_PREFIX ?= $(HOME)/deps/$(PLATFORM)/install
+
+    CPPFLAGS += -I$(PROJECT_ROOT)/include
+    CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_DARWIN_C_SOURCE
+
+    ifeq ($(LINK_MODE),static)
+        CPPFLAGS += -I$(DEPS_PREFIX)/include
+        LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64
+
+        CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
+        ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)
+        LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS)
+    else
+        LDLIBS += -lcurl -larchive
+    endif
 endif
 
 ifeq ($(PLATFORM),windows-x64)

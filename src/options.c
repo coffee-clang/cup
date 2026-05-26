@@ -48,9 +48,7 @@ static void init_command_options(CommandOptions *options) {
         return;
     }
 
-    options->format = NULL;
-    options->target = NULL;
-    options->seen = 0;
+    memset(options, 0, sizeof(*options));
 }
 
 static const OptionDefinition *find_option_definition(const char *name) {
@@ -114,11 +112,11 @@ static CupError set_option_value(CommandOptions *options, const OptionDefinition
 }
 
 // PUBLIC API
-CupError parse_command_options(int start_option, int argc, char *argv[], CommandOptions *options) {
+CupError parse_command_options(int start_option, int argc, char *const argv[], CommandOptions *options) {
     CupError err;
     int i;
 
-    if (argv == NULL || options == NULL) {
+    if (argc < 0 || start_option < 0 || start_option > argc || argv == NULL || options == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -153,7 +151,7 @@ CupError parse_command_options(int start_option, int argc, char *argv[], Command
 
             err = set_option_value(options, definition, value);
             if (err != CUP_OK) {
-                return CUP_ERR_INVALID_INPUT;
+                return err;
             }
 
             i += 2;
@@ -162,7 +160,7 @@ CupError parse_command_options(int start_option, int argc, char *argv[], Command
 
         err = set_option_value(options, definition, NULL);
         if (err != CUP_OK) {
-            return CUP_ERR_INVALID_INPUT;
+            return err;
         }
 
         i += 1;
@@ -189,7 +187,7 @@ CupError validate_command_options(const CommandOptions *options, unsigned allowe
 
     for (i = 0; i < count; ++i) {
         if ((disallowed & OPTION_DEFINITIONS[i].flag) != 0) {
-            fprintf(stderr, "Error: option '%s' is not valid for command '%s'.\n", 
+            fprintf(stderr, "Error: option '%s' is not valid for command '%s'.\n",
                     OPTION_DEFINITIONS[i].long_name, command_name);
             return CUP_ERR_INVALID_INPUT;
         }

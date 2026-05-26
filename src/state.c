@@ -3,6 +3,7 @@
 #include "filesystem.h"
 #include "platform.h"
 #include "registry.h"
+#include "entry.h"
 #include "system.h"
 #include "util.h"
 
@@ -10,16 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 
-// PARSING
+// KEY PARSING
 static CupError split_state_key(const char *key, const char *prefix, char *component, size_t component_size, char *host_platform, size_t host_size, char *target_platform, size_t target_size, int *matched) {
+    CupError err;
+    SplitOutput split_outputs[3];
+    char body_copy[MAX_STATE_LINE_LEN];
     const char *body;
-    const char *first_dot;
-    const char *second_dot;
-    const char *third_dot;
     size_t prefix_len;
-    size_t component_len;
-    size_t host_len;
-    size_t target_len;
 
     if (component == NULL || host_platform == NULL || target_platform == NULL || matched == NULL ||
         component_size == 0 || host_size == 0 || target_size == 0 || is_empty_string(key) || is_empty_string(prefix)) {
@@ -27,53 +25,36 @@ static CupError split_state_key(const char *key, const char *prefix, char *compo
     }
 
     *matched = 0;
-
     prefix_len = strlen(prefix);
+
     if (strncmp(key, prefix, prefix_len) != 0) {
         return CUP_OK;
     }
 
-    *matched = 1;
     body = key + prefix_len;
+    *matched = 1;
 
-    first_dot = strchr(body, '.');
-    if (first_dot == NULL) {
-        return CUP_ERR_STATE_LOAD;
+    err = checked_snprintf(body_copy, sizeof(body_copy), "%s", body);
+    if (err != CUP_OK) {
+        return err;
     }
 
-    second_dot = strchr(first_dot + 1, '.');
-    if (second_dot == NULL) {
-        return CUP_ERR_STATE_LOAD;
+    split_outputs[0].buffer = component;
+    split_outputs[0].size = component_size;
+    split_outputs[1].buffer = host_platform;
+    split_outputs[1].size = host_size;
+    split_outputs[2].buffer = target_platform;
+    split_outputs[2].size = target_size;
+
+    err = split_exact(body_copy, '.', split_outputs, 3);
+    if (err != CUP_OK) {
+        return err;
     }
-
-    third_dot = strchr(second_dot + 1, '.');
-    if (third_dot != NULL) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    component_len = (size_t)(first_dot - body);
-    host_len = (size_t)(second_dot - first_dot - 1);
-    target_len = strlen(second_dot + 1);
-
-    if (component_len == 0 || host_len == 0 || target_len == 0 ||
-        component_len >= component_size ||
-        host_len >= host_size ||
-        target_len >= target_size) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    memcpy(component, body, component_len);
-    component[component_len] = '\0';
-
-    memcpy(host_platform, first_dot + 1, host_len);
-    host_platform[host_len] = '\0';
-
-    memcpy(target_platform, second_dot + 1, target_len);
-    target_platform[target_len] = '\0';
 
     return CUP_OK;
 }
 
+// ENTRY STORAGE HELPERS
 static CupError set_state_entry(StateEntry *state_entry, const char *component, const char *host_platform, const char *target_platform, const char *entry) {
     CupError err;
 
@@ -98,58 +79,20 @@ static CupError set_state_entry(StateEntry *state_entry, const char *component, 
     }
 
     err = checked_snprintf(state_entry->entry, sizeof(state_entry->entry), "%s", entry);
-    return err;
-}
-
-static CupError validate_state_line(char *line) {
-    char *trimmed;
-
-    if (line == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    trim_line_end(line);
-    trimmed = trim_spaces(line);
-
-    if (trimmed[0] == '\0' || trimmed[0] == '#') {
-        return CUP_OK;
-    }
-
-    if (strchr(trimmed, '=') == NULL) {
-        fprintf(stderr, "Error: malformed state line '%s'.\n", trimmed);
-        return CUP_ERR_STATE_LOAD;
+    if (err != CUP_OK) {
+        return err;
     }
 
     return CUP_OK;
 }
 
-static CupError validate_state_entry_value(const char *component, const char *entry) {
+// LINE/GLOBAL VALIDATION
+static CupError validate_state_line(const char *component, const char *host_platform, const char *target_platform, const char *entry) {
     CupError err;
     char tool[MAX_NAME_LEN];
     char release[MAX_NAME_LEN];
 
-    if (is_empty_string(component) || is_empty_string(entry)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = split_once(entry, '@', tool, sizeof(tool), release, sizeof(release));
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: malformed state entry '%s'. Expected '<tool>@<release>'.\n", entry);
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    err = validate_tool_for_component(component, tool);
-    if (err != CUP_OK) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    return CUP_OK;
-}
-
-static CupError validate_state_key_parts(const char *component, const char *host_platform, const char *target_platform) {
-    CupError err;
-
-    if (is_empty_string(component) || is_empty_string(host_platform) || is_empty_string(target_platform)) {
+    if (is_empty_string(component) || is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -168,10 +111,21 @@ static CupError validate_state_key_parts(const char *component, const char *host
         return CUP_ERR_STATE_LOAD;
     }
 
+    err = parse_entry(entry, tool, sizeof(tool), release, sizeof(release));
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: malformed state entry '%s'. Expected '<tool>@<release>'.\n", entry);
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    err = validate_tool_for_component(component, tool);
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
+    }
+
     return CUP_OK;
 }
 
-static CupError validate_state_defaults(const CupState *state) {
+static CupError validate_state(const CupState *state) {
     int index;
     size_t i;
 
@@ -195,6 +149,7 @@ static CupError validate_state_defaults(const CupState *state) {
     return CUP_OK;
 }
 
+// LINE PARSING
 static CupError parse_state_line(CupState *state, char *line) {
     CupError err;
     char key[MAX_STATE_LINE_LEN];
@@ -202,9 +157,6 @@ static CupError parse_state_line(CupState *state, char *line) {
     char component[MAX_NAME_LEN];
     char host_platform[MAX_PLATFORM_LEN];
     char target_platform[MAX_PLATFORM_LEN];
-    char *line_key;
-    char *line_value;
-    int has_pair;
     int is_installed;
     int is_default;
     int index;
@@ -213,26 +165,7 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = validate_state_line(line);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = parse_key_value_line(line, &line_key, &line_value, &has_pair);
-    if (err != CUP_OK) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    if (!has_pair) {
-        return CUP_OK;
-    }
-
-    err = checked_snprintf(key, sizeof(key), "%s", line_key);
-    if (err != CUP_OK) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    err = checked_snprintf(value, sizeof(value), "%s", line_value);
+    err = split_key_value(line, key, sizeof(key), value, sizeof(value));
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
@@ -260,25 +193,18 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = validate_state_key_parts(component, host_platform, target_platform);
-    if (err != CUP_OK) {
-        return CUP_ERR_STATE_LOAD;
-    }
-
-    err = validate_state_entry_value(component, value);
+    err = validate_state_line(component, host_platform, target_platform, value);
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
 
     if (is_installed) {
-        index = state_find_installed(state, component, host_platform, target_platform, value);
-        if (index != -1) {
+        err = state_add_installed(state, component, host_platform, target_platform, value);
+        if (err == CUP_ERR_ALREADY_INSTALLED) {
             fprintf(stderr, "Error: duplicate installed state entry '%s' for component '%s', host '%s', target '%s'.\n",
                 value, component, host_platform, target_platform);
             return CUP_ERR_STATE_LOAD;
         }
-
-        err = state_add_installed(state, component, host_platform, target_platform, value);
         if (err != CUP_OK) {
             return CUP_ERR_STATE_LOAD;
         }
@@ -302,30 +228,25 @@ static CupError parse_state_line(CupState *state, char *line) {
 }
 
 // PERSISTENCE
-CupError state_init(CupState *state) {
+CupError state_load(CupState *state) {
+    CupError err;
+    FILE *file;
+    char state_path[MAX_PATH_LEN];
+    char line[MAX_STATE_LINE_LEN];
+    size_t line_number;
+
     if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     memset(state, 0, sizeof(*state));
-    return CUP_OK;
-}
 
-CupError state_load(CupState *state, const char *filename) {
-    CupError err;
-    FILE *file;
-    char line[MAX_STATE_LINE_LEN];
-
-    if (state == NULL || is_empty_string(filename)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = state_init(state);
+    err = get_state_file_path(state_path, sizeof(state_path));
     if (err != CUP_OK) {
-        return CUP_ERR_STATE_LOAD;
+        return err;
     }
 
-    file = fopen(filename, "r");
+    file = fopen(state_path, "r");
     if (file == NULL) {
         if (errno == ENOENT) {
             return CUP_OK;
@@ -335,9 +256,25 @@ CupError state_load(CupState *state, const char *filename) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    while (fgets(line, sizeof(line), file) != NULL) {
+    line_number = 0;
+
+    while (1) {
+        int has_line;
+
+        err = read_text_line(file, line, sizeof(line), &has_line, &line_number);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Error: could not read state file line.\n");
+            fclose(file);
+            return CUP_ERR_STATE_LOAD;
+        }
+
+        if (!has_line) {
+            break;
+        }
+
         err = parse_state_line(state, line);
         if (err != CUP_OK) {
+            fprintf(stderr, "Error: invalid state file line %zu.\n", line_number);
             fclose(file);
             return CUP_ERR_STATE_LOAD;
         }
@@ -347,7 +284,7 @@ CupError state_load(CupState *state, const char *filename) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = validate_state_defaults(state);
+    err = validate_state(state);
     if (err != CUP_OK) {
         return err;
     }
@@ -355,15 +292,16 @@ CupError state_load(CupState *state, const char *filename) {
     return CUP_OK;
 }
 
-CupError state_save(const CupState *state, const char *filename) {
+CupError state_save(const CupState *state) {
     CupError err;
     FILE *file;
+    char state_path[MAX_PATH_LEN];
     char tmp_filename[MAX_PATH_LEN];
     char suffix[MAX_NAME_LEN];
     int status;
     size_t i;
 
-    if (state == NULL || is_empty_string(filename)) {
+    if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -377,7 +315,12 @@ CupError state_save(const CupState *state, const char *filename) {
         return CUP_ERR_STATE_SAVE;
     }
 
-    err = checked_snprintf(tmp_filename, sizeof(tmp_filename), "%s.%s.tmp", filename, suffix);
+    err = get_state_file_path(state_path, sizeof(state_path));
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_SAVE;
+    }
+
+    err = checked_snprintf(tmp_filename, sizeof(tmp_filename), "%s.%s.tmp", state_path, suffix);
     if (err != CUP_OK) {
         return CUP_ERR_STATE_SAVE;
     }
@@ -419,7 +362,7 @@ CupError state_save(const CupState *state, const char *filename) {
         return CUP_ERR_STATE_SAVE;
     }
 
-    err = system_rename_path(tmp_filename, filename);
+    err = system_rename_path(tmp_filename, state_path);
     if (err != CUP_OK) {
         system_remove_file(tmp_filename);
         fprintf(stderr, "Error: could not replace state file.\n");
@@ -429,7 +372,7 @@ CupError state_save(const CupState *state, const char *filename) {
     return CUP_OK;
 }
 
-// INSTALLED ENTRIES
+// INSTALLED API
 int state_find_installed(const CupState *state, const char *component, const char *host_platform, const char *target_platform, const char *entry) {
     size_t i;
 
@@ -499,7 +442,7 @@ CupError state_remove_installed(CupState *state, const char *component, const ch
     return CUP_OK;
 }
 
-// DEFAULT ENTRIES
+// DEFAULT API
 int state_find_default(const CupState *state, const char *component, const char *host_platform, const char *target_platform) {
     size_t i;
 

@@ -6,16 +6,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_ARCH_PER_OS 4
+#define MAX_ARCH_ENTRIES_PER_OS 4
 
 typedef struct {
     const char *os;
-    const char *arch[MAX_ARCH_PER_OS];
+    const char *arch[MAX_ARCH_ENTRIES_PER_OS];
 } SupportedPlatform;
 
-static const SupportedPlatform SUPPORTED_PLATFORM[] = {
-    { "linux", { "x64", NULL } },
-    { "windows", { "x64", NULL } }
+static const SupportedPlatform SUPPORTED_PLATFORMS[] = {
+    { "linux", { "x64", "arm64", NULL } },
+    { "windows", { "x64", NULL } },
+    { "macos", { "x64", "arm64", NULL } }
 };
 
 static const SupportedPlatform *find_supported_os(const char *os) {
@@ -26,11 +27,11 @@ static const SupportedPlatform *find_supported_os(const char *os) {
         return NULL;
     }
 
-    count = sizeof(SUPPORTED_PLATFORM) / sizeof(SUPPORTED_PLATFORM[0]);
+    count = sizeof(SUPPORTED_PLATFORMS) / sizeof(SUPPORTED_PLATFORMS[0]);
 
     for (i = 0; i < count; ++i) {
-        if (strcmp(SUPPORTED_PLATFORM[i].os, os) == 0) {
-            return &SUPPORTED_PLATFORM[i];
+        if (strcmp(SUPPORTED_PLATFORMS[i].os, os) == 0) {
+            return &SUPPORTED_PLATFORMS[i];
         }
     }
 
@@ -71,6 +72,8 @@ CupError get_host_platform(char *buffer, size_t size) {
 CupError validate_platform(const char *platform) {
     CupError err;
     const SupportedPlatform *supported;
+    SplitOutput split_outputs[2];
+    char platform_copy[MAX_PLATFORM_LEN];
     char os[MAX_NAME_LEN];
     char arch[MAX_NAME_LEN];
     size_t i;
@@ -79,10 +82,20 @@ CupError validate_platform(const char *platform) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = split_once(platform, '-', os, sizeof(os), arch, sizeof(arch));
+    err = checked_snprintf(platform_copy, sizeof(platform_copy), "%s", platform);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    split_outputs[0].buffer = os;
+    split_outputs[0].size = sizeof(os);
+    split_outputs[1].buffer = arch;
+    split_outputs[1].size = sizeof(arch);
+
+    err = split_exact(platform_copy, '-', split_outputs, 2);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: invalid platform '%s'. Expected format '<os>-<arch>'.\n", platform);
-        return err;
+        return CUP_ERR_INVALID_INPUT;
     }
 
     supported = find_supported_os(os);
@@ -91,7 +104,7 @@ CupError validate_platform(const char *platform) {
         return CUP_ERR_INVALID_OS;
     }
 
-    for (i = 0; i < MAX_ARCH_PER_OS && supported->arch[i] != NULL; ++i) {
+    for (i = 0; i < MAX_ARCH_ENTRIES_PER_OS && supported->arch[i] != NULL; ++i) {
         if (strcmp(supported->arch[i], arch) == 0) {
             return CUP_OK;
         }

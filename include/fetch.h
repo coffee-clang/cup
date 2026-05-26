@@ -5,6 +5,6 @@
 
 #include "error.h"
 
-CupError fetch_package(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version, const char *archive_format);
+CupError fetch_package(char *archive_path, size_t archive_path_size, const char *package_url, const char *component, const char *tool, const char *version);
 
 #endif /* CUP_FETCH_H */

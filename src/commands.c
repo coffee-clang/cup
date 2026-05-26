@@ -5,6 +5,9 @@
 #include "filesystem.h"
 #include "interrupt.h"
 #include "manifest.h"
+#include "info.h"
+#include "entry.h"
+#include "path.h"
 #include "platform.h"
 #include "registry.h"
 #include "state.h"
@@ -35,7 +38,7 @@ typedef struct {
 
 typedef struct {
     CupState state;
-    char state_file[MAX_PATH_LEN];
+    Manifest manifest;
     char host_platform[MAX_PLATFORM_LEN];
     char target_platform[MAX_PLATFORM_LEN];
 } CommandContext;
@@ -46,7 +49,7 @@ typedef struct {
 } DoctorReport;
 
 // ENTRY HELPERS
-static void print_entry_resolution(FILE *stream, const EntryContext *ctx) {
+static void print_resolved_entry(FILE *stream, const EntryContext *ctx) {
     if (stream == NULL || ctx == NULL) {
         return;
     }
@@ -59,21 +62,10 @@ static void print_entry_resolution(FILE *stream, const EntryContext *ctx) {
     fprintf(stream, "%s -> %s", ctx->input_entry, ctx->canonical_entry);
 }
 
-static CupError build_canonical_entry(char *buffer, size_t size, const char *tool, const char *version) {
+static CupError prepare_entry_context(const char *component, const char *entry, EntryContext *ctx) {
     CupError err;
 
-    if (buffer == NULL || size == 0 || is_empty_string(tool) || is_empty_string(version)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = checked_snprintf(buffer, size, "%s@%s", tool, version);
-    return err;
-}
-
-static CupError parse_entry_context(const char *component, const char *entry, EntryContext *ctx) {
-    CupError err;
-
-    if (ctx == NULL || is_empty_string(component) || is_empty_string(entry)) {
+    if (is_empty_string(component) || is_empty_string(entry) || ctx == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -84,26 +76,16 @@ static CupError parse_entry_context(const char *component, const char *entry, En
         return err;
     }
 
-    err = split_once(ctx->input_entry, '@', ctx->tool, sizeof(ctx->tool), ctx->release, sizeof(ctx->release));
+    err = parse_entry(entry, ctx->tool, sizeof(ctx->tool), ctx->release, sizeof(ctx->release));
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'. Expected format '<tool>@<release>'.\n", ctx->input_entry);
+        fprintf(stderr, "Error: invalid entry '%s'. Expected '<tool>@<release>'.\n", entry);
         return err;
     }
-
-    err = validate_component(component);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = validate_tool_for_component(component, ctx->tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
+    
     return CUP_OK;
 }
 
-static CupError resolve_entry_release(const char *component, const char *host_platform, const char *target_platform, EntryContext *ctx) {
+static CupError resolve_entry_release(const Manifest *manifest, const char *component, const char *host_platform, const char *target_platform, EntryContext *ctx) {
     CupError err;
 
     if (ctx == NULL || is_empty_string(component) || is_empty_string(host_platform) || 
@@ -111,28 +93,38 @@ static CupError resolve_entry_release(const char *component, const char *host_pl
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = resolve_release(ctx->resolved_release, sizeof(ctx->resolved_release), component, ctx->tool, host_platform, 
-        target_platform, ctx->release);
+    if (is_stable_release(ctx->release) != 0) {
+        err = resolve_stable_release(manifest, ctx->resolved_release, sizeof(ctx->resolved_release), component, ctx->tool, host_platform, target_platform);
+        if (err != CUP_OK) {
+            return err;
+        }
+    } else {
+        err = checked_snprintf(ctx->resolved_release, sizeof(ctx->resolved_release), "%s", ctx->release);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    err = build_entry(ctx->canonical_entry, sizeof(ctx->canonical_entry), ctx->tool, ctx->resolved_release);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = build_canonical_entry(ctx->canonical_entry, sizeof(ctx->canonical_entry), ctx->tool, ctx->resolved_release);
-    return err;
+    return CUP_OK;
 }
 
-// COMMAND OPTIONS / PLATFORM HELPERS
-static CupError resolve_command_format(char *buffer, size_t size, const char *component, const char *host_platform, const char *target_platform, const char *format_override, EntryContext *ctx) {
+// COMMAND CONTEXT / OPTIONS / PLATFORM
+static CupError resolve_command_format(const Manifest *manifest, char *buffer, size_t size, const char *component, const char *host_platform, const char *target_platform, const char *format_override, const EntryContext *ctx) {
     CupError err;
     int format_supported;
 
-    if (buffer == NULL || size == 0 || 
+    if (buffer == NULL || size == 0 || ctx == NULL ||
         is_empty_string(component) || is_empty_string(host_platform) || is_empty_string(target_platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     if (!is_empty_string(format_override)) {
-        err = is_format_supported(component, ctx->tool, host_platform, target_platform, format_override, &format_supported);
+        err = is_format_supported(manifest, component, ctx->tool, host_platform, target_platform, format_override, &format_supported);
         if (err != CUP_OK) {
             return err;
         }
@@ -147,7 +139,7 @@ static CupError resolve_command_format(char *buffer, size_t size, const char *co
         return err;
     }
 
-    err = get_default_format(buffer, size, component, ctx->tool, host_platform, target_platform);
+    err = get_default_format(manifest, buffer, size, component, ctx->tool, host_platform, target_platform);
     return err;
 }
 
@@ -178,6 +170,12 @@ static CupError resolve_command_platforms(char *host_platform, size_t host_size,
     return err;
 }
 
+/*
+ * Load the full context required by normal commands.
+ * Recovery/diagnostic commands such as doctor and repair intentionally
+ * perform their own checks instead of using this function, so they can
+ * report corrupted state or manifest files.
+ */
 static CupError load_command_context(CommandContext *ctx, const char *target_override) {
     CupError err;
 
@@ -193,13 +191,17 @@ static CupError load_command_context(CommandContext *ctx, const char *target_ove
         return err;
     }
 
-    err = get_state_file_path(ctx->state_file, sizeof(ctx->state_file));
+    err = state_load(&ctx->state);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = state_load(&ctx->state, ctx->state_file);
-    return err;
+    err = manifest_load(&ctx->manifest);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return CUP_OK;
 }
 
 // INTERRUPT / CLEANUP HELPERS
@@ -229,7 +231,7 @@ static CupError stop_if_interrupted(const char *tmp_path) {
     return CUP_ERR_INTERRUPT;
 }
 
-// INSTALL PRESENCE / PRECONDITIONS
+// INSTALL / REMOVE TRANSACTION HELPERS
 static CupError check_install_presence(const CupState *state, const char *component, const char *host_platform, const char *target_platform, const EntryContext *ctx, int *in_state, int *on_disk) {
     CupError err;
 
@@ -247,14 +249,14 @@ static CupError check_install_presence(const CupState *state, const char *compon
 static CupError require_consistent_installed(const char *component, const char *host_platform, const char *target_platform, const EntryContext *ctx, int in_state, int on_disk) {
     if (!in_state && !on_disk) {
         fprintf(stderr, "Error: '%s:", component);
-        print_entry_resolution(stderr, ctx);
+        print_resolved_entry(stderr, ctx);
         fprintf(stderr, "' is not installed for host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_NOT_INSTALLED;
     }
 
     if (in_state != on_disk) {
         fprintf(stderr, "Error: inconsistent install state detected for '%s:", component);
-        print_entry_resolution(stderr, ctx);
+        print_resolved_entry(stderr, ctx);
         fprintf(stderr, "' on host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_INCONSISTENT_STATE;
     }
@@ -265,14 +267,14 @@ static CupError require_consistent_installed(const char *component, const char *
 static CupError require_not_installed(const char *component, const char *host_platform, const char *target_platform, const EntryContext *ctx, int in_state, int on_disk) {
     if (in_state && on_disk) {
         fprintf(stderr, "Error: '%s:", component);
-        print_entry_resolution(stderr, ctx);
+        print_resolved_entry(stderr, ctx);
         fprintf(stderr, "' is already installed for host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_ALREADY_INSTALLED;
     }
 
     if (in_state != on_disk) {
         fprintf(stderr, "Error: inconsistent install state detected for '%s:", component);
-        print_entry_resolution(stderr, ctx);
+        print_resolved_entry(stderr, ctx);
         fprintf(stderr, "' on host '%s', target '%s'.\n", host_platform, target_platform);
         return CUP_ERR_INCONSISTENT_STATE;
     }
@@ -280,18 +282,24 @@ static CupError require_not_installed(const char *component, const char *host_pl
     return CUP_OK;
 }
 
-// INSTALL TRANSACTION
-static CupError perform_install(const char *tmp_path, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version, const char *archive_format) {
+static CupError stage_package_install(const Manifest *manifest, const char *tmp_path, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version, const char *archive_format) {
     CupError err;
     char package_path[MAX_PATH_LEN];
+    char package_url[MAX_MANIFEST_URL_LEN];
 
-    if (is_empty_string(tmp_path) || is_empty_string(component) || is_empty_string(tool) || is_empty_string(host_platform) || 
-        is_empty_string(target_platform) || is_empty_string(version) || is_empty_string(archive_format)){
+    if (manifest == NULL || is_empty_string(tmp_path) || is_empty_string(component) || 
+        is_empty_string(tool) || is_empty_string(host_platform) ||  is_empty_string(target_platform) || 
+        is_empty_string(version) || is_empty_string(archive_format)){
         return CUP_ERR_INVALID_INPUT;
     }
 
+    err = build_download_url(manifest, package_url, sizeof(package_url), component, tool, host_platform, target_platform, version, archive_format);
+    if (err != CUP_OK) {
+        return err;
+    }
+
     printf("==> Fetching package...\n");
-    err = fetch_package(package_path, sizeof(package_path), component, tool, host_platform, target_platform, version, archive_format);
+    err = fetch_package(package_path, sizeof(package_path), package_url, component, tool, version);
     if (err != CUP_OK) {
         return err;
     }
@@ -338,7 +346,7 @@ static void cleanup_transaction(InstallTransaction *tx) {
     clear_transaction_tmp(tx);
 }
 
-// DIAGNOSTICS
+// DOCTOR HELPERS
 static CupError doctor_check_structure(DoctorReport *report) {
     CupError err;
     size_t missing_count;
@@ -363,28 +371,82 @@ static CupError doctor_check_structure(DoctorReport *report) {
     return CUP_OK;
 }
 
-static CupError doctor_check_state(CommandContext *command, DoctorReport *report) {
+static CupError doctor_check_state(CupState *state, DoctorReport *report) {
     CupError err;
+
+    if (state == NULL || report == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = state_load(state);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Issue: state file is missing, unreadable, or malformed.\n");
+        report->issues++;
+        return CUP_OK;
+    }
+
+    printf("OK: state file is valid.\n");
+    return CUP_OK;
+}
+
+static CupError doctor_check_manifest(Manifest *manifest, DoctorReport *report) {
+    CupError err;
+
+    if (manifest == NULL || report == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = manifest_load(manifest);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Issue: package manifest is missing, unreadable, or malformed.\n");
+        report->issues++;
+        return CUP_OK;
+    }
+
+    printf("OK: package manifest is readable.\n");
+    return CUP_OK;
+}
+
+static CupError doctor_check_info_files(const CommandContext *command, DoctorReport *report) {
+    CupError err;
+    EntryContext ctx;
+    char install_path[MAX_PATH_LEN];
+    size_t i;
 
     if (command == NULL || report == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = get_state_file_path(command->state_file, sizeof(command->state_file));
-    if (err != CUP_OK) {
-        report->issues++;
-        fprintf(stderr, "Error: could not resolve state file path.\n");
-        return err;
+    for (i = 0; i < command->state.installed_count; ++i) {
+        const StateEntry *entry = &command->state.installed[i];
+
+        err = parse_entry(entry->entry, ctx.tool, sizeof(ctx.tool), ctx.release, sizeof(ctx.release));
+        if (err != CUP_OK) {
+            fprintf(stderr, "Issue: installed state entry '%s' is malformed.\n", entry->entry);
+            report->issues++;
+            continue;
+        }
+
+        err = build_install_path(install_path, sizeof(install_path), entry->component, ctx.tool, entry->host_platform, 
+            entry->target_platform, ctx.release);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Issue: could not build install path for '%s'.\n", entry->entry);
+            report->issues++;
+            continue;
+        }
+
+        err = validate_installation_metadata(install_path, entry->component, ctx.tool, entry->host_platform, entry->target_platform, ctx.release);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Issue: installed package metadata is invalid for '%s'.\n", entry->entry);
+            report->issues++;
+            continue;
+        }
     }
 
-    err = state_load(&command->state, command->state_file);
-    if (err != CUP_OK) {
-        report->issues++;
-        fprintf(stderr, "Error: state file is invalid: %s\n", command->state_file);
-        return CUP_OK;
+    if (command->state.installed_count > 0) {
+        printf("OK: installed package info files are valid.\n");
     }
 
-    printf("OK: state file is valid.\n");
     return CUP_OK;
 }
 
@@ -399,14 +461,14 @@ static CupError doctor_check_installed_entries(const CommandContext *command, Do
     }
 
     for (i = 0; i < command->state.installed_count; ++i) {
-        err = parse_entry_context(command->state.installed[i].component, command->state.installed[i].entry, &ctx);
+        err = prepare_entry_context(command->state.installed[i].component, command->state.installed[i].entry, &ctx);
         if (err != CUP_OK) {
             report->issues++;
             fprintf(stderr, "Error: invalid state entry '%s'.\n", command->state.installed[i].entry);
             continue;
         }
 
-        err = build_canonical_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
+        err = build_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
         if (err != CUP_OK) {
             report->issues++;
             fprintf(stderr, "Error: could not parse state entry '%s'.\n", command->state.installed[i].entry);
@@ -444,13 +506,13 @@ static CupError doctor_check_manifest_for_entries(const CommandContext *command,
     }
 
     for (i = 0; i < command->state.installed_count; ++i) {
-        err = parse_entry_context(command->state.installed[i].component, command->state.installed[i].entry, &ctx);
+        err = prepare_entry_context(command->state.installed[i].component, command->state.installed[i].entry, &ctx);
         if (err != CUP_OK) {
             continue;
         }
 
-        err = is_version_available(command->state.installed[i].component, ctx.tool, command->state.installed[i].host_platform,
-            command->state.installed[i].target_platform, ctx.release, &is_available);
+        err = is_version_available(&command->manifest, command->state.installed[i].component, ctx.tool, 
+            command->state.installed[i].host_platform, command->state.installed[i].target_platform, ctx.release, &is_available);
         if (err != CUP_OK) {
             report->warnings++;
             fprintf(stderr, "Warning: manifest information is unavailable for '%s:%s' on host '%s', target '%s'.\n",
@@ -493,6 +555,7 @@ static CupError doctor_check_tmp(DoctorReport *report) {
     return CUP_OK;
 }
 
+// REPAIR HELPERS
 static CupError repair_state_entries(CupState *state, int *changed, int *removed_entries) {
     EntryContext ctx;
     CupError err;
@@ -505,12 +568,12 @@ static CupError repair_state_entries(CupState *state, int *changed, int *removed
 
     i = 0;
     while (i < state->installed_count) {
-        err = parse_entry_context(state->installed[i].component, state->installed[i].entry, &ctx);
+        err = prepare_entry_context(state->installed[i].component, state->installed[i].entry, &ctx);
         if (err != CUP_OK) {
             return CUP_ERR_STATE_LOAD;
         }
 
-        err = build_canonical_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
+        err = build_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
         if (err != CUP_OK) {
             return CUP_ERR_STATE_LOAD;
         }
@@ -584,6 +647,65 @@ static CupError repair_state_defaults(CupState *state, int *changed, int *remove
     return CUP_OK;
 }
 
+// INFO PRINTING HELPERS
+static void print_info_field(const PackageInfo *info, const char *key, const char *label) {
+    const char *value;
+
+    if (info == NULL || is_empty_string(key) || is_empty_string(label)) {
+        return;
+    }
+
+    value = get_info_value(info, key);
+    if (value == NULL) {
+        return;
+    }
+
+    printf("  %-18s %s\n", label, value);
+}
+
+static void print_info_groups(const PackageInfo *info, const char *title, const char *prefix) {
+    const PackageInfoField *field;
+    size_t cursor;
+    int printed_title;
+
+    if (info == NULL || is_empty_string(title) || is_empty_string(prefix)) {
+        return;
+    }
+
+    cursor = 0;
+    printed_title = 0;
+
+    while ((field = next_info_field(info, prefix, &cursor)) != NULL) {
+        const char *display_key;
+
+        if (!printed_title) {
+            printf("\n%s:\n", title);
+            printed_title = 1;
+        }
+
+        display_key = field->key + strlen(prefix);
+        printf("  %-18s %s\n", display_key, field->value);
+    }
+}
+
+static void print_package_info(const PackageInfo *info) {
+    if (info == NULL) {
+        return;
+    }
+
+    printf("Package:\n");
+    print_info_field(info, "package.component", "component");
+    print_info_field(info, "package.tool", "tool");
+    print_info_field(info, "package.version", "version");
+    print_info_field(info, "platform.host", "host");
+    print_info_field(info, "platform.target", "target");
+
+    print_info_groups(info, "Entries", "entry.");
+    print_info_groups(info, "Features", "features.");
+    print_info_groups(info, "Contents", "contents.");
+    print_info_groups(info, "Build/config", "config.");
+}
+
 // COMMAND HANDLERS
 CupError handle_list(const char *target_override) {
     CommandContext command;
@@ -593,7 +715,6 @@ CupError handle_list(const char *target_override) {
     int has_annotation;
     int is_default;
     int is_stable;
-    int manifest_available;
     int on_disk;
     size_t i;
 
@@ -617,13 +738,13 @@ CupError handle_list(const char *target_override) {
         
         printf("- %s:%s", command.state.installed[i].component, command.state.installed[i].entry);
 
-        err = parse_entry_context(command.state.installed[i].component, command.state.installed[i].entry, &ctx);
+        err = prepare_entry_context(command.state.installed[i].component, command.state.installed[i].entry, &ctx);
         if (err != CUP_OK) {
             printf(" (invalid)\n");
             continue;
         }
 
-        err = build_canonical_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
+        err = build_entry(ctx.canonical_entry, sizeof(ctx.canonical_entry), ctx.tool, ctx.release);
         if (err != CUP_OK) {
             printf(" (invalid)\n");
             continue;
@@ -643,20 +764,19 @@ CupError handle_list(const char *target_override) {
 
         default_entry = state_get_default(&command.state, command.state.installed[i].component, command.host_platform, 
             command.target_platform);
+        
         is_default = (default_entry != NULL && strcmp(default_entry, ctx.canonical_entry) == 0);
-        manifest_available = 1;
         is_stable = 0;
 
-        err = is_stable_version(command.state.installed[i].component, ctx.tool, command.host_platform, command.target_platform, 
-            ctx.release, &is_stable);
+        err = is_stable_version(&command.manifest, command.state.installed[i].component, ctx.tool, command.host_platform, 
+            command.target_platform, ctx.release, &is_stable);
         if (err != CUP_OK) {
-            manifest_available = 0;
             is_stable = 0;
         }
 
         has_annotation = 0;
 
-        if (is_default || is_stable || !manifest_available) {
+        if (is_default || is_stable) {
             printf(" (");
 
             if (is_default) {
@@ -670,15 +790,6 @@ CupError handle_list(const char *target_override) {
                 }
 
                 printf("stable");
-                has_annotation = 1;
-            }
-
-            if (!manifest_available) {
-                if (has_annotation) {
-                    printf(", ");
-                }
-
-                printf("manifest unavailable");
             }
 
             printf(")");
@@ -714,19 +825,19 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    err = parse_entry_context(component, entry, &ctx);
+    err = prepare_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
     printf("==> Resolving release...\n");
-    err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
+    err = resolve_entry_release(&command.manifest, component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = is_version_available(component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release, 
-        &version_available);
+    err = is_version_available(&command.manifest, component, ctx.tool, command.host_platform, command.target_platform, 
+        ctx.resolved_release, &version_available);
     if (err != CUP_OK) {
         return err;
     }
@@ -738,8 +849,8 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     }
 
     printf("==> Resolving package format...\n");
-    err = resolve_command_format(archive_format, sizeof(archive_format), component, command.host_platform, 
-    command.target_platform, format_override, &ctx);
+    err = resolve_command_format(&command.manifest, archive_format, sizeof(archive_format), component, command.host_platform, 
+        command.target_platform, format_override, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -765,7 +876,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    err = perform_install(tx.tmp_path, component, ctx.tool, command.host_platform, command.target_platform, 
+    err = stage_package_install(&command.manifest, tx.tmp_path, component, ctx.tool, command.host_platform, command.target_platform, 
         ctx.resolved_release, archive_format);
     if (err != CUP_OK) {
         if (err == CUP_ERR_INTERRUPT) {
@@ -789,7 +900,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     }
 
     printf("==> Validating installation...\n");
-    err = validate_install(tx.tmp_path, component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release);
+    err = validate_installation_metadata(tx.tmp_path, component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
         return err;
@@ -813,7 +924,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     }
 
     err = build_install_path(tx.install_path, sizeof(tx.install_path), component, ctx.tool, command.host_platform, 
-    command.target_platform, ctx.resolved_release);
+        command.target_platform, ctx.resolved_release);
     if (err != CUP_OK) {
         cleanup_transaction(&tx);
         return err;
@@ -842,7 +953,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     }
 
     printf("==> Saving state...\n");
-    err = state_save(&command.state, command.state_file);
+    err = state_save(&command.state);
     if (err != CUP_OK) {
         rollback_err = move_transaction(&tx, MOVE_INSTALL_TO_TMP);
         if (rollback_err != CUP_OK) {
@@ -859,7 +970,7 @@ CupError handle_install(const char *component, const char *entry, const char *ta
     clear_transaction_tmp(&tx);
 
     printf("Installed %s ", component);
-    print_entry_resolution(stdout, &ctx);
+    print_resolved_entry(stdout, &ctx);
     printf(" for host '%s', target '%s' successfully.\n", command.host_platform, command.target_platform);
     return CUP_OK;
 }
@@ -882,13 +993,13 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    err = parse_entry_context(component, entry, &ctx);
+    err = prepare_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
     printf("==> Resolving release...\n");
-    err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
+    err = resolve_entry_release(&command.manifest, component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -923,7 +1034,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
 
     err = system_remove_directory(tx.tmp_path);
     if (err != CUP_OK) {
-        clear_transaction_tmp(&tx);
+        cleanup_transaction(&tx);
         return err;
     }
 
@@ -946,7 +1057,8 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
         return err;
     }
 
-    err = state_remove_default_if_matches(&command.state, component, command.host_platform, command.target_platform, ctx.canonical_entry);
+    err = state_remove_default_if_matches(&command.state, component, command.host_platform, command.target_platform, 
+        ctx.canonical_entry);
     if (err != CUP_OK) {
         rollback_err = move_transaction(&tx, MOVE_TMP_TO_INSTALL);
         if (rollback_err != CUP_OK) {
@@ -959,7 +1071,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
     }
 
     printf("==> Saving state...\n");
-    err = state_save(&command.state, command.state_file);
+    err = state_save(&command.state);
     if (err != CUP_OK) {
         rollback_err = move_transaction(&tx, MOVE_TMP_TO_INSTALL);
         if (rollback_err != CUP_OK) {
@@ -976,7 +1088,7 @@ CupError handle_remove(const char *component, const char *entry, const char *tar
     cleanup_transaction(&tx);
 
     printf("Removed %s ", component);
-    print_entry_resolution(stdout, &ctx);
+    print_resolved_entry(stdout, &ctx);
     printf(" for host '%s', target '%s' successfully.\n", command.host_platform, command.target_platform);
     return CUP_OK;
 }
@@ -994,13 +1106,13 @@ CupError handle_default(const char *component, const char *entry, const char *ta
         return err;
     }
 
-    err = parse_entry_context(component, entry, &ctx);
+    err = prepare_entry_context(component, entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
     printf("==> Resolving release...\n");
-    err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
+    err = resolve_entry_release(&command.manifest, component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -1023,13 +1135,13 @@ CupError handle_default(const char *component, const char *entry, const char *ta
     }
 
     printf("==> Saving state...\n");
-    err = state_save(&command.state, command.state_file);
+    err = state_save(&command.state);
     if (err != CUP_OK) {
         return err;
     }
 
     printf("Default %s for host '%s', target '%s' set to ", component, command.host_platform, command.target_platform);
-    print_entry_resolution(stdout, &ctx);
+    print_resolved_entry(stdout, &ctx);
     printf(".\n");
     return CUP_OK;
 }
@@ -1060,12 +1172,12 @@ CupError handle_current(const char *component, const char *target_override) {
         return CUP_OK;
     }
 
-    err = parse_entry_context(component, default_entry, &ctx);
+    err = prepare_entry_context(component, default_entry, &ctx);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = resolve_entry_release(component, command.host_platform, command.target_platform, &ctx);
+    err = resolve_entry_release(&command.manifest, component, command.host_platform, command.target_platform, &ctx);
     if (err != CUP_OK) {
         return err;
     }
@@ -1078,14 +1190,14 @@ CupError handle_current(const char *component, const char *target_override) {
     if (!in_state || !on_disk) {
         fprintf(stderr, "Error: default for component '%s' on host '%s', target '%s' points to an inconsistent installation '", 
             component, command.host_platform, command.target_platform);
-        print_entry_resolution(stderr, &ctx);
+        print_resolved_entry(stderr, &ctx);
         fprintf(stderr, "'.\n");
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
     is_stable = 0;
 
-    err = is_stable_version(component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release, &is_stable);
+    err = is_stable_version(&command.manifest, component, ctx.tool, command.host_platform, command.target_platform, ctx.resolved_release, &is_stable);
     if (err != CUP_OK) {
         is_stable = 0;
     }
@@ -1096,6 +1208,66 @@ CupError handle_current(const char *component, const char *target_override) {
         printf(" (stable)");
     }
     printf("\n");
+    return CUP_OK;
+}
+
+CupError handle_info(const char *component, const char *entry, const char *target_override) {
+    CommandContext command;
+    EntryContext ctx;
+    PackageInfo info;
+    CupError err;
+    char install_path[MAX_PATH_LEN];
+    char info_path[MAX_PATH_LEN];
+    int in_state;
+    int on_disk;
+
+    err = load_command_context(&command, target_override);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = prepare_entry_context(component, entry, &ctx);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = resolve_entry_release(&command.manifest, component, command.host_platform, command.target_platform, &ctx);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = check_install_presence(&command.state, component, command.host_platform, command.target_platform, &ctx, &in_state, &on_disk);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = require_consistent_installed(component, command.host_platform, command.target_platform, &ctx, in_state, on_disk);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = build_install_path(install_path, sizeof(install_path), component, ctx.tool, command.host_platform,
+        command.target_platform, ctx.resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = path_join(info_path, sizeof(info_path), install_path, "info.txt");
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = info_load(&info, info_path);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not read package metadata '%s'.\n", info_path);
+        return err;
+    }
+
+    printf("Package information for %s ", component);
+    print_resolved_entry(stdout, &ctx);
+    printf(" on host '%s', target '%s':\n\n", command.host_platform, command.target_platform);
+
+    print_package_info(&info);
     return CUP_OK;
 }
 
@@ -1113,7 +1285,12 @@ CupError handle_doctor(void) {
         return err;
     }
 
-    err = doctor_check_state(&command, &report);
+    err = doctor_check_state(&command.state, &report);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = doctor_check_manifest(&command.manifest, &report);
     if (err != CUP_OK) {
         return err;
     }
@@ -1125,6 +1302,11 @@ CupError handle_doctor(void) {
         }
 
         err = doctor_check_manifest_for_entries(&command, &report);
+        if (err != CUP_OK) {
+            return err;
+        }
+
+        err = doctor_check_info_files(&command, &report);
         if (err != CUP_OK) {
             return err;
         }
@@ -1173,12 +1355,7 @@ CupError handle_repair(void) {
     }
 
     printf("==> Loading state...\n");
-    err = get_state_file_path(command.state_file, sizeof(command.state_file));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = state_load(&command.state, command.state_file);
+    err = state_load(&command.state);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: state file is invalid and cannot be repaired automatically yet.\n");
         return err;
@@ -1197,7 +1374,7 @@ CupError handle_repair(void) {
 
     if (changed) {
         printf("==> Saving repaired state...\n");
-        err = state_save(&command.state, command.state_file);
+        err = state_save(&command.state);
         if (err != CUP_OK) {
             return err;
         }

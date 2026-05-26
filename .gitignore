@@ -58,6 +58,10 @@ dkms.conf
 # vscode directory
 .vscode/
 
+# doxygen
+/doxygen-output
+Doxyfile
+
 # mdbook output
 /book/
 

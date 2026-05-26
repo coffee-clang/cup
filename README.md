@@ -175,5 +175,5 @@ cup uninstall
 
 The full project documentation is split into:
 
-- [Specification](doc/SPECIFICATION.md): command model, manifest model, state model, filesystem layout, install/remove flows, repair behavior, packaging assumptions and design boundaries.
-- [Dependencies](doc/DEPENDENCIES.md): dependencies for building `cup`, the component build infrastructure, Docker/MSYS2 builders, package tests, release publishing and runtime packaging notes.
+- [Specification](docs/specification.md): command model, manifest model, state model, filesystem layout, install/remove flows, repair behavior, packaging assumptions and design boundaries.
+- [Dependencies](docs/dependencies.md): dependencies for building `cup`, the component build infrastructure, Docker/MSYS2 builders, package tests, release publishing and runtime packaging notes.

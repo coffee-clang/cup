@@ -22,9 +22,8 @@ typedef struct {
 } CupState;
 
 // PERSISTENCE
-CupError state_init(CupState *state);
-CupError state_load(CupState *state, const char *filename);
-CupError state_save(const CupState *state, const char *filename);
+CupError state_load(CupState *state);
+CupError state_save(const CupState *state);
 
 // INSTALLED ENTRIES
 int state_find_installed(const CupState *state, const char *component, const char *host_platform, const char *target_platform, const char *entry);

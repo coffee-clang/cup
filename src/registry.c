@@ -12,6 +12,11 @@ typedef struct {
     const char *tools[MAX_TOOLS_PER_COMPONENT];
 } SupportedComponent;
 
+/*
+ * Components and tools recognized by this cup build.
+ * This registry validates the domain accepted by the CLI and state files;
+ * concrete versions, formats and URLs are provided by the manifest.
+ */
 static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "compiler", { "gcc", "clang", NULL } },
     { "debugger", { "gdb", "lldb", NULL } },

@@ -1,6 +1,5 @@
 #include "commands.h"
 
-#include "filesystem.h"
 #include "options.h"
 
 #include <stdio.h>
@@ -19,10 +18,12 @@ static void print_usage(FILE *stream, const char *prog_name) {
         "  %s remove <component> <tool>@<release> [--target <target-platform>]\n"
         "  %s default <component> <tool>@<release> [--target <target-platform>]\n"
         "  %s current <component> [--target <target-platform>]\n"
+        "  %s info <component> <tool>@<release> [--target <target-platform>]\n"
         "  %s doctor\n"
         "  %s repair\n"
         "  %s uninstall\n",
-        prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
+        prog_name, prog_name, prog_name, prog_name, prog_name, 
+        prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
 static void print_help(const char *prog_name) {
@@ -37,6 +38,7 @@ static void print_help(const char *prog_name) {
         "  remove     Remove an installed tool release.\n"
         "  default    Set the default installed tool release for a component.\n"
         "  current    Show the current default for a component.\n"
+        "  info       Show metadata for an installed package.\n"
         "  doctor     Check cup state and installation consistency without modifying files.\n"
         "  repair     Repair safe cup state inconsistencies and clean temporary files.\n"
         "  uninstall  Remove cup itself and all cup-managed data.\n"
@@ -48,8 +50,9 @@ static void print_help(const char *prog_name) {
         "  %s install compiler gcc@stable\n"
         "  %s install compiler gcc@stable --target windows-x64\n"
         "  %s default compiler gcc@stable\n"
-        "  %s current compiler\n",
-        prog_name, prog_name, prog_name, prog_name);
+        "  %s current compiler\n"
+        "  %s info compiler gcc@stable\n",
+        prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
 int main(int argc, char *argv[]) {
@@ -192,6 +195,31 @@ int main(int argc, char *argv[]) {
         }
         
         err = handle_current(argv[2], options.target);
+        return err;
+    }
+
+    if (strcmp(command, "info") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: missing arguments for command 'info'.\n");
+            print_usage(stderr, argv[0]);
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        start_option = 4;
+
+        err = parse_command_options(start_option, argc, argv, &options);
+        if (err != CUP_OK) {
+            print_usage(stderr, argv[0]);
+            return err;
+        }
+
+        err = validate_command_options(&options, OPT_TARGET, command);
+        if (err != CUP_OK) {
+            print_usage(stderr, argv[0]);
+            return err;
+        }
+
+        err = handle_info(argv[2], argv[3], options.target);
         return err;
     }
 

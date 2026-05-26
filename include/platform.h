@@ -5,6 +5,9 @@
 
 #include "error.h"
 
+/*
+ * Platform identifiers use the '<os>-<arch>' format, such as 'linux-x64'.
+ */
 CupError get_host_platform(char *buffer, size_t size);
 CupError validate_platform(const char *platform);
 

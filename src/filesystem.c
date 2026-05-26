@@ -2,12 +2,32 @@
 
 #include "constants.h"
 #include "interrupt.h"
+#include "info.h"
 #include "path.h"
 #include "system.h"
 #include "util.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#define COPY_BUFFER_SIZE 8192
+
+#define CUP_COMPONENTS_DIR "components"
+#define CUP_TMP_DIR "tmp"
+#define CUP_CACHE_DIR "cache"
+#define CUP_CONFIG_DIR "config"
+#define CUP_SCRIPTS_DIR "scripts"
+#define CUP_STATE_FILE "state.txt"
+#define CUP_MANIFEST_FILE "packages.cfg"
+#define CUP_INFO_FILE "info.txt"
+
+static const char *const CUP_BASE_DIRS[] = {
+    CUP_COMPONENTS_DIR,
+    CUP_TMP_DIR,
+    CUP_CACHE_DIR,
+    CUP_CONFIG_DIR,
+    CUP_SCRIPTS_DIR
+};
 
 // DIRECTORY HELPERS
 static CupError create_directory(const char *path) {
@@ -63,6 +83,7 @@ static CupError count_visited_entry(const char *path, const SystemPathInfo *info
     return CUP_OK;
 }
 
+// RECURSIVE REMOVAL CALLBACKS
 static CupError remove_visited_entry(const char *path, const SystemPathInfo *info, void *userdata) {
     CupError err;
     (void) userdata;
@@ -124,7 +145,7 @@ static CupError remove_directory_recursive(const char *path) {
     return CUP_OK;
 }
 
-// ROOT PATHS
+// CUP ROOT / PATH HELPERS
 CupError get_cup_root_path(char *buffer, size_t size) {
     CupError err;
     char home[MAX_PATH_LEN];
@@ -142,11 +163,11 @@ CupError get_cup_root_path(char *buffer, size_t size) {
     return err;
 }
 
-static CupError get_components_root_path(char *buffer, size_t size) {
+static CupError get_cup_child_path(char *buffer, size_t size, const char *child) {
     CupError err;
     char root[MAX_PATH_LEN];
 
-    if (buffer == NULL || size == 0) {
+    if (buffer == NULL || size == 0 || is_empty_string(child)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -155,125 +176,135 @@ static CupError get_components_root_path(char *buffer, size_t size) {
         return err;
     }
 
-    err = path_join(buffer, size, root, "components");
-    return err;
-}
-
-static CupError get_tmp_root_path(char *buffer, size_t size) {
-    CupError err;
-    char root[MAX_PATH_LEN];
-
-    if (buffer == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_cup_root_path(root, sizeof(root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(buffer, size, root, "tmp");
-    return err;
-}
-
-static CupError get_cache_root_path(char *buffer, size_t size) {
-    CupError err;
-    char root[MAX_PATH_LEN];
-
-    if (buffer == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_cup_root_path(root, sizeof(root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(buffer, size, root, "cache");
-    return err;
-}
-
-static CupError get_config_root_path(char *buffer, size_t size) {
-    CupError err;
-    char root[MAX_PATH_LEN];
-
-    if (buffer == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_cup_root_path(root, sizeof(root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(buffer, size, root, "config");
+    err = path_join(buffer, size, root, child);
     return err;
 }
 
 CupError get_state_file_path(char *buffer, size_t size) {
+    return get_cup_child_path(buffer, size, CUP_STATE_FILE);
+}
+
+CupError get_manifest_file_path(char *buffer, size_t size) {
     CupError err;
-    char root[MAX_PATH_LEN];
+    char config_dir[MAX_PATH_LEN];
 
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = get_cup_root_path(root, sizeof(root));
+    err = get_cup_child_path(config_dir, sizeof(config_dir), CUP_CONFIG_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(buffer, size, root, "state.txt");
-    return err;
+    err = path_join(buffer, size, config_dir, CUP_MANIFEST_FILE);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return CUP_OK;
 }
 
 CupError get_uninstall_script_path(char *buffer, size_t size) {
     CupError err;
-    char cup_root[MAX_PATH_LEN];
     char scripts_dir[MAX_PATH_LEN];
+
+#if defined(_WIN32)
+    const char *script_name = "uninstall.ps1";
+#else
+    const char *script_name = "uninstall.sh";
+#endif
 
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = get_cup_root_path(cup_root, sizeof(cup_root));
+    err = get_cup_child_path(scripts_dir, sizeof(scripts_dir), CUP_SCRIPTS_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(scripts_dir, sizeof(scripts_dir), cup_root, "scripts");
-    if (err != CUP_OK) {
-        return err;
-    }
-
-#ifdef _WIN32
-    err = path_join(buffer, size, scripts_dir, "uninstall.ps1");
-#else
-    err = path_join(buffer, size, scripts_dir, "uninstall.sh");
-#endif
-
+    err = path_join(buffer, size, scripts_dir, script_name);
     return err;
 }
 
-// STRUCTURE
-static CupError check_required_directory(const char *path, const char *label, size_t *missing_count) {
+// PATH CHAIN BUILDER
+static CupError build_path_chain(char *buffer, size_t size, const char *root, const char *const *parts, size_t part_count, int create_dirs) {
     CupError err;
+    char current[MAX_PATH_LEN];
+    char next[MAX_PATH_LEN];
+    size_t i;
+
+    if (buffer == NULL || size == 0 || is_empty_string(root) || parts == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = checked_snprintf(current, sizeof(current), "%s", root);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    for (i = 0; i < part_count; ++i) {
+        if (is_empty_string(parts[i])) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = path_join(next, sizeof(next), current, parts[i]);
+        if (err != CUP_OK) {
+            return err;
+        }
+
+        if (create_dirs) {
+            err = create_directory(next);
+            if (err != CUP_OK) {
+                return err;
+            }
+        }
+
+        err = checked_snprintf(current, sizeof(current), "%s", next);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    err = checked_snprintf(buffer, size, "%s", current);
+    return err;
+}
+
+// STRUCTURE CHECK / ENSURE
+static CupError check_required_directory(const char *path, const char *description, size_t *missing_count) {
+    CupError err;
+    int exists;
     int is_directory;
 
-    if (is_empty_string(path) || is_empty_string(label) || missing_count == NULL) {
+    if (is_empty_string(path) || is_empty_string(description) || missing_count == NULL) {
         return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = system_path_exists(path, &exists);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Warning: could not inspect %s directory '%s'.\n", description, path);
+        (*missing_count)++;
+        return CUP_OK;
+    }
+
+    if (!exists) {
+        fprintf(stderr, "Warning: missing %s directory '%s'. Run 'cup repair' to recreate it.\n", description, path);
+        (*missing_count)++;
+        return CUP_OK;
     }
 
     err = system_is_directory(path, &is_directory);
     if (err != CUP_OK) {
-        fprintf(stderr, "Warning: could not inspect %s directory '%s'.\n", label, path);
+        fprintf(stderr, "Warning: could not inspect %s directory '%s'.\n", description, path);
         (*missing_count)++;
         return CUP_OK;
     }
 
     if (!is_directory) {
-        fprintf(stderr, "Warning: missing %s directory '%s'. Run 'cup repair' to recreate it.\n", label, path);
+        fprintf(stderr, "Warning: %s path '%s' exists but is not a directory.\n", description, path);
         (*missing_count)++;
+        return CUP_OK;
     }
 
     return CUP_OK;
@@ -281,11 +312,10 @@ static CupError check_required_directory(const char *path, const char *label, si
 
 CupError check_cup_structure(size_t *missing_count) {
     CupError err;
-    char cup_root[MAX_PATH_LEN];
-    char components_root[MAX_PATH_LEN];
-    char tmp_root[MAX_PATH_LEN];
-    char cache_root[MAX_PATH_LEN];
-    char config_root[MAX_PATH_LEN];
+    char root[MAX_PATH_LEN];
+    char path[MAX_PATH_LEN];
+    size_t i;
+    size_t count;
 
     if (missing_count == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -293,54 +323,28 @@ CupError check_cup_structure(size_t *missing_count) {
 
     *missing_count = 0;
 
-    err = get_cup_root_path(cup_root, sizeof(cup_root));
+    err = get_cup_root_path(root, sizeof(root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_components_root_path(components_root, sizeof(components_root));
+    err = check_required_directory(root, "cup root", missing_count);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
-    if (err != CUP_OK) {
-        return err;
-    }
+    count = sizeof(CUP_BASE_DIRS) / sizeof(CUP_BASE_DIRS[0]);
 
-    err = get_cache_root_path(cache_root, sizeof(cache_root));
-    if (err != CUP_OK) {
-        return err;
-    }
+    for (i = 0; i < count; ++i) {
+        err = get_cup_child_path(path, sizeof(path), CUP_BASE_DIRS[i]);
+        if (err != CUP_OK) {
+            return err;
+        }
 
-    err = get_config_root_path(config_root, sizeof(config_root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = check_required_directory(cup_root, "cup root", missing_count);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = check_required_directory(components_root, "components", missing_count);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = check_required_directory(tmp_root, "temporary", missing_count);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = check_required_directory(cache_root, "cache", missing_count);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = check_required_directory(config_root, "config", missing_count);
-    if (err != CUP_OK) {
-        return err;
+        err = check_required_directory(path, CUP_BASE_DIRS[i], missing_count);
+        if (err != CUP_OK) {
+            return err;
+        }
     }
 
     return CUP_OK;
@@ -348,60 +352,33 @@ CupError check_cup_structure(size_t *missing_count) {
 
 CupError ensure_cup_structure(void) {
     CupError err;
-    char cup_root[MAX_PATH_LEN];
-    char components_root[MAX_PATH_LEN];
-    char tmp_root[MAX_PATH_LEN];
-    char cache_root[MAX_PATH_LEN];
-    char config_root[MAX_PATH_LEN];
+    char root[MAX_PATH_LEN];
+    char path[MAX_PATH_LEN];
+    size_t i;
+    size_t count;
 
-    err = get_cup_root_path(cup_root, sizeof(cup_root));
+    err = get_cup_root_path(root, sizeof(root));
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_components_root_path(components_root, sizeof(components_root));
+    err = create_directory(root);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
-    if (err != CUP_OK) {
-        return err;
-    }
+    count = sizeof(CUP_BASE_DIRS) / sizeof(CUP_BASE_DIRS[0]);
 
-    err = get_cache_root_path(cache_root, sizeof(cache_root));
-    if (err != CUP_OK) {
-        return err;
-    }
+    for (i = 0; i < count; ++i) {
+        err = get_cup_child_path(path, sizeof(path), CUP_BASE_DIRS[i]);
+        if (err != CUP_OK) {
+            return err;
+        }
 
-    err = get_config_root_path(config_root, sizeof(config_root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(cup_root);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(components_root);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(tmp_root);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(cache_root);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(config_root);
-    if (err != CUP_OK) {
-        return err;
+        err = create_directory(path);
+        if (err != CUP_OK) {
+            return err;
+        }
     }
 
     return CUP_OK;
@@ -410,13 +387,11 @@ CupError ensure_cup_structure(void) {
 CupError ensure_component_base_dirs(const char *component, const char *tool, const char *host_platform, const char *target_platform) {
     CupError err;
     char components_root[MAX_PATH_LEN];
-    char component_dir[MAX_PATH_LEN];
-    char tool_dir[MAX_PATH_LEN];
-    char host_dir[MAX_PATH_LEN];
-    char target_dir[MAX_PATH_LEN];
+    char target_path[MAX_PATH_LEN];
+    const char *parts[4];
 
-    if (is_empty_string(component) || is_empty_string(tool) || is_empty_string(host_platform) || is_empty_string(target_platform)) {
-        fprintf(stderr, "Error: invalid component directory arguments.\n");
+    if (is_empty_string(component) || is_empty_string(tool) ||
+        is_empty_string(host_platform) || is_empty_string(target_platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -425,59 +400,27 @@ CupError ensure_component_base_dirs(const char *component, const char *tool, con
         return err;
     }
 
-    err = get_components_root_path(components_root, sizeof(components_root));
+    err = get_cup_child_path(components_root, sizeof(components_root), CUP_COMPONENTS_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(component_dir, sizeof(component_dir), components_root, component);
-    if (err != CUP_OK) {
-        return err;
-    }
+    parts[0] = component;
+    parts[1] = tool;
+    parts[2] = host_platform;
+    parts[3] = target_platform;
 
-    err = path_join(tool_dir, sizeof(tool_dir), component_dir, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(host_dir, sizeof(host_dir), tool_dir, host_platform);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(target_dir, sizeof(target_dir), host_dir, target_platform);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(component_dir);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(tool_dir);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(host_dir);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(target_dir);
+    err = build_path_chain(target_path, sizeof(target_path), components_root, parts, 4, 1);
     return err;
 }
 
 CupError ensure_cache_package_dirs(const char *component, const char *tool, const char *version) {
     CupError err;
     char cache_root[MAX_PATH_LEN];
-    char component_dir[MAX_PATH_LEN];
-    char tool_dir[MAX_PATH_LEN];
-    char version_dir[MAX_PATH_LEN];
+    char package_path[MAX_PATH_LEN];
+    const char *parts[3];
 
     if (is_empty_string(component) || is_empty_string(tool) || is_empty_string(version)) {
-        fprintf(stderr, "Error: invalid cache directory arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -486,37 +429,42 @@ CupError ensure_cache_package_dirs(const char *component, const char *tool, cons
         return err;
     }
 
-    err = get_cache_root_path(cache_root, sizeof(cache_root));
+    err = get_cup_child_path(cache_root, sizeof(cache_root), CUP_CACHE_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(component_dir, sizeof(component_dir), cache_root, component);
+    parts[0] = component;
+    parts[1] = tool;
+    parts[2] = version;
+
+    err = build_path_chain(package_path, sizeof(package_path), cache_root, parts, 3, 1);
+    return err;
+}
+
+// CACHE / INSTALL PATH BUILDERS
+CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version) {
+    CupError err;
+    char components_root[MAX_PATH_LEN];
+    const char *parts[5];
+
+    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
+        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(version)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = get_cup_child_path(components_root, sizeof(components_root), CUP_COMPONENTS_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(tool_dir, sizeof(tool_dir), component_dir, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
+    parts[0] = component;
+    parts[1] = tool;
+    parts[2] = host_platform;
+    parts[3] = target_platform;
+    parts[4] = version;
 
-    err = path_join(version_dir, sizeof(version_dir), tool_dir, version);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(component_dir);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(tool_dir);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = create_directory(version_dir);
+    err = build_path_chain(buffer, size, components_root, parts, 5, 0);
     if (err != CUP_OK) {
         return err;
     }
@@ -524,128 +472,39 @@ CupError ensure_cache_package_dirs(const char *component, const char *tool, cons
     return CUP_OK;
 }
 
-// PATH BUILDERS
-CupError build_install_path(char *buffer, size_t size, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version) {
-    CupError err;
-    char components_root[MAX_PATH_LEN];
-    char component_path[MAX_PATH_LEN];
-    char tool_path[MAX_PATH_LEN];
-    char host_path[MAX_PATH_LEN];
-    char target_path[MAX_PATH_LEN];
-
-    if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) ||
-        is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(version)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_components_root_path(components_root, sizeof(components_root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(component_path, sizeof(component_path), components_root, component);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(tool_path, sizeof(tool_path), component_path, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(host_path, sizeof(host_path), tool_path, host_platform);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(target_path, sizeof(target_path), host_path, target_platform);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(buffer, size, target_path, version);
-    return err;
-}
-
-static CupError build_tmp_path(char *buffer, size_t size, const char *operation, const char *component, const char *tool, const char *version, const char *suffix) {
-    CupError err;
-    char tmp_root[MAX_PATH_LEN];
-
-    if (buffer == NULL || size == 0 || is_empty_string(operation) || is_empty_string(component) || 
-        is_empty_string(tool) || is_empty_string(version) || is_empty_string(suffix)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = checked_snprintf(buffer, size, "%s/%s-%s-%s-%s-%s", tmp_root, operation, component, tool, version, suffix);
-    return err;
-}
-
-static CupError build_safe_child_path(char *buffer, size_t size, const char *base_path, const char *relative_path) {
-    CupError err;
-
-    if (buffer == NULL || size == 0 || is_empty_string(base_path) || is_empty_string(relative_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (relative_path[0] == '/') {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (path_has_parent_ref(relative_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = path_join(buffer, size, base_path, relative_path);
-    return err;
-}
-
 CupError build_cache_archive_path(char *buffer, size_t size, const char *component, const char *tool, const char *version, const char *archive_name) {
     CupError err;
     char cache_root[MAX_PATH_LEN];
-    char component_path[MAX_PATH_LEN];
-    char tool_path[MAX_PATH_LEN];
-    char cache_package_path[MAX_PATH_LEN];
+    const char *parts[4];
 
     if (buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) || 
         is_empty_string(version) || is_empty_string(archive_name)) {
-        fprintf(stderr, "Error: invalid cache archive path arguments.\n");
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = get_cache_root_path(cache_root, sizeof(cache_root));
+    err = get_cup_child_path(cache_root, sizeof(cache_root), CUP_CACHE_DIR);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(component_path, sizeof(component_path), cache_root, component);
+    parts[0] = component;
+    parts[1] = tool;
+    parts[2] = version;
+    parts[3] = archive_name;
+
+    err = build_path_chain(buffer, size, cache_root, parts, 4, 0);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = path_join(tool_path, sizeof(tool_path), component_path, tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(cache_package_path, sizeof(cache_package_path), tool_path, version);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = path_join(buffer, size, cache_package_path, archive_name);
-    return err;
+    return CUP_OK;
 }
 
-// FILE OPERATIONS
+// FILE COPY
 CupError copy_file(const char *source_path, const char *destination_path) {
     FILE *source;
     FILE *destination;
-    char buffer[8192];
+    char buffer[COPY_BUFFER_SIZE];
     size_t read_count;
     size_t write_count;
 
@@ -695,7 +554,25 @@ CupError copy_file(const char *source_path, const char *destination_path) {
     return CUP_OK;
 }
 
-// TMP / INSTALL VALIDATION
+// TMP HELPERS
+static CupError build_tmp_path(char *buffer, size_t size, const char *operation, const char *component, const char *tool, const char *version, const char *suffix) {
+    CupError err;
+    char tmp_root[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0 || is_empty_string(operation) || is_empty_string(component) || 
+        is_empty_string(tool) || is_empty_string(version) || is_empty_string(suffix)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = get_cup_child_path(tmp_root, sizeof(tmp_root), CUP_TMP_DIR);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = checked_snprintf(buffer, size, "%s/%s-%s-%s-%s-%s", tmp_root, operation, component, tool, version, suffix);
+    return err;
+}
+
 CupError create_tmp_dir(char *buffer, size_t size, const char *operation, const char *component, const char *tool, const char *version) {
     CupError err;
     char suffix[MAX_NAME_LEN];
@@ -733,6 +610,7 @@ CupError create_tmp_dir(char *buffer, size_t size, const char *operation, const 
     return CUP_OK;
 }
 
+// INSTALL VALIDATION
 static CupError require_path_type(const char *path, int want_directory) {
     CupError err;
     int matches_type;
@@ -768,7 +646,7 @@ static CupError validate_child_path(const char *base_path, const char *relative_
     CupError err;
     char path[MAX_PATH_LEN];
 
-    err = build_safe_child_path(path, sizeof(path), base_path, relative_path);
+    err = path_join_safe_relative(path, sizeof(path), base_path, relative_path);
     if (err != CUP_OK) {
         return err;
     }
@@ -777,22 +655,15 @@ static CupError validate_child_path(const char *base_path, const char *relative_
     return err;
 }
 
-static CupError validate_info_field(const char *info_path, const char *field, const char *expected_value) {
-    CupError err;
-    char actual_value[MAX_STATE_LINE_LEN];
-    int found;
+static CupError validate_info_field(const PackageInfo *info, const char *field, const char *expected_value) {
+    const char *actual_value;
 
-    if (is_empty_string(info_path) || is_empty_string(field) || is_empty_string(expected_value)) {
+    if (info == NULL || is_empty_string(field) || is_empty_string(expected_value)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = read_key_value_field(actual_value, sizeof(actual_value), info_path, field, &found);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not read package metadata '%s'.\n", info_path);
-        return CUP_ERR_VALIDATION;
-    }
-
-    if (!found) {
+    actual_value = get_info_value(info, field);
+    if (actual_value == NULL) {
         fprintf(stderr, "Error: package metadata is missing field '%s'.\n", field);
         return CUP_ERR_VALIDATION;
     }
@@ -806,8 +677,46 @@ static CupError validate_info_field(const char *info_path, const char *field, co
     return CUP_OK;
 }
 
+static CupError validate_info_entries(const PackageInfo *info, const char *base_path) {
+    CupError err;
+    const PackageInfoField *field;
+    size_t cursor;
+    size_t entry_count;
+
+    if (info == NULL || is_empty_string(base_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    cursor = 0;
+    entry_count = 0;
+
+    while ((field = next_info_field(info, "entry.", &cursor)) != NULL) {
+        if (is_empty_string(field->value)) {
+            fprintf(stderr, "Error: package metadata entry '%s' is empty.\n", field->key);
+            return CUP_ERR_VALIDATION;
+        }
+
+        err = validate_child_path(base_path, field->value, 0);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Error: package metadata entry '%s' points to missing or invalid file '%s'.\n",
+                field->key, field->value);
+            return CUP_ERR_VALIDATION;
+        }
+
+        entry_count++;
+    }
+
+    if (entry_count == 0) {
+        fprintf(stderr, "Error: package metadata does not declare any entry.* executable.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    return CUP_OK;
+}
+
 static CupError validate_info_file(const char *tmp_path, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version) {
     CupError err;
+    PackageInfo info;
     char info_path[MAX_PATH_LEN];
 
     if (is_empty_string(tmp_path) || is_empty_string(component) || is_empty_string(tool) ||
@@ -815,32 +724,43 @@ static CupError validate_info_file(const char *tmp_path, const char *component, 
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = build_safe_child_path(info_path, sizeof(info_path), tmp_path, "info.txt");
+    err = path_join_safe_relative(info_path, sizeof(info_path), tmp_path, CUP_INFO_FILE);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_info_field(info_path, "package.component", component);
+    err = info_load(&info, info_path);
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not read package metadata '%s'.\n", info_path);
+        return CUP_ERR_VALIDATION;
+    }
+
+    err = validate_info_field(&info, "package.component", component);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_info_field(info_path, "package.tool", tool);
+    err = validate_info_field(&info, "package.tool", tool);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_info_field(info_path, "package.version", version);
+    err = validate_info_field(&info, "package.version", version);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_info_field(info_path, "platform.host", host_platform);
+    err = validate_info_field(&info, "platform.host", host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_info_field(info_path, "platform.target", target_platform);
+    err = validate_info_field(&info, "platform.target", target_platform);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = validate_info_entries(&info, tmp_path);
     if (err != CUP_OK) {
         return err;
     }
@@ -848,7 +768,7 @@ static CupError validate_info_file(const char *tmp_path, const char *component, 
     return CUP_OK;
 }
 
-CupError validate_install(const char *tmp_path, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version) {
+CupError validate_installation_metadata(const char *tmp_path, const char *component, const char *tool, const char *host_platform, const char *target_platform, const char *version) {
     CupError err;
 
     if (is_empty_string(tmp_path) || is_empty_string(component) || is_empty_string(tool) ||
@@ -862,7 +782,7 @@ CupError validate_install(const char *tmp_path, const char *component, const cha
         return CUP_ERR_VALIDATION;
     }
 
-    err = validate_child_path(tmp_path, "info.txt", 0);
+    err = validate_child_path(tmp_path, CUP_INFO_FILE, 0);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: installed package metadata is missing or invalid.\n");
         return CUP_ERR_VALIDATION;
@@ -873,16 +793,10 @@ CupError validate_install(const char *tmp_path, const char *component, const cha
         return err;
     }
 
-    err = validate_child_path(tmp_path, "bin", 1);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: installed package does not contain a bin directory.\n");
-        return CUP_ERR_VALIDATION;
-    }
-
     return CUP_OK;
 }
 
-// CLEANUP
+// TMP CLEANUP / PUBLIC CLEANUP
 CupError count_tmp_entries(size_t *count) {
     CupError err;
     char tmp_root[MAX_PATH_LEN];
@@ -894,7 +808,7 @@ CupError count_tmp_entries(size_t *count) {
 
     *count = 0;
 
-    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
+    err = get_cup_child_path(tmp_root, sizeof(tmp_root), CUP_TMP_DIR);
     if (err != CUP_OK) {
         return err;
     }
@@ -941,7 +855,7 @@ CupError cleanup_tmp_path(const char *tmp_path) {
     }
 
     if (!is_directory) {
-        fprintf(stderr, "Error: temporary path '%s' is not directory.\n", tmp_path);
+        fprintf(stderr, "Error: temporary path '%s' is not a directory.\n", tmp_path);
         return CUP_ERR_TEMPORARY;
     }
 
@@ -963,7 +877,7 @@ CupError cleanup_all_tmp(void) {
     int exists;
     int is_directory;
 
-    err = get_tmp_root_path(tmp_root, sizeof(tmp_root));
+    err = get_cup_child_path(tmp_root, sizeof(tmp_root), CUP_TMP_DIR);
     if (err != CUP_OK) {
         return err;
     }
