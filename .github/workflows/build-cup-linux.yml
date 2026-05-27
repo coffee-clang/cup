@@ -9,6 +9,8 @@ on:
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
+      - "certs/**"
+      - "scripts/certs/update-ca-bundle.sh"
       - "scripts/bootstrap/bootstrap-linux-deps.sh"
       - "scripts/install/install-cup.sh"
       - "scripts/install/uninstall-cup.sh"
@@ -30,11 +32,20 @@ permissions:
 
 jobs:
   build-cup-linux:
-    name: Build cup for linux-x64
-    runs-on: ubuntu-latest
+    name: Build cup for ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
 
     env:
-      PLATFORM: linux-x64
+      PLATFORM: ${{ matrix.platform }}
       LINK_MODE: static
       RELEASE_TAG: cup-bootstrap
 
@@ -59,8 +70,7 @@ jobs:
 
       - name: Bootstrap static dependencies
         run: |
-          chmod +x scripts/bootstrap/bootstrap-linux-deps.sh
-          scripts/bootstrap/bootstrap-linux-deps.sh
+          bash scripts/bootstrap/bootstrap-linux-deps.sh
 
       - name: Build cup
         run: |
@@ -70,34 +80,33 @@ jobs:
         run: |
           mkdir -p dist
 
-          cp "build/$PLATFORM/bin/cup" dist/cup-linux-x64
-          chmod +x dist/cup-linux-x64
+          cp "build/$PLATFORM/bin/cup" "dist/cup-$PLATFORM"
+          chmod +x "dist/cup-$PLATFORM"
 
-          cp config/packages.cfg dist/packages.cfg
+          if [ "$PLATFORM" = "linux-x64" ]; then
+            cp config/packages.cfg dist/packages.cfg
 
-          cp scripts/install/install-cup.sh dist/install.sh
-          chmod +x dist/install.sh
+            cp scripts/install/install-cup.sh dist/install.sh
+            chmod +x dist/install.sh
 
-          cp scripts/install/uninstall-cup.sh dist/uninstall.sh
-          chmod +x dist/uninstall.sh
+            cp scripts/install/uninstall-cup.sh dist/uninstall.sh
+            chmod +x dist/uninstall.sh
 
-          sha256sum \
-            dist/cup-linux-x64 \
-            dist/packages.cfg \
-            dist/install.sh \
-            dist/uninstall.sh > dist/SHA256SUMS
+            sha256sum \
+              "dist/cup-$PLATFORM" \
+              dist/packages.cfg \
+              dist/install.sh \
+              dist/uninstall.sh > "dist/SHA256SUMS.$PLATFORM"
+          else
+            sha256sum "dist/cup-$PLATFORM" > "dist/SHA256SUMS.$PLATFORM"
+          fi
 
       - name: Upload workflow artifact
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == 'false' }}
         uses: actions/upload-artifact@v6
         with:
-          name: cup-linux-x64-assets
-          path: |
-            dist/cup-linux-x64
-            dist/packages.cfg
-            dist/install.sh
-            dist/uninstall.sh
-            dist/SHA256SUMS
+          name: cup-${{ matrix.platform }}-assets
+          path: dist/*
 
       - name: Ensure release exists
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true') }}
@@ -109,7 +118,7 @@ jobs:
           else
             gh release create "$RELEASE_TAG" \
               --title "cup bootstrap" \
-              --notes "Bootstrap assets for installing cup."
+              --notes "Bootstrap assets for installing cup." || true
           fi
 
       - name: Upload release assets
@@ -117,10 +126,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            dist/cup-linux-x64 \
-            dist/packages.cfg \
-            dist/install.sh \
-            dist/uninstall.sh \
-            dist/SHA256SUMS \
-            --clobber
+          gh release upload "$RELEASE_TAG" dist/* --clobber

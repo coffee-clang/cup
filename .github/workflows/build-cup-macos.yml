@@ -1,4 +1,4 @@
-name: Build cup Windows
+name: Build cup macOS
 
 on:
   push:
@@ -11,10 +11,10 @@ on:
       - "config/packages.cfg"
       - "certs/**"
       - "scripts/certs/update-ca-bundle.sh"
-      - "scripts/bootstrap/bootstrap-windows-deps.sh"
-      - "scripts/install/install-cup-windows.ps1"
-      - "scripts/install/uninstall-cup-windows.ps1"
-      - ".github/workflows/build-cup-windows.yml"
+      - "scripts/bootstrap/bootstrap-macos-deps.sh"
+      - "scripts/install/install-cup.sh"
+      - "scripts/install/uninstall-cup.sh"
+      - ".github/workflows/build-cup-macos.yml"
 
   workflow_dispatch:
     inputs:
@@ -31,12 +31,21 @@ permissions:
   contents: write
 
 jobs:
-  build-cup-windows:
-    name: Build cup for windows-x64
-    runs-on: ubuntu-latest
+  build-cup-macos:
+    name: Build cup for ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: macos-arm64
+            runner: macos-15
 
     env:
-      PLATFORM: windows-x64
+      PLATFORM: ${{ matrix.platform }}
       LINK_MODE: static
       RELEASE_TAG: cup-bootstrap
 
@@ -46,23 +55,18 @@ jobs:
 
       - name: Install system build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            curl \
-            file \
-            make \
-            mingw-w64 \
-            perl \
-            pkg-config \
-            tar \
-            xz-utils \
-            zip
+          brew update
+          for package in autoconf automake libtool pkg-config make curl xz; do
+            if brew list --formula "$package" >/dev/null 2>&1; then
+              echo "$package already installed"
+            else
+              brew install "$package"
+            fi
+          done
 
-      - name: Bootstrap Windows static dependencies
+      - name: Bootstrap macOS static dependencies
         run: |
-          bash scripts/bootstrap/bootstrap-windows-deps.sh
+          bash scripts/bootstrap/bootstrap-macos-deps.sh
 
       - name: Build cup
         run: |
@@ -72,25 +76,16 @@ jobs:
         run: |
           mkdir -p dist
 
-          cp "build/$PLATFORM/bin/cup.exe" dist/cup-windows-x64.exe
+          cp "build/$PLATFORM/bin/cup" "dist/cup-$PLATFORM"
+          chmod +x "dist/cup-$PLATFORM"
 
-          cp config/packages.cfg dist/packages.cfg
-
-          cp scripts/install/install-cup-windows.ps1 dist/install.ps1
-
-          cp scripts/install/uninstall-cup-windows.ps1 dist/uninstall.ps1
-
-          sha256sum \
-            dist/cup-windows-x64.exe \
-            dist/packages.cfg \
-            dist/install.ps1 \
-            dist/uninstall.ps1 > dist/SHA256SUMS.windows-x64
+          shasum -a 256 "dist/cup-$PLATFORM" > "dist/SHA256SUMS.$PLATFORM"
 
       - name: Upload workflow artifact
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == 'false' }}
         uses: actions/upload-artifact@v6
         with:
-          name: cup-windows-x64-assets
+          name: cup-${{ matrix.platform }}-assets
           path: dist/*
 
       - name: Ensure release exists

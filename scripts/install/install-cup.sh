@@ -150,15 +150,29 @@ offer_path_update_unix_shell() {
     esac
 }
 
-detect_arch_x64() {
+detect_unix_asset() {
+    os="$(uname -s 2>/dev/null || true)"
     arch="$(uname -m 2>/dev/null || true)"
 
-    case "$arch" in
-        x86_64|amd64)
-            return 0
+    case "$os:$arch" in
+        Linux:x86_64|Linux:amd64)
+            CUP_ASSET="cup-linux-x64"
+            CUP_INSTALLED_NAME="cup"
+            ;;
+        Linux:aarch64|Linux:arm64)
+            CUP_ASSET="cup-linux-arm64"
+            CUP_INSTALLED_NAME="cup"
+            ;;
+        Darwin:x86_64|Darwin:amd64)
+            CUP_ASSET="cup-macos-x64"
+            CUP_INSTALLED_NAME="cup"
+            ;;
+        Darwin:arm64|Darwin:aarch64)
+            CUP_ASSET="cup-macos-arm64"
+            CUP_INSTALLED_NAME="cup"
             ;;
         *)
-            die "unsupported architecture: $arch. This installer currently supports x86_64 only."
+            die "unsupported platform: $os $arch"
             ;;
     esac
 }
@@ -179,10 +193,9 @@ print_install_test_hint() {
     fi
 }
 
-install_unix_like() {
+install_unix_like_asset() {
     cup_asset="$1"
     installed_name="$2"
-
     cup_bin="$CUP_BIN_DIR/$installed_name"
 
     need_command chmod
@@ -190,8 +203,6 @@ install_unix_like() {
     need_command mv
     need_command rm
     need_command uname
-
-    detect_arch_x64
 
     info "Installing cup into $CUP_HOME"
 
@@ -221,8 +232,13 @@ install_unix_like() {
     print_install_test_hint "$cup_bin"
 }
 
+install_unix_like() {
+    detect_unix_asset
+    install_unix_like_asset "$CUP_ASSET" "$CUP_INSTALLED_NAME"
+}
+
 run_powershell_installer() {
-    ps_command="irm https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/install.ps1 | iex"
+    ps_command="iwr $BASE_URL/install.ps1 -OutFile \$env:TEMP\\install-cup.ps1; & \$env:TEMP\\install-cup.ps1"
 
     if command -v powershell.exe >/dev/null 2>&1; then
         powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ps_command"
@@ -234,7 +250,7 @@ run_powershell_installer() {
         exit $?
     fi
 
-    die "PowerShell was not found. Run the Windows installer manually from PowerShell: irm $BASE_URL/install.ps1 | iex"
+    die "PowerShell was not found. Run the Windows installer manually from PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -Command \"iwr $BASE_URL/install.ps1 -OutFile \$env:TEMP\\install-cup.ps1; & \$env:TEMP\\install-cup.ps1\""
 }
 
 install_windows_from_shell() {
@@ -257,7 +273,7 @@ install_windows_from_shell() {
             run_powershell_installer
             ;;
         2)
-            install_unix_like "cup-windows-x64.exe" "cup.exe"
+            install_unix_like_asset "cup-windows-x64.exe" "cup.exe"
             ;;
         *)
             die "invalid choice"
@@ -269,8 +285,8 @@ main() {
     os="$(uname -s 2>/dev/null || true)"
 
     case "$os" in
-        Linux)
-            install_unix_like "cup-linux-x64" "cup"
+        Linux|Darwin)
+            install_unix_like
             ;;
         MINGW*|MSYS*|CYGWIN*)
             install_windows_from_shell

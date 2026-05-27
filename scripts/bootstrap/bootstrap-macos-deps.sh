@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLATFORM="windows-x64"
-HOST_TRIPLE="${HOST_TRIPLE:-x86_64-w64-mingw32}"
-
+PLATFORM="${PLATFORM:-macos-$(uname -m | sed 's/x86_64/x64/; s/arm64/arm64/')}"
 ZLIB_VERSION="${ZLIB_VERSION:-1.3.2}"
 XZ_VERSION="${XZ_VERSION:-5.8.3}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.6}"
 CURL_VERSION="${CURL_VERSION:-8.20.0}"
 LIBARCHIVE_VERSION="${LIBARCHIVE_VERSION:-3.8.7}"
 
@@ -14,27 +13,26 @@ SRC_DIR="$DEPS_ROOT/src"
 BUILD_DIR="$DEPS_ROOT/build"
 PREFIX="${PREFIX:-$DEPS_ROOT/install}"
 
-JOBS="${JOBS:-$(nproc)}"
+JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
-CC="${CC:-${HOST_TRIPLE}-gcc}"
-AR="${AR:-${HOST_TRIPLE}-ar}"
-RANLIB="${RANLIB:-${HOST_TRIPLE}-ranlib}"
-STRIP="${STRIP:-${HOST_TRIPLE}-strip}"
-WINDRES="${WINDRES:-${HOST_TRIPLE}-windres}"
+case "$PLATFORM" in
+    macos-x64)
+        OPENSSL_TARGET="${OPENSSL_TARGET:-darwin64-x86_64-cc}"
+        ;;
+    macos-arm64)
+        OPENSSL_TARGET="${OPENSSL_TARGET:-darwin64-arm64-cc}"
+        ;;
+    *)
+        echo "Error: unsupported macOS dependency platform '$PLATFORM'." >&2
+        exit 1
+        ;;
+esac
 
 ZLIB_URL="https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz"
 XZ_URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/xz-${XZ_VERSION}.tar.xz"
+OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
 CURL_URL="https://curl.se/download/curl-${CURL_VERSION}.tar.xz"
 LIBARCHIVE_URL="https://libarchive.org/downloads/libarchive-${LIBARCHIVE_VERSION}.tar.xz"
-
-require_tool() {
-    tool="$1"
-
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Error: required tool '$tool' was not found." >&2
-        exit 1
-    fi
-}
 
 download() {
     url="$1"
@@ -77,21 +75,15 @@ build_zlib() {
     download "$ZLIB_URL" "$archive"
     extract "$archive" "$source"
 
-    echo "==> Building zlib ${ZLIB_VERSION} for ${HOST_TRIPLE}"
+    echo "==> Building zlib ${ZLIB_VERSION}"
     cd "$source"
 
-    make -f win32/Makefile.gcc clean || true
+    CHOST="" ./configure \
+        --prefix="$PREFIX" \
+        --static
 
-    make -f win32/Makefile.gcc \
-        PREFIX="${HOST_TRIPLE}-" \
-        -j"$JOBS"
-
-    make -f win32/Makefile.gcc \
-        PREFIX="${HOST_TRIPLE}-" \
-        BINARY_PATH="$PREFIX/bin" \
-        INCLUDE_PATH="$PREFIX/include" \
-        LIBRARY_PATH="$PREFIX/lib" \
-        install
+    make -j"$JOBS"
+    make install
 }
 
 build_xz() {
@@ -101,18 +93,37 @@ build_xz() {
     download "$XZ_URL" "$archive"
     extract "$archive" "$source"
 
-    echo "==> Building xz ${XZ_VERSION} for ${HOST_TRIPLE}"
+    echo "==> Building xz ${XZ_VERSION}"
     cd "$source"
 
-    CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
     ./configure \
-        --host="$HOST_TRIPLE" \
         --prefix="$PREFIX" \
         --disable-shared \
         --enable-static
 
     make -j"$JOBS"
     make install
+}
+
+build_openssl() {
+    archive="$SRC_DIR/openssl-${OPENSSL_VERSION}.tar.gz"
+    source="$BUILD_DIR/openssl-${OPENSSL_VERSION}"
+
+    download "$OPENSSL_URL" "$archive"
+    extract "$archive" "$source"
+
+    echo "==> Building OpenSSL ${OPENSSL_VERSION}"
+    cd "$source"
+
+    ./Configure "$OPENSSL_TARGET" \
+        no-shared \
+        no-tests \
+        no-autoload-config \
+        --prefix="$PREFIX" \
+        --openssldir="$PREFIX/ssl"
+
+    make -j"$JOBS"
+    make install_sw
 }
 
 build_curl() {
@@ -122,21 +133,17 @@ build_curl() {
     download "$CURL_URL" "$archive"
     extract "$archive" "$source"
 
-    echo "==> Building curl ${CURL_VERSION} for ${HOST_TRIPLE}"
+    echo "==> Building curl ${CURL_VERSION}"
     cd "$source"
 
-    CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64" \
-    LIBS="-lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -liphlpapi" \
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
     ./configure \
-        --host="$HOST_TRIPLE" \
         --prefix="$PREFIX" \
         --disable-shared \
         --enable-static \
-        --with-schannel \
-        --without-openssl \
+        --with-openssl="$PREFIX" \
         --with-zlib="$PREFIX" \
         --without-ca-bundle \
         --without-ca-path \
@@ -171,15 +178,13 @@ build_libarchive() {
     download "$LIBARCHIVE_URL" "$archive"
     extract "$archive" "$source"
 
-    echo "==> Building libarchive ${LIBARCHIVE_VERSION} for ${HOST_TRIPLE}"
+    echo "==> Building libarchive ${LIBARCHIVE_VERSION}"
     cd "$source"
 
-    CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" WINDRES="$WINDRES" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64" \
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
     ./configure \
-        --host="$HOST_TRIPLE" \
         --prefix="$PREFIX" \
         --disable-shared \
         --enable-static \
@@ -209,24 +214,15 @@ verify() {
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
         pkg-config --static --libs libarchive
 
-    echo "==> Windows dependencies installed in $PREFIX"
+    echo "==> macOS dependencies installed in $PREFIX"
 }
 
 main() {
-    require_tool "$CC"
-    require_tool "$AR"
-    require_tool "$RANLIB"
-    require_tool "$WINDRES"
-    require_tool curl
-    require_tool tar
-    require_tool make
-    require_tool perl
-    require_tool pkg-config
-
-    mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
+    mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
 
     build_zlib
     build_xz
+    build_openssl
     build_curl
     build_libarchive
     verify

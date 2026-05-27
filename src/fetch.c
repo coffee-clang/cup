@@ -1,5 +1,6 @@
 #include "fetch.h"
 
+#include "ca_bundle.h"
 #include "constants.h"
 #include "filesystem.h"
 #include "interrupt.h"
@@ -8,12 +9,48 @@
 #include "util.h"
 
 #include <curl/curl.h>
-#if defined(__linux__)
+#if defined(CUP_USE_OPENSSL_INIT)
 #include <openssl/ssl.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(CUP_USE_EMBEDDED_CA_BUNDLE) && LIBCURL_VERSION_NUM < 0x074D00
+#error "CUP_USE_EMBEDDED_CA_BUNDLE requires libcurl >= 7.77.0"
+#endif
+
+// TLS HELPERS
+static void initialize_tls_runtime(void) {
+#if defined(CUP_USE_OPENSSL_INIT)
+    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
+#endif
+}
+
+static CupError configure_tls_trust(CURL *curl) {
+#if defined(CUP_USE_EMBEDDED_CA_BUNDLE)
+    CURLcode res;
+    struct curl_blob ca_blob;
+
+    if (curl == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    ca_blob.data = (void *)cup_ca_bundle;
+    ca_blob.len = cup_ca_bundle_len;
+    ca_blob.flags = CURL_BLOB_NOCOPY;
+
+    res = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &ca_blob);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: could not configure embedded CA bundle: %s.\n", curl_easy_strerror(res));
+        return CUP_ERR_FETCH;
+    }
+#else
+    (void)curl;
+#endif
+
+    return CUP_OK;
+}
 
 // CALLBACKS
 static size_t write_file_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -96,9 +133,7 @@ static CupError download_package(const char *url, const char *dst_path) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-#if defined(__linux__)
-    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
-#endif
+    initialize_tls_runtime();
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "Error: could not initialize libcurl.\n");
@@ -119,6 +154,15 @@ static CupError download_package(const char *url, const char *dst_path) {
         curl_global_cleanup();
         fprintf(stderr, "Error: could not create libcurl handle.\n");
         return CUP_ERR_FETCH;
+    }
+
+    err = configure_tls_trust(curl);
+    if (err != CUP_OK) {
+        curl_easy_cleanup(curl);
+        fclose(file);
+        system_remove_file(dst_path);
+        curl_global_cleanup();
+        return err;
     }
 
     error_buffer[0] = '\0';

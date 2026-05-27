@@ -1,9 +1,5 @@
 PROJECT_ROOT := $(CURDIR)
 
-ifeq ($(origin PLATFORM),environment)
-override PLATFORM := linux-x64
-endif
-
 PLATFORM ?= linux-x64
 SUPPORTED_PLATFORM := linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
 
@@ -33,6 +29,7 @@ COMMON_SRC := \
 	src/info.c \
 	src/registry.c \
 	src/fetch.c \
+	src/ca_bundle.c \
 	src/package_archive.c \
 	src/extract.c \
 	src/path.c \
@@ -46,11 +43,11 @@ ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64),)
     SYSTEM_SRC := src/system_posix.c
     DEPS_PREFIX ?= $(HOME)/deps/$(PLATFORM)/install
 
-    CPPFLAGS += -I$(PROJECT_ROOT)/include
+    CPPFLAGS += -I$(PROJECT_ROOT)/include -DCUP_USE_EMBEDDED_CA_BUNDLE
     CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_POSIX_C_SOURCE=200809L
 
     ifeq ($(LINK_MODE),static)
-        CPPFLAGS += -I$(DEPS_PREFIX)/include
+        CPPFLAGS += -I$(DEPS_PREFIX)/include -DCUP_USE_OPENSSL_INIT
         LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64 -static
 
         CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
@@ -67,11 +64,11 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
     SYSTEM_SRC := src/system_posix.c
     DEPS_PREFIX ?= $(HOME)/deps/$(PLATFORM)/install
 
-    CPPFLAGS += -I$(PROJECT_ROOT)/include
+    CPPFLAGS += -I$(PROJECT_ROOT)/include -DCUP_USE_EMBEDDED_CA_BUNDLE
     CFLAGS += -Wall -Wextra -Werror -std=c11 -g -D_DARWIN_C_SOURCE
 
     ifeq ($(LINK_MODE),static)
-        CPPFLAGS += -I$(DEPS_PREFIX)/include
+        CPPFLAGS += -I$(DEPS_PREFIX)/include -DCUP_USE_OPENSSL_INIT
         LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64
 
         CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
@@ -88,7 +85,7 @@ ifeq ($(PLATFORM),windows-x64)
 	SYSTEM_SRC := src/system_windows.c
 	DEPS_PREFIX ?= $(HOME)/deps/windows-x64/install
 
-	CPPFLAGS += -I$(PROJECT_ROOT)/include
+	CPPFLAGS += -I$(PROJECT_ROOT)/include -DCUP_USE_EMBEDDED_CA_BUNDLE
 	CFLAGS += -Wall -Wextra -Werror -std=c11 -g
 
 	ifeq ($(LINK_MODE),static)
@@ -125,7 +122,6 @@ clean:
 
 dev-clean: clean
 	rm -rf ~/.cup
-	rm -rf ./error-output.txt
 	clear
 
 docs-assets:

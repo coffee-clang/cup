@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLATFORM="linux-x64"
+PLATFORM="${PLATFORM:-linux-x64}"
 
 ZLIB_VERSION="${ZLIB_VERSION:-1.3.2}"
 XZ_VERSION="${XZ_VERSION:-5.8.3}"
@@ -15,6 +15,20 @@ BUILD_DIR="$DEPS_ROOT/build"
 PREFIX="${PREFIX:-$DEPS_ROOT/install}"
 
 JOBS="${JOBS:-$(nproc)}"
+
+case "$PLATFORM" in
+    linux-x64)
+        OPENSSL_TARGET="${OPENSSL_TARGET:-linux-x86_64}"
+        ;;
+    linux-arm64)
+        OPENSSL_TARGET="${OPENSSL_TARGET:-linux-aarch64}"
+        ;;
+    *)
+        echo "Error: unsupported Linux dependency platform '$PLATFORM'." >&2
+        exit 1
+        ;;
+esac
+
 
 ZLIB_URL="https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz"
 XZ_URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/xz-${XZ_VERSION}.tar.xz"
@@ -103,11 +117,12 @@ build_openssl() {
     echo "==> Building OpenSSL ${OPENSSL_VERSION}"
     cd "$source"
 
-    ./Configure linux-x86_64 \
+    ./Configure "$OPENSSL_TARGET" \
         no-shared \
         no-tests \
+        no-autoload-config \
         --prefix="$PREFIX" \
-        --openssldir="/etc/ssl"
+        --openssldir="$PREFIX/ssl"
 
     make -j"$JOBS"
     make install_sw
@@ -132,6 +147,8 @@ build_curl() {
         --enable-static \
         --with-openssl="$PREFIX" \
         --with-zlib="$PREFIX" \
+        --without-ca-bundle \
+        --without-ca-path \
         --without-brotli \
         --without-zstd \
         --without-nghttp2 \
