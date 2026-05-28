@@ -64,36 +64,46 @@ CupError system_get_process_id(char *buffer, size_t size) {
 
 CupError system_start_uninstall(const char *cup_root, const char *uninstall_script) {
     CupError err;
-    char pid_suffix[MAX_NAME_LEN];
     char tmp_script[MAX_PATH_LEN];
+    int fd;
     pid_t pid;
 
     if (is_empty_string(cup_root) || is_empty_string(uninstall_script)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_get_process_id(pid_suffix, sizeof(pid_suffix));
+    err = checked_snprintf(tmp_script, sizeof(tmp_script), "/tmp/cup-uninstall-XXXXXX");
     if (err != CUP_OK) {
         return err;
     }
 
-    err = checked_snprintf(tmp_script, sizeof(tmp_script), "/tmp/cup-uninstall-%s.sh", pid_suffix);
-    if (err != CUP_OK) {
-        return err;
+    fd = mkstemp(tmp_script);
+    if (fd < 0) {
+        fprintf(stderr, "Error: could not create temporary uninstall script: %s.\n", strerror(errno));
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if (close(fd) != 0) {
+        fprintf(stderr, "Error: could not close temporary uninstall script '%s': %s.\n", tmp_script, strerror(errno));
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
     }
 
     err = copy_file(uninstall_script, tmp_script);
     if (err != CUP_OK) {
+        system_remove_file(tmp_script);
         return err;
     }
 
     if (chmod(tmp_script, S_IRUSR | S_IWUSR | S_IXUSR) != 0) {
+        fprintf(stderr, "Error: could not make uninstall script '%s' executable: %s.\n", tmp_script, strerror(errno));
         system_remove_file(tmp_script);
         return CUP_ERR_FILESYSTEM;
     }
 
     pid = fork();
     if (pid < 0) {
+        fprintf(stderr, "Error: could not start uninstall process: %s.\n", strerror(errno));
         system_remove_file(tmp_script);
         return CUP_ERR_FILESYSTEM;
     }
@@ -257,6 +267,10 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
 
     directory = opendir(path);
     if (directory == NULL) {
+        if (errno == ENOENT) {
+            return CUP_OK;
+        }
+
         fprintf(stderr, "Error: could not open directory '%s': %s.\n", path, strerror(errno));
         return CUP_ERR_FILESYSTEM;
     }

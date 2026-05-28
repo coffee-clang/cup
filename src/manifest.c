@@ -154,6 +154,71 @@ static CupError replace_placeholder(char *buffer, size_t size, const char *templ
     return err;
 }
 
+static int is_known_url_placeholder(const char *placeholder, size_t len) {
+    static const char *known[] = {
+        "{tool}",
+        "{host_platform}",
+        "{target_platform}",
+        "{version}",
+        "{format}"
+    };
+    size_t i;
+
+    if (placeholder == NULL || len == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
+        if (strlen(known[i]) == len && strncmp(placeholder, known[i], len) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static CupError validate_url_template_placeholders(const char *url_template) {
+    const char *cursor;
+
+    if (is_empty_string(url_template)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    cursor = url_template;
+
+    while ((cursor = strchr(cursor, '{')) != NULL) {
+        const char *end = strchr(cursor, '}');
+
+        if (end == NULL) {
+            fprintf(stderr, "Error: manifest url_template contains an unterminated placeholder.\n");
+            return CUP_ERR_MANIFEST;
+        }
+
+        if (!is_known_url_placeholder(cursor, (size_t)(end - cursor + 1))) {
+            fprintf(stderr, "Error: manifest url_template contains unsupported placeholder '%.*s'.\n",
+                (int)(end - cursor + 1), cursor);
+            return CUP_ERR_MANIFEST;
+        }
+
+        cursor = end + 1;
+    }
+
+    return CUP_OK;
+}
+
+static CupError reject_unresolved_url_placeholders(const char *url) {
+    if (is_empty_string(url)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (strchr(url, '{') != NULL || strchr(url, '}') != NULL) {
+        fprintf(stderr, "Error: resolved manifest URL still contains unresolved placeholders.\n");
+        return CUP_ERR_MANIFEST;
+    }
+
+    return CUP_OK;
+}
+
 // STORAGE HELPERS
 static int manifest_has_key(const Manifest *manifest, const char *key) {
     size_t i;
@@ -380,6 +445,11 @@ static CupError validate_manifest_config(const Manifest *manifest, const char *c
         target_platform, "url_template");
     if (err != CUP_OK) {
         return CUP_ERR_MANIFEST;
+    }
+
+    err = validate_url_template_placeholders(url_template);
+    if (err != CUP_OK) {
+        return err;
     }
 
     return CUP_OK;
@@ -612,6 +682,7 @@ CupError build_download_url(const Manifest *manifest, char *buffer, size_t size,
     char step1[MAX_MANIFEST_URL_LEN];
     char step2[MAX_MANIFEST_URL_LEN];
     char step3[MAX_MANIFEST_URL_LEN];
+    char step4[MAX_MANIFEST_URL_LEN];
 
     if (manifest == NULL || buffer == NULL || size == 0 || is_empty_string(component) || is_empty_string(tool) ||
         is_empty_string(host_platform) || is_empty_string(target_platform) || is_empty_string(version) || is_empty_string(format)) {
@@ -623,22 +694,32 @@ CupError build_download_url(const Manifest *manifest, char *buffer, size_t size,
         return err;
     }
 
-    err = replace_placeholder(step1, sizeof(step1), url_template, "{host_platform}", host_platform);
+    err = replace_placeholder(step1, sizeof(step1), url_template, "{tool}", tool);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(step2, sizeof(step2), step1, "{target_platform}", target_platform);
+    err = replace_placeholder(step2, sizeof(step2), step1, "{host_platform}", host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(step3, sizeof(step3), step2, "{version}", version);
+    err = replace_placeholder(step3, sizeof(step3), step2, "{target_platform}", target_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = replace_placeholder(buffer, size, step3, "{format}", format);
+    err = replace_placeholder(step4, sizeof(step4), step3, "{version}", version);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = replace_placeholder(buffer, size, step4, "{format}", format);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = reject_unresolved_url_placeholders(buffer);
     if (err != CUP_OK) {
         return err;
     }

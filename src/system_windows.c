@@ -11,6 +11,8 @@
 
 static void print_windows_error(const char *message, const char *path) {
     DWORD error_code;
+    char error_message[512];
+    DWORD length;
 
     error_code = GetLastError();
 
@@ -18,12 +20,28 @@ static void print_windows_error(const char *message, const char *path) {
         message = "Windows operation";
     }
 
+    error_message[0] = '\0';
+    length = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, error_code, 0,
+        error_message, (DWORD)sizeof(error_message), NULL);
+
+    if (length > 0) {
+        while (length > 0 && (error_message[length - 1] == '\r' || error_message[length - 1] == '\n' || 
+            error_message[length - 1] == ' ' || error_message[length - 1] == '\t')) {
+            error_message[length - 1] = '\0';
+            length--;
+        }
+    }
+
+    if (is_empty_string(error_message)) {
+        checked_snprintf(error_message, sizeof(error_message), "Windows error code %lu", (unsigned long)error_code);
+    }
+
     if (is_empty_string(path)) {
-        fprintf(stderr, "Error: %s failed with Windows error code %lu.\n", message, (unsigned long)error_code);
+        fprintf(stderr, "Error: %s failed: %s.\n", message, error_message);
         return;
     }
 
-    fprintf(stderr, "Error: %s '%s' failed with Windows error code %lu.\n", message, path, (unsigned long)error_code);
+    fprintf(stderr, "Error: %s '%s' failed: %s.\n", message, path, error_message);
 }
 
 static CupError build_search_pattern(char *buffer, size_t size, const char *path) {
@@ -109,6 +127,7 @@ CupError system_start_uninstall(const char *cup_root, const char *uninstall_scri
 
     length = GetTempPathA(sizeof(tmp_path), tmp_path);
     if (length == 0 || length >= sizeof(tmp_path)) {
+        print_windows_error("could not get temporary directory", NULL);
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -144,20 +163,10 @@ CupError system_start_uninstall(const char *cup_root, const char *uninstall_scri
     startup_info.cb = sizeof(startup_info);
     ZeroMemory(&process_info, sizeof(process_info));
 
-    success = CreateProcessA(
-        NULL,
-        command,
-        NULL,
-        NULL,
-        FALSE,
-        0,
-        NULL,
-        NULL,
-        &startup_info,
-        &process_info
-    );
+    success = CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup_info, &process_info);
 
     if (!success) {
+        print_windows_error("could not start uninstall process", tmp_script);
         system_remove_file(tmp_script);
         return CUP_ERR_FILESYSTEM;
     }
@@ -232,14 +241,14 @@ CupError system_remove_file(const char *path) {
 
         if ((attributes & FILE_ATTRIBUTE_READONLY) != 0) {
             if (!SetFileAttributesA(path, attributes & ~FILE_ATTRIBUTE_READONLY)) {
-                fprintf(stderr, "Error: could not clear read-only attribute for '%s'.\n", path);
+                print_windows_error("could not clear read-only attribute", path);
                 return CUP_ERR_FILESYSTEM;
             }
         }
     }
 
     if (!DeleteFileA(path)) {
-        fprintf(stderr, "Error: could not remove file '%s'.\n", path);
+        print_windows_error("could not remove file", path);
         return CUP_ERR_FILESYSTEM;
     }
 

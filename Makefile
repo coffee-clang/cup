@@ -6,12 +6,23 @@ SUPPORTED_PLATFORM := linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
 LINK_MODE ?= dynamic
 SUPPORTED_LINK_MODE := dynamic static
 
-ifeq ($(filter $(PLATFORM),$(SUPPORTED_PLATFORM)),)
-$(error Unsupported PLATFORM '$(PLATFORM)'. Supported values: $(SUPPORTED_PLATFORM))
+NON_BUILD_GOALS := clean dev-clean docs-assets docs serve
+ifeq ($(strip $(MAKECMDGOALS)),)
+    NEED_BUILD_CONFIG := 1
+else ifneq ($(strip $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS))),)
+    NEED_BUILD_CONFIG := 1
+else
+    NEED_BUILD_CONFIG := 0
 endif
 
-ifeq ($(filter $(LINK_MODE),$(SUPPORTED_LINK_MODE)),)
-$(error Unsupported LINK_MODE '$(LINK_MODE)'. Supported values: $(SUPPORTED_LINK_MODE))
+ifeq ($(NEED_BUILD_CONFIG),1)
+    ifeq ($(filter $(PLATFORM),$(SUPPORTED_PLATFORM)),)
+        $(error Unsupported PLATFORM '$(PLATFORM)'. Supported values: $(SUPPORTED_PLATFORM))
+    endif
+
+    ifeq ($(filter $(LINK_MODE),$(SUPPORTED_LINK_MODE)),)
+        $(error Unsupported LINK_MODE '$(LINK_MODE)'. Supported values: $(SUPPORTED_LINK_MODE))
+    endif
 endif
 
 BUILD_DIR := build
@@ -69,7 +80,7 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
 
     ifeq ($(LINK_MODE),static)
         CPPFLAGS += -I$(DEPS_PREFIX)/include -DCUP_USE_OPENSSL_INIT
-        LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64
+        LDFLAGS += -L$(DEPS_PREFIX)/lib
 
         CURL_LIBS := $(shell $(DEPS_PREFIX)/bin/curl-config --static-libs 2>/dev/null)
         ARCHIVE_LIBS := $(shell PKG_CONFIG_PATH=$(DEPS_PREFIX)/lib/pkgconfig pkg-config --static --libs libarchive 2>/dev/null)

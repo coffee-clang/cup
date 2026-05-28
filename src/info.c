@@ -86,8 +86,8 @@ const char *get_info_value(const PackageInfo *info, const char *key) {
 
 static CupError parse_info_line(PackageInfo *info, char *line) {
     CupError err;
-    char key[MAX_STATE_LINE_LEN];
-    char value[MAX_ENTRY_LEN];
+    char key[MAX_INFO_KEY_LEN];
+    char value[MAX_INFO_VALUE_LEN];
 
     err = split_key_value(line, key, sizeof(key), value, sizeof(value));
     if (err != CUP_OK) {

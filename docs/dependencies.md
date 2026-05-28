@@ -41,7 +41,7 @@ uname
 Install command:
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install-cup.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
 The installer downloads the prebuilt `cup` executable and the package manifest, then installs them under:
@@ -60,7 +60,7 @@ The Windows installer requires PowerShell and `Invoke-WebRequest`.
 Install command:
 
 ```powershell
-irm https://github.com/coffee-clang/cup/releases/latest/download/install-cup.ps1 | iex
+iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1
 ```
 
 It installs:
@@ -68,7 +68,7 @@ It installs:
 ```text
 %USERPROFILE%\.cup\bin\cup.exe
 %USERPROFILE%\.cup\config\packages.cfg
-%USERPROFILE%\.cup\bin\uninstall.ps1
+%USERPROFILE%\.cup\scripts\uninstall.ps1
 ```
 
 ### 1.3 Windows cmd.exe
@@ -76,7 +76,7 @@ It installs:
 From `cmd.exe`, use PowerShell:
 
 ```cmd
-powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install-cup.ps1 | iex"
+powershell -ExecutionPolicy Bypass -NoProfile -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 ### 1.4 Windows Git Bash, MSYS2, or Cygwin
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/c
 The shell installer can run in Unix-like Windows environments:
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install-cup.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
 When it detects Windows, it can delegate to the native PowerShell installer or install only inside the current shell environment.

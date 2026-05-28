@@ -77,7 +77,7 @@ The installer installs:
 ```text
 ~/.cup/bin/cup
 ~/.cup/config/packages.cfg
-~/.cup/bin/uninstall.sh
+~/.cup/scripts/uninstall.sh
 ```
 
 It can add `~/.cup/bin` to the shell `PATH`.
@@ -85,7 +85,7 @@ It can add `~/.cup/bin` to the shell `PATH`.
 ### Windows PowerShell
 
 ```powershell
-irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex
+iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1
 ```
 
 The installer installs:
@@ -93,7 +93,7 @@ The installer installs:
 ```text
 %USERPROFILE%\.cup\bin\cup.exe
 %USERPROFILE%\.cup\config\packages.cfg
-%USERPROFILE%\.cup\bin\uninstall.ps1
+%USERPROFILE%\.cup\scripts\uninstall.ps1
 ```
 
 It can add `%USERPROFILE%\.cup\bin` to the user `PATH`.
@@ -103,7 +103,7 @@ It can add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 From `cmd.exe`, call the PowerShell installer:
 
 ```cmd
-powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -NoProfile -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 ### Windows Git Bash, MSYS2, or Cygwin
