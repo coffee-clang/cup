@@ -19,12 +19,12 @@ static BOOL WINAPI handle_console_event(DWORD type) {
             return FALSE;
     }
 }
-#endif
-
+#else
 static void handle_sigint(int sig) {
     (void)sig;
     g_interrupted = 1;
 }
+#endif
 
 void interrupt_setup(void) {
     g_interrupted = 0;
