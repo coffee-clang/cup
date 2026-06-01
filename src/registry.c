@@ -24,7 +24,7 @@ static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "formatter", { "clang-format", NULL } },
     { "linter", { "clang-tidy", NULL } },
     { "language-server", { "clangd", NULL } },
-    { "analyzer", { "valgrind", "leaks", NULL } }
+    { "analyzer", { "valgrind", NULL } }
 };
 
 static const SupportedComponent *find_supported_component(const char *component) {
