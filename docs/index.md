@@ -4,31 +4,37 @@
   </div>
   <div class="tagline">
     <h1>Cup</h1>
-    <p>C Package Manager &mdash; Toolchain Installer</p>
+    <p>C Toolchain Installer</p>
   </div>
 </div>
 
-Cup is a toolchain manager for C. It installs and manages C development tools
-in user space, without requiring system-wide installation or administrator
-privileges. Its goal is to provide a simple command-line interface for
-installing, tracking, selecting and removing toolchain components across
-supported host and target platforms.
+`cup` is a user-space toolchain manager for C development tools.
 
-## What Cup Does
+It installs prebuilt tool archives under the user's home directory, keeps a local state file, and lets the user select the default tool for each component without requiring system-wide installation or administrator privileges.
 
-`cup` installs known component/tool pairs from prebuilt archives described by a
-manifest.
+`cup` is intentionally separate from the component build system. This repository contains the command-line installer, the manifest reader, the state manager, the archive downloader/extractor and the bootstrap installers. The archives consumed by `cup` are produced by the separate `cup-components` repository.
+
+## Overview
+
+A typical command is:
 
 ```sh
 cup install compiler gcc@stable
 ```
 
-The command resolves the requested release through the manifest, downloads the
-matching package asset, extracts it into a temporary staging directory,
-validates the package layout, commits it into the local `.cup` tree and records
-it in the local state file.
+The command:
 
-The current implementation supports:
+1. validates the requested component and tool;
+2. detects the host platform;
+3. resolves the target platform;
+4. resolves `stable` through the manifest;
+5. downloads the matching package archive;
+6. extracts it into a temporary staging directory;
+7. validates `info.txt` package metadata;
+8. commits the package into `~/.cup/components`;
+9. records the installation in `~/.cup/state.txt`.
+
+The current registry accepts:
 
 ```text
 compiler/gcc
@@ -42,150 +48,92 @@ language-server/clangd
 analyzer/valgrind
 ```
 
-A tool must be accepted by the internal registry and present in the manifest to
-be installable.
+Package availability is determined by `packages.cfg`, not by the registry alone.
 
-## Supported Platforms
+## Platform model
 
-The current platform identifiers are:
+Platform identifiers use this format:
+
+```text
+<os>-<arch>
+```
+
+Recognized identifiers are:
 
 ```text
 linux-x64
+linux-arm64
+macos-x64
+macos-arm64
 windows-x64
 ```
 
-A package lookup uses two platform values:
+Each package lookup uses:
 
-- **host platform** — where the installed tool runs
-- **target platform** — what the installed tool targets
+```text
+host platform
+  where the installed tool runs
 
-The target defaults to the host. It can be overridden with `--target` when the
-selected tool supports that target.
-
-```sh
-cup install compiler gcc@stable
-cup install compiler gcc@stable --target windows-x64
+target platform
+  what the installed tool targets
 ```
 
-## Install Cup
+The host is detected by `cup`. The target defaults to the host and can be overridden with `--target`.
 
-### Linux
+## Install cup
+
+### Linux and macOS
 
 ```sh
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer installs:
+The installer downloads the platform-specific `cup` binary, the package manifest and the uninstall script into:
 
 ```text
-~/.cup/bin/cup
-~/.cup/config/packages.cfg
-~/.cup/scripts/uninstall.sh
+~/.cup/bin
+~/.cup/config
+~/.cup/scripts
 ```
-
-It can add `~/.cup/bin` to the shell `PATH`.
 
 ### Windows PowerShell
 
 ```powershell
-iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The installer installs:
+The Windows installer writes to:
 
 ```text
-%USERPROFILE%\.cup\bin\cup.exe
-%USERPROFILE%\.cup\config\packages.cfg
-%USERPROFILE%\.cup\scripts\uninstall.ps1
+%USERPROFILE%\.cup\bin
+%USERPROFILE%\.cup\config
+%USERPROFILE%\.cup\scripts
 ```
 
-It can add `%USERPROFILE%\.cup\bin` to the user `PATH`.
-
-### Windows cmd.exe
-
-From `cmd.exe`, call the PowerShell installer:
-
-```cmd
-powershell -ExecutionPolicy Bypass -NoProfile -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
-```
-
-### Windows Git Bash, MSYS2, or Cygwin
-
-```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
-```
-
-When the shell installer detects a Windows Unix-like environment, it can
-delegate to the native PowerShell installer or install only inside the current
-shell environment.
-
-## Basic Usage
-
-Show available commands:
+## Basic commands
 
 ```sh
 cup help
-```
-
-List installed tools:
-
-```sh
 cup list
-cup list --target windows-x64
-```
-
-Install a tool:
-
-```sh
 cup install compiler gcc@stable
-cup install debugger gdb@stable
-cup install formatter clang-format@stable
-```
-
-Install a compiler targeting Windows:
-
-```sh
-cup install compiler gcc@stable --target windows-x64
-```
-
-Remove an installed tool:
-
-```sh
-cup remove compiler gcc@stable
-```
-
-Set and inspect a default for a component:
-
-```sh
 cup default compiler gcc@stable
 cup current compiler
-```
-
-Check and repair the local cup installation:
-
-```sh
+cup info compiler gcc@stable
+cup remove compiler gcc@stable
 cup doctor
 cup repair
-```
-
-Uninstall cup and all cup-managed data:
-
-```sh
 cup uninstall
 ```
 
-`cup uninstall` does not remove PATH entries. Leaving the PATH entry in place is
-safe; it will be reused if cup is installed again.
+Use `--target` when a command should operate on a non-default target platform:
 
-## Project Status
+```sh
+cup install compiler gcc@stable --target windows-x64
+cup list --target windows-x64
+cup current compiler --target windows-x64
+```
 
-Cup is under active development. It is a [Coffee](https://coffee-clang.github.io/)
-project.
+## Documentation sections
 
-- [Specification](specification.md) — command model, manifest model, state
-  model, filesystem layout, install/remove flows, repair behavior, packaging
-  assumptions and design boundaries.
-- [Dependencies](dependencies.md) — dependencies for building `cup`, the
-  component build infrastructure, Docker/MSYS2 builders, package tests, release
-  publishing and runtime packaging notes.
-- [GitHub](https://github.com/coffee-clang/cup)
+- [Specification](specification.md) describes the implemented command model, manifest format, state file, filesystem layout, package metadata, transaction flow and design boundaries.
+- [Dependencies](dependencies.md) describes installer dependencies, local build dependencies, linked libraries, bootstrap scripts and release artifacts.
