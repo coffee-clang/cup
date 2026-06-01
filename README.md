@@ -198,4 +198,4 @@ The full documentation is split into:
 - [Specification](docs/specification.md): command model, manifest model, local state, filesystem layout, install/remove flows, package metadata and design boundaries.
 - [Dependencies](docs/dependencies.md): installer dependencies, build dependencies for the `cup` executable, linked libraries, bootstrap scripts and release assets.
 
-The component build infrastructure is documented in the separate `[cup-components]`(https://github.com/coffee-clang/cup-components) repository.
+The component build infrastructure is documented in the separate [cup-components](https://github.com/coffee-clang/cup-components) repository.
