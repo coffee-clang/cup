@@ -395,11 +395,6 @@ CupError ensure_component_base_dirs(const char *component, const char *tool, con
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = ensure_cup_structure();
-    if (err != CUP_OK) {
-        return err;
-    }
-
     err = get_cup_child_path(components_root, sizeof(components_root), CUP_COMPONENTS_DIR);
     if (err != CUP_OK) {
         return err;
@@ -422,11 +417,6 @@ CupError ensure_cache_package_dirs(const char *component, const char *tool, cons
 
     if (is_empty_string(component) || is_empty_string(tool) || is_empty_string(version)) {
         return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = ensure_cup_structure();
-    if (err != CUP_OK) {
-        return err;
     }
 
     err = get_cup_child_path(cache_root, sizeof(cache_root), CUP_CACHE_DIR);
@@ -576,11 +566,6 @@ static CupError build_tmp_path(char *buffer, size_t size, const char *operation,
 CupError create_tmp_dir(char *buffer, size_t size, const char *operation, const char *component, const char *tool, const char *version) {
     CupError err;
     char suffix[MAX_NAME_LEN];
-
-    err = ensure_cup_structure();
-    if (err != CUP_OK) {
-        return err;
-    }
 
     err = system_get_process_id(suffix, sizeof(suffix));
     if (err != CUP_OK) {

@@ -305,11 +305,6 @@ CupError state_save(const CupState *state) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = ensure_cup_structure();
-    if (err != CUP_OK) {
-        return CUP_ERR_STATE_SAVE;
-    }
-
     err = system_get_process_id(suffix, sizeof(suffix));
     if (err != CUP_OK) {
         return CUP_ERR_STATE_SAVE;

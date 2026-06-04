@@ -191,6 +191,11 @@ static CupError load_command_context(CommandContext *ctx, const char *target_ove
         return err;
     }
 
+    err = ensure_cup_structure();
+    if (err != CUP_OK) {
+        return err;
+    }
+
     err = state_load(&ctx->state);
     if (err != CUP_OK) {
         return err;
