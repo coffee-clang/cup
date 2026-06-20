@@ -157,6 +157,7 @@ jobs:
     env:
       RELEASE_TAG: cup-bootstrap
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download all assets
         uses: actions/download-artifact@v7
@@ -175,9 +176,16 @@ jobs:
           done
       - name: Ensure release exists
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "cup bootstrap" \
+          if ! gh release view "$RELEASE_TAG" \
+              --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --title "cup bootstrap" \
               --notes "Bootstrap assets for installing cup."
           fi
+
       - name: Upload one coherent asset set
-        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+        run: |
+          gh release upload "$RELEASE_TAG" dist/* \
+            --repo "$GH_REPO" \
+            --clobber
