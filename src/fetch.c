@@ -1,9 +1,8 @@
 #include "fetch.h"
 
 #include "ca_bundle.h"
-#include "constants.h"
-#include "filesystem.h"
 #include "interrupt.h"
+#include "layout.h"
 #include "package_archive.h"
 #include "system.h"
 #include "util.h"
@@ -13,14 +12,12 @@
 #include <openssl/ssl.h>
 #endif
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE) && LIBCURL_VERSION_NUM < 0x074D00
 #error "CUP_USE_EMBEDDED_CA_BUNDLE requires libcurl >= 7.77.0"
 #endif
 
-// TLS HELPERS
+// TLS CONFIGURATION
 static void initialize_tls_runtime(void) {
 #if defined(CUP_USE_OPENSSL_INIT)
     OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
@@ -29,20 +26,17 @@ static void initialize_tls_runtime(void) {
 
 static CupError configure_tls_trust(CURL *curl) {
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE)
-    CURLcode res;
     struct curl_blob ca_blob;
-
-    if (curl == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
+    CURLcode result;
 
     ca_blob.data = (void *)cup_ca_bundle;
     ca_blob.len = cup_ca_bundle_len;
     ca_blob.flags = CURL_BLOB_NOCOPY;
 
-    res = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &ca_blob);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Error: could not configure embedded CA bundle: %s.\n", curl_easy_strerror(res));
+    result = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &ca_blob);
+    if (result != CURLE_OK) {
+        fprintf(stderr, "Error: could not configure embedded CA bundle: %s.\n",
+            curl_easy_strerror(result));
         return CUP_ERR_FETCH;
     }
 #else
@@ -52,234 +46,201 @@ static CupError configure_tls_trust(CURL *curl) {
     return CUP_OK;
 }
 
-// CALLBACKS
-static size_t write_file_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    FILE *file;
+// CURL CALLBACKS
+static size_t write_file_callback(void *ptr, size_t size, size_t count, void *userdata) {
+    FILE *file = userdata;
+    size_t bytes;
 
-    if (userdata == NULL) {
+    if (file == NULL || (size != 0 && count > (size_t)-1 / size)) {
         return 0;
     }
 
-    file = (FILE *)userdata;
-    return fwrite(ptr, size, nmemb, file);
+    bytes = size * count;
+    return fwrite(ptr, 1, bytes, file);
 }
 
-static int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
-    (void)clientp;
-    (void)dltotal;
-    (void)dlnow;
-    (void)ultotal;
-    (void)ulnow;
+static int progress_callback(void *userdata, curl_off_t download_total,
+    curl_off_t downloaded, curl_off_t upload_total, curl_off_t uploaded) {
+    (void)userdata;
+    (void)download_total;
+    (void)downloaded;
+    (void)upload_total;
+    (void)uploaded;
 
     return interrupt_requested() ? 1 : 0;
 }
 
-// URL HELPERS
-static CupError get_archive_name(char *buffer, size_t size, const char *url) {
+#define SETOPT(handle, option, value) do { \
+    CURLcode setopt_result = curl_easy_setopt((handle), (option), (value)); \
+    if (setopt_result != CURLE_OK) { \
+        fprintf(stderr, "Error: could not configure libcurl option %s: %s.\n", \
+            #option, curl_easy_strerror(setopt_result)); \
+        result = setopt_result; \
+        goto cleanup; \
+    } \
+} while (0)
+
+// DOWNLOADS
+static CupError download_file(const char *url, const char *final_path, int require_archive) {
+    CURL *curl = NULL;
+    CURLcode result = CURLE_OK;
+    FILE *file = NULL;
     CupError err;
-    const char *slash;
-    const char *start;
-    char temp[MAX_PATH_LEN];
-    char *query;
-    char *fragment;
-
-    if (buffer == NULL || size == 0 || is_empty_string(url)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    slash = strrchr(url, '/');
-    if (slash == NULL || slash[1] == '\0') {
-        return CUP_ERR_FETCH;
-    }
-
-    start = slash + 1;
-
-    err = checked_snprintf(temp, sizeof(temp), "%s", start);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    query = strchr(temp, '?');
-    if (query != NULL) {
-        *query = '\0';
-    }
-
-    fragment = strchr(temp, '#');
-    if (fragment != NULL) {
-        *fragment = '\0';
-    }
-
-    if (temp[0] == '\0') {
-        return CUP_ERR_FETCH;
-    }
-
-    err = checked_snprintf(buffer, size, "%s", temp);
-    return err;
-}
-
-// DOWNLOAD
-static CupError download_package(const char *url, const char *dst_path) {
-    CURL *curl;
-    CURLcode res;
-    FILE *file;
     char error_buffer[CURL_ERROR_SIZE];
-    long response_code;
-    int status;
+    char pid[MAX_NAME_LEN];
+    char part_path[MAX_PATH_LEN];
+    long response_code = 0;
+    int close_status;
     int usable;
-    CupError err;
 
-    if (is_empty_string(url) || is_empty_string(dst_path)) {
-        fprintf(stderr, "Error: invalid download arguments.\n");
+    if (is_empty_string(url) || is_empty_string(final_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
+    error_buffer[0] = '\0';
+
+    if (system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
+        checked_snprintf(part_path, sizeof(part_path),
+            "%s.part-%s", final_path, pid) != CUP_OK) {
+        return CUP_ERR_FETCH;
+    }
+
+    system_remove_file(part_path);
     initialize_tls_runtime();
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        fprintf(stderr, "Error: could not initialize libcurl.\n");
         return CUP_ERR_FETCH;
     }
 
-    file = fopen(dst_path, "wb");
+    file = fopen(part_path, "wb");
     if (file == NULL) {
         curl_global_cleanup();
-        fprintf(stderr, "Error: could not open destination file '%s'.\n", dst_path);
         return CUP_ERR_FETCH;
     }
 
     curl = curl_easy_init();
     if (curl == NULL) {
         fclose(file);
-        system_remove_file(dst_path);
+        system_remove_file(part_path);
         curl_global_cleanup();
-        fprintf(stderr, "Error: could not create libcurl handle.\n");
         return CUP_ERR_FETCH;
     }
 
     err = configure_tls_trust(curl);
     if (err != CUP_OK) {
-        curl_easy_cleanup(curl);
-        fclose(file);
-        system_remove_file(dst_path);
-        curl_global_cleanup();
-        return err;
+        result = CURLE_FAILED_INIT;
+        goto cleanup;
     }
 
-    error_buffer[0] = '\0';
-    response_code = 0;
+    SETOPT(curl, CURLOPT_ERRORBUFFER, error_buffer);
+    SETOPT(curl, CURLOPT_URL, url);
+    SETOPT(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    SETOPT(curl, CURLOPT_MAXREDIRS, 10L);
+    SETOPT(curl, CURLOPT_FAILONERROR, 1L);
+    SETOPT(curl, CURLOPT_USERAGENT, "cup");
+    SETOPT(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    SETOPT(curl, CURLOPT_ACCEPT_ENCODING, "");
+    SETOPT(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    SETOPT(curl, CURLOPT_PROTOCOLS_STR, "https");
+    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    SETOPT(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
+    SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
+    SETOPT(curl, CURLOPT_WRITEDATA, file);
+    SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
+    SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
 
-    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
-    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "cup");
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
-
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
-
-    res = curl_easy_perform(curl);
-
+    result = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
 
-    curl_easy_cleanup(curl);
+cleanup:
+    if (curl != NULL) {
+        curl_easy_cleanup(curl);
+    }
 
-    status = fclose(file);
-    file = NULL;
-
+    err = file != NULL ? system_sync_file(file) : CUP_ERR_FETCH;
+    close_status = file != NULL ? fclose(file) : -1;
     curl_global_cleanup();
 
-    if (res == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
-        system_remove_file(dst_path);
-        fprintf(stderr, "\nError: download interrupted.\n");
+    if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
+        system_remove_file(part_path);
         return CUP_ERR_INTERRUPT;
     }
 
-    if (res != CURLE_OK) {
-        system_remove_file(dst_path);
-
-        fprintf(stderr, "Error: failed to download package from '%s': %s%s%s.\n", url, curl_easy_strerror(res),
-                error_buffer[0] != '\0' ? " - " : "", error_buffer[0] != '\0' ? error_buffer : "");
-
+    if (result != CURLE_OK || response_code >= 400 ||
+        err != CUP_OK || close_status != 0) {
+        system_remove_file(part_path);
+        fprintf(stderr, "Error: failed to download package from '%s'%s%s.\n",
+            url, error_buffer[0] ? ": " : "",
+            error_buffer[0] ? error_buffer : "");
         return CUP_ERR_FETCH;
     }
 
-    if (response_code >= 400) {
-        system_remove_file(dst_path);
-        fprintf(stderr, "Error: failed to download package from '%s': HTTP %ld.\n", url, response_code);
-        return CUP_ERR_FETCH;
+    if (require_archive) {
+        err = package_archive_is_usable(part_path, &usable);
+        if (err != CUP_OK || !usable) {
+            system_remove_file(part_path);
+            return CUP_ERR_ARCHIVE;
+        }
     }
 
-    if (status != 0) {
-        system_remove_file(dst_path);
-        fprintf(stderr, "Error: could not finalize downloaded file '%s'.\n", dst_path);
-        return CUP_ERR_FETCH;
-    }
+    system_set_read_only(final_path, 0);
+    system_remove_file(final_path);
 
-    err = package_archive_is_usable(dst_path, &usable);
+    err = system_move_path(part_path, final_path);
     if (err != CUP_OK) {
-        system_remove_file(dst_path);
-        return err;
-    }
-
-    if (!usable) {
-        system_remove_file(dst_path);
-        fprintf(stderr, "Error: downloaded package is empty or is not a readable archive.\n");
-        return CUP_ERR_ARCHIVE;
+        system_remove_file(part_path);
+        return CUP_ERR_FETCH;
     }
 
     return CUP_OK;
 }
 
-// PUBLIC API
-CupError fetch_package(char *archive_path, size_t archive_path_size, const char *package_url, const char *component, const char *tool, const char *version) {
+CupError fetch_package(char *archive_path, size_t archive_path_size,
+    const char *package_url, const PackageIdentity *identity,
+    const char *format, int force_download) {
     CupError err;
-    char archive_name[MAX_PATH_LEN];
     int usable;
 
-    if (archive_path == NULL || archive_path_size == 0 || is_empty_string(package_url) || 
-        is_empty_string(component) || is_empty_string(tool) || is_empty_string(version)) {
-        fprintf(stderr, "Error: invalid package fetch arguments.\n");
+    if (archive_path == NULL || archive_path_size == 0 ||
+        is_empty_string(package_url) || identity == NULL || is_empty_string(format)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = get_archive_name(archive_name, sizeof(archive_name), package_url);
+    err = layout_ensure_cache_parent(identity);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = ensure_cache_package_dirs(component, tool, version);
+    err = layout_build_cache_archive_path(archive_path,
+        archive_path_size, identity, format);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = build_cache_archive_path(archive_path, archive_path_size, component, tool, version, archive_name);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = package_archive_is_usable(archive_path, &usable);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    if (!usable) {
-        err = download_package(package_url, archive_path);
+    if (force_download) {
+        system_set_read_only(archive_path, 0);
+        system_remove_file(archive_path);
+        usable = 0;
+    } else {
+        err = package_archive_is_usable(archive_path, &usable);
         if (err != CUP_OK) {
             return err;
         }
     }
 
+    if (!usable) {
+        return download_file(package_url, archive_path, 1);
+    }
+
     return CUP_OK;
+}
+
+CupError fetch_resource(const char *url, const char *destination) {
+    return download_file(url, destination, 0);
 }

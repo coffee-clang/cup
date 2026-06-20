@@ -26,27 +26,38 @@ ifeq ($(NEED_BUILD_CONFIG),1)
 endif
 
 BUILD_DIR := build
-OBJ_DIR := $(BUILD_DIR)/$(PLATFORM)/obj
-BIN_DIR := $(BUILD_DIR)/$(PLATFORM)/bin
+CONFIG_DIR := $(BUILD_DIR)/$(PLATFORM)/$(LINK_MODE)
+OBJ_DIR := $(CONFIG_DIR)/obj
+BIN_DIR := $(CONFIG_DIR)/bin
 
 COMMON_SRC := \
-	src/main.c \
-	src/entry.c \
-	src/options.c \
-	src/commands.c \
-	src/state.c \
-	src/filesystem.c \
-	src/manifest.c \
-	src/info.c \
-	src/registry.c \
-	src/fetch.c \
-	src/ca_bundle.c \
-	src/package_archive.c \
-	src/extract.c \
-	src/path.c \
-	src/util.c \
-	src/interrupt.c \
-	src/platform.c
+    src/main.c \
+    src/entry.c \
+    src/options.c \
+    src/command_context.c \
+    src/commands_install.c \
+    src/commands_remove.c \
+    src/commands_state.c \
+    src/doctor.c \
+    src/repair.c \
+    src/uninstall.c \
+    src/state.c \
+    src/filesystem.c \
+    src/layout.c \
+    src/manifest.c \
+    src/info.c \
+    src/package.c \
+    src/transaction.c \
+    src/text.c \
+    src/registry.c \
+    src/fetch.c \
+    src/ca_bundle.c \
+    src/package_archive.c \
+    src/extract.c \
+    src/path.c \
+    src/util.c \
+    src/interrupt.c \
+    src/platform.c
 
 ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64),)
     CC = gcc
@@ -113,6 +124,7 @@ endif
 
 SRC := $(COMMON_SRC) $(SYSTEM_SRC)
 OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC))
+DEP := $(OBJ:.o=.d)
 
 MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 
@@ -126,7 +138,9 @@ $(TARGET): $(OBJ)
 
 $(OBJ_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
+
+-include $(DEP)
 
 clean:
 	rm -rf $(BUILD_DIR)

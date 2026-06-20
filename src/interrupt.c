@@ -1,13 +1,17 @@
 #include "interrupt.h"
 
 #include <signal.h>
-#ifdef _WIN32
+#include <stddef.h>
+#if defined(_WIN32)
 #include <windows.h>
 #endif
 
+// INTERRUPT STATE
 static volatile sig_atomic_t g_interrupted = 0;
+static int g_handler_active = 0;
 
-#ifdef _WIN32
+// PLATFORM HANDLERS
+#if defined(_WIN32)
 static BOOL WINAPI handle_console_event(DWORD type) {
     switch (type) {
         case CTRL_C_EVENT:
@@ -26,16 +30,35 @@ static void handle_sigint(int sig) {
 }
 #endif
 
+// PUBLIC API
 void interrupt_setup(void) {
     g_interrupted = 0;
 #ifdef _WIN32
-    SetConsoleCtrlHandler(handle_console_event, TRUE);
+    g_handler_active = SetConsoleCtrlHandler(handle_console_event, TRUE) != 0;
 #else
-    signal(SIGINT, handle_sigint);
+    struct sigaction action;
+    action.sa_handler = handle_sigint;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    g_handler_active = sigaction(SIGINT, &action, NULL) == 0;
 #endif
 }
 
 void interrupt_reset(void) {
+#ifdef _WIN32
+    if (g_handler_active) {
+        SetConsoleCtrlHandler(handle_console_event, FALSE);
+    }
+#else
+    if (g_handler_active) {
+        struct sigaction action;
+        action.sa_handler = SIG_DFL;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = 0;
+        sigaction(SIGINT, &action, NULL);
+    }
+#endif
+    g_handler_active = 0;
     g_interrupted = 0;
 }
 

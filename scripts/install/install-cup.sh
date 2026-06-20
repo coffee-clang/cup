@@ -4,23 +4,18 @@ set -eu
 REPO_OWNER="coffee-clang"
 REPO_NAME="cup"
 RELEASE_TAG="cup-bootstrap"
-
 BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}"
 
-CUP_HOME="${CUP_HOME:-"$HOME/.cup"}"
-CUP_BIN_DIR="$CUP_HOME/bin"
-CUP_CONFIG_DIR="$CUP_HOME/config"
-CUP_SCRIPTS_DIR="$CUP_HOME/scripts"
-
-PACKAGES_CFG="$CUP_CONFIG_DIR/packages.cfg"
-UNINSTALL_SCRIPT="$CUP_SCRIPTS_DIR/uninstall.sh"
-
-PACKAGES_ASSET="packages.cfg"
-UNINSTALL_ASSET="uninstall.sh"
-
+CUP_ROOT=""
+CUP_BIN_DIR=""
+CUP_CONFIG_DIR=""
+CUP_SCRIPTS_DIR=""
+PACKAGES_CFG=""
+UNINSTALL_SCRIPT=""
 CUP_AVAILABLE_IN_PATH=0
+WINDOWS_SHELL_INSTALL=0
 
-die() {
+fail() {
     printf 'Error: %s\n' "$*" >&2
     exit 1
 }
@@ -30,7 +25,7 @@ info() {
 }
 
 need_command() {
-    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+    command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
 has_tty() {
@@ -51,35 +46,46 @@ prompt_tty() {
     fi
 }
 
+configure_paths() {
+    CUP_ROOT="$1"
+    uninstall_name="$2"
+    CUP_BIN_DIR="$CUP_ROOT/bin"
+    CUP_CONFIG_DIR="$CUP_ROOT/config"
+    CUP_SCRIPTS_DIR="$CUP_ROOT/scripts"
+    PACKAGES_CFG="$CUP_CONFIG_DIR/packages.cfg"
+    UNINSTALL_SCRIPT="$CUP_SCRIPTS_DIR/$uninstall_name"
+}
+
 download_file() {
     url="$1"
     output="$2"
 
-    tmp="${output}.tmp"
-
-    rm -f "$tmp"
-
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$tmp" || {
-            rm -f "$tmp"
-            die "failed to download $url"
-        }
+        curl -fsSL "$url" -o "$output" || fail "failed to download $url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$url" -O "$tmp" || {
-            rm -f "$tmp"
-            die "failed to download $url"
-        }
+        wget -q "$url" -O "$output" || fail "failed to download $url"
     else
-        die "neither curl nor wget is available"
+        fail "neither curl nor wget is available"
     fi
+}
 
-    mv "$tmp" "$output"
+verify_checksum_file() {
+    directory="$1"
+    checksum_file="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$directory" && sha256sum -c "$checksum_file") >/dev/null ||
+            fail "checksum verification failed"
+    elif command -v shasum >/dev/null 2>&1; then
+        (cd "$directory" && shasum -a 256 -c "$checksum_file") >/dev/null ||
+            fail "checksum verification failed"
+    else
+        fail "neither sha256sum nor shasum is available"
+    fi
 }
 
 detect_shell_profile() {
-    shell_name="$(basename "${SHELL:-}")"
-
-    case "$shell_name" in
+    case "$(basename "${SHELL:-}")" in
         zsh)
             printf '%s\n' "$HOME/.zshrc"
             ;;
@@ -89,8 +95,6 @@ detect_shell_profile() {
         *)
             if [ -f "$HOME/.bashrc" ]; then
                 printf '%s\n' "$HOME/.bashrc"
-            elif [ -f "$HOME/.profile" ]; then
-                printf '%s\n' "$HOME/.profile"
             else
                 printf '%s\n' "$HOME/.profile"
             fi
@@ -98,33 +102,26 @@ detect_shell_profile() {
     esac
 }
 
-path_line_exists() {
-    profile="$1"
-
-    [ -f "$profile" ] || return 1
-
-    grep -F 'export PATH="$HOME/.cup/bin:$PATH"' "$profile" >/dev/null 2>&1
-}
-
 cup_bin_in_current_path() {
     printf '%s' ":$PATH:" | grep -F ":$CUP_BIN_DIR:" >/dev/null 2>&1
 }
 
-offer_path_update_unix_shell() {
+offer_path_update() {
     profile="$(detect_shell_profile)"
+    path_line="export PATH=\"$CUP_BIN_DIR:\$PATH\""
 
     if cup_bin_in_current_path; then
         CUP_AVAILABLE_IN_PATH=1
         info "cup bin directory is already available in PATH for this shell."
-        return 0
+        return
     fi
 
-    if path_line_exists "$profile"; then
+    if [ -f "$profile" ] && grep -F "$path_line" "$profile" >/dev/null 2>&1; then
         CUP_AVAILABLE_IN_PATH=1
         info "PATH entry already exists in $profile."
-        info "Restart your shell or run:"
-        info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
-        return 0
+        info "Restart the shell or run:"
+        info "  $path_line"
+        return
     fi
 
     answer="$(prompt_tty "Add $CUP_BIN_DIR to PATH in $profile? [y/N] " "")"
@@ -133,108 +130,180 @@ offer_path_update_unix_shell() {
         y|Y|yes|YES)
             {
                 printf '\n# cup\n'
-                printf 'export PATH="$HOME/.cup/bin:$PATH"\n'
+                printf '%s\n' "$path_line"
             } >> "$profile"
-
             CUP_AVAILABLE_IN_PATH=1
-            info "PATH updated in $profile."
-            info "Restart your shell or run:"
-            info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
+            info "PATH updated in $profile. Restart the shell or run:"
+            info "  $path_line"
             ;;
         *)
-            CUP_AVAILABLE_IN_PATH=0
-            info "PATH not modified."
-            info "To use cup without the full path, add this line to your shell profile:"
-            info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
+            info "PATH not modified. Add this line manually when needed:"
+            info "  $path_line"
             ;;
     esac
 }
 
-detect_unix_asset() {
+set_windows_read_only() {
+    path="$1"
+
+    need_command cygpath
+    need_command attrib.exe
+    attrib.exe +R "$(cygpath -w "$path")" >/dev/null ||
+        fail "failed to set read-only attribute on $path"
+}
+
+clear_windows_read_only() {
+    path="$1"
+
+    if [ "$WINDOWS_SHELL_INSTALL" -eq 1 ] && [ -e "$path" ]; then
+        attrib.exe -R "$(cygpath -w "$path")" >/dev/null 2>&1 || true
+    fi
+}
+
+install_assets() {
+    cup_asset="$1"
+    installed_name="$2"
+    platform="$3"
+    uninstall_asset="$4"
+    cup_bin="$CUP_BIN_DIR/$installed_name"
+
+    need_command chmod
+    need_command mkdir
+    need_command mktemp
+    need_command mv
+    need_command rm
+
+    mkdir -p "$CUP_BIN_DIR" "$CUP_CONFIG_DIR" "$CUP_SCRIPTS_DIR"
+    staging="$(mktemp -d "$CUP_ROOT/.bootstrap.XXXXXX")" ||
+        fail "failed to create bootstrap staging directory"
+    backup="$staging/backup"
+    committed=0
+    had_bin=0
+    had_manifest=0
+    had_uninstall=0
+    installed_bin=0
+    installed_manifest=0
+    installed_uninstall=0
+
+    mkdir -p "$backup"
+
+    rollback() {
+        if [ "$committed" -eq 0 ]; then
+            clear_windows_read_only "$PACKAGES_CFG"
+            clear_windows_read_only "$UNINSTALL_SCRIPT"
+            [ "$installed_bin" -eq 1 ] && rm -f "$cup_bin" || true
+            [ "$installed_manifest" -eq 1 ] && rm -f "$PACKAGES_CFG" || true
+            [ "$installed_uninstall" -eq 1 ] && rm -f "$UNINSTALL_SCRIPT" || true
+            [ "$had_bin" -eq 1 ] && mv "$backup/bin" "$cup_bin" || true
+            [ "$had_manifest" -eq 1 ] && mv "$backup/packages.cfg" "$PACKAGES_CFG" || true
+            [ "$had_uninstall" -eq 1 ] && mv "$backup/uninstall" "$UNINSTALL_SCRIPT" || true
+
+            if [ "$had_manifest" -eq 1 ] || [ "$had_uninstall" -eq 1 ]; then
+                if [ "$WINDOWS_SHELL_INSTALL" -eq 1 ]; then
+                    if [ "$had_manifest" -eq 1 ]; then
+                        attrib.exe +R "$(cygpath -w "$PACKAGES_CFG")" >/dev/null 2>&1 || true
+                    fi
+                    if [ "$had_uninstall" -eq 1 ]; then
+                        attrib.exe +R "$(cygpath -w "$UNINSTALL_SCRIPT")" >/dev/null 2>&1 || true
+                    fi
+                else
+                    [ "$had_manifest" -eq 1 ] && chmod 0444 "$PACKAGES_CFG" || true
+                    [ "$had_uninstall" -eq 1 ] && chmod 0555 "$UNINSTALL_SCRIPT" || true
+                fi
+            fi
+        fi
+        rm -rf "$staging"
+    }
+    trap rollback EXIT HUP INT TERM
+
+    info "Installing cup into $CUP_ROOT"
+    download_file "$BASE_URL/$cup_asset" "$staging/$cup_asset"
+    download_file "$BASE_URL/packages.cfg" "$staging/packages.cfg"
+    download_file "$BASE_URL/$uninstall_asset" "$staging/$uninstall_asset"
+    download_file "$BASE_URL/SHA256SUMS.$platform" "$staging/SHA256SUMS.$platform"
+    download_file "$BASE_URL/SHA256SUMS.common" "$staging/SHA256SUMS.common"
+    verify_checksum_file "$staging" "SHA256SUMS.$platform"
+    verify_checksum_file "$staging" "SHA256SUMS.common"
+
+    clear_windows_read_only "$PACKAGES_CFG"
+    clear_windows_read_only "$UNINSTALL_SCRIPT"
+
+    if [ -e "$cup_bin" ]; then
+        mv "$cup_bin" "$backup/bin"
+        had_bin=1
+    fi
+    if [ -e "$PACKAGES_CFG" ]; then
+        mv "$PACKAGES_CFG" "$backup/packages.cfg"
+        had_manifest=1
+    fi
+    if [ -e "$UNINSTALL_SCRIPT" ]; then
+        mv "$UNINSTALL_SCRIPT" "$backup/uninstall"
+        had_uninstall=1
+    fi
+
+    mv "$staging/$cup_asset" "$cup_bin"
+    installed_bin=1
+    mv "$staging/packages.cfg" "$PACKAGES_CFG"
+    installed_manifest=1
+    mv "$staging/$uninstall_asset" "$UNINSTALL_SCRIPT"
+    installed_uninstall=1
+
+    chmod 0755 "$cup_bin"
+    chmod 0444 "$PACKAGES_CFG"
+    if [ "$WINDOWS_SHELL_INSTALL" -eq 1 ]; then
+        chmod 0444 "$UNINSTALL_SCRIPT" 2>/dev/null || true
+        set_windows_read_only "$PACKAGES_CFG"
+        set_windows_read_only "$UNINSTALL_SCRIPT"
+    else
+        chmod 0555 "$UNINSTALL_SCRIPT"
+    fi
+
+    committed=1
+    trap - EXIT HUP INT TERM
+    rm -rf "$staging"
+
+    info "cup installed successfully."
+    info "Binary:    $cup_bin"
+    info "Manifest:  $PACKAGES_CFG"
+    info "Uninstall: $UNINSTALL_SCRIPT"
+    offer_path_update
+
+    if [ "$CUP_AVAILABLE_IN_PATH" -eq 1 ]; then
+        info "Test with: cup help"
+    else
+        info "Test with: $cup_bin help"
+    fi
+}
+
+install_unix() {
     os="$(uname -s 2>/dev/null || true)"
     arch="$(uname -m 2>/dev/null || true)"
 
     case "$os:$arch" in
         Linux:x86_64|Linux:amd64)
-            CUP_ASSET="cup-linux-x64"
-            CUP_INSTALLED_NAME="cup"
+            asset="cup-linux-x64"
+            platform="linux-x64"
             ;;
         Linux:aarch64|Linux:arm64)
-            CUP_ASSET="cup-linux-arm64"
-            CUP_INSTALLED_NAME="cup"
+            asset="cup-linux-arm64"
+            platform="linux-arm64"
             ;;
         Darwin:x86_64|Darwin:amd64)
-            CUP_ASSET="cup-macos-x64"
-            CUP_INSTALLED_NAME="cup"
+            asset="cup-macos-x64"
+            platform="macos-x64"
             ;;
         Darwin:arm64|Darwin:aarch64)
-            CUP_ASSET="cup-macos-arm64"
-            CUP_INSTALLED_NAME="cup"
+            asset="cup-macos-arm64"
+            platform="macos-arm64"
             ;;
         *)
-            die "unsupported platform: $os $arch"
+            fail "unsupported platform: $os $arch"
             ;;
     esac
-}
 
-print_install_test_hint() {
-    cup_bin="$1"
-
-    info ""
-    info "You can test the installation with:"
-
-    if [ "$CUP_AVAILABLE_IN_PATH" = "1" ]; then
-        info "  cup help"
-        info ""
-        info "If 'cup' is not found yet, restart your shell or run:"
-        info "  export PATH=\"\$HOME/.cup/bin:\$PATH\""
-    else
-        info "  $cup_bin help"
-    fi
-}
-
-install_unix_like_asset() {
-    cup_asset="$1"
-    installed_name="$2"
-    cup_bin="$CUP_BIN_DIR/$installed_name"
-
-    need_command chmod
-    need_command mkdir
-    need_command mv
-    need_command rm
-    need_command uname
-
-    info "Installing cup into $CUP_HOME"
-
-    mkdir -p "$CUP_BIN_DIR"
-    mkdir -p "$CUP_CONFIG_DIR"
-    mkdir -p "$CUP_SCRIPTS_DIR"
-
-    info "Downloading cup binary..."
-    download_file "$BASE_URL/$cup_asset" "$cup_bin"
-    chmod +x "$cup_bin"
-
-    info "Downloading package manifest..."
-    download_file "$BASE_URL/$PACKAGES_ASSET" "$PACKAGES_CFG"
-
-    info "Downloading uninstall script..."
-    download_file "$BASE_URL/$UNINSTALL_ASSET" "$UNINSTALL_SCRIPT"
-    chmod +x "$UNINSTALL_SCRIPT"
-
-    info ""
-    info "cup installed successfully."
-    info "Binary:    $cup_bin"
-    info "Manifest:  $PACKAGES_CFG"
-    info "Uninstall: $UNINSTALL_SCRIPT"
-    info ""
-
-    offer_path_update_unix_shell
-    print_install_test_hint "$cup_bin"
-}
-
-install_unix_like() {
-    detect_unix_asset
-    install_unix_like_asset "$CUP_ASSET" "$CUP_INSTALLED_NAME"
+    WINDOWS_SHELL_INSTALL=0
+    configure_paths "$HOME/.cup" "uninstall.sh"
+    install_assets "$asset" "cup" "$platform" "uninstall.sh"
 }
 
 run_powershell_installer() {
@@ -250,20 +319,47 @@ run_powershell_installer() {
         exit $?
     fi
 
-    die "PowerShell was not found. Run the Windows installer manually from PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -Command \"iwr $BASE_URL/install.ps1 -OutFile \$env:TEMP\\install-cup.ps1; & \$env:TEMP\\install-cup.ps1\""
+    fail "PowerShell was not found. Run the Windows installer manually from PowerShell."
+}
+
+get_windows_profile_root() {
+    windows_profile="${USERPROFILE:-}"
+
+    need_command cygpath
+
+    if [ -z "$windows_profile" ] && command -v cmd.exe >/dev/null 2>&1; then
+        windows_profile="$(cmd.exe /d /c echo %USERPROFILE% 2>/dev/null | tr -d '\r')"
+    fi
+
+    [ -n "$windows_profile" ] || fail "Windows user profile could not be determined"
+    cygpath -u "$windows_profile"
+}
+
+install_windows_from_shell_directly() {
+    arch="$(uname -m 2>/dev/null || true)"
+
+    case "$arch" in
+        x86_64|amd64)
+            ;;
+        *)
+            fail "unsupported Windows architecture: $arch. This installer supports x64 only"
+            ;;
+    esac
+
+    WINDOWS_SHELL_INSTALL=1
+    configure_paths "$(get_windows_profile_root)/.cup" "uninstall.ps1"
+    install_assets "cup-windows-x64.exe" "cup.exe" "windows-x64" "uninstall.ps1"
 }
 
 install_windows_from_shell() {
-    info "Windows shell detected."
+    info "Windows Unix-like shell detected."
     info ""
     info "Choose installation mode:"
     info "  1) Native Windows installation via PowerShell"
-    info "     Installs to: C:\\Users\\<user>\\.cup"
-    info "     Recommended if you want cup available from normal Windows terminals."
+    info "     Updates the Windows user PATH."
     info ""
-    info "  2) Current Unix-like shell environment"
-    info "     Installs to: $HOME/.cup"
-    info "     Recommended only if you mainly use cup inside MSYS2/Git Bash/Cygwin."
+    info "  2) Installation from the current shell"
+    info "     Uses the same %USERPROFILE%\\.cup root, but updates this shell profile."
     info ""
 
     choice="$(prompt_tty "Choice [1/2, default: 1]: " "1")"
@@ -273,10 +369,10 @@ install_windows_from_shell() {
             run_powershell_installer
             ;;
         2)
-            install_unix_like_asset "cup-windows-x64.exe" "cup.exe"
+            install_windows_from_shell_directly
             ;;
         *)
-            die "invalid choice"
+            fail "invalid choice"
             ;;
     esac
 }
@@ -286,13 +382,13 @@ main() {
 
     case "$os" in
         Linux|Darwin)
-            install_unix_like
+            install_unix
             ;;
         MINGW*|MSYS*|CYGWIN*)
             install_windows_from_shell
             ;;
         *)
-            die "unsupported operating system: $os"
+            fail "unsupported operating system: $os"
             ;;
     esac
 }

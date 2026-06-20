@@ -8,6 +8,7 @@
 
 #define MAX_ARCH_ENTRIES_PER_OS 4
 
+// SUPPORTED PLATFORMS
 typedef struct {
     const char *os;
     const char *arch[MAX_ARCH_ENTRIES_PER_OS];
@@ -19,6 +20,7 @@ static const SupportedPlatform SUPPORTED_PLATFORMS[] = {
     { "macos", { "x64", "arm64", NULL } }
 };
 
+// PLATFORM LOOKUP
 static const SupportedPlatform *find_supported_os(const char *os) {
     size_t count;
     size_t i;
@@ -38,6 +40,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     return NULL;
 }
 
+// PUBLIC API
 CupError get_host_platform(char *buffer, size_t size) {
     CupError err;
     const char *os;
@@ -87,10 +90,8 @@ CupError validate_platform(const char *platform) {
         return err;
     }
 
-    split_outputs[0].buffer = os;
-    split_outputs[0].size = sizeof(os);
-    split_outputs[1].buffer = arch;
-    split_outputs[1].size = sizeof(arch);
+    split_outputs[0] = (SplitOutput){os, sizeof(os)};
+    split_outputs[1] = (SplitOutput){arch, sizeof(arch)};
 
     err = split_exact(platform_copy, '-', split_outputs, 2);
     if (err != CUP_OK) {

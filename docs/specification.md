@@ -220,7 +220,7 @@ The manifest is required for package resolution. If `~/.cup/config/packages.cfg`
 
 ## 5. Network and certificate handling
 
-Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes archives directly into the local cache, follows release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads can be removed when an operation fails or is interrupted.
+Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes to a process-specific `.part` file, synchronizes and minimally validates it, then moves it into the deterministic cache path. It follows HTTPS release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads are removed after failure or interruption.
 
 The project also contains an embedded CA bundle module:
 
@@ -241,26 +241,35 @@ The default root is:
 ~/.cup
 ```
 
-The base structure is:
+The canonical per-user structure is:
 
 ```text
 ~/.cup/
+  bin/
   components/
   tmp/
+    transaction.txt   # present only while an operation is pending
   cache/
   config/
   scripts/
   state.txt
+  cup.lock
 ```
+
+The root is always `.cup` in the user home. It is derived from `HOME` or `USERPROFILE`, never from the executable location and never from a configurable `CUP_HOME` environment variable.
 
 Important files:
 
 ```text
 ~/.cup/config/packages.cfg
 ~/.cup/state.txt
+~/.cup/cup.lock
+~/.cup/tmp/transaction.txt
 ~/.cup/scripts/uninstall.sh
 ~/.cup/scripts/uninstall.ps1
 ```
+
+The official manifest, uninstall script and package `info.txt` files are read-only guards against accidental changes. `doctor` verifies the expected protection and `repair` restores permissions when the content remains valid.
 
 Installed component packages use this path shape:
 
@@ -271,16 +280,13 @@ Installed component packages use this path shape:
 Cached package archives use this path shape:
 
 ```text
-~/.cup/cache/<component>/<tool>/<version>/<archive-name>
+~/.cup/cache/<component>/<tool>/<host_platform>/<target_platform>/<version>/
+  <tool>-<version>-<host_platform>-<target_platform>.<format>
 ```
 
-Temporary transactions are created under:
+The cache filename is constructed locally instead of being derived from the URL.
 
-```text
-~/.cup/tmp/
-```
-
-Temporary names include the operation, component, tool, version and process id.
+Staging and removal paths are created under `~/.cup/tmp/`. Mutable operations use a single journal at `~/.cup/tmp/transaction.txt` and an operating-system lock on `~/.cup/cup.lock`. Read commands acquire a shared lock; mutating commands acquire an exclusive non-blocking lock for the complete operation.
 
 ## 7. State file
 
@@ -309,19 +315,9 @@ installed.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
 default.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
 ```
 
-State loading validates:
+State loading parses and validates each line, identifier and duplicate independently from semantic validation. A second phase checks global relationships such as defaults pointing to installed entries. Normal commands require both phases; `doctor` can report semantic inconsistencies and `repair` can correct them before saving.
 
-```text
-component names
-platform identifiers
-entry syntax
-tool/component compatibility
-duplicate installed entries
-duplicate defaults
-defaults pointing to installed entries
-```
-
-State saving writes a temporary file next to `state.txt` and then replaces the previous state file with a rename.
+State saving validates the final model, synchronizes a temporary file and atomically replaces `state.txt`. Malformed documents replaced by `repair` are preserved as `state.txt.invalid`, `state.txt.invalid.1` and so on.
 
 ## 8. Package contract
 
@@ -379,11 +375,11 @@ config.languages=c,c++,lto
 
 `cup info` prints this metadata for an installed package.
 
-`cup doctor` validates installed package metadata and reports malformed or missing `info.txt` files.
+`cup doctor` validates installed package metadata, its correspondence with the canonical path, all declared executable entries and the read-only protection. `cup` never rewrites individual `info.txt` fields; an invalid metadata file requires recovery or replacement of the complete package.
 
 ### 8.2 Archive safety
 
-Extraction is performed through libarchive. Extracted paths are checked before writing into the staging directory. Unsafe absolute paths, parent-directory references and Windows-style unsafe paths are rejected.
+Extraction is performed through libarchive. Every archive must have one common top-level root. Absolute paths, parent traversal, unsafe Windows paths, device/FIFO/socket entries and links that escape the package are rejected. Relative internal symlinks and hardlinks are accepted.
 
 Packages are extracted into a temporary staging directory first and moved into the final installation path only after validation.
 
@@ -401,21 +397,20 @@ resolve stable release
 verify version availability
 resolve archive format
 check that the package is not already installed
-create temporary transaction directory
+create temporary staging directory
+write transaction.txt
 build package URL
-download archive into cache
-extract archive into staging
-validate info.txt identity
-ensure component directories
-move staging directory into final install path
+download through a .part file into the deterministic cache path
+extract one safe archive root into staging
+validate info.txt identity and declared executables
+protect info.txt as read-only
+move staging into the final install path
 add installed entry to state
-save state
-clean temporary files
+save state (commit point)
+remove transaction.txt
 ```
 
-If a failure occurs before the commit, the temporary directory is removed. If a failure occurs after the package is moved into place but before the state is saved, `cup` attempts to roll the directory move back.
-
-POSIX builds install interrupt handling around install/remove transactions so temporary files can be cleaned when the operation is interrupted.
+If a normal failure occurs before the commit, `cup` rolls the operation back immediately. If the process is terminated in a way that cannot be handled, the journal remains. `doctor` reports it and `repair` uses `state.txt` as the commit point to roll the operation back or finish its cleanup.
 
 ## 10. Remove flow
 
@@ -432,7 +427,7 @@ saves state
 removes temporary files
 ```
 
-If state saving fails, `cup` attempts to move the package back to its original install path.
+If state saving fails, `cup` attempts to move the package back to its original install path. An unhandled termination leaves the journal and temporary package available for deterministic recovery.
 
 ## 11. Default and current
 
@@ -468,20 +463,22 @@ cup info compiler clang@stable
 
 ## 13. Doctor and repair
 
-`cup doctor` checks the local installation without modifying files. It validates:
+`cup doctor` is completely read-only. It checks the canonical directory tree, lock and journal, state syntax and semantics, installed manifest and read-only protection, state-to-package and package-to-state correspondence, package metadata and executable entries, the canonical binary and uninstall script, and direct leftovers in `tmp`. If the installed manifest is missing, a repository checkout may be used only as a development fallback and is reported separately.
+
+`cup repair` acquires the exclusive lock and applies deterministic corrections only. It can:
 
 ```text
-base directory structure
-state file syntax and references
-installed package directories
-installed package info files
-manifest availability and tuple references when needed
-leftover temporary files
+recreate the canonical directory structure
+recover or complete an interrupted install/remove transaction
+preserve malformed text files as .invalid.N
+restore the official manifest, canonical executable and uninstall script
+reconstruct installed state entries from fully valid packages
+remove stale installed entries and defaults
+restore read-only and executable permissions
+clean temporary leftovers after transaction recovery
 ```
 
-`cup repair` performs safe repairs only. It can recreate missing base directories, remove state entries whose package directories are missing, remove defaults that no longer point to installed packages and clean stale temporary directories.
-
-`repair` does not redownload packages and does not guess missing package metadata.
+A package in `components` is adopted only when its canonical path, identity metadata and declared contents all agree. Ambiguous or unrecognized package paths are left unchanged and reported; `repair` does not choose between conflicting valid alternatives.
 
 ## 14. Uninstall
 
@@ -493,59 +490,47 @@ The uninstall command intentionally does not remove shell or user PATH entries. 
 
 ## 15. Main modules
 
-The implementation is split into small C modules:
+The implementation is split by responsibility:
 
 ```text
-main.c
-  command dispatch and help text
+main.c / options.c
+  command dispatch and CLI option parsing
 
-options.c
-  command option parsing and option validation
+command_context.c
+  shared platform, state, manifest and lock context
 
-commands.c
-  high-level command handlers and install/remove transactions
+commands_install.c / commands_remove.c
+  install and remove command orchestration
 
-entry.c
-  <tool>@<release> parsing and canonical entry construction
+commands_state.c
+  list, default, current and info commands
 
-state.c
-  state file load/save and installed/default entry management
+doctor.c / repair.c / uninstall.c
+  diagnostics, deterministic recovery and self-removal
 
-manifest.c
-  manifest load, validation and package URL resolution
-
-info.c
-  package info.txt parsing and metadata iteration
+layout.c
+  canonical ~/.cup paths and directory creation
 
 filesystem.c
-  .cup layout, install/cache/tmp paths and filesystem checks
-
-path.c
-  checked path joins and safe relative path validation
-
-fetch.c
-  libcurl downloads into the package cache
-
-ca_bundle.c
-  embedded certificate bundle used by libcurl when enabled
-
-package_archive.c
-  archive usability checks
-
-extract.c
-  libarchive extraction into staging directories
-
-registry.c
-  supported component/tool pairs
-
-platform.c
-  host platform detection and platform validation
-
-interrupt.c
-  interrupt-aware transaction cleanup support
+  portable tree operations and invalid-file preservation
 
 system_posix.c / system_windows.c
-  platform-specific filesystem, process and uninstall operations
+  operating-system file, permission, lock and process primitives
+
+package.c / info.c
+  package identity, component scanning and immutable metadata validation
+
+transaction.c
+  transaction.txt persistence and identity reconstruction
+
+state.c / manifest.c / text.c
+  state model, structured manifest model and common key/value parsing
+
+fetch.c / package_archive.c / extract.c
+  HTTPS transfer, cache checks and safe archive extraction
+
+entry.c / path.c / registry.c / platform.c / interrupt.c
+  focused domain and platform helpers
 ```
 
 ## 16. Design boundaries

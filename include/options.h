@@ -14,6 +14,7 @@ typedef struct {
     OptionFlags seen;
 } CommandOptions;
 
+/* Parse common CLI options and verify which ones a command accepts. */
 CupError parse_command_options(int start_option, int argc, char *const argv[], CommandOptions *options);
 CupError validate_command_options(const CommandOptions *options, OptionFlags allowed_options, const char *command_name);
 

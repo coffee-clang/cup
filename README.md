@@ -79,15 +79,20 @@ Bootstrap assets for `cup` are published in the `coffee-clang/cup` repository. T
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer detects the platform, downloads the matching `cup` binary, installs the manifest and installs the uninstall script under:
+The installer verifies the published SHA-256 files before committing the matching `cup` binary, the manifest and the uninstall script. It creates the canonical per-user tree under `~/.cup`; this location is not configurable:
 
 ```text
 ~/.cup/bin
+~/.cup/components
+~/.cup/tmp
+~/.cup/cache
 ~/.cup/config
 ~/.cup/scripts
+~/.cup/state.txt
+~/.cup/cup.lock
 ```
 
-It can also add `~/.cup/bin` to the shell `PATH`.
+The manifest and uninstall script are installed read-only. The installer can also add `~/.cup/bin` to the shell `PATH`.
 
 ### Windows PowerShell
 
@@ -95,13 +100,7 @@ It can also add `~/.cup/bin` to the shell `PATH`.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The installer downloads:
-
-```text
-%USERPROFILE%\.cup\bin\cup.exe
-%USERPROFILE%\.cup\config\packages.cfg
-%USERPROFILE%\.cup\scripts\uninstall.ps1
-```
+The installer verifies the published SHA-256 files and creates the complete tree under `%USERPROFILE%\.cup`, including the executable, manifest, state, lock and uninstall script. The manifest and uninstall script are protected with the Windows read-only attribute.
 
 It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 
@@ -119,7 +118,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/c
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-When the shell installer detects a Windows Unix-like environment, it offers the native PowerShell installation mode or a shell-local installation mode.
+When the shell installer detects a Windows Unix-like environment, it delegates to the native PowerShell installer so the canonical root remains `%USERPROFILE%\.cup`.
 
 ## Basic usage
 
@@ -176,6 +175,8 @@ Check and repair the local `cup` tree:
 cup doctor
 cup repair
 ```
+
+`doctor` is read-only and reports structural, state, package, permission and interrupted-transaction problems. `repair` applies only deterministic corrections, including journal recovery and state/component reconciliation.
 
 Uninstall `cup` and all cup-managed data:
 

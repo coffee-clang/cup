@@ -7,6 +7,7 @@
 
 #define MAX_TOOLS_PER_COMPONENT 8
 
+// COMPONENT REGISTRY
 typedef struct {
     const char *component;
     const char *tools[MAX_TOOLS_PER_COMPONENT];
@@ -27,6 +28,7 @@ static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     { "analyzer", { "valgrind", NULL } }
 };
 
+// REGISTRY LOOKUP
 static const SupportedComponent *find_supported_component(const char *component) {
     size_t count;
     size_t i;
@@ -46,6 +48,7 @@ static const SupportedComponent *find_supported_component(const char *component)
     return NULL;
 }
 
+// PUBLIC API
 CupError validate_component(const char *component) {
     const SupportedComponent *supported;
 

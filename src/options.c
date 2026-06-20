@@ -20,7 +20,7 @@ typedef struct {
     const char *long_name;
     const char *short_name;
     OptionId id;
-    unsigned flag;
+    OptionFlags flag;
     OptionValueMode value_mode;
 } OptionDefinition;
 
@@ -43,14 +43,6 @@ static const OptionDefinition OPTION_DEFINITIONS[] = {
 };
 
 // INTERNAL HELPERS
-static void init_command_options(CommandOptions *options) {
-    if (options == NULL) {
-        return;
-    }
-
-    memset(options, 0, sizeof(*options));
-}
-
 static const OptionDefinition *find_option_definition(const char *name) {
     size_t count;
     size_t i;
@@ -120,7 +112,7 @@ CupError parse_command_options(int start_option, int argc, char *const argv[], C
         return CUP_ERR_INVALID_INPUT;
     }
 
-    init_command_options(options);
+    memset(options, 0, sizeof(*options));
 
     i = start_option;
     while (i < argc) {
@@ -169,10 +161,11 @@ CupError parse_command_options(int start_option, int argc, char *const argv[], C
     return CUP_OK;
 }
 
-CupError validate_command_options(const CommandOptions *options, unsigned allowed_options, const char *command_name) {
+CupError validate_command_options(const CommandOptions *options,
+    OptionFlags allowed_options, const char *command_name) {
     size_t count;
     size_t i;
-    unsigned disallowed;
+    OptionFlags disallowed;
 
     if (options == NULL || is_empty_string(command_name)) {
         return CUP_ERR_INVALID_INPUT;

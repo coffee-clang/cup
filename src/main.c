@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+// CLI OUTPUT
 static void print_usage(FILE *stream, const char *prog_name) {
     if (prog_name == NULL) {
         prog_name = "cup";
@@ -22,7 +23,7 @@ static void print_usage(FILE *stream, const char *prog_name) {
         "  %s doctor\n"
         "  %s repair\n"
         "  %s uninstall\n",
-        prog_name, prog_name, prog_name, prog_name, prog_name, 
+        prog_name, prog_name, prog_name, prog_name, prog_name,
         prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
@@ -40,7 +41,7 @@ static void print_help(const char *prog_name) {
         "  current    Show the current default for a component.\n"
         "  info       Show metadata for an installed package.\n"
         "  doctor     Check cup state and installation consistency without modifying files.\n"
-        "  repair     Repair safe cup state inconsistencies and clean temporary files.\n"
+        "  repair     Recover interrupted operations and repair safe cup inconsistencies.\n"
         "  uninstall  Remove cup itself and all cup-managed data.\n"
         "\n"
         "Entry format:\n"
@@ -55,6 +56,7 @@ static void print_help(const char *prog_name) {
         prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
+// COMMAND DISPATCH
 int main(int argc, char *argv[]) {
     CupError err;
     CommandOptions options;
@@ -94,8 +96,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = handle_list(options.target);
-        return err;
+        return handle_list(options.target);
     }
 
     if (strcmp(command, "install") == 0) {
@@ -119,8 +120,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = handle_install(argv[2], argv[3], options.target, options.format);
-        return err;
+        return handle_install(argv[2], argv[3], options.target, options.format);
     }
 
     if (strcmp(command, "remove") == 0) {
@@ -144,8 +144,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = handle_remove(argv[2], argv[3], options.target);
-        return err;
+        return handle_remove(argv[2], argv[3], options.target);
     }
 
     if (strcmp(command, "default") == 0) {
@@ -169,8 +168,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = handle_default(argv[2], argv[3], options.target);
-        return err;
+        return handle_default(argv[2], argv[3], options.target);
     }
 
     if (strcmp(command, "current") == 0) {
@@ -193,9 +191,8 @@ int main(int argc, char *argv[]) {
             print_usage(stderr, argv[0]);
             return err;
         }
-        
-        err = handle_current(argv[2], options.target);
-        return err;
+
+        return handle_current(argv[2], options.target);
     }
 
     if (strcmp(command, "info") == 0) {
@@ -219,8 +216,7 @@ int main(int argc, char *argv[]) {
             return err;
         }
 
-        err = handle_info(argv[2], argv[3], options.target);
-        return err;
+        return handle_info(argv[2], argv[3], options.target);
     }
 
     if (strcmp(command, "doctor") == 0) {
@@ -230,8 +226,7 @@ int main(int argc, char *argv[]) {
             return CUP_ERR_INVALID_INPUT;
         }
 
-        err = handle_doctor();
-        return err;
+        return handle_doctor();
     }
 
     if (strcmp(command, "repair") == 0) {
@@ -241,8 +236,7 @@ int main(int argc, char *argv[]) {
             return CUP_ERR_INVALID_INPUT;
         }
 
-        err = handle_repair();
-        return err;
+        return handle_repair();
     }
 
     if (strcmp(command, "uninstall") == 0) {
@@ -252,8 +246,7 @@ int main(int argc, char *argv[]) {
             return CUP_ERR_INVALID_INPUT;
         }
 
-        err = handle_uninstall();
-        return err;
+        return handle_uninstall();
     }
 
     fprintf(stderr, "Error: unknown command '%s'.\n", command);

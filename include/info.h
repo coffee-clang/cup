@@ -6,20 +6,28 @@
 #include "constants.h"
 #include "error.h"
 
+/* One key/value field loaded from info.txt. */
 typedef struct {
     char key[MAX_INFO_KEY_LEN];
     char value[MAX_INFO_VALUE_LEN];
 } PackageInfoField;
 
+/* Dynamically sized representation of package metadata. */
 typedef struct {
-    PackageInfoField fields[MAX_INFO_FIELDS];
+    PackageInfoField *fields;
     size_t count;
+    size_t capacity;
 } PackageInfo;
 
-int info_key_has_prefix(const char *key, const char *prefix);
+/* Initialize or release a PackageInfo object. */
+void info_init(PackageInfo *info);
+void info_free(PackageInfo *info);
+
+/* Load and validate a complete info.txt file. */
 CupError info_load(PackageInfo *info, const char *path);
-const char *get_info_value(const PackageInfo *info, const char *key);
-const PackageInfoField *next_info_field(const PackageInfo *info, const char *prefix, size_t *cursor);
-size_t count_info_fields(const PackageInfo *info, const char *prefix);
+
+/* Read one value or iterate over fields sharing a prefix. */
+const char *info_get(const PackageInfo *info, const char *key);
+const PackageInfoField *info_next(const PackageInfo *info, const char *prefix, size_t *cursor);
 
 #endif /* CUP_INFO_H */

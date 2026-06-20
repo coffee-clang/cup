@@ -5,7 +5,8 @@
 
 #include <string.h>
 
-int is_stable_release(const char *release) {
+// ENTRY FORMAT
+int entry_is_stable(const char *release) {
     if (is_empty_string(release)) {
         return 0;
     }
@@ -13,44 +14,36 @@ int is_stable_release(const char *release) {
     return strcmp(release, "stable") == 0;
 }
 
-CupError parse_entry(const char *entry, char *tool, size_t tool_size, char *release, size_t release_size) {
-    CupError err;
-    char entry_copy[MAX_ENTRY_LEN];
+CupError entry_parse(const char *entry, char *tool, size_t tool_size, char *release, size_t release_size) {
+    char buffer[MAX_ENTRY_LEN];
     SplitOutput outputs[2];
+    CupError err;
 
-    if (is_empty_string(entry) || tool == NULL || tool_size == 0 || release == NULL || release_size == 0) {
+    if (is_empty_string(entry) || tool == NULL || tool_size == 0 ||
+        release == NULL || release_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(entry_copy, sizeof(entry_copy), "%s", entry);
+    err = checked_snprintf(buffer, sizeof(buffer), "%s", entry);
     if (err != CUP_OK) {
         return err;
     }
 
-    outputs[0].buffer = tool;
-    outputs[0].size = tool_size;
-    outputs[1].buffer = release;
-    outputs[1].size = release_size;
+    outputs[0] = (SplitOutput){tool, tool_size};
+    outputs[1] = (SplitOutput){release, release_size};
 
-    err = split_exact(entry_copy, '@', outputs, 2);
-    if (err != CUP_OK) {
-        return err;
+    err = split_exact(buffer, '@', outputs, 2);
+    if (err != CUP_OK || is_empty_string(tool) || is_empty_string(release)) {
+        return CUP_ERR_INVALID_INPUT;
     }
 
     return CUP_OK;
 }
 
-CupError build_entry(char *buffer, size_t size, const char *tool, const char *release) {
-    CupError err;
-
+CupError entry_build(char *buffer, size_t size, const char *tool, const char *release) {
     if (buffer == NULL || size == 0 || is_empty_string(tool) || is_empty_string(release)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(buffer, size, "%s@%s", tool, release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return CUP_OK;
+    return checked_snprintf(buffer, size, "%s@%s", tool, release);
 }

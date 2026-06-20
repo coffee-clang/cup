@@ -88,13 +88,7 @@ The host is detected by `cup`. The target defaults to the host and can be overri
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer downloads the platform-specific `cup` binary, the package manifest and the uninstall script into:
-
-```text
-~/.cup/bin
-~/.cup/config
-~/.cup/scripts
-```
+The installer verifies published SHA-256 checksums and creates the canonical per-user tree under `~/.cup`. It installs the executable, a read-only package manifest, a read-only uninstall script, the state file and the operation lock together.
 
 ### Windows PowerShell
 
@@ -102,13 +96,7 @@ The installer downloads the platform-specific `cup` binary, the package manifest
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The Windows installer writes to:
-
-```text
-%USERPROFILE%\.cup\bin
-%USERPROFILE%\.cup\config
-%USERPROFILE%\.cup\scripts
-```
+The Windows installer creates the same canonical tree under `%USERPROFILE%\.cup` and applies the read-only attribute to the manifest and uninstall script. Git Bash, MSYS2 and Cygwin installation delegates to this native installer rather than creating a second shell-specific root.
 
 ## Basic commands
 
@@ -124,6 +112,8 @@ cup doctor
 cup repair
 cup uninstall
 ```
+
+`doctor` never modifies the installation. `repair` owns safe structural repair, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
 
 Use `--target` when a command should operate on a non-default target platform:
 

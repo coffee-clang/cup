@@ -44,12 +44,14 @@ Install command:
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer downloads:
+The installer downloads and verifies:
 
 ```text
 cup binary for the detected platform
 packages.cfg
 uninstall.sh
+SHA256SUMS.<platform>
+SHA256SUMS.common
 ```
 
 and installs them under:
@@ -79,12 +81,14 @@ Install command:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The installer downloads:
+The installer downloads and verifies:
 
 ```text
 cup-windows-x64.exe
 packages.cfg
 uninstall.ps1
+SHA256SUMS.windows-x64
+SHA256SUMS.common
 ```
 
 and installs them under:
@@ -97,14 +101,7 @@ and installs them under:
 
 ### 2.3 Windows Unix-like shells
 
-When `install.sh` runs under Git Bash, MSYS2 or Cygwin, it detects the Windows shell environment and offers two modes:
-
-```text
-native Windows installation through PowerShell
-current Unix-like shell installation under $HOME/.cup
-```
-
-The native Windows installation is the recommended mode when the user wants `cup` available from normal Windows terminals.
+When `install.sh` runs under Git Bash, MSYS2 or Cygwin, it delegates to the native PowerShell installer. This keeps the single Windows root under `%USERPROFILE%\.cup` and avoids a second shell-specific installation tree.
 
 ## 3. Building cup from source
 
@@ -130,19 +127,23 @@ make PLATFORM=windows-x64 LINK_MODE=static
 
 A dynamic link mode is available only for local development and troubleshooting, where using system libraries makes iteration easier. It is not the bootstrap installation mode.
 
-Build outputs are written under:
+Build outputs and object files are separated by platform and link mode:
 
 ```text
-build/<platform>/bin/
+build/<platform>/<link-mode>/obj/
+build/<platform>/<link-mode>/bin/
 ```
 
 Examples:
 
 ```text
-build/linux-x64/bin/cup
-build/macos-arm64/bin/cup
-build/windows-x64/bin/cup.exe
+build/linux-x64/static/bin/cup
+build/linux-x64/dynamic/bin/cup
+build/macos-arm64/static/bin/cup
+build/windows-x64/static/bin/cup.exe
 ```
+
+The Makefile emits `.d` dependency files with `-MMD -MP`, so changes to project headers rebuild the affected objects. The static configuration is the only configuration published; the dynamic configuration remains a development and diagnostic tool.
 
 ## 4. Source-level build requirements
 
@@ -322,19 +323,18 @@ secur32
 The produced executable is:
 
 ```text
-build/windows-x64/bin/cup.exe
+build/windows-x64/static/bin/cup.exe
 ```
 
 ## 8. Release workflows
 
-The repository contains platform-specific GitHub Actions workflows:
+The repository contains one coordinated executable build and publication workflow:
 
 ```text
-.github/workflows/build-cup-linux.yml
-.github/workflows/build-cup-macos.yml
-.github/workflows/build-cup-windows.yml
-.github/workflows/static.yml
+.github/workflows/build-cup.yml
 ```
+
+Its Linux, macOS and Windows jobs produce static platform assets. A single dependent publication job uploads the complete asset set to the mutable bootstrap release, avoiding partially mixed platform releases.
 
 Release assets for the bootstrap installer include:
 
@@ -349,6 +349,8 @@ install.sh
 install.ps1
 uninstall.sh
 uninstall.ps1
+SHA256SUMS.common
+SHA256SUMS.<platform>
 ```
 
 The `packages.cfg` asset is the manifest used by installed copies of `cup` to locate component packages produced by `cup-components`.

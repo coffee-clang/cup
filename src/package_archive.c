@@ -47,7 +47,7 @@ CupError package_archive_open_reader(struct archive **reader, const char *archiv
 }
 
 // CACHE VALIDATION
-static CupError package_archive_has_header(const char *archive_path, int *has_header) {
+static CupError archive_has_header(const char *archive_path, int *has_header) {
     CupError err;
     struct archive *reader;
     struct archive_entry *entry;
@@ -105,7 +105,7 @@ CupError package_archive_is_usable(const char *archive_path, int *is_usable) {
         return CUP_OK;
     }
 
-    err = package_archive_has_header(archive_path, &has_header);
+    err = archive_has_header(archive_path, &has_header);
     if (err != CUP_OK) {
         return err;
     }

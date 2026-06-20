@@ -2,23 +2,19 @@
 
 #include "util.h"
 
+#include <ctype.h>
 #include <string.h>
 
 // PATH BUILDING
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child) {
-    CupError err;
-
     if (buffer == NULL || size == 0 || is_empty_string(parent) || is_empty_string(child)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(buffer, size, "%s/%s", parent, child);
-    return err;
+    return checked_snprintf(buffer, size, "%s/%s", parent, child);
 }
 
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child) {
-    CupError err;
-    
     if (buffer == NULL || size == 0 || is_empty_string(parent)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -27,50 +23,120 @@ CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, 
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = path_join(buffer, size, parent, child);
-    return err;
+    return path_join(buffer, size, parent, child);
+}
+
+const char *path_last_segment(const char *path) {
+    const char *slash;
+    const char *backslash;
+
+    if (path == NULL) {
+        return NULL;
+    }
+
+    slash = strrchr(path, '/');
+    backslash = strrchr(path, '\\');
+
+    if (backslash != NULL && (slash == NULL || backslash > slash)) {
+        slash = backslash;
+    }
+
+    return slash == NULL ? path : slash + 1;
 }
 
 // PATH VALIDATION
-static int is_path_separator(char value) {
-    return value == '/' || value == '\\';
-}
+static int equals_ignore_case_n(const char *left, const char *right, size_t length) {
+    size_t i;
 
-int path_has_parent_ref(const char *path) {
-    const char *start;
-    const char *end;
-    size_t len;
-
-    if (path == NULL) {
-        return 1;
+    for (i = 0; i < length; ++i) {
+        if (tolower((unsigned char)left[i]) != tolower((unsigned char)right[i])) {
+            return 0;
+        }
     }
 
-    start = path;
+    return right[length] == '\0';
+}
 
-    while (*start != '\0') {
-        end = start;
+static int is_windows_reserved_name(const char *value) {
+    static const char *const reserved[] = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    const char *dot;
+    size_t base_length;
+    size_t i;
 
-        while (*end != '\0' && !is_path_separator(*end)) {
-            end++;
-        }
+    if (is_empty_string(value)) {
+        return 0;
+    }
 
-        len = (size_t)(end - start);
+    dot = strchr(value, '.');
+    base_length = dot == NULL ? strlen(value) : (size_t)(dot - value);
 
-        if (len == 2 && start[0] == '.' && start[1] == '.') {
+    for (i = 0; i < sizeof(reserved) / sizeof(reserved[0]); ++i) {
+        if (strlen(reserved[i]) == base_length &&
+            equals_ignore_case_n(value, reserved[i], base_length)) {
             return 1;
         }
-
-        if (*end == '\0') {
-            break;
-        }
-
-        start = end + 1;
     }
 
     return 0;
 }
 
+int path_is_safe_segment(const char *value) {
+    const unsigned char *cursor;
+    size_t length;
+
+    if (is_empty_string(value)) {
+        return 0;
+    }
+
+    length = strlen(value);
+    if ((length == 1 && value[0] == '.') ||
+        (length == 2 && value[0] == '.' && value[1] == '.')) {
+        return 0;
+    }
+
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (*cursor < 32 || *cursor == 127 || *cursor == '/' ||
+            *cursor == '\\' || *cursor == ':') {
+            return 0;
+        }
+    }
+
+    if (value[length - 1] == '.' || value[length - 1] == ' ') {
+        return 0;
+    }
+
+    return !is_windows_reserved_name(value);
+}
+
+int path_is_safe_identifier(const char *value) {
+    const unsigned char *cursor;
+
+    if (!path_is_safe_segment(value) || !isalnum((unsigned char)value[0])) {
+        return 0;
+    }
+
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (isalnum(*cursor) || *cursor == '.' || *cursor == '_' ||
+            *cursor == '+' || *cursor == '-') {
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
+}
+
 int path_is_safe_relative(const char *path) {
+    const char *segment;
+    const char *cursor;
+    char part[256];
+    size_t length;
+
     if (is_empty_string(path)) {
         return 0;
     }
@@ -83,8 +149,35 @@ int path_is_safe_relative(const char *path) {
         return 0;
     }
 
-    if (path_has_parent_ref(path)) {
+    if (strchr(path, '\\') != NULL || strchr(path, ':') != NULL) {
         return 0;
+    }
+
+    segment = path;
+    cursor = path;
+
+    while (1) {
+        if (*cursor == '/' || *cursor == '\0') {
+            length = (size_t)(cursor - segment);
+            if (length == 0 || length >= sizeof(part)) {
+                return 0;
+            }
+
+            memcpy(part, segment, length);
+            part[length] = '\0';
+
+            if (!path_is_safe_segment(part)) {
+                return 0;
+            }
+
+            if (*cursor == '\0') {
+                break;
+            }
+
+            segment = cursor + 1;
+        }
+
+        cursor++;
     }
 
     return 1;
