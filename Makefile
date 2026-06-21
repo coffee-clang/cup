@@ -194,7 +194,7 @@ $(OBJ_DIR)/%.o: src/%.c $(MODE_STAMP)
 -include $(DEP)
 
 clean:
-	rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR)
 
 reset-dev-home:
 	@test "$(CUP_ALLOW_DEV_CLEAN)" = "1" || { \
@@ -205,9 +205,9 @@ reset-dev-home:
 		/*) test "$(HOME)" != "/" ;; \
 		*) false ;; \
 	esac || { echo "Invalid HOME for reset-dev-home" >&2; exit 1; }
-	rm -rf $(BUILD_DIR)
-	rm -rf -- "$(HOME)/.cup"
-    clear
+	@rm -rf $(BUILD_DIR)
+	@rm -rf -- "$(HOME)/.cup"
+	@clear 2>/dev/null || true
 
 docs-assets:
 	@echo "Fetching remote docs theme assets..."
