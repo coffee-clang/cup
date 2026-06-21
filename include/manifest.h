@@ -40,7 +40,8 @@ typedef struct {
 void manifest_init(Manifest *manifest);
 void manifest_free(Manifest *manifest);
 
-/* Load the active manifest, using the repository fallback only when the installed file is missing. */
+/* Load the active manifest, using the repository fallback only when the
+ * installed file is missing. */
 CupError manifest_load(Manifest *manifest);
 
 /* Load only the installed manifest or an explicitly selected file. */

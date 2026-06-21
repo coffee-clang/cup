@@ -1,19 +1,13 @@
 #include "options.h"
 
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
 
-// TYPES
 typedef enum {
-    OPTION_VALUE_NONE = 0,
-    OPTION_VALUE_REQUIRED
-} OptionValueMode;
-
-typedef enum {
-    OPTION_ID_FORMAT = 0,
-    OPTION_ID_TARGET
+    OPTION_FORMAT,
+    OPTION_TARGET
 } OptionId;
 
 typedef struct {
@@ -21,64 +15,35 @@ typedef struct {
     const char *short_name;
     OptionId id;
     OptionFlags flag;
-    OptionValueMode value_mode;
 } OptionDefinition;
 
-// DEFINITIONS
 static const OptionDefinition OPTION_DEFINITIONS[] = {
-    {
-        "--format",
-        "-f",
-        OPTION_ID_FORMAT,
-        OPT_FORMAT,
-        OPTION_VALUE_REQUIRED
-    },
-    {
-        "--target",
-        NULL,
-        OPTION_ID_TARGET,
-        OPT_TARGET,
-        OPTION_VALUE_REQUIRED
-    }
+    { "--format", "-f", OPTION_FORMAT, OPT_FORMAT },
+    { "--target", NULL, OPTION_TARGET, OPT_TARGET }
 };
 
-// INTERNAL HELPERS
-static const OptionDefinition *find_option_definition(const char *name) {
-    size_t count;
+static const OptionDefinition *find_option(const char *name) {
     size_t i;
 
-    if (is_empty_string(name)) {
+    if (text_is_empty(name)) {
         return NULL;
     }
 
-    count = sizeof(OPTION_DEFINITIONS) / sizeof(OPTION_DEFINITIONS[0]);
+    for (i = 0; i < sizeof(OPTION_DEFINITIONS) / sizeof(OPTION_DEFINITIONS[0]); ++i) {
+        const OptionDefinition *option = &OPTION_DEFINITIONS[i];
 
-    for (i = 0; i < count; ++i) {
-        if (strcmp(name, OPTION_DEFINITIONS[i].long_name) == 0) {
-            return &OPTION_DEFINITIONS[i];
-        }
-
-        if (OPTION_DEFINITIONS[i].short_name != NULL &&
-            strcmp(name, OPTION_DEFINITIONS[i].short_name) == 0) {
-            return &OPTION_DEFINITIONS[i];
+        if (strcmp(name, option->long_name) == 0 ||
+            (option->short_name != NULL && strcmp(name, option->short_name) == 0)) {
+            return option;
         }
     }
 
     return NULL;
 }
 
-static CupError set_option_value(CommandOptions *options, const OptionDefinition *definition, const char *value) {
-    if (options == NULL || definition == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (definition->value_mode == OPTION_VALUE_REQUIRED && is_empty_string(value)) {
-        fprintf(stderr, "Error: missing value for option '%s'.\n", definition->long_name);
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (definition->value_mode == OPTION_VALUE_NONE && value != NULL) {
-        fprintf(stderr, "Error: option '%s' does not accept a value.\n", definition->long_name);
+static CupError assign_option(CommandOptions *options,
+    const OptionDefinition *definition, const char *value) {
+    if (options == NULL || definition == NULL || text_is_empty(value)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -87,101 +52,78 @@ static CupError set_option_value(CommandOptions *options, const OptionDefinition
         return CUP_ERR_INVALID_INPUT;
     }
 
-    options->seen |= definition->flag;
-
     switch (definition->id) {
-        case OPTION_ID_FORMAT:
+        case OPTION_FORMAT:
             options->format = value;
-            return CUP_OK;
+            break;
 
-        case OPTION_ID_TARGET:
+        case OPTION_TARGET:
             options->target = value;
-            return CUP_OK;
+            break;
 
         default:
             return CUP_ERR_INVALID_INPUT;
     }
+
+    options->seen |= definition->flag;
+    return CUP_OK;
 }
 
-// PUBLIC API
-CupError parse_command_options(int start_option, int argc, char *const argv[], CommandOptions *options) {
-    CupError err;
-    int i;
+CupError options_parse(int first_option, int argc, char *const argv[],
+    CommandOptions *options) {
+    int index;
 
-    if (argc < 0 || start_option < 0 || start_option > argc || argv == NULL || options == NULL) {
+    if (argc < 0 || first_option < 0 || first_option > argc ||
+        argv == NULL || options == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     memset(options, 0, sizeof(*options));
 
-    i = start_option;
-    while (i < argc) {
-        const char *name;
-        const char *value;
+    for (index = first_option; index < argc; index += 2) {
         const OptionDefinition *definition;
-        const OptionDefinition *validation;
+        const char *name = argv[index];
+        const char *value;
 
-        name = argv[i];
-        definition = find_option_definition(name);
+        definition = find_option(name);
         if (definition == NULL) {
             fprintf(stderr, "Error: unknown option '%s'.\n", name);
             return CUP_ERR_INVALID_INPUT;
         }
 
-        if (definition->value_mode == OPTION_VALUE_REQUIRED) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "Error: missing value for option '%s'.\n", definition->long_name);
-                return CUP_ERR_INVALID_INPUT;
-            }
-
-            value = argv[i + 1];
-            validation = find_option_definition(value);
-            if (validation != NULL) {
-                fprintf(stderr, "Error: missing value for option '%s'.\n", definition->long_name);
-                return CUP_ERR_INVALID_INPUT;
-            }
-
-            err = set_option_value(options, definition, value);
-            if (err != CUP_OK) {
-                return err;
-            }
-
-            i += 2;
-            continue;
+        if (index + 1 >= argc || find_option(argv[index + 1]) != NULL) {
+            fprintf(stderr, "Error: missing value for option '%s'.\n",
+                definition->long_name);
+            return CUP_ERR_INVALID_INPUT;
         }
 
-        err = set_option_value(options, definition, NULL);
-        if (err != CUP_OK) {
-            return err;
+        value = argv[index + 1];
+        if (assign_option(options, definition, value) != CUP_OK) {
+            return CUP_ERR_INVALID_INPUT;
         }
-
-        i += 1;
     }
 
     return CUP_OK;
 }
 
-CupError validate_command_options(const CommandOptions *options,
-    OptionFlags allowed_options, const char *command_name) {
-    size_t count;
-    size_t i;
+CupError options_validate(const CommandOptions *options,
+    OptionFlags allowed, const char *command_name) {
     OptionFlags disallowed;
+    size_t i;
 
-    if (options == NULL || is_empty_string(command_name)) {
+    if (options == NULL || text_is_empty(command_name)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    disallowed = options->seen & ~allowed_options;
+    disallowed = options->seen & ~allowed;
     if (disallowed == 0) {
         return CUP_OK;
     }
 
-    count = sizeof(OPTION_DEFINITIONS) / sizeof(OPTION_DEFINITIONS[0]);
-
-    for (i = 0; i < count; ++i) {
+    for (i = 0; i < sizeof(OPTION_DEFINITIONS) / sizeof(OPTION_DEFINITIONS[0]); ++i) {
         if ((disallowed & OPTION_DEFINITIONS[i].flag) != 0) {
             fprintf(stderr, "Error: option '%s' is not valid for command '%s'.\n",
-                    OPTION_DEFINITIONS[i].long_name, command_name);
+                OPTION_DEFINITIONS[i].long_name, command_name);
             return CUP_ERR_INVALID_INPUT;
         }
     }

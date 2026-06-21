@@ -4,54 +4,59 @@
 #include "package.h"
 #include "system.h"
 #include "text.h"
-#include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 // KEY PARSING
-static CupError split_state_key(const char *key, const char *prefix,
+typedef enum {
+    STATE_RECORD_UNKNOWN,
+    STATE_RECORD_INSTALLED,
+    STATE_RECORD_DEFAULT
+} StateRecordType;
+
+static CupError parse_state_key(const char *key, StateRecordType *type,
     char *component, size_t component_size,
     char *host_platform, size_t host_size,
-    char *target_platform, size_t target_size,
-    int *matched) {
-    CupError err;
-    SplitOutput parts[3];
-    char body_copy[MAX_STATE_LINE_LEN];
-    const char *body;
-    size_t prefix_length;
+    char *target_platform, size_t target_size) {
+    static const char installed_prefix[] = "installed.";
+    static const char default_prefix[] = "default.";
+    TextBuffer parts[3];
+    char body[MAX_STATE_LINE_LEN];
+    const char *scope;
 
-    if (component == NULL || host_platform == NULL || target_platform == NULL || matched == NULL ||
-        component_size == 0 || host_size == 0 || target_size == 0 ||
-        is_empty_string(key) || is_empty_string(prefix)) {
+    if (text_is_empty(key) || type == NULL || component == NULL ||
+        component_size == 0 || host_platform == NULL || host_size == 0 ||
+        target_platform == NULL || target_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    *matched = 0;
-    prefix_length = strlen(prefix);
-
-    if (strncmp(key, prefix, prefix_length) != 0) {
+    if (strncmp(key, installed_prefix, sizeof(installed_prefix) - 1) == 0) {
+        *type = STATE_RECORD_INSTALLED;
+        scope = key + sizeof(installed_prefix) - 1;
+    } else if (strncmp(key, default_prefix, sizeof(default_prefix) - 1) == 0) {
+        *type = STATE_RECORD_DEFAULT;
+        scope = key + sizeof(default_prefix) - 1;
+    } else {
+        *type = STATE_RECORD_UNKNOWN;
         return CUP_OK;
     }
 
-    body = key + prefix_length;
-    *matched = 1;
-
-    err = checked_snprintf(body_copy, sizeof(body_copy), "%s", body);
-    if (err != CUP_OK) {
-        return err;
+    if (text_format(body, sizeof(body), "%s", scope) != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
     }
 
-    parts[0] = (SplitOutput){component, component_size};
-    parts[1] = (SplitOutput){host_platform, host_size};
-    parts[2] = (SplitOutput){target_platform, target_size};
+    parts[0] = (TextBuffer){.data = component, .capacity = component_size};
+    parts[1] = (TextBuffer){.data = host_platform, .capacity = host_size};
+    parts[2] = (TextBuffer){.data = target_platform, .capacity = target_size};
 
-    return split_exact(body_copy, '.', parts, 3);
+    return text_split_exact(body, '.', parts, 3) == CUP_OK
+        ? CUP_OK : CUP_ERR_STATE_LOAD;
 }
 
 // ENTRY HELPERS
-static int scope_matches(const StateEntry *state_entry, const char *component,
+static int state_entry_matches_scope(const StateEntry *state_entry, const char *component,
     const char *host_platform, const char *target_platform) {
     return strcmp(state_entry->component, component) == 0 &&
         strcmp(state_entry->host_platform, host_platform) == 0 &&
@@ -62,29 +67,29 @@ static CupError set_state_entry(StateEntry *state_entry, const char *component,
     const char *host_platform, const char *target_platform, const char *entry) {
     CupError err;
 
-    if (state_entry == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state_entry == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(state_entry->component, sizeof(state_entry->component), "%s", component);
+    err = text_format(state_entry->component, sizeof(state_entry->component), "%s", component);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = checked_snprintf(state_entry->host_platform,
+    err = text_format(state_entry->host_platform,
         sizeof(state_entry->host_platform), "%s", host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = checked_snprintf(state_entry->target_platform,
+    err = text_format(state_entry->target_platform,
         sizeof(state_entry->target_platform), "%s", target_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    return checked_snprintf(state_entry->entry, sizeof(state_entry->entry), "%s", entry);
+    return text_format(state_entry->entry, sizeof(state_entry->entry), "%s", entry);
 }
 
 CupError state_validate(const CupState *state) {
@@ -101,7 +106,8 @@ CupError state_validate(const CupState *state) {
             default_entry->host_platform, default_entry->target_platform,
             default_entry->entry) == -1) {
             fprintf(stderr,
-                "Error: default state entry '%s' for component '%s', host '%s', target '%s' is not installed.\n",
+                "Error: default state entry '%s' for component '%s', "
+                "host '%s', target '%s' is not installed.\n",
                 default_entry->entry, default_entry->component,
                 default_entry->host_platform, default_entry->target_platform);
             return CUP_ERR_STATE_LOAD;
@@ -113,80 +119,66 @@ CupError state_validate(const CupState *state) {
 
 // LINE PARSING
 static CupError parse_state_line(CupState *state, char *line) {
+    PackageIdentity identity;
+    StateRecordType type;
     CupError err;
     char key[MAX_STATE_LINE_LEN];
-    char value[MAX_ENTRY_LEN];
+    char entry[MAX_ENTRY_LEN];
     char component[MAX_NAME_LEN];
     char host_platform[MAX_PLATFORM_LEN];
     char target_platform[MAX_PLATFORM_LEN];
-    int is_installed;
-    int is_default;
 
     if (state == NULL || line == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_parse_key_value(line, key, sizeof(key), value, sizeof(value));
+    err = text_parse_key_value(line, key, sizeof(key), entry, sizeof(entry));
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = split_state_key(key, "installed.",
+    err = parse_state_key(key, &type,
         component, sizeof(component),
         host_platform, sizeof(host_platform),
-        target_platform, sizeof(target_platform),
-        &is_installed);
+        target_platform, sizeof(target_platform));
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: malformed installed state key '%s'.\n", key);
+        fprintf(stderr, "Error: malformed %s state key '%s'.\n",
+            type == STATE_RECORD_DEFAULT ? "default" : "installed", key);
         return CUP_ERR_STATE_LOAD;
     }
-
-    is_default = 0;
-    if (!is_installed) {
-        err = split_state_key(key, "default.",
-            component, sizeof(component),
-            host_platform, sizeof(host_platform),
-            target_platform, sizeof(target_platform),
-            &is_default);
-        if (err != CUP_OK) {
-            fprintf(stderr, "Error: malformed default state key '%s'.\n", key);
-            return CUP_ERR_STATE_LOAD;
-        }
-    }
-
-    if (!is_installed && !is_default) {
+    if (type == STATE_RECORD_UNKNOWN) {
         fprintf(stderr, "Error: unknown state key '%s'.\n", key);
         return CUP_ERR_STATE_LOAD;
     }
 
-    {
-        PackageIdentity identity;
-
-        if (package_identity_from_entry(&identity, component,
-            host_platform, target_platform, value) != CUP_OK) {
-            return CUP_ERR_STATE_LOAD;
-        }
+    err = package_identity_from_entry(&identity, component,
+        host_platform, target_platform, entry);
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
     }
 
-    if (is_installed) {
-        err = state_add_installed(state, component, host_platform, target_platform, value);
+    if (type == STATE_RECORD_INSTALLED) {
+        err = state_add_installed(state, component,
+            host_platform, target_platform, entry);
         if (err == CUP_ERR_ALREADY_INSTALLED) {
             fprintf(stderr,
-                "Error: duplicate installed state entry '%s' for component '%s', host '%s', target '%s'.\n",
-                value, component, host_platform, target_platform);
-            return CUP_ERR_STATE_LOAD;
+                "Error: duplicate installed state entry '%s' for "
+                "component '%s', host '%s', target '%s'.\n",
+                entry, component, host_platform, target_platform);
         }
 
         return err == CUP_OK ? CUP_OK : CUP_ERR_STATE_LOAD;
     }
 
     if (state_find_default(state, component, host_platform, target_platform) != -1) {
-        fprintf(stderr, "Error: duplicate default for component '%s', host '%s', target '%s'.\n",
+        fprintf(stderr,
+            "Error: duplicate default for component '%s', host '%s', target '%s'.\n",
             component, host_platform, target_platform);
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = state_set_default(state, component, host_platform, target_platform, value);
+    err = state_set_default(state, component,
+        host_platform, target_platform, entry);
     return err == CUP_OK ? CUP_OK : CUP_ERR_STATE_LOAD;
 }
 
@@ -253,10 +245,11 @@ CupError state_load(CupState *state, StateFileStatus *status) {
 
 CupError state_save(const CupState *state) {
     CupError err;
-    FILE *file;
+    FILE *file = NULL;
+    char root[MAX_PATH_LEN];
     char state_path[MAX_PATH_LEN];
     char tmp_path[MAX_PATH_LEN];
-    char process_id[MAX_NAME_LEN];
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     int write_status;
     size_t i;
 
@@ -265,16 +258,10 @@ CupError state_save(const CupState *state) {
     }
 
     if (state_validate(state) != CUP_OK ||
-        system_get_process_id(process_id, sizeof(process_id)) != CUP_OK ||
+        layout_get_root(root, sizeof(root)) != CUP_OK ||
         layout_get_state_path(state_path, sizeof(state_path)) != CUP_OK ||
-        checked_snprintf(tmp_path, sizeof(tmp_path),
-            "%s.%s.tmp", state_path, process_id) != CUP_OK) {
-        return CUP_ERR_STATE_SAVE;
-    }
-
-    file = fopen(tmp_path, "w");
-    if (file == NULL) {
-        fprintf(stderr, "Error: could not open temporary state file for writing.\n");
+        system_create_temp_file(root, "state", tmp_path,
+            sizeof(tmp_path), &file) != CUP_OK) {
         return CUP_ERR_STATE_SAVE;
     }
 
@@ -314,11 +301,17 @@ CupError state_save(const CupState *state) {
         return CUP_ERR_STATE_SAVE;
     }
 
-    err = system_replace_file(tmp_path, state_path);
+    err = system_replace_file(tmp_path, state_path, &commit_state);
     if (err != CUP_OK) {
-        system_remove_file(tmp_path);
-        fprintf(stderr, "Error: could not replace state file.\n");
-        return CUP_ERR_STATE_SAVE;
+        if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+            system_remove_file(tmp_path);
+            fprintf(stderr, "Error: could not replace state file.\n");
+            return CUP_ERR_STATE_SAVE;
+        }
+
+        fprintf(stderr, "Error: state file was replaced, but its "
+            "durability could not be confirmed.\n");
+        return CUP_ERR_COMMIT;
     }
 
     return CUP_OK;
@@ -329,13 +322,14 @@ int state_find_installed(const CupState *state, const char *component,
     const char *host_platform, const char *target_platform, const char *entry) {
     size_t i;
 
-    if (state == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return -1;
     }
 
     for (i = 0; i < state->installed_count; ++i) {
-        if (scope_matches(&state->installed[i], component, host_platform, target_platform) &&
+        if (state_entry_matches_scope(&state->installed[i], component,
+            host_platform, target_platform) &&
             strcmp(state->installed[i].entry, entry) == 0) {
             return (int)i;
         }
@@ -348,8 +342,8 @@ CupError state_add_installed(CupState *state, const char *component,
     const char *host_platform, const char *target_platform, const char *entry) {
     CupError err;
 
-    if (state == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -376,8 +370,8 @@ CupError state_remove_installed(CupState *state, const char *component,
     int index;
     size_t i;
 
-    if (state == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -401,13 +395,14 @@ int state_find_default(const CupState *state, const char *component,
     const char *host_platform, const char *target_platform) {
     size_t i;
 
-    if (state == NULL || is_empty_string(component) ||
-        is_empty_string(host_platform) || is_empty_string(target_platform)) {
+    if (state == NULL || text_is_empty(component) ||
+        text_is_empty(host_platform) || text_is_empty(target_platform)) {
         return -1;
     }
 
     for (i = 0; i < state->default_count; ++i) {
-        if (scope_matches(&state->defaults[i], component, host_platform, target_platform)) {
+        if (state_entry_matches_scope(&state->defaults[i], component,
+            host_platform, target_platform)) {
             return (int)i;
         }
     }
@@ -428,14 +423,14 @@ CupError state_set_default(CupState *state, const char *component,
     CupError err;
     int index;
 
-    if (state == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     index = state_find_default(state, component, host_platform, target_platform);
     if (index != -1) {
-        return checked_snprintf(state->defaults[index].entry,
+        return text_format(state->defaults[index].entry,
             sizeof(state->defaults[index].entry), "%s", entry);
     }
 
@@ -458,8 +453,8 @@ CupError state_clear_default(CupState *state, const char *component,
     int index;
     size_t i;
 
-    if (state == NULL || is_empty_string(component) ||
-        is_empty_string(host_platform) || is_empty_string(target_platform)) {
+    if (state == NULL || text_is_empty(component) ||
+        text_is_empty(host_platform) || text_is_empty(target_platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -482,8 +477,8 @@ CupError state_clear_matching_default(CupState *state, const char *component,
     const char *host_platform, const char *target_platform, const char *entry) {
     int index;
 
-    if (state == NULL || is_empty_string(component) || is_empty_string(host_platform) ||
-        is_empty_string(target_platform) || is_empty_string(entry)) {
+    if (state == NULL || text_is_empty(component) || text_is_empty(host_platform) ||
+        text_is_empty(target_platform) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

@@ -6,7 +6,6 @@
 #include "registry.h"
 #include "system.h"
 #include "text.h"
-#include "util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,13 +79,13 @@ static CupError append_package(Manifest *manifest, const char *component,
     *result = &manifest->packages[manifest->count++];
     memset(*result, 0, sizeof(**result));
 
-    if (checked_snprintf((*result)->component,
+    if (text_format((*result)->component,
         sizeof((*result)->component), "%s", component) != CUP_OK ||
-        checked_snprintf((*result)->tool,
+        text_format((*result)->tool,
             sizeof((*result)->tool), "%s", tool) != CUP_OK ||
-        checked_snprintf((*result)->host_platform,
+        text_format((*result)->host_platform,
             sizeof((*result)->host_platform), "%s", host) != CUP_OK ||
-        checked_snprintf((*result)->target_platform,
+        text_format((*result)->target_platform,
             sizeof((*result)->target_platform), "%s", target) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
@@ -99,19 +98,19 @@ static CupError parse_package_key(const char *key, char *component, size_t compo
     char *tool, size_t tool_size, char *host, size_t host_size,
     char *target, size_t target_size, char *field, size_t field_size) {
     char copy[MAX_MANIFEST_KEY_LEN];
-    SplitOutput outputs[5];
+    TextBuffer outputs[5];
 
-    if (checked_snprintf(copy, sizeof(copy), "%s", key) != CUP_OK) {
+    if (text_format(copy, sizeof(copy), "%s", key) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
-    outputs[0] = (SplitOutput){component, component_size};
-    outputs[1] = (SplitOutput){tool, tool_size};
-    outputs[2] = (SplitOutput){host, host_size};
-    outputs[3] = (SplitOutput){target, target_size};
-    outputs[4] = (SplitOutput){field, field_size};
+    outputs[0] = (TextBuffer){.data = component, .capacity = component_size};
+    outputs[1] = (TextBuffer){.data = tool, .capacity = tool_size};
+    outputs[2] = (TextBuffer){.data = host, .capacity = host_size};
+    outputs[3] = (TextBuffer){.data = target, .capacity = target_size};
+    outputs[4] = (TextBuffer){.data = field, .capacity = field_size};
 
-    return split_exact(copy, '.', outputs, 5) == CUP_OK ?
+    return text_split_exact(copy, '.', outputs, 5) == CUP_OK ?
         CUP_OK : CUP_ERR_MANIFEST;
 }
 
@@ -150,7 +149,7 @@ static CupError set_package_field(ManifestPackage *package, const char *field, c
         return CUP_ERR_MANIFEST;
     }
 
-    if (checked_snprintf(destination, destination_size, "%s", value) != CUP_OK) {
+    if (text_format(destination, destination_size, "%s", value) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -172,9 +171,9 @@ static CupError parse_manifest_line(Manifest *manifest, char *line) {
     if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK ||
         parse_package_key(key, component, sizeof(component), tool, sizeof(tool),
             host, sizeof(host), target, sizeof(target), field, sizeof(field)) != CUP_OK ||
-        validate_component(component) != CUP_OK ||
-        validate_tool_for_component(component, tool) != CUP_OK ||
-        validate_platform(host) != CUP_OK || validate_platform(target) != CUP_OK) {
+        registry_validate_component(component) != CUP_OK ||
+        registry_validate_tool(component, tool) != CUP_OK ||
+        platform_validate(host) != CUP_OK || platform_validate(target) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -199,7 +198,7 @@ static CupError validate_value_list(const char *value, const char *expected, int
         *contains = 0;
     }
 
-    if (checked_snprintf(copy, sizeof(copy), "%s", value) != CUP_OK) {
+    if (text_format(copy, sizeof(copy), "%s", value) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -213,7 +212,7 @@ static CupError validate_value_list(const char *value, const char *expected, int
             *separator = '\0';
         }
 
-        part = trim_spaces(cursor);
+        part = text_trim(cursor);
         if (!path_is_safe_identifier(part)) {
             return CUP_ERR_MANIFEST;
         }
@@ -292,7 +291,8 @@ static CupError validate_manifest_package(const ManifestPackage *package) {
 
     if (validate_value_list(package->available_versions,
         package->stable_version, &contains) != CUP_OK || !contains) {
-        fprintf(stderr, "Error: stable_version is not listed in available_versions for '%s.%s.%s.%s'.\n",
+        fprintf(stderr, "Error: stable_version is not listed in "
+            "available_versions for '%s.%s.%s.%s'.\n",
             package->component, package->tool,
             package->host_platform, package->target_platform);
         return CUP_ERR_MANIFEST;
@@ -317,14 +317,14 @@ CupError manifest_load_path(Manifest *manifest, const char *path, ManifestSource
     size_t line_number = 0;
     size_t i;
 
-    if (manifest == NULL || is_empty_string(path)) {
+    if (manifest == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     manifest_free(manifest);
     manifest->source = source;
 
-    if (checked_snprintf(manifest->path, sizeof(manifest->path), "%s", path) != CUP_OK) {
+    if (text_format(manifest->path, sizeof(manifest->path), "%s", path) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -423,7 +423,8 @@ static const ManifestPackage *require_package(const Manifest *manifest,
 
     index = find_package_index(manifest, component, tool, host, target);
     if (index == -1) {
-        fprintf(stderr, "Error: tool '%s' for component '%s' is not configured for host '%s', target '%s'.\n",
+        fprintf(stderr, "Error: tool '%s' for component '%s' is not "
+            "configured for host '%s', target '%s'.\n",
             tool, component, host, target);
         return NULL;
     }
@@ -440,7 +441,7 @@ CupError manifest_resolve_stable(const Manifest *manifest, char *buffer, size_t 
         return CUP_ERR_MANIFEST;
     }
 
-    return checked_snprintf(buffer, size, "%s", package->stable_version);
+    return text_format(buffer, size, "%s", package->stable_version);
 }
 
 CupError manifest_is_stable(const Manifest *manifest, const char *component,
@@ -488,7 +489,7 @@ CupError manifest_get_default_format(const Manifest *manifest, char *buffer,
         return CUP_ERR_MANIFEST;
     }
 
-    return checked_snprintf(buffer, size, "%s", package->default_format);
+    return text_format(buffer, size, "%s", package->default_format);
 }
 
 CupError manifest_has_format(const Manifest *manifest, const char *component,

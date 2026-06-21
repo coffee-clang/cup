@@ -6,46 +6,75 @@
 #include "platform.h"
 #include "registry.h"
 #include "transaction.h"
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#define DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup-windows.ps1"
-#else
-#define DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup.sh"
-#endif
 
 // COMMAND LIFECYCLE
 static CupError resolve_platforms(CommandContext *context, const char *target_override) {
     CupError err;
 
-    err = get_host_platform(context->host_platform, sizeof(context->host_platform));
+    err = platform_get_host(context->host_platform, sizeof(context->host_platform));
     if (err != CUP_OK) {
         return err;
     }
 
-    if (is_empty_string(target_override)) {
-        return checked_snprintf(context->target_platform, sizeof(context->target_platform),
+    if (text_is_empty(target_override)) {
+        return text_format(context->target_platform, sizeof(context->target_platform),
             "%s", context->host_platform);
     }
 
-    err = validate_platform(target_override);
+    err = platform_validate(target_override);
     if (err != CUP_OK) {
         return err;
     }
 
-    return checked_snprintf(context->target_platform, sizeof(context->target_platform),
+    return text_format(context->target_platform, sizeof(context->target_platform),
         "%s", target_override);
+}
+
+static CupError uninstall_script_is_valid(const char *path, int *is_valid) {
+    CupError err;
+    int is_regular_file;
+
+    if (text_is_empty(path) || is_valid == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    *is_valid = 0;
+    err = system_is_regular_file(path, &is_regular_file);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!is_regular_file) {
+        return CUP_OK;
+    }
+
+#if !defined(_WIN32)
+    {
+        int is_executable;
+
+        err = system_is_executable(path, &is_executable);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (!is_executable) {
+            return CUP_OK;
+        }
+    }
+#endif
+
+    *is_valid = 1;
+    return CUP_OK;
 }
 
 static CupError validate_bootstrap(void) {
     Manifest manifest;
     CupError err;
-    char uninstall[MAX_PATH_LEN];
-    int executable;
-    int is_file;
+    char installed_uninstall[MAX_PATH_LEN];
+    int is_valid;
 
     manifest_init(&manifest);
     err = manifest_load(&manifest);
@@ -54,31 +83,26 @@ static CupError validate_bootstrap(void) {
         return err;
     }
 
-    if (layout_get_uninstall_path(uninstall, sizeof(uninstall)) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    err = system_is_regular_file(uninstall, &is_file);
+    err = layout_get_uninstall_path(installed_uninstall,
+        sizeof(installed_uninstall));
     if (err != CUP_OK) {
         return err;
     }
 
-    if (!is_file) {
-        err = system_is_regular_file(DEVELOPMENT_UNINSTALL_PATH, &is_file);
-        if (err != CUP_OK || !is_file) {
-            return CUP_ERR_FILESYSTEM;
-        }
-
-        err = system_is_executable(DEVELOPMENT_UNINSTALL_PATH, &executable);
-    } else {
-        err = system_is_executable(uninstall, &executable);
+    err = uninstall_script_is_valid(installed_uninstall, &is_valid);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (is_valid) {
+        return CUP_OK;
     }
 
-    if (err != CUP_OK || !executable) {
-        return CUP_ERR_FILESYSTEM;
+    err = uninstall_script_is_valid(CUP_DEVELOPMENT_UNINSTALL_PATH, &is_valid);
+    if (err != CUP_OK) {
+        return err;
     }
 
-    return CUP_OK;
+    return is_valid ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 static CupError initialize_runtime(void) {
@@ -94,7 +118,8 @@ static CupError initialize_runtime(void) {
     return state_save(&state);
 }
 
-CupError command_context_begin(CommandContext *context, const char *target_override, SystemLockMode mode) {
+CupError command_context_begin(CommandContext *context,
+    const char *target_override, SystemLockMode mode) {
     LayoutRuntimeStatus runtime_status;
     SystemLockMode lock_mode = mode;
     CupError err;
@@ -251,12 +276,14 @@ CupError command_require_no_transaction(void) {
     transaction_init(&transaction);
     err = transaction_load(&transaction, &status);
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: transaction journal is invalid. Run 'cup doctor' and 'cup repair'.\n");
+        fprintf(stderr, "Error: transaction journal is invalid. "
+            "Run 'cup doctor' and 'cup repair'.\n");
         return CUP_ERR_TRANSACTION;
     }
 
     if (status == TRANSACTION_FILE_LOADED) {
-        fprintf(stderr, "Error: an interrupted %s transaction for '%s@%s' must be repaired first.\n",
+        fprintf(stderr, "Error: an interrupted %s transaction for "
+            "'%s@%s' must be repaired first.\n",
             transaction_operation_name(transaction.operation), transaction.package.tool,
             transaction.package.version);
         return CUP_ERR_TRANSACTION;
@@ -269,25 +296,25 @@ CupError command_require_no_transaction(void) {
 CupError entry_request_parse(const char *component, const char *entry, EntryRequest *request) {
     CupError err;
 
-    if (request == NULL || is_empty_string(component) || is_empty_string(entry)) {
+    if (request == NULL || text_is_empty(component) || text_is_empty(entry)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     memset(request, 0, sizeof(*request));
 
-    err = validate_component(component);
+    err = registry_validate_component(component);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = checked_snprintf(request->input_entry, sizeof(request->input_entry), "%s", entry);
+    err = text_format(request->input_entry, sizeof(request->input_entry), "%s", entry);
     if (err != CUP_OK || entry_parse(entry, request->tool, sizeof(request->tool),
         request->release, sizeof(request->release)) != CUP_OK) {
         fprintf(stderr, "Error: invalid entry '%s'. Expected '<tool>@<release>'.\n", entry);
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = validate_tool_for_component(component, request->tool);
+    err = registry_validate_tool(component, request->tool);
     if (err != CUP_OK) {
         return err;
     }
@@ -320,7 +347,7 @@ CupError entry_request_resolve(const Manifest *manifest, const char *component,
             return err;
         }
     } else {
-        err = checked_snprintf(request->resolved_release, sizeof(request->resolved_release),
+        err = text_format(request->resolved_release, sizeof(request->resolved_release),
             "%s", request->release);
         if (err != CUP_OK) {
             return err;
@@ -366,7 +393,7 @@ static CupError get_package_presence(const CommandContext *context, const Packag
     *in_state = state_find_installed(&context->state, package->component,
         package->host_platform, package->target_platform, entry) != -1;
 
-    return package_exists(package, on_disk);
+    return package_directory_exists(package, on_disk);
 }
 
 CupError command_require_installed(const CommandContext *context, const PackageIdentity *package) {

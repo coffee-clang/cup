@@ -7,13 +7,22 @@
 
 #include "error.h"
 
-typedef struct {
-    int is_directory;
-    int is_reparse_point;
-    int is_regular_file;
-} SystemPathInfo;
+typedef enum {
+    SYSTEM_PATH_MISSING,
+    SYSTEM_PATH_REGULAR_FILE,
+    SYSTEM_PATH_DIRECTORY,
+    SYSTEM_PATH_LINK,
+    SYSTEM_PATH_OTHER
+} SystemPathKind;
 
-typedef CupError (*SystemDirectoryCallback)( const char *path, const SystemPathInfo *info, void *userdata);
+typedef enum {
+    SYSTEM_COMMIT_NOT_APPLIED,
+    SYSTEM_COMMIT_APPLIED,
+    SYSTEM_COMMIT_DURABLE
+} SystemCommitState;
+
+typedef CupError (*SystemDirectoryCallback)(const char *path,
+    SystemPathKind kind, void *userdata);
 
 typedef enum {
     SYSTEM_LOCK_SHARED,
@@ -27,19 +36,30 @@ typedef struct {
 
 /* Process and user environment. */
 CupError system_get_home_dir(char *buffer, size_t size);
-CupError system_get_process_id(char *buffer, size_t size);
 CupError system_start_uninstall(const char *cup_root, const char *uninstall_script);
 
 /* Files and directories. */
 CupError system_make_directory(const char *path);
 CupError system_remove_directory(const char *path);
-CupError system_move_path(const char *source, const char *destination);
-CupError system_replace_file(const char *source, const char *destination);
+CupError system_move_path(const char *source, const char *destination,
+    SystemCommitState *commit_state);
+CupError system_replace_file(const char *source, const char *destination,
+    SystemCommitState *commit_state);
 CupError system_remove_file(const char *path);
 CupError system_copy_file(const char *source_path, const char *destination_path);
 CupError system_sync_file(FILE *file);
+CupError system_sync_parent_directory(const char *path);
 
-/* Path inspection and permissions. */
+/* Exclusive temporary objects created below a caller-selected directory. */
+CupError system_create_temp_file(const char *directory, const char *prefix,
+    char *path, size_t path_size, FILE **file);
+CupError system_create_temp_directory(const char *directory, const char *prefix,
+    char *path, size_t path_size);
+CupError system_make_unique_temp_path(const char *directory, const char *prefix,
+    char *path, size_t path_size);
+
+/* Path inspection and permissions. Inspection never follows links. */
+CupError system_get_path_kind(const char *path, SystemPathKind *kind);
 CupError system_path_exists(const char *path, int *exists);
 CupError system_is_directory(const char *path, int *is_directory);
 CupError system_is_regular_file(const char *path, int *is_regular_file);

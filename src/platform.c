@@ -1,7 +1,7 @@
 #include "platform.h"
 
 #include "constants.h"
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,7 +25,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     size_t count;
     size_t i;
 
-    if (is_empty_string(os)) {
+    if (text_is_empty(os)) {
         return NULL;
     }
 
@@ -41,7 +41,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
 }
 
 // PUBLIC API
-CupError get_host_platform(char *buffer, size_t size) {
+CupError platform_get_host(char *buffer, size_t size) {
     CupError err;
     const char *os;
     const char *arch;
@@ -68,32 +68,32 @@ CupError get_host_platform(char *buffer, size_t size) {
     return CUP_ERR_INVALID_ARCH;
 #endif
 
-    err = checked_snprintf(buffer, size, "%s-%s", os, arch);
+    err = text_format(buffer, size, "%s-%s", os, arch);
     return err;
 }
 
-CupError validate_platform(const char *platform) {
+CupError platform_validate(const char *platform) {
     CupError err;
     const SupportedPlatform *supported;
-    SplitOutput split_outputs[2];
+    TextBuffer split_outputs[2];
     char platform_copy[MAX_PLATFORM_LEN];
     char os[MAX_NAME_LEN];
     char arch[MAX_NAME_LEN];
     size_t i;
 
-    if (is_empty_string(platform)) {
+    if (text_is_empty(platform)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(platform_copy, sizeof(platform_copy), "%s", platform);
+    err = text_format(platform_copy, sizeof(platform_copy), "%s", platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    split_outputs[0] = (SplitOutput){os, sizeof(os)};
-    split_outputs[1] = (SplitOutput){arch, sizeof(arch)};
+    split_outputs[0] = (TextBuffer){.data = os, .capacity = sizeof(os)};
+    split_outputs[1] = (TextBuffer){.data = arch, .capacity = sizeof(arch)};
 
-    err = split_exact(platform_copy, '-', split_outputs, 2);
+    err = text_split_exact(platform_copy, '-', split_outputs, 2);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: invalid platform '%s'. Expected format '<os>-<arch>'.\n", platform);
         return CUP_ERR_INVALID_INPUT;

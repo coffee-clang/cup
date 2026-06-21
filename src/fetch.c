@@ -5,13 +5,14 @@
 #include "layout.h"
 #include "package_archive.h"
 #include "system.h"
-#include "util.h"
+#include "text.h"
 
 #include <curl/curl.h>
 #if defined(CUP_USE_OPENSSL_INIT)
 #include <openssl/ssl.h>
 #endif
 #include <stdio.h>
+#include <string.h>
 
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE) && LIBCURL_VERSION_NUM < 0x074D00
 #error "CUP_USE_EMBEDDED_CA_BUNDLE requires libcurl >= 7.77.0"
@@ -87,33 +88,42 @@ static CupError download_file(const char *url, const char *final_path, int requi
     FILE *file = NULL;
     CupError err;
     char error_buffer[CURL_ERROR_SIZE];
-    char pid[MAX_NAME_LEN];
+    char parent[MAX_PATH_LEN];
     char part_path[MAX_PATH_LEN];
     long response_code = 0;
     int close_status;
     int usable;
 
-    if (is_empty_string(url) || is_empty_string(final_path)) {
+    if (text_is_empty(url) || text_is_empty(final_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     error_buffer[0] = '\0';
 
-    if (system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
-        checked_snprintf(part_path, sizeof(part_path),
-            "%s.part-%s", final_path, pid) != CUP_OK) {
+    if (text_format(parent, sizeof(parent), "%s", final_path) != CUP_OK) {
         return CUP_ERR_FETCH;
     }
+    {
+        char *slash = strrchr(parent, '/');
+        if (slash == NULL) {
+            if (text_format(parent, sizeof(parent), ".") != CUP_OK) {
+                return CUP_ERR_FETCH;
+            }
+        } else if (slash == parent) {
+            slash[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+    }
 
-    system_remove_file(part_path);
     initialize_tls_runtime();
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         return CUP_ERR_FETCH;
     }
 
-    file = fopen(part_path, "wb");
-    if (file == NULL) {
+    if (system_create_temp_file(parent, "download", part_path,
+        sizeof(part_path), &file) != CUP_OK) {
         curl_global_cleanup();
         return CUP_ERR_FETCH;
     }
@@ -192,10 +202,16 @@ cleanup:
     system_set_read_only(final_path, 0);
     system_remove_file(final_path);
 
-    err = system_move_path(part_path, final_path);
-    if (err != CUP_OK) {
-        system_remove_file(part_path);
-        return CUP_ERR_FETCH;
+    {
+        SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+
+        err = system_move_path(part_path, final_path, &commit_state);
+        if (err != CUP_OK) {
+            if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+                system_remove_file(part_path);
+            }
+            return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : CUP_ERR_FETCH;
+        }
     }
 
     return CUP_OK;
@@ -208,7 +224,7 @@ CupError fetch_package(char *archive_path, size_t archive_path_size,
     int usable;
 
     if (archive_path == NULL || archive_path_size == 0 ||
-        is_empty_string(package_url) || identity == NULL || is_empty_string(format)) {
+        text_is_empty(package_url) || identity == NULL || text_is_empty(format)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

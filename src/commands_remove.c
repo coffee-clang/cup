@@ -11,151 +11,221 @@
 
 #include <stdio.h>
 
-// REMOVE COMMAND
-CupError handle_remove(const char *component, const char *entry, const char *target_override) {
-    CommandContext context = {0};
+typedef struct {
+    CommandContext context;
     EntryRequest request;
     PackageIdentity package;
-    CupError err;
-    char pid[MAX_NAME_LEN];
     char install_path[MAX_PATH_LEN];
-    char temporary_path[MAX_PATH_LEN];
-    int package_moved = 0;
-    int state_changed = 0;
+    char staging_path[MAX_PATH_LEN];
+    int package_moved;
+    int state_changed;
+} RemoveOperation;
 
-    err = entry_request_parse(component, entry, &request);
+static CupError prepare_remove(RemoveOperation *operation,
+    const char *component, const char *entry, const char *target_override) {
+    CupError err;
+
+    err = entry_request_parse(component, entry, &operation->request);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+    err = command_context_begin(&operation->context, target_override,
+        SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
     err = command_require_no_transaction();
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = command_context_load_state(&context);
+    err = command_context_load_state(&operation->context);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    if (entry_is_stable(request.release)) {
-        err = command_context_load_manifest(&context);
+    if (entry_is_stable(operation->request.release)) {
+        err = command_context_load_manifest(&operation->context);
         if (err != CUP_OK) {
-            goto done;
+            return err;
         }
     }
 
-    err = entry_request_resolve(context.has_manifest ? &context.manifest : NULL,
-        component, context.host_platform, context.target_platform, &request);
+    err = entry_request_resolve(operation->context.has_manifest
+            ? &operation->context.manifest : NULL,
+        component, operation->context.host_platform,
+        operation->context.target_platform, &operation->request);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = package_identity_init(&package, component, request.tool,
-        context.host_platform, context.target_platform, request.resolved_release);
+    err = package_identity_init(&operation->package, component,
+        operation->request.tool, operation->context.host_platform,
+        operation->context.target_platform,
+        operation->request.resolved_release);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = command_require_installed(&context, &package);
+    err = command_require_installed(&operation->context,
+        &operation->package);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = layout_build_install_path(install_path, sizeof(install_path), &package);
+    err = layout_build_install_path(operation->install_path,
+        sizeof(operation->install_path), &operation->package);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = system_get_process_id(pid, sizeof(pid));
+    err = layout_make_tmp_path(operation->staging_path,
+        sizeof(operation->staging_path), "remove", &operation->package);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
 
-    err = layout_build_tmp_path(temporary_path, sizeof(temporary_path),
-        "remove", &package, pid);
-    if (err != CUP_OK) {
-        goto done;
+    err = transaction_begin(TRANSACTION_REMOVE, &operation->package,
+        operation->staging_path);
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+            "Error: transaction journal was created, but its durability could "
+            "not be confirmed. Run 'cup repair'.\n");
     }
 
-    err = filesystem_remove_tree(temporary_path);
-    if (err != CUP_OK) {
-        goto done;
-    }
+    return err;
+}
 
-    err = transaction_begin(TRANSACTION_REMOVE, &package, temporary_path);
-    if (err != CUP_OK) {
-        goto done;
-    }
+static CupError stage_removal(RemoveOperation *operation) {
+    CupError err;
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
     printf("==> Moving package to temporary storage...\n");
 
-    err = system_move_path(install_path, temporary_path);
-    if (err != CUP_OK) {
-        goto rollback;
-    }
-    package_moved = 1;
-
-    err = state_clear_matching_default(&context.state, component,
-        package.host_platform, package.target_platform, request.resolved_entry);
-    if (err != CUP_OK) {
-        goto rollback;
+    err = system_move_path(operation->install_path, operation->staging_path,
+        &commit_state);
+    if (err != CUP_OK && commit_state == SYSTEM_COMMIT_APPLIED) {
+        operation->package_moved = 1;
+        fprintf(stderr,
+            "Error: package was moved to temporary storage, but its durability "
+            "could not be confirmed. Run 'cup repair'.\n");
+        return CUP_ERR_COMMIT;
     }
 
-    err = state_remove_installed(&context.state, component,
-        package.host_platform, package.target_platform, request.resolved_entry);
-    if (err != CUP_OK) {
-        goto rollback;
-    }
-    state_changed = 1;
-
-    err = state_save(&context.state);
-    if (err != CUP_OK) {
-        goto rollback;
+    if (err == CUP_OK) {
+        operation->package_moved = 1;
     }
 
-    err = filesystem_remove_tree(temporary_path);
+    return err;
+}
+
+static CupError commit_removal(RemoveOperation *operation) {
+    CupError err;
+
+    err = state_clear_matching_default(&operation->context.state,
+        operation->package.component, operation->package.host_platform,
+        operation->package.target_platform,
+        operation->request.resolved_entry);
     if (err != CUP_OK) {
-        fprintf(stderr, "Warning: package was removed from state, but temporary cleanup failed. "
-            "Run 'cup repair'.\n");
-        err = CUP_OK;
-        goto done;
+        return err;
+    }
+
+    err = state_remove_installed(&operation->context.state,
+        operation->package.component, operation->package.host_platform,
+        operation->package.target_platform,
+        operation->request.resolved_entry);
+    if (err != CUP_OK) {
+        return err;
+    }
+    operation->state_changed = 1;
+
+    err = state_save(&operation->context.state);
+    if (err != CUP_OK) {
+        if (err == CUP_ERR_COMMIT) {
+            fprintf(stderr,
+                "Error: removal state was applied, but its durability could "
+                "not be confirmed. Run 'cup repair'.\n");
+        }
+        return err;
+    }
+
+    err = filesystem_remove_tree(operation->staging_path);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+            "Warning: package was removed from state, but temporary cleanup "
+            "failed. Run 'cup repair'.\n");
+        return CUP_OK;
     }
 
     err = transaction_clear();
     if (err != CUP_OK) {
-        fprintf(stderr, "Warning: package removal committed, but transaction cleanup failed. "
-            "Run 'cup repair'.\n");
-        err = CUP_OK;
+        fprintf(stderr,
+            "Warning: package removal committed, but transaction cleanup "
+            "failed. Run 'cup repair'.\n");
     }
 
-    printf("Removed %s ", component);
-    entry_request_print(stdout, &request);
-    printf(" for host '%s', target '%s'.\n",
-        package.host_platform, package.target_platform);
-    goto done;
+    return CUP_OK;
+}
 
-rollback:
-    if (state_changed) {
-        state_add_installed(&context.state, component,
-            package.host_platform, package.target_platform, request.resolved_entry);
+static CupError rollback_removal(RemoveOperation *operation) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+
+    if (operation->state_changed) {
+        state_add_installed(&operation->context.state,
+            operation->package.component, operation->package.host_platform,
+            operation->package.target_platform,
+            operation->request.resolved_entry);
     }
 
-    if (package_moved && system_move_path(temporary_path, install_path) != CUP_OK) {
-        fprintf(stderr, "Error: removal failed and rollback could not be completed. "
-            "Run 'cup repair'.\n");
-        err = CUP_ERR_ROLLBACK;
-        goto done;
+    if (operation->package_moved &&
+        system_move_path(operation->staging_path, operation->install_path,
+            &commit_state) != CUP_OK) {
+        return CUP_ERR_ROLLBACK;
     }
 
     transaction_clear();
+    return CUP_OK;
+}
+
+static void print_remove_result(const RemoveOperation *operation) {
+    printf("Removed %s ", operation->package.component);
+    entry_request_print(stdout, &operation->request);
+    printf(" for host '%s', target '%s'.\n",
+        operation->package.host_platform, operation->package.target_platform);
+}
+
+CupError command_remove(const char *component, const char *entry,
+    const char *target_override) {
+    RemoveOperation operation = {0};
+    CupError err;
+
+    err = prepare_remove(&operation, component, entry, target_override);
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    err = stage_removal(&operation);
+    if (err == CUP_OK) {
+        err = commit_removal(&operation);
+    }
+
+    if (err != CUP_OK && err != CUP_ERR_COMMIT) {
+        if (rollback_removal(&operation) != CUP_OK) {
+            fprintf(stderr,
+                "Error: removal failed and rollback could not be completed. "
+                "Run 'cup repair'.\n");
+            err = CUP_ERR_ROLLBACK;
+        }
+        goto done;
+    }
+
+    if (err == CUP_OK) {
+        print_remove_result(&operation);
+    }
 
 done:
-    command_context_end(&context);
+    command_context_end(&operation.context);
     return err;
 }

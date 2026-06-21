@@ -4,7 +4,6 @@
 #include "path.h"
 #include "system.h"
 #include "text.h"
-#include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -36,20 +35,17 @@ const char *transaction_operation_name(TransactionOperation operation) {
 // JOURNAL PERSISTENCE
 static CupError save_journal(const Transaction *transaction) {
     CupError err;
-    FILE *file;
+    FILE *file = NULL;
     char path[MAX_PATH_LEN];
+    char tmp_dir[MAX_PATH_LEN];
     char temporary[MAX_PATH_LEN];
-    char pid[MAX_NAME_LEN];
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     int failed = 0;
 
-    err = layout_get_transaction_path(path, sizeof(path));
-    if (err != CUP_OK || system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
-        checked_snprintf(temporary, sizeof(temporary), "%s.%s.tmp", path, pid) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
-    file = fopen(temporary, "w");
-    if (file == NULL) {
+    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
+        layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
+        system_create_temp_file(tmp_dir, "transaction", temporary,
+            sizeof(temporary), &file) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
@@ -77,21 +73,26 @@ static CupError save_journal(const Transaction *transaction) {
         return CUP_ERR_TRANSACTION;
     }
 
-    if (system_replace_file(temporary, path) != CUP_OK) {
-        system_remove_file(temporary);
-        return CUP_ERR_TRANSACTION;
+    err = system_replace_file(temporary, path, &commit_state);
+    if (err != CUP_OK) {
+        if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+            system_remove_file(temporary);
+            return CUP_ERR_TRANSACTION;
+        }
+        return CUP_ERR_COMMIT;
     }
 
     return CUP_OK;
 }
 
-CupError transaction_begin(TransactionOperation operation, const PackageIdentity *package, const char *temporary_path) {
+CupError transaction_begin(TransactionOperation operation,
+    const PackageIdentity *package, const char *temporary_path) {
     Transaction transaction;
     const char *name;
     char journal[MAX_PATH_LEN];
     int exists;
 
-    if (package == NULL || is_empty_string(temporary_path) ||
+    if (package == NULL || text_is_empty(temporary_path) ||
         (operation != TRANSACTION_INSTALL && operation != TRANSACTION_REMOVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -115,7 +116,7 @@ CupError transaction_begin(TransactionOperation operation, const PackageIdentity
     transaction.operation = operation;
     transaction.package = *package;
 
-    if (checked_snprintf(transaction.temporary_name,
+    if (text_format(transaction.temporary_name,
         sizeof(transaction.temporary_name), "%s", name) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
@@ -123,7 +124,8 @@ CupError transaction_begin(TransactionOperation operation, const PackageIdentity
     return save_journal(&transaction);
 }
 
-static CupError set_transaction_field(Transaction *transaction, const char *key, const char *value, unsigned *seen) {
+static CupError set_transaction_field(Transaction *transaction,
+    const char *key, const char *value, unsigned *seen) {
     unsigned bit;
     char *destination = NULL;
     size_t destination_size = 0;
@@ -178,7 +180,7 @@ static CupError set_transaction_field(Transaction *transaction, const char *key,
     *seen |= bit;
 
     if (destination != NULL &&
-        checked_snprintf(destination, destination_size, "%s", value) != CUP_OK) {
+        text_format(destination, destination_size, "%s", value) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
@@ -269,7 +271,19 @@ CupError transaction_clear(void) {
         return CUP_ERR_TRANSACTION;
     }
 
-    if (system_remove_file(path) != CUP_OK) {
+    {
+        int exists;
+
+        if (system_path_exists(path, &exists) != CUP_OK) {
+            return CUP_ERR_TRANSACTION;
+        }
+        if (!exists) {
+            return CUP_OK;
+        }
+    }
+
+    if (system_remove_file(path) != CUP_OK ||
+        system_sync_parent_directory(path) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 

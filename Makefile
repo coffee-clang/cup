@@ -55,7 +55,6 @@ COMMON_SRC := \
     src/package_archive.c \
     src/extract.c \
     src/path.c \
-    src/util.c \
     src/interrupt.c \
     src/platform.c
 

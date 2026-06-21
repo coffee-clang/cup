@@ -7,7 +7,7 @@
 #include "platform.h"
 #include "registry.h"
 #include "system.h"
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,28 +17,28 @@ CupError package_identity_init(PackageIdentity *identity, const char *component,
     const char *host_platform, const char *target_platform, const char *version) {
     CupError err;
 
-    if (identity == NULL || is_empty_string(component) || is_empty_string(tool) ||
-        is_empty_string(host_platform) || is_empty_string(target_platform) ||
-        is_empty_string(version)) {
+    if (identity == NULL || text_is_empty(component) || text_is_empty(tool) ||
+        text_is_empty(host_platform) || text_is_empty(target_platform) ||
+        text_is_empty(version)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = validate_component(component);
+    err = registry_validate_component(component);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_tool_for_component(component, tool);
+    err = registry_validate_tool(component, tool);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_platform(host_platform);
+    err = platform_validate(host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = validate_platform(target_platform);
+    err = platform_validate(target_platform);
     if (err != CUP_OK) {
         return err;
     }
@@ -50,12 +50,13 @@ CupError package_identity_init(PackageIdentity *identity, const char *component,
 
     memset(identity, 0, sizeof(*identity));
 
-    if (checked_snprintf(identity->component, sizeof(identity->component), "%s", component) != CUP_OK ||
-        checked_snprintf(identity->tool, sizeof(identity->tool), "%s", tool) != CUP_OK ||
-        checked_snprintf(identity->host_platform, sizeof(identity->host_platform), "%s", host_platform) != CUP_OK ||
-        checked_snprintf(identity->target_platform, sizeof(identity->target_platform),
+    if (text_format(identity->component, sizeof(identity->component), "%s", component) != CUP_OK ||
+        text_format(identity->tool, sizeof(identity->tool), "%s", tool) != CUP_OK ||
+        text_format(identity->host_platform,
+            sizeof(identity->host_platform), "%s", host_platform) != CUP_OK ||
+        text_format(identity->target_platform, sizeof(identity->target_platform),
             "%s", target_platform) != CUP_OK ||
-        checked_snprintf(identity->version, sizeof(identity->version), "%s", version) != CUP_OK) {
+        text_format(identity->version, sizeof(identity->version), "%s", version) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -78,23 +79,30 @@ CupError package_identity_from_entry(PackageIdentity *identity, const char *comp
 }
 
 // PACKAGE VALIDATION
-static CupError require_path_type(const char *path, int directory) {
-    CupError err;
-    int matches;
-    long long file_size;
+static CupError validate_directory(const char *path) {
+    int is_directory;
 
-    if (directory) {
-        err = system_is_directory(path, &matches);
-        return err == CUP_OK && matches ? CUP_OK : CUP_ERR_VALIDATION;
-    }
-
-    err = system_is_regular_file(path, &matches);
-    if (err != CUP_OK || !matches) {
+    if (system_is_directory(path, &is_directory) != CUP_OK || !is_directory) {
         return CUP_ERR_VALIDATION;
     }
 
-    err = system_file_size(path, &file_size);
-    return err == CUP_OK && file_size > 0 ? CUP_OK : CUP_ERR_VALIDATION;
+    return CUP_OK;
+}
+
+static CupError validate_nonempty_file(const char *path) {
+    long long size;
+    int is_regular_file;
+
+    if (system_is_regular_file(path, &is_regular_file) != CUP_OK ||
+        !is_regular_file) {
+        return CUP_ERR_VALIDATION;
+    }
+
+    if (system_file_size(path, &size) != CUP_OK || size <= 0) {
+        return CUP_ERR_VALIDATION;
+    }
+
+    return CUP_OK;
 }
 
 static CupError require_info_value(const PackageInfo *info, const char *key, const char *expected) {
@@ -116,13 +124,14 @@ static CupError validate_info_entries(const PackageInfo *info, const char *base_
 
     while ((field = info_next(info, "entry.", &cursor)) != NULL) {
         char path[MAX_PATH_LEN];
-        int executable;
+        int is_executable;
 
         if (!path_is_safe_relative(field->value) ||
             path_join_safe_relative(path, sizeof(path), base_path, field->value) != CUP_OK ||
-            require_path_type(path, 0) != CUP_OK ||
-            system_is_executable(path, &executable) != CUP_OK || !executable) {
-            fprintf(stderr, "Error: package metadata entry '%s' points to invalid or non-executable file '%s'.\n",
+            validate_nonempty_file(path) != CUP_OK ||
+            system_is_executable(path, &is_executable) != CUP_OK || !is_executable) {
+            fprintf(stderr, "Error: package metadata entry '%s' points to "
+                "invalid or non-executable file '%s'.\n",
                 field->key, field->value);
             return CUP_ERR_VALIDATION;
         }
@@ -143,17 +152,17 @@ CupError package_validate(const char *base_path, const PackageIdentity *identity
     CupError err;
     char info_path[MAX_PATH_LEN];
 
-    if (is_empty_string(base_path) || identity == NULL) {
+    if (text_is_empty(base_path) || identity == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = require_path_type(base_path, 1);
+    err = validate_directory(base_path);
     if (err != CUP_OK) {
         return CUP_ERR_VALIDATION;
     }
 
-    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILE);
-    if (err != CUP_OK || require_path_type(info_path, 0) != CUP_OK) {
+    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILENAME);
+    if (err != CUP_OK || validate_nonempty_file(info_path) != CUP_OK) {
         fprintf(stderr, "Error: package metadata is missing or invalid.\n");
         return CUP_ERR_VALIDATION;
     }
@@ -183,11 +192,11 @@ CupError package_info_is_read_only(const char *base_path, int *is_read_only) {
     CupError err;
     char info_path[MAX_PATH_LEN];
 
-    if (is_empty_string(base_path) || is_read_only == NULL) {
+    if (text_is_empty(base_path) || is_read_only == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILE);
+    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILENAME);
     if (err != CUP_OK) {
         return err;
     }
@@ -199,11 +208,11 @@ CupError package_set_info_read_only(const char *base_path) {
     CupError err;
     char info_path[MAX_PATH_LEN];
 
-    if (is_empty_string(base_path)) {
+    if (text_is_empty(base_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILE);
+    err = path_join(info_path, sizeof(info_path), base_path, CUP_INFO_FILENAME);
     if (err != CUP_OK) {
         return err;
     }
@@ -211,7 +220,7 @@ CupError package_set_info_read_only(const char *base_path) {
     return system_set_read_only(info_path, 1);
 }
 
-CupError package_exists(const PackageIdentity *identity, int *exists) {
+CupError package_directory_exists(const PackageIdentity *identity, int *exists) {
     CupError err;
     char path[MAX_PATH_LEN];
     int is_directory;
@@ -237,23 +246,31 @@ CupError package_exists(const PackageIdentity *identity, int *exists) {
 }
 
 // COMPONENTS SCAN
+typedef enum {
+    PACKAGE_LEVEL_COMPONENT,
+    PACKAGE_LEVEL_TOOL,
+    PACKAGE_LEVEL_HOST,
+    PACKAGE_LEVEL_TARGET,
+    PACKAGE_LEVEL_VERSION
+} PackagePathLevel;
+
 typedef struct {
     PackageList *packages;
     PackageIdentity identity;
-    int depth;
+    PackagePathLevel level;
 } PackageScanContext;
 
-static CupError scan_package_path(const char *path, const SystemPathInfo *info, void *userdata) {
+static CupError scan_package_path(const char *path, SystemPathKind path_kind, void *userdata) {
     PackageScanContext *context = userdata;
     PackageScanContext child;
     const char *name;
     CupError err;
 
-    if (context == NULL || info == NULL) {
+    if (context == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (!info->is_directory || info->is_reparse_point) {
+    if (path_kind != SYSTEM_PATH_DIRECTORY) {
         context->packages->invalid_count++;
         return CUP_OK;
     }
@@ -265,53 +282,53 @@ static CupError scan_package_path(const char *path, const SystemPathInfo *info, 
     }
 
     child = *context;
-    child.depth++;
+    child.level = (PackagePathLevel)(context->level + 1);
 
-    switch (context->depth) {
-        case 0:
-            if (validate_component(name) != CUP_OK) {
+    switch (context->level) {
+        case PACKAGE_LEVEL_COMPONENT:
+            if (registry_validate_component(name) != CUP_OK) {
                 context->packages->invalid_count++;
                 return CUP_OK;
             }
-            err = checked_snprintf(child.identity.component,
+            err = text_format(child.identity.component,
                 sizeof(child.identity.component), "%s", name);
             break;
 
-        case 1:
-            if (validate_tool_for_component(context->identity.component, name) != CUP_OK) {
+        case PACKAGE_LEVEL_TOOL:
+            if (registry_validate_tool(context->identity.component, name) != CUP_OK) {
                 context->packages->invalid_count++;
                 return CUP_OK;
             }
-            err = checked_snprintf(child.identity.tool,
+            err = text_format(child.identity.tool,
                 sizeof(child.identity.tool), "%s", name);
             break;
 
-        case 2:
-            if (validate_platform(name) != CUP_OK) {
+        case PACKAGE_LEVEL_HOST:
+            if (platform_validate(name) != CUP_OK) {
                 context->packages->invalid_count++;
                 return CUP_OK;
             }
-            err = checked_snprintf(child.identity.host_platform,
+            err = text_format(child.identity.host_platform,
                 sizeof(child.identity.host_platform), "%s", name);
             break;
 
-        case 3:
-            if (validate_platform(name) != CUP_OK) {
+        case PACKAGE_LEVEL_TARGET:
+            if (platform_validate(name) != CUP_OK) {
                 context->packages->invalid_count++;
                 return CUP_OK;
             }
-            err = checked_snprintf(child.identity.target_platform,
+            err = text_format(child.identity.target_platform,
                 sizeof(child.identity.target_platform), "%s", name);
             break;
 
-        case 4:
+        case PACKAGE_LEVEL_VERSION:
             if (!path_is_safe_identifier(name) ||
                 context->packages->count >= MAX_SCANNED_PACKAGES) {
                 context->packages->invalid_count++;
                 return CUP_OK;
             }
 
-            err = checked_snprintf(child.identity.version,
+            err = text_format(child.identity.version,
                 sizeof(child.identity.version), "%s", name);
             if (err != CUP_OK || package_validate(path, &child.identity) != CUP_OK) {
                 context->packages->invalid_count++;

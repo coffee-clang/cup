@@ -6,10 +6,19 @@
 
 #include "error.h"
 
-/* Read the next non-empty, non-comment line from a text file. */
-CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, size_t *line_number);
+typedef struct {
+    char *data;
+    size_t capacity;
+} TextBuffer;
 
-/* Split a line at the first '=' and trim both fields. */
-CupError text_parse_key_value(char *line, char *key, size_t key_size, char *value, size_t value_size);
+int text_is_empty(const char *value);
+char *text_trim(char *value);
+CupError text_format(char *buffer, size_t size, const char *format, ...);
+CupError text_split_exact(char *input, char separator,
+    TextBuffer *outputs, size_t output_count);
+CupError text_read_line(FILE *file, char *buffer, size_t size,
+    int *has_line, size_t *line_number);
+CupError text_parse_key_value(char *line, char *key, size_t key_size,
+    char *value, size_t value_size);
 
 #endif /* CUP_TEXT_H */

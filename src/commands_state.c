@@ -55,7 +55,7 @@ static void print_package_info(const PackageInfo *info) {
 }
 
 // LIST COMMAND
-CupError handle_list(const char *target_override) {
+CupError command_list(const char *target_override) {
     CommandContext context = {0};
     CupError err;
     size_t i;
@@ -77,9 +77,9 @@ CupError handle_list(const char *target_override) {
         const StateEntry *state_entry = &context.state.installed[i];
         PackageIdentity package;
         const char *default_entry;
-        int on_disk = 0;
-        int stable = 0;
-        int annotated = 0;
+        int is_on_disk = 0;
+        int is_stable = 0;
+        int has_annotation = 0;
 
         if (strcmp(state_entry->host_platform, context.host_platform) != 0 ||
             strcmp(state_entry->target_platform, context.target_platform) != 0) {
@@ -97,12 +97,12 @@ CupError handle_list(const char *target_override) {
         if (package_identity_from_entry(&package, state_entry->component,
             state_entry->host_platform, state_entry->target_platform,
             state_entry->entry) != CUP_OK ||
-            package_exists(&package, &on_disk) != CUP_OK) {
+            package_directory_exists(&package, &is_on_disk) != CUP_OK) {
             printf(" (invalid)\n");
             continue;
         }
 
-        if (!on_disk) {
+        if (!is_on_disk) {
             printf(" (missing on disk)\n");
             continue;
         }
@@ -113,21 +113,21 @@ CupError handle_list(const char *target_override) {
         if (context.has_manifest) {
             manifest_is_stable(&context.manifest, state_entry->component,
                 package.tool, package.host_platform, package.target_platform,
-                package.version, &stable);
+                package.version, &is_stable);
         }
 
         if ((default_entry != NULL &&
-            strcmp(default_entry, state_entry->entry) == 0) || stable) {
+            strcmp(default_entry, state_entry->entry) == 0) || is_stable) {
             printf(" (");
 
             if (default_entry != NULL &&
                 strcmp(default_entry, state_entry->entry) == 0) {
                 printf("default");
-                annotated = 1;
+                has_annotation = 1;
             }
 
-            if (stable) {
-                printf("%sstable", annotated ? ", " : "");
+            if (is_stable) {
+                printf("%sstable", has_annotation ? ", " : "");
             }
 
             printf(")");
@@ -149,7 +149,7 @@ done:
 }
 
 // DEFAULT COMMAND
-CupError handle_default(const char *component, const char *entry, const char *target_override) {
+CupError command_default(const char *component, const char *entry, const char *target_override) {
     CommandContext context = {0};
     EntryRequest request;
     PackageIdentity package;
@@ -221,14 +221,14 @@ done:
 }
 
 // CURRENT COMMAND
-CupError handle_current(const char *component, const char *target_override) {
+CupError command_current(const char *component, const char *target_override) {
     CommandContext context = {0};
     PackageIdentity package;
     CupError err;
     const char *default_entry;
-    int stable = 0;
+    int is_stable = 0;
 
-    err = validate_component(component);
+    err = registry_validate_component(component);
     if (err != CUP_OK) {
         goto done;
     }
@@ -268,12 +268,12 @@ CupError handle_current(const char *component, const char *target_override) {
 
     if (context.has_manifest) {
         manifest_is_stable(&context.manifest, component, package.tool,
-            package.host_platform, package.target_platform, package.version, &stable);
+            package.host_platform, package.target_platform, package.version, &is_stable);
     }
 
     printf("Current %s default for host '%s', target '%s': %s%s\n",
         component, context.host_platform, context.target_platform,
-        default_entry, stable ? " (stable)" : "");
+        default_entry, is_stable ? " (stable)" : "");
     err = CUP_OK;
 
 done:
@@ -282,7 +282,7 @@ done:
 }
 
 // INFO COMMAND
-CupError handle_info(const char *component, const char *entry, const char *target_override) {
+CupError command_info(const char *component, const char *entry, const char *target_override) {
     CommandContext context = {0};
     EntryRequest request;
     PackageIdentity package;
@@ -334,7 +334,7 @@ CupError handle_info(const char *component, const char *entry, const char *targe
 
     err = layout_build_install_path(install_path, sizeof(install_path), &package);
     if (err != CUP_OK ||
-        path_join(info_path, sizeof(info_path), install_path, CUP_INFO_FILE) != CUP_OK) {
+        path_join(info_path, sizeof(info_path), install_path, CUP_INFO_FILENAME) != CUP_OK) {
         err = CUP_ERR_FILESYSTEM;
         goto done;
     }

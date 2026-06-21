@@ -40,7 +40,7 @@ CupError package_info_is_read_only(const char *base_path, int *is_read_only);
 CupError package_set_info_read_only(const char *base_path);
 
 /* Check whether the canonical package directory exists. */
-CupError package_exists(const PackageIdentity *identity, int *exists);
+CupError package_directory_exists(const PackageIdentity *identity, int *exists);
 
 /* Scan and validate all package directories under components. */
 CupError package_scan(PackageList *packages);

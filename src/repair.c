@@ -10,18 +10,18 @@
 #include "state.h"
 #include "system.h"
 #include "transaction.h"
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define BOOTSTRAP_URL "https://github.com/coffee-clang/cup/releases/download/cup-bootstrap"
 
-#if defined(_WIN32)
-#define DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup-windows.ps1"
-#else
-#define DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup.sh"
-#endif
+typedef enum {
+    REPAIR_ASSET_EXECUTABLE = 1u << 0,
+    REPAIR_ASSET_READ_ONLY = 1u << 1
+} RepairAssetFlags;
+
 
 // REPAIR HELPERS
 static CupError installed_bootstrap_exists(int *exists) {
@@ -68,7 +68,7 @@ static CupError development_bootstrap_available(int *available) {
         return CUP_OK;
     }
 
-    err = system_is_regular_file(DEVELOPMENT_UNINSTALL_PATH, &uninstall_exists);
+    err = system_is_regular_file(CUP_DEVELOPMENT_UNINSTALL_PATH, &uninstall_exists);
     if (err != CUP_OK) {
         return err;
     }
@@ -95,90 +95,120 @@ static int package_list_contains(const PackageList *packages, const PackageIdent
     return 0;
 }
 
-static CupError download_asset(const char *asset, char *temporary, size_t temporary_size) {
-    CupError err;
+static CupError create_repair_temp(char *path, size_t path_size) {
     char tmp_dir[MAX_PATH_LEN];
-    char pid[MAX_NAME_LEN];
-    char url[MAX_MANIFEST_URL_LEN];
+    FILE *file = NULL;
 
     if (layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
-        system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
-        checked_snprintf(temporary, temporary_size,
-            "%s/repair-%s-%s", tmp_dir, asset, pid) != CUP_OK ||
-        checked_snprintf(url, sizeof(url), "%s/%s", BOOTSTRAP_URL, asset) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
+        system_create_temp_file(tmp_dir, "repair", path, path_size, &file) != CUP_OK) {
+        return CUP_ERR_TEMPORARY;
     }
 
-    err = filesystem_remove_tree(temporary);
-    if (err != CUP_OK) {
-        return err;
+    if (fclose(file) != 0) {
+        system_remove_file(path);
+        return CUP_ERR_TEMPORARY;
     }
 
-    return fetch_resource(url, temporary);
+    return CUP_OK;
 }
 
-static CupError restore_asset(const char *destination, const char *local_source,
-    const char *asset, int executable, int read_only) {
+static CupError download_asset(const char *asset_name,
+    char *path, size_t path_size) {
+    char url[MAX_MANIFEST_URL_LEN];
+
+    if (create_repair_temp(path, path_size) != CUP_OK ||
+        text_format(url, sizeof(url), "%s/%s", BOOTSTRAP_URL, asset_name) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    return fetch_resource(url, path);
+}
+
+static CupError stage_asset(const char *local_source, const char *asset_name,
+    char *staged_path, size_t staged_size) {
     CupError err;
-    char temporary[MAX_PATH_LEN];
-    char backup[MAX_PATH_LEN];
-    int exists;
+    int is_regular_file;
 
-    if (!is_empty_string(local_source) &&
-        system_is_regular_file(local_source, &exists) == CUP_OK && exists) {
-        char tmp_dir[MAX_PATH_LEN];
-        char pid[MAX_NAME_LEN];
-
-        if (layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
-            system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
-            checked_snprintf(temporary, sizeof(temporary),
-                "%s/repair-%s-%s", tmp_dir, asset, pid) != CUP_OK) {
-            return CUP_ERR_FILESYSTEM;
-        }
-
-        err = filesystem_remove_tree(temporary);
+    if (!text_is_empty(local_source) &&
+        system_is_regular_file(local_source, &is_regular_file) == CUP_OK &&
+        is_regular_file) {
+        err = create_repair_temp(staged_path, staged_size);
         if (err == CUP_OK) {
-            err = system_copy_file(local_source, temporary);
+            err = system_copy_file(local_source, staged_path);
         }
-    } else {
-        err = download_asset(asset, temporary, sizeof(temporary));
+        return err;
     }
 
+    return download_asset(asset_name, staged_path, staged_size);
+}
+
+static CupError apply_asset_permissions(const char *path,
+    RepairAssetFlags flags) {
+    if ((flags & REPAIR_ASSET_EXECUTABLE) != 0 &&
+        system_set_executable(path, 1) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if ((flags & REPAIR_ASSET_READ_ONLY) != 0 &&
+        system_set_read_only(path, 1) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    return CUP_OK;
+}
+
+static CupError commit_asset(const char *staged_path, const char *destination,
+    const char *backup_description) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    CupError err;
+    char backup_path[MAX_PATH_LEN];
+    int destination_exists;
+
+    err = system_path_exists(destination, &destination_exists);
     if (err != CUP_OK) {
         return err;
     }
 
-    if (executable && system_set_executable(temporary, 1) != CUP_OK) {
-        system_remove_file(temporary);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if (read_only && system_set_read_only(temporary, 1) != CUP_OK) {
-        system_remove_file(temporary);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    err = system_path_exists(destination, &exists);
-    if (err != CUP_OK) {
-        system_remove_file(temporary);
-        return err;
-    }
-
-    if (exists) {
+    if (destination_exists) {
         system_set_read_only(destination, 0);
-
-        err = filesystem_backup_invalid(destination, backup, sizeof(backup));
+        err = filesystem_backup_invalid(destination,
+            backup_path, sizeof(backup_path));
         if (err != CUP_OK) {
-            system_remove_file(temporary);
             return err;
         }
 
-        printf("Preserved invalid file as '%s'.\n", backup);
+        printf("Preserved invalid %s as '%s'.\n",
+            backup_description, backup_path);
     }
 
-    err = system_replace_file(temporary, destination);
+    err = system_replace_file(staged_path, destination, &commit_state);
+    if (err == CUP_OK) {
+        return CUP_OK;
+    }
+
+    return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
+}
+
+static CupError restore_asset(const char *destination,
+    const char *local_source, const char *asset_name, RepairAssetFlags flags) {
+    CupError err;
+    char staged_path[MAX_PATH_LEN];
+
+    err = stage_asset(local_source, asset_name,
+        staged_path, sizeof(staged_path));
     if (err != CUP_OK) {
-        system_remove_file(temporary);
+        return err;
+    }
+
+    err = apply_asset_permissions(staged_path, flags);
+    if (err != CUP_OK) {
+        system_remove_file(staged_path);
+        return err;
+    }
+
+    err = commit_asset(staged_path, destination, "file");
+    if (err != CUP_OK && err != CUP_ERR_COMMIT) {
+        system_remove_file(staged_path);
     }
 
     return err;
@@ -188,101 +218,84 @@ static CupError restore_asset(const char *destination, const char *local_source,
 static CupError repair_manifest(void) {
     Manifest manifest;
     CupError err;
-    char path[MAX_PATH_LEN];
-    char temporary[MAX_PATH_LEN];
-    char backup[MAX_PATH_LEN];
-    int exists;
-    int read_only;
+    char manifest_path[MAX_PATH_LEN];
+    char staged_path[MAX_PATH_LEN];
+    int manifest_exists;
+    int is_read_only;
 
     manifest_init(&manifest);
 
-    if (layout_get_manifest_path(path, sizeof(path)) != CUP_OK) {
+    err = layout_get_manifest_path(manifest_path, sizeof(manifest_path));
+    if (err != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
-    err = system_path_exists(path, &exists);
+    err = system_path_exists(manifest_path, &manifest_exists);
     if (err != CUP_OK) {
         return err;
     }
 
-    if (exists && manifest_load_installed(&manifest) == CUP_OK) {
+    if (manifest_exists && manifest_load_installed(&manifest) == CUP_OK) {
         manifest_free(&manifest);
 
-        if (system_is_read_only(path, &read_only) != CUP_OK || !read_only) {
+        err = system_is_read_only(manifest_path, &is_read_only);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (!is_read_only) {
             printf("Restoring read-only protection on packages.cfg.\n");
-            return system_set_read_only(path, 1);
+            return system_set_read_only(manifest_path, 1);
         }
 
         return CUP_OK;
     }
 
     manifest_free(&manifest);
-
     manifest_init(&manifest);
     err = manifest_load_development(&manifest);
-
     if (err == CUP_OK) {
-        char tmp_dir[MAX_PATH_LEN];
-        char pid[MAX_NAME_LEN];
-
-        if (layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
-            system_get_process_id(pid, sizeof(pid)) != CUP_OK ||
-            checked_snprintf(temporary, sizeof(temporary),
-                "%s/repair-packages-%s", tmp_dir, pid) != CUP_OK ||
-            system_copy_file(manifest.path, temporary) != CUP_OK) {
-            manifest_free(&manifest);
-            return CUP_ERR_MANIFEST;
+        err = create_repair_temp(staged_path, sizeof(staged_path));
+        if (err == CUP_OK) {
+            err = system_copy_file(manifest.path, staged_path);
         }
-
         manifest_free(&manifest);
     } else {
         manifest_free(&manifest);
-        err = download_asset("packages.cfg", temporary, sizeof(temporary));
-        if (err != CUP_OK) {
-            return err;
-        }
+        err = download_asset(CUP_MANIFEST_FILENAME,
+            staged_path, sizeof(staged_path));
+    }
+    if (err != CUP_OK) {
+        return err;
     }
 
     manifest_init(&manifest);
-    err = manifest_load_path(&manifest, temporary, MANIFEST_SOURCE_INSTALLED);
+    err = manifest_load_path(&manifest, staged_path,
+        MANIFEST_SOURCE_INSTALLED);
     manifest_free(&manifest);
-
     if (err != CUP_OK) {
-        system_remove_file(temporary);
+        system_remove_file(staged_path);
         return CUP_ERR_MANIFEST;
     }
 
-    if (system_set_read_only(temporary, 1) != CUP_OK) {
-        system_remove_file(temporary);
-        return CUP_ERR_FILESYSTEM;
+    err = system_set_read_only(staged_path, 1);
+    if (err != CUP_OK) {
+        system_remove_file(staged_path);
+        return err;
     }
 
-    if (system_path_exists(path, &exists) != CUP_OK) {
-        system_remove_file(temporary);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if (exists) {
-        system_set_read_only(path, 0);
-
-        err = filesystem_backup_invalid(path, backup, sizeof(backup));
-        if (err != CUP_OK) {
-            system_remove_file(temporary);
-            return err;
+    err = commit_asset(staged_path, manifest_path, "manifest");
+    if (err != CUP_OK) {
+        if (err != CUP_ERR_COMMIT) {
+            system_remove_file(staged_path);
         }
-
-        printf("Preserved invalid manifest as '%s'.\n", backup);
+        return err;
     }
 
-    err = system_replace_file(temporary, path);
-    if (err == CUP_OK) {
-        printf("Restored official package manifest.\n");
-    }
-
-    return err;
+    printf("Restored official package manifest.\n");
+    return CUP_OK;
 }
 
-static const char *get_binary_asset(const char *host) {
+static const char *find_binary_asset(const char *host) {
     if (strcmp(host, "linux-x64") == 0) {
         return "cup-linux-x64";
     }
@@ -306,165 +319,231 @@ static const char *get_binary_asset(const char *host) {
     return NULL;
 }
 
-static CupError repair_assets(void) {
+static CupError repair_binary(void) {
     CupError err;
-    char path[MAX_PATH_LEN];
-    char host[MAX_PLATFORM_LEN];
-    const char *asset;
-    int exists;
+    char binary_path[MAX_PATH_LEN];
+    char host_platform[MAX_PLATFORM_LEN];
+    const char *asset_name;
+    int is_regular_file;
+    int is_executable;
 
-    if (layout_get_binary_path(path, sizeof(path)) != CUP_OK ||
-        get_host_platform(host, sizeof(host)) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
+    err = layout_get_binary_path(binary_path, sizeof(binary_path));
+    if (err != CUP_OK) {
+        return err;
     }
 
-    if (system_is_regular_file(path, &exists) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
+    err = platform_get_host(host_platform, sizeof(host_platform));
+    if (err != CUP_OK) {
+        return err;
     }
 
-    if (!exists) {
-        asset = get_binary_asset(host);
-        if (asset == NULL) {
+    err = system_is_regular_file(binary_path, &is_regular_file);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (!is_regular_file) {
+        asset_name = find_binary_asset(host_platform);
+        if (asset_name == NULL) {
             return CUP_ERR_NOT_AVAILABLE;
         }
 
         printf("Restoring canonical cup executable.\n");
-        err = restore_asset(path, NULL, asset, 1, 0);
-        if (err != CUP_OK) {
-            return err;
-        }
-    } else {
-        int executable;
-
-        if (system_is_executable(path, &executable) != CUP_OK || !executable) {
-            if (system_set_executable(path, 1) != CUP_OK) {
-                return CUP_ERR_FILESYSTEM;
-            }
-
-            printf("Restored executable permissions on canonical cup executable.\n");
-        }
+        return restore_asset(binary_path, NULL, asset_name,
+            REPAIR_ASSET_EXECUTABLE);
     }
 
-    if (layout_get_uninstall_path(path, sizeof(path)) != CUP_OK ||
-        system_is_regular_file(path, &exists) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
+    err = system_is_executable(binary_path, &is_executable);
+    if (err != CUP_OK || !is_executable) {
+        if (system_set_executable(binary_path, 1) != CUP_OK) {
+            return CUP_ERR_FILESYSTEM;
+        }
+
+        printf("Restored executable permissions on canonical cup executable.\n");
     }
 
-    if (!exists) {
+    return CUP_OK;
+}
+
+static CupError repair_uninstall_script(void) {
+    CupError err;
+    char script_path[MAX_PATH_LEN];
+    int is_regular_file;
+    int is_read_only;
+
+    err = layout_get_uninstall_path(script_path, sizeof(script_path));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = system_is_regular_file(script_path, &is_regular_file);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (!is_regular_file) {
         printf("Restoring uninstall script.\n");
-
 #if defined(_WIN32)
-        err = restore_asset(path, DEVELOPMENT_UNINSTALL_PATH,
-            "uninstall.ps1", 0, 1);
+        return restore_asset(script_path, CUP_DEVELOPMENT_UNINSTALL_PATH,
+            CUP_UNINSTALL_FILENAME, REPAIR_ASSET_READ_ONLY);
 #else
-        err = restore_asset(path, DEVELOPMENT_UNINSTALL_PATH,
-            "uninstall.sh", 1, 1);
+        return restore_asset(script_path, CUP_DEVELOPMENT_UNINSTALL_PATH,
+            CUP_UNINSTALL_FILENAME,
+            REPAIR_ASSET_EXECUTABLE | REPAIR_ASSET_READ_ONLY);
 #endif
+    }
 
-        if (err != CUP_OK) {
-            return err;
-        }
-    } else {
-        int executable;
-        int read_only;
+#if !defined(_WIN32)
+    {
+        int is_executable;
 
-        if (system_is_executable(path, &executable) != CUP_OK || !executable) {
-            if (system_set_executable(path, 1) != CUP_OK) {
+        err = system_is_executable(script_path, &is_executable);
+        if (err != CUP_OK || !is_executable) {
+            if (system_set_executable(script_path, 1) != CUP_OK) {
                 return CUP_ERR_FILESYSTEM;
             }
 
             printf("Restored executable permissions on uninstall script.\n");
         }
+    }
+#endif
 
-        if (system_is_read_only(path, &read_only) != CUP_OK || !read_only) {
-            if (system_set_read_only(path, 1) != CUP_OK) {
-                return CUP_ERR_FILESYSTEM;
-            }
-
-            printf("Restored read-only protection on uninstall script.\n");
+    err = system_is_read_only(script_path, &is_read_only);
+    if (err != CUP_OK || !is_read_only) {
+        if (system_set_read_only(script_path, 1) != CUP_OK) {
+            return CUP_ERR_FILESYSTEM;
         }
+
+        printf("Restored read-only protection on uninstall script.\n");
+    }
+
+    return CUP_OK;
+}
+
+static CupError repair_bootstrap_assets(void) {
+    CupError err;
+
+    err = repair_binary();
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = repair_uninstall_script();
+    if (err != CUP_OK) {
+        return err;
     }
 
     return repair_manifest();
 }
 
 // TRANSACTION RECOVERY
-static CupError recover_transaction(const Transaction *transaction, CupState *state) {
+static CupError move_staged_package(const PackageIdentity *package,
+    const char *staged_path, const char *install_path) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    CupError err;
+
+    err = layout_ensure_package_parent(package);
+    if (err != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
+
+    err = system_move_path(staged_path, install_path, &commit_state);
+    return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
+}
+
+static CupError remove_transaction_path(const char *path, int exists) {
+    if (!exists) {
+        return CUP_OK;
+    }
+
+    return filesystem_remove_tree(path) == CUP_OK
+        ? CUP_OK : CUP_ERR_TRANSACTION;
+}
+
+static CupError recover_installed_package(const Transaction *transaction,
+    const char *install_path, int install_exists,
+    const char *staged_path, int staged_exists) {
+    CupError err;
+
+    if (!install_exists) {
+        if (!staged_exists) {
+            return CUP_ERR_TRANSACTION;
+        }
+
+        err = move_staged_package(&transaction->package,
+            staged_path, install_path);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    return remove_transaction_path(staged_path, staged_exists);
+}
+
+static CupError recover_absent_package(TransactionOperation operation,
+    const char *install_path, int install_exists,
+    const char *staged_path, int staged_exists) {
+    CupError err;
+
+    if (operation == TRANSACTION_INSTALL) {
+        err = remove_transaction_path(install_path, install_exists);
+        if (err != CUP_OK) {
+            return err;
+        }
+        return remove_transaction_path(staged_path, staged_exists);
+    }
+
+    err = remove_transaction_path(staged_path, staged_exists);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return remove_transaction_path(install_path, install_exists);
+}
+
+static CupError recover_transaction(const Transaction *transaction,
+    CupState *state) {
     CupError err;
     char entry[MAX_ENTRY_LEN];
     char install_path[MAX_PATH_LEN];
-    char temporary_path[MAX_PATH_LEN];
-    int installed;
+    char staged_path[MAX_PATH_LEN];
+    int is_installed;
     int install_exists;
-    int temporary_exists;
+    int staged_exists;
+
+    if (transaction == NULL || state == NULL ||
+        (transaction->operation != TRANSACTION_INSTALL &&
+            transaction->operation != TRANSACTION_REMOVE)) {
+        return CUP_ERR_TRANSACTION;
+    }
 
     if (entry_build(entry, sizeof(entry), transaction->package.tool,
         transaction->package.version) != CUP_OK ||
         layout_build_install_path(install_path, sizeof(install_path),
             &transaction->package) != CUP_OK ||
-        transaction_get_tmp_path(transaction, temporary_path,
-            sizeof(temporary_path)) != CUP_OK) {
+        transaction_get_tmp_path(transaction, staged_path,
+            sizeof(staged_path)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
-    installed = state_find_installed(state, transaction->package.component,
-        transaction->package.host_platform, transaction->package.target_platform,
-        entry) != -1;
+    is_installed = state_find_installed(state,
+        transaction->package.component,
+        transaction->package.host_platform,
+        transaction->package.target_platform, entry) != -1;
 
     if (system_path_exists(install_path, &install_exists) != CUP_OK ||
-        system_path_exists(temporary_path, &temporary_exists) != CUP_OK) {
+        system_path_exists(staged_path, &staged_exists) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
-    if (transaction->operation == TRANSACTION_INSTALL) {
-        if (installed) {
-            if (!install_exists && temporary_exists) {
-                err = layout_ensure_package_parent(&transaction->package);
-                if (err != CUP_OK ||
-                    system_move_path(temporary_path, install_path) != CUP_OK) {
-                    return CUP_ERR_TRANSACTION;
-                }
-            } else if (!install_exists) {
-                return CUP_ERR_TRANSACTION;
-            }
-
-            if (temporary_exists && filesystem_remove_tree(temporary_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-        } else {
-            if (install_exists && filesystem_remove_tree(install_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-
-            if (temporary_exists && filesystem_remove_tree(temporary_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-        }
-    } else if (transaction->operation == TRANSACTION_REMOVE) {
-        if (installed) {
-            if (!install_exists && temporary_exists) {
-                err = layout_ensure_package_parent(&transaction->package);
-                if (err != CUP_OK ||
-                    system_move_path(temporary_path, install_path) != CUP_OK) {
-                    return CUP_ERR_TRANSACTION;
-                }
-            } else if (!install_exists) {
-                return CUP_ERR_TRANSACTION;
-            } else if (temporary_exists &&
-                filesystem_remove_tree(temporary_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-        } else {
-            if (temporary_exists && filesystem_remove_tree(temporary_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-
-            if (install_exists && filesystem_remove_tree(install_path) != CUP_OK) {
-                return CUP_ERR_TRANSACTION;
-            }
-        }
+    if (is_installed) {
+        err = recover_installed_package(transaction,
+            install_path, install_exists, staged_path, staged_exists);
     } else {
-        return CUP_ERR_TRANSACTION;
+        err = recover_absent_package(transaction->operation,
+            install_path, install_exists, staged_path, staged_exists);
+    }
+    if (err != CUP_OK) {
+        return err;
     }
 
     err = transaction_clear();
@@ -478,45 +557,52 @@ static CupError recover_transaction(const Transaction *transaction, CupState *st
 }
 
 // STATE RECONCILIATION
-static CupError reconcile_state(CupState *state, const PackageList *packages, int *changed) {
-    size_t i = 0;
+static CupError remove_stale_installed_entries(CupState *state,
+    const PackageList *packages, int *state_changed) {
+    size_t index = 0;
 
-    while (i < state->installed_count) {
+    while (index < state->installed_count) {
         PackageIdentity package;
-        StateEntry entry = state->installed[i];
+        StateEntry entry = state->installed[index];
 
         if (package_identity_from_entry(&package, entry.component,
-            entry.host_platform, entry.target_platform, entry.entry) != CUP_OK ||
-            !package_list_contains(packages, &package)) {
-            state_clear_matching_default(state, entry.component,
-                entry.host_platform, entry.target_platform, entry.entry);
-            state_remove_installed(state, entry.component,
-                entry.host_platform, entry.target_platform, entry.entry);
-
-            printf("Removed stale state entry '%s:%s'.\n",
-                entry.component, entry.entry);
-            *changed = 1;
+            entry.host_platform, entry.target_platform, entry.entry) == CUP_OK &&
+            package_list_contains(packages, &package)) {
+            index++;
             continue;
         }
 
-        i++;
+        state_clear_matching_default(state, entry.component,
+            entry.host_platform, entry.target_platform, entry.entry);
+        state_remove_installed(state, entry.component,
+            entry.host_platform, entry.target_platform, entry.entry);
+
+        printf("Removed stale state entry '%s:%s'.\n",
+            entry.component, entry.entry);
+        *state_changed = 1;
     }
+
+    return CUP_OK;
+}
+
+static CupError adopt_scanned_packages(CupState *state,
+    const PackageList *packages, int *state_changed) {
+    size_t i;
 
     for (i = 0; i < packages->count; ++i) {
         const PackageIdentity *package = &packages->items[i];
         char entry[MAX_ENTRY_LEN];
         char install_path[MAX_PATH_LEN];
-        int read_only;
+        int is_read_only;
 
-        if (entry_build(entry, sizeof(entry), package->tool, package->version) != CUP_OK) {
+        if (entry_build(entry, sizeof(entry),
+            package->tool, package->version) != CUP_OK) {
             continue;
         }
 
         if (state_find_installed(state, package->component,
             package->host_platform, package->target_platform, entry) == -1) {
-            CupError err;
-
-            err = state_add_installed(state, package->component,
+            CupError err = state_add_installed(state, package->component,
                 package->host_platform, package->target_platform, entry);
             if (err != CUP_OK) {
                 return err;
@@ -524,11 +610,13 @@ static CupError reconcile_state(CupState *state, const PackageList *packages, in
 
             printf("Adopted valid package '%s:%s' into state.txt.\n",
                 package->component, entry);
-            *changed = 1;
+            *state_changed = 1;
         }
 
-        if (layout_build_install_path(install_path, sizeof(install_path), package) == CUP_OK &&
-            (package_info_is_read_only(install_path, &read_only) != CUP_OK || !read_only)) {
+        if (layout_build_install_path(install_path,
+            sizeof(install_path), package) == CUP_OK &&
+            (package_info_is_read_only(install_path, &is_read_only) != CUP_OK ||
+                !is_read_only)) {
             if (package_set_info_read_only(install_path) != CUP_OK) {
                 return CUP_ERR_FILESYSTEM;
             }
@@ -538,47 +626,225 @@ static CupError reconcile_state(CupState *state, const PackageList *packages, in
         }
     }
 
-    i = 0;
+    return CUP_OK;
+}
 
-    while (i < state->default_count) {
-        StateEntry entry = state->defaults[i];
+static CupError remove_stale_defaults(CupState *state, int *state_changed) {
+    size_t index = 0;
+
+    while (index < state->default_count) {
+        StateEntry entry = state->defaults[index];
 
         if (state_find_installed(state, entry.component,
-            entry.host_platform, entry.target_platform, entry.entry) == -1) {
-            state_clear_default(state, entry.component,
-                entry.host_platform, entry.target_platform);
-
-            printf("Removed stale default for component '%s'.\n", entry.component);
-            *changed = 1;
+            entry.host_platform, entry.target_platform, entry.entry) != -1) {
+            index++;
             continue;
         }
 
-        i++;
+        state_clear_default(state, entry.component,
+            entry.host_platform, entry.target_platform);
+        printf("Removed stale default for component '%s'.\n", entry.component);
+        *state_changed = 1;
     }
 
     return CUP_OK;
 }
 
+static CupError reconcile_state(CupState *state,
+    const PackageList *packages, int *state_changed) {
+    CupError err;
+
+    err = remove_stale_installed_entries(state, packages, state_changed);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = adopt_scanned_packages(state, packages, state_changed);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return remove_stale_defaults(state, state_changed);
+}
+
 // REPAIR COMMAND
-CupError handle_repair(void) {
-    SystemLock lock = {0, 0};
+typedef struct {
+    SystemLock lock;
     CupState state;
     StateFileStatus state_status;
     PackageList packages;
     Transaction transaction;
+    int state_changed;
+    int preserve_tmp;
+} RepairContext;
+
+static void repair_context_init(RepairContext *context) {
+    memset(context, 0, sizeof(*context));
+    transaction_init(&context->transaction);
+}
+
+static CupError repair_load_state(RepairContext *context) {
+    Transaction pending_transaction;
     TransactionFileStatus transaction_status;
     CupError err;
-    char lock_path[MAX_PATH_LEN];
     char state_path[MAX_PATH_LEN];
-    char backup[MAX_PATH_LEN];
-    char transaction_path[MAX_PATH_LEN];
-    char tmp_dir[MAX_PATH_LEN];
-    int changed = 0;
-    int skip_tmp_cleanup = 0;
-    int installed_bootstrap;
-    int development_bootstrap;
+    char backup_path[MAX_PATH_LEN];
 
-    transaction_init(&transaction);
+    err = state_load(&context->state, &context->state_status);
+    if (err == CUP_OK) {
+        return CUP_OK;
+    }
+
+    transaction_init(&pending_transaction);
+    err = transaction_load(&pending_transaction, &transaction_status);
+    if (err == CUP_OK && transaction_status == TRANSACTION_FILE_LOADED) {
+        fprintf(stderr, "Error: state.txt is invalid while a transaction is pending; "
+            "automatic recovery would be ambiguous.\n");
+        return CUP_ERR_TRANSACTION;
+    }
+
+    err = layout_get_state_path(state_path, sizeof(state_path));
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    err = filesystem_backup_invalid(state_path,
+        backup_path, sizeof(backup_path));
+    if (err != CUP_OK) {
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    printf("Preserved invalid state as '%s'.\n", backup_path);
+    memset(&context->state, 0, sizeof(context->state));
+    context->state_status = STATE_FILE_MISSING;
+    context->state_changed = 1;
+    return CUP_OK;
+}
+
+static CupError repair_pending_transaction(RepairContext *context) {
+    TransactionFileStatus transaction_status;
+    CupError err;
+    char transaction_path[MAX_PATH_LEN];
+    char backup_path[MAX_PATH_LEN];
+
+    err = transaction_load(&context->transaction, &transaction_status);
+    if (err != CUP_OK) {
+        err = layout_get_transaction_path(transaction_path,
+            sizeof(transaction_path));
+        if (err != CUP_OK) {
+            return CUP_ERR_TRANSACTION;
+        }
+
+        err = filesystem_backup_invalid(transaction_path,
+            backup_path, sizeof(backup_path));
+        if (err != CUP_OK) {
+            return CUP_ERR_TRANSACTION;
+        }
+
+        printf("Preserved invalid transaction journal as '%s'; "
+            "ambiguous temporary data was left untouched.\n", backup_path);
+        context->preserve_tmp = 1;
+        return CUP_OK;
+    }
+
+    if (transaction_status == TRANSACTION_FILE_MISSING) {
+        return CUP_OK;
+    }
+
+    err = recover_transaction(&context->transaction, &context->state);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+            "Error: interrupted transaction cannot be repaired safely.\n");
+    }
+
+    return err;
+}
+
+static CupError repair_bootstrap(void) {
+    CupError err;
+    int installed_exists;
+    int development_available;
+
+    err = installed_bootstrap_exists(&installed_exists);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = development_bootstrap_available(&development_available);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (!installed_exists && development_available) {
+        printf("Using development bootstrap files from the repository.\n");
+        return CUP_OK;
+    }
+
+    err = layout_ensure_bootstrap();
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return repair_bootstrap_assets();
+}
+
+static CupError repair_packages(RepairContext *context) {
+    CupError err;
+
+    err = package_scan(&context->packages);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (context->packages.invalid_count > 0) {
+        printf("Warning: %zu invalid or ambiguous package path(s) "
+            "were left unchanged.\n", context->packages.invalid_count);
+    }
+
+    return reconcile_state(&context->state, &context->packages,
+        &context->state_changed);
+}
+
+static CupError repair_save_state(const RepairContext *context) {
+    CupError err;
+
+    if (context->state_status == STATE_FILE_LOADED &&
+        !context->state_changed) {
+        return CUP_OK;
+    }
+
+    err = state_save(&context->state);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    printf("Saved a valid state.txt.\n");
+    return CUP_OK;
+}
+
+static CupError repair_cleanup_tmp(const RepairContext *context) {
+    char tmp_dir[MAX_PATH_LEN];
+    char transaction_path[MAX_PATH_LEN];
+
+    if (context->preserve_tmp) {
+        return CUP_OK;
+    }
+
+    if (layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
+        layout_get_transaction_path(transaction_path,
+            sizeof(transaction_path)) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    return filesystem_clear_directory(tmp_dir, transaction_path);
+}
+
+CupError command_repair(void) {
+    RepairContext context;
+    CupError err;
+    char lock_path[MAX_PATH_LEN];
+
+    repair_context_init(&context);
     printf("==> Repairing cup...\n");
 
     err = layout_ensure_root();
@@ -586,136 +852,45 @@ CupError handle_repair(void) {
         return err;
     }
 
-    if (layout_get_lock_path(lock_path, sizeof(lock_path)) != CUP_OK) {
+    err = layout_get_lock_path(lock_path, sizeof(lock_path));
+    if (err != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    err = system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+    err = system_lock_acquire(&context.lock,
+        lock_path, SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
         if (err == CUP_ERR_LOCK) {
-            fprintf(stderr, "Error: another cup operation is currently running.\n");
+            fprintf(stderr,
+                "Error: another cup operation is currently running.\n");
         }
         return err;
     }
 
     err = layout_ensure_runtime();
-    if (err != CUP_OK) {
-        goto done;
+    if (err == CUP_OK) {
+        err = repair_load_state(&context);
+    }
+    if (err == CUP_OK) {
+        err = repair_pending_transaction(&context);
+    }
+    if (err == CUP_OK) {
+        err = repair_bootstrap();
+    }
+    if (err == CUP_OK) {
+        err = repair_packages(&context);
+    }
+    if (err == CUP_OK) {
+        err = repair_save_state(&context);
+    }
+    if (err == CUP_OK) {
+        err = repair_cleanup_tmp(&context);
     }
 
-    err = state_load(&state, &state_status);
-    if (err != CUP_OK) {
-        err = transaction_load(&transaction, &transaction_status);
-        if (err == CUP_OK && transaction_status == TRANSACTION_FILE_LOADED) {
-            fprintf(stderr, "Error: state.txt is invalid while a transaction is pending; "
-                "automatic recovery would be ambiguous.\n");
-            err = CUP_ERR_TRANSACTION;
-            goto done;
-        }
-
-        if (layout_get_state_path(state_path, sizeof(state_path)) != CUP_OK) {
-            err = CUP_ERR_STATE_LOAD;
-            goto done;
-        }
-
-        if (filesystem_backup_invalid(state_path, backup, sizeof(backup)) != CUP_OK) {
-            err = CUP_ERR_STATE_LOAD;
-            goto done;
-        }
-
-        printf("Preserved invalid state as '%s'.\n", backup);
-        memset(&state, 0, sizeof(state));
-        state_status = STATE_FILE_MISSING;
-        changed = 1;
+    if (err == CUP_OK) {
+        printf("Repair completed.\n");
     }
 
-    err = transaction_load(&transaction, &transaction_status);
-    if (err != CUP_OK) {
-        if (layout_get_transaction_path(transaction_path,
-            sizeof(transaction_path)) != CUP_OK ||
-            filesystem_backup_invalid(transaction_path,
-                backup, sizeof(backup)) != CUP_OK) {
-            err = CUP_ERR_TRANSACTION;
-            goto done;
-        }
-
-        printf("Preserved invalid transaction journal as '%s'; "
-            "ambiguous temporary data was left untouched.\n", backup);
-        skip_tmp_cleanup = 1;
-    } else if (transaction_status == TRANSACTION_FILE_LOADED) {
-        err = recover_transaction(&transaction, &state);
-        if (err != CUP_OK) {
-            fprintf(stderr, "Error: interrupted transaction cannot be repaired safely.\n");
-            goto done;
-        }
-    }
-
-    err = installed_bootstrap_exists(&installed_bootstrap);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    err = development_bootstrap_available(&development_bootstrap);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    if (installed_bootstrap || !development_bootstrap) {
-        err = layout_ensure_bootstrap();
-        if (err != CUP_OK) {
-            goto done;
-        }
-
-        err = repair_assets();
-        if (err != CUP_OK) {
-            goto done;
-        }
-    } else {
-        printf("Using development bootstrap files from the repository.\n");
-    }
-
-    err = package_scan(&packages);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    if (packages.invalid_count > 0) {
-        printf("Warning: %zu invalid or ambiguous package path(s) were left unchanged.\n",
-            packages.invalid_count);
-    }
-
-    err = reconcile_state(&state, &packages, &changed);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    if (state_status == STATE_FILE_MISSING || changed) {
-        err = state_save(&state);
-        if (err != CUP_OK) {
-            goto done;
-        }
-
-        printf("Saved a valid state.txt.\n");
-    }
-
-    if (!skip_tmp_cleanup) {
-        if (layout_get_tmp_dir(tmp_dir, sizeof(tmp_dir)) != CUP_OK ||
-            layout_get_transaction_path(transaction_path,
-                sizeof(transaction_path)) != CUP_OK) {
-            err = CUP_ERR_FILESYSTEM;
-            goto done;
-        }
-
-        err = filesystem_clear_directory(tmp_dir, transaction_path);
-        if (err != CUP_OK) {
-            goto done;
-        }
-    }
-
-    printf("Repair completed.\n");
-    err = CUP_OK;
-
-done:
-    system_lock_release(&lock);
+    system_lock_release(&context.lock);
     return err;
 }

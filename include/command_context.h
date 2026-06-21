@@ -29,7 +29,8 @@ typedef struct {
 } CommandContext;
 
 /* Resolve platforms, verify the cup root and acquire the requested lock. */
-CupError command_context_begin(CommandContext *context, const char *target_override, SystemLockMode mode);
+CupError command_context_begin(CommandContext *context,
+    const char *target_override, SystemLockMode mode);
 
 /* Release the lock and resources owned by the command context. */
 void command_context_end(CommandContext *context);

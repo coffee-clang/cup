@@ -3,29 +3,53 @@
 #include "filesystem.h"
 #include "path.h"
 #include "system.h"
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 
+// MANAGED LAYOUT
+static const char ROOT_DIRECTORY[] = ".cup";
+static const char BIN_DIRECTORY[] = "bin";
+static const char COMPONENTS_DIRECTORY[] = "components";
+static const char TMP_DIRECTORY[] = "tmp";
+static const char CACHE_DIRECTORY[] = "cache";
+static const char CONFIG_DIRECTORY[] = "config";
+static const char SCRIPTS_DIRECTORY[] = "scripts";
+
+static const char STATE_FILENAME[] = "state.txt";
+static const char LOCK_FILENAME[] = "cup.lock";
+static const char TRANSACTION_FILENAME[] = "transaction.txt";
+
+#if defined(_WIN32)
+static const char BINARY_FILENAME[] = "cup.exe";
+#else
+static const char BINARY_FILENAME[] = "cup";
+#endif
+
 // MANAGED DIRECTORIES
 static const char *const RUNTIME_DIRS[] = {
-    CUP_COMPONENTS_DIR,
-    CUP_TMP_DIR,
-    CUP_CACHE_DIR
+    COMPONENTS_DIRECTORY,
+    TMP_DIRECTORY,
+    CACHE_DIRECTORY
 };
 
 static const char *const BOOTSTRAP_DIRS[] = {
-    CUP_BIN_DIR,
-    CUP_CONFIG_DIR,
-    CUP_SCRIPTS_DIR
+    BIN_DIRECTORY,
+    CONFIG_DIRECTORY,
+    SCRIPTS_DIRECTORY
 };
 
 // PATH HELPERS
+typedef enum {
+    PATH_CHAIN_ONLY,
+    PATH_CHAIN_CREATE_DIRECTORIES
+} PathChainMode;
+
 static CupError build_root_path(char *buffer, size_t size, const char *child) {
     CupError err;
     char root[MAX_PATH_LEN];
 
-    if (buffer == NULL || size == 0 || is_empty_string(child)) {
+    if (buffer == NULL || size == 0 || text_is_empty(child)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -38,17 +62,17 @@ static CupError build_root_path(char *buffer, size_t size, const char *child) {
 }
 
 static CupError build_path_chain(char *buffer, size_t size, const char *root,
-    const char *const *parts, size_t count, int create) {
+    const char *const *parts, size_t count, PathChainMode mode) {
     CupError err;
     char current[MAX_PATH_LEN];
     char next[MAX_PATH_LEN];
     size_t i;
 
-    if (buffer == NULL || size == 0 || is_empty_string(root) || parts == NULL) {
+    if (buffer == NULL || size == 0 || text_is_empty(root) || parts == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(current, sizeof(current), "%s", root);
+    err = text_format(current, sizeof(current), "%s", root);
     if (err != CUP_OK) {
         return err;
     }
@@ -63,23 +87,24 @@ static CupError build_path_chain(char *buffer, size_t size, const char *root,
             return err;
         }
 
-        if (create) {
+        if (mode == PATH_CHAIN_CREATE_DIRECTORIES) {
             err = filesystem_ensure_directory(next);
             if (err != CUP_OK) {
                 return err;
             }
         }
 
-        err = checked_snprintf(current, sizeof(current), "%s", next);
+        err = text_format(current, sizeof(current), "%s", next);
         if (err != CUP_OK) {
             return err;
         }
     }
 
-    return checked_snprintf(buffer, size, "%s", current);
+    return text_format(buffer, size, "%s", current);
 }
 
-static CupError check_layout_directory(const char *path, const char *description, size_t *missing_count) {
+static CupError check_layout_directory(const char *path,
+    const char *description, size_t *missing_count) {
     CupError err;
     int exists;
     int is_directory;
@@ -114,34 +139,34 @@ CupError layout_get_root(char *buffer, size_t size) {
         return err;
     }
 
-    return checked_snprintf(buffer, size, "%s/.cup", home);
+    return path_join(buffer, size, home, ROOT_DIRECTORY);
 }
 
 CupError layout_get_components_dir(char *buffer, size_t size) {
-    return build_root_path(buffer, size, CUP_COMPONENTS_DIR);
+    return build_root_path(buffer, size, COMPONENTS_DIRECTORY);
 }
 
 CupError layout_get_tmp_dir(char *buffer, size_t size) {
-    return build_root_path(buffer, size, CUP_TMP_DIR);
+    return build_root_path(buffer, size, TMP_DIRECTORY);
 }
 
 CupError layout_get_state_path(char *buffer, size_t size) {
-    return build_root_path(buffer, size, CUP_STATE_FILE);
+    return build_root_path(buffer, size, STATE_FILENAME);
 }
 
 CupError layout_get_lock_path(char *buffer, size_t size) {
-    return build_root_path(buffer, size, CUP_LOCK_FILE);
+    return build_root_path(buffer, size, LOCK_FILENAME);
 }
 
 CupError layout_get_manifest_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
 
-    err = build_root_path(directory, sizeof(directory), CUP_CONFIG_DIR);
+    err = build_root_path(directory, sizeof(directory), CONFIG_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, CUP_MANIFEST_FILE);
+    return path_join(buffer, size, directory, CUP_MANIFEST_FILENAME);
 }
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
@@ -152,39 +177,31 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, CUP_TRANSACTION_FILE);
+    return path_join(buffer, size, directory, TRANSACTION_FILENAME);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
-#if defined(_WIN32)
-    const char *name = "uninstall.ps1";
-#else
-    const char *name = "uninstall.sh";
-#endif
 
-    err = build_root_path(directory, sizeof(directory), CUP_SCRIPTS_DIR);
+    err = build_root_path(directory, sizeof(directory), SCRIPTS_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, name);
+
+    return path_join(buffer, size, directory, CUP_UNINSTALL_FILENAME);
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
-#if defined(_WIN32)
-    const char *name = "cup.exe";
-#else
-    const char *name = "cup";
-#endif
 
-    err = build_root_path(directory, sizeof(directory), CUP_BIN_DIR);
+    err = build_root_path(directory, sizeof(directory), BIN_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, name);
+
+    return path_join(buffer, size, directory, BINARY_FILENAME);
 }
 
 // PACKAGE PATHS
@@ -207,7 +224,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     parts[2] = identity->host_platform;
     parts[3] = identity->target_platform;
     parts[4] = identity->version;
-    return build_path_chain(buffer, size, root, parts, 5, 0);
+    return build_path_chain(buffer, size, root, parts, 5, PATH_CHAIN_ONLY);
 }
 
 static CupError build_cache_dir(char *buffer, size_t size, const PackageIdentity *identity) {
@@ -219,7 +236,7 @@ static CupError build_cache_dir(char *buffer, size_t size, const PackageIdentity
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = build_root_path(root, sizeof(root), CUP_CACHE_DIR);
+    err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
@@ -229,7 +246,7 @@ static CupError build_cache_dir(char *buffer, size_t size, const PackageIdentity
     parts[2] = identity->host_platform;
     parts[3] = identity->target_platform;
     parts[4] = identity->version;
-    return build_path_chain(buffer, size, root, parts, 5, 0);
+    return build_path_chain(buffer, size, root, parts, 5, PATH_CHAIN_ONLY);
 }
 
 CupError layout_build_cache_archive_path(char *buffer, size_t size,
@@ -247,7 +264,8 @@ CupError layout_build_cache_archive_path(char *buffer, size_t size,
         return err;
     }
 
-    err = checked_snprintf(filename, sizeof(filename), "%s-%s-%s-%s.%s", identity->tool, identity->version,
+    err = text_format(filename, sizeof(filename), "%s-%s-%s-%s.%s",
+        identity->tool, identity->version,
         identity->host_platform, identity->target_platform, format);
     if (err != CUP_OK) {
         return err;
@@ -256,47 +274,20 @@ CupError layout_build_cache_archive_path(char *buffer, size_t size,
     return path_join(buffer, size, directory, filename);
 }
 
-CupError layout_build_tmp_path(char *buffer, size_t size, const char *operation,
-    const PackageIdentity *identity, const char *suffix) {
-    CupError err;
-    char root[MAX_PATH_LEN];
-    char name[MAX_PATH_LEN];
-
-    if (identity == NULL || !path_is_safe_identifier(operation) || !path_is_safe_identifier(suffix)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = layout_get_tmp_dir(root, sizeof(root));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = checked_snprintf(name, sizeof(name), "%s-%s-%s-%s-%s-%s-%s", operation,
-        identity->component, identity->tool, identity->host_platform, identity->target_platform,
-        identity->version, suffix);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return path_join(buffer, size, root, name);
-}
-
 // STRUCTURE CHECKS AND CREATION
-static CupError inspect_runtime_path(const char *path, int directory,
-    size_t *present_count, int *invalid) {
+static CupError inspect_runtime_path(const char *path,
+    SystemPathKind expected_kind, size_t *present_count, int *has_invalid_path) {
+    SystemPathKind info;
     CupError err;
-    int exists;
-    int valid;
 
-    err = system_path_exists(path, &exists);
-    if (err != CUP_OK || !exists) {
+    err = system_get_path_kind(path, &info);
+    if (err != CUP_OK || info == SYSTEM_PATH_MISSING) {
         return err;
     }
 
     (*present_count)++;
-    err = directory ? system_is_directory(path, &valid) : system_is_regular_file(path, &valid);
-    if (err != CUP_OK || !valid) {
-        *invalid = 1;
+    if (info != expected_kind) {
+        *has_invalid_path = 1;
     }
 
     return CUP_OK;
@@ -306,7 +297,7 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
     CupError err;
     char path[MAX_PATH_LEN];
     size_t present_count = 0;
-    int invalid = 0;
+    int has_invalid_path = 0;
     size_t i;
 
     if (status == NULL) {
@@ -319,7 +310,8 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
             return err;
         }
 
-        err = inspect_runtime_path(path, 1, &present_count, &invalid);
+        err = inspect_runtime_path(path, SYSTEM_PATH_DIRECTORY,
+            &present_count, &has_invalid_path);
         if (err != CUP_OK) {
             return err;
         }
@@ -330,14 +322,16 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
         return err;
     }
 
-    err = inspect_runtime_path(path, 0, &present_count, &invalid);
+    err = inspect_runtime_path(path, SYSTEM_PATH_REGULAR_FILE,
+        &present_count, &has_invalid_path);
     if (err != CUP_OK) {
         return err;
     }
 
     if (present_count == 0) {
         *status = LAYOUT_RUNTIME_MISSING;
-    } else if (!invalid && present_count == 4) {
+    } else if (!has_invalid_path &&
+        present_count == sizeof(RUNTIME_DIRS) / sizeof(RUNTIME_DIRS[0]) + 1) {
         *status = LAYOUT_RUNTIME_READY;
     } else {
         *status = LAYOUT_RUNTIME_INCOMPLETE;
@@ -447,7 +441,7 @@ CupError layout_ensure_package_parent(const PackageIdentity *identity) {
     parts[1] = identity->tool;
     parts[2] = identity->host_platform;
     parts[3] = identity->target_platform;
-    return build_path_chain(path, sizeof(path), root, parts, 4, 1);
+    return build_path_chain(path, sizeof(path), root, parts, 4, PATH_CHAIN_CREATE_DIRECTORIES);
 }
 
 CupError layout_ensure_cache_parent(const PackageIdentity *identity) {
@@ -460,7 +454,7 @@ CupError layout_ensure_cache_parent(const PackageIdentity *identity) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = build_root_path(root, sizeof(root), CUP_CACHE_DIR);
+    err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
@@ -469,36 +463,45 @@ CupError layout_ensure_cache_parent(const PackageIdentity *identity) {
     parts[2] = identity->host_platform;
     parts[3] = identity->target_platform;
     parts[4] = identity->version;
-    return build_path_chain(path, sizeof(path), root, parts, 5, 1);
+    return build_path_chain(path, sizeof(path), root, parts, 5, PATH_CHAIN_CREATE_DIRECTORIES);
 }
 
-CupError layout_create_tmp_dir(char *buffer, size_t size, const char *operation, const PackageIdentity *identity) {
-    CupError err;
-    char suffix[MAX_NAME_LEN];
-
-    if (buffer == NULL || size == 0 || identity == NULL) {
+static CupError build_tmp_prefix(char *buffer, size_t size, const char *operation,
+    const PackageIdentity *identity) {
+    if (buffer == NULL || size == 0 || identity == NULL ||
+        !path_is_safe_identifier(operation)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_get_process_id(suffix, sizeof(suffix));
-    if (err != CUP_OK) {
+    return text_format(buffer, size, "%s-%s-%s-%s-%s-%s", operation,
+        identity->component, identity->tool, identity->host_platform,
+        identity->target_platform, identity->version);
+}
+
+CupError layout_create_tmp_dir(char *buffer, size_t size, const char *operation,
+    const PackageIdentity *identity) {
+    char root[MAX_PATH_LEN];
+    char prefix[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0 || identity == NULL ||
+        layout_get_tmp_dir(root, sizeof(root)) != CUP_OK ||
+        build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
-    err = layout_build_tmp_path(buffer, size, operation, identity, suffix);
-    if (err != CUP_OK) {
+    return system_create_temp_directory(root, prefix, buffer, size);
+}
+
+CupError layout_make_tmp_path(char *buffer, size_t size, const char *operation,
+    const PackageIdentity *identity) {
+    char root[MAX_PATH_LEN];
+    char prefix[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0 || identity == NULL ||
+        layout_get_tmp_dir(root, sizeof(root)) != CUP_OK ||
+        build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
-    err = filesystem_remove_tree(buffer);
-    if (err != CUP_OK) {
-        return CUP_ERR_TEMPORARY;
-    }
-
-    err = filesystem_ensure_directory(buffer);
-    if (err != CUP_OK) {
-        return CUP_ERR_TEMPORARY;
-    }
-
-    return CUP_OK;
+    return system_make_unique_temp_path(root, prefix, buffer, size);
 }

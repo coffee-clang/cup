@@ -1,7 +1,6 @@
 #include "info.h"
 
 #include "text.h"
-#include "util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +26,7 @@ void info_free(PackageInfo *info) {
 static int key_has_prefix(const char *key, const char *prefix) {
     size_t length;
 
-    if (is_empty_string(key) || is_empty_string(prefix)) {
+    if (text_is_empty(key) || text_is_empty(prefix)) {
         return 0;
     }
 
@@ -66,9 +65,9 @@ static CupError add_field(PackageInfo *info, const char *key, const char *value)
         info->capacity = capacity;
     }
 
-    if (checked_snprintf(info->fields[info->count].key,
+    if (text_format(info->fields[info->count].key,
         sizeof(info->fields[info->count].key), "%s", key) != CUP_OK ||
-        checked_snprintf(info->fields[info->count].value,
+        text_format(info->fields[info->count].value,
             sizeof(info->fields[info->count].value), "%s", value) != CUP_OK) {
         return CUP_ERR_VALIDATION;
     }
@@ -84,7 +83,7 @@ CupError info_load(PackageInfo *info, const char *path) {
     char line[MAX_INFO_LINE_LEN];
     size_t line_number = 0;
 
-    if (info == NULL || is_empty_string(path)) {
+    if (info == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -132,7 +131,7 @@ CupError info_load(PackageInfo *info, const char *path) {
 const char *info_get(const PackageInfo *info, const char *key) {
     size_t i;
 
-    if (info == NULL || is_empty_string(key)) {
+    if (info == NULL || text_is_empty(key)) {
         return NULL;
     }
 
@@ -146,7 +145,7 @@ const char *info_get(const PackageInfo *info, const char *key) {
 }
 
 const PackageInfoField *info_next(const PackageInfo *info, const char *prefix, size_t *cursor) {
-    if (info == NULL || is_empty_string(prefix) || cursor == NULL) {
+    if (info == NULL || text_is_empty(prefix) || cursor == NULL) {
         return NULL;
     }
 

@@ -33,7 +33,7 @@ static void handle_sigint(int sig) {
 // PUBLIC API
 void interrupt_setup(void) {
     g_interrupted = 0;
-#ifdef _WIN32
+#if defined(_WIN32)
     g_handler_active = SetConsoleCtrlHandler(handle_console_event, TRUE) != 0;
 #else
     struct sigaction action;
@@ -45,7 +45,7 @@ void interrupt_setup(void) {
 }
 
 void interrupt_reset(void) {
-#ifdef _WIN32
+#if defined(_WIN32)
     if (g_handler_active) {
         SetConsoleCtrlHandler(handle_console_event, FALSE);
     }

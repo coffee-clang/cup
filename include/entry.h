@@ -9,7 +9,8 @@
 int entry_is_stable(const char *release);
 
 /* Parse a '<tool>@<release>' string. */
-CupError entry_parse(const char *entry, char *tool, size_t tool_size, char *release, size_t release_size);
+CupError entry_parse(const char *entry, char *tool, size_t tool_size,
+    char *release, size_t release_size);
 
 /* Build a '<tool>@<release>' string. */
 CupError entry_build(char *buffer, size_t size, const char *tool, const char *release);

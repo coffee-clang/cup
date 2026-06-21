@@ -1,7 +1,7 @@
 #include "package_archive.h"
 
 #include "system.h"
-#include "util.h"
+#include "text.h"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -13,7 +13,7 @@ CupError package_archive_open_reader(struct archive **reader, const char *archiv
     struct archive *archive_reader;
     int status;
 
-    if (reader == NULL || is_empty_string(archive_path)) {
+    if (reader == NULL || text_is_empty(archive_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -53,7 +53,7 @@ static CupError archive_has_header(const char *archive_path, int *has_header) {
     struct archive_entry *entry;
     int status;
 
-    if (has_header == NULL || is_empty_string(archive_path)) {
+    if (has_header == NULL || text_is_empty(archive_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -81,7 +81,7 @@ CupError package_archive_is_usable(const char *archive_path, int *is_usable) {
     int has_header;
     long long size;
 
-    if (is_usable == NULL || is_empty_string(archive_path)) {
+    if (is_usable == NULL || text_is_empty(archive_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

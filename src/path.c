@@ -1,21 +1,21 @@
 #include "path.h"
 
-#include "util.h"
+#include "text.h"
 
 #include <ctype.h>
 #include <string.h>
 
 // PATH BUILDING
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child) {
-    if (buffer == NULL || size == 0 || is_empty_string(parent) || is_empty_string(child)) {
+    if (buffer == NULL || size == 0 || text_is_empty(parent) || text_is_empty(child)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    return checked_snprintf(buffer, size, "%s/%s", parent, child);
+    return text_format(buffer, size, "%s/%s", parent, child);
 }
 
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child) {
-    if (buffer == NULL || size == 0 || is_empty_string(parent)) {
+    if (buffer == NULL || size == 0 || text_is_empty(parent)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -67,7 +67,7 @@ static int is_windows_reserved_name(const char *value) {
     size_t base_length;
     size_t i;
 
-    if (is_empty_string(value)) {
+    if (text_is_empty(value)) {
         return 0;
     }
 
@@ -88,7 +88,7 @@ int path_is_safe_segment(const char *value) {
     const unsigned char *cursor;
     size_t length;
 
-    if (is_empty_string(value)) {
+    if (text_is_empty(value)) {
         return 0;
     }
 
@@ -137,7 +137,7 @@ int path_is_safe_relative(const char *path) {
     char part[256];
     size_t length;
 
-    if (is_empty_string(path)) {
+    if (text_is_empty(path)) {
         return 0;
     }
 

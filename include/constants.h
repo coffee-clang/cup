@@ -2,13 +2,11 @@
 #define CUP_CONSTANTS_H
 
 // IN-MEMORY STATE CAPACITY
-// The state keeps a bounded list of installed entries and one default entry
-// for each logical component group.
+// One default can exist for each component, host and target scope.
 #define MAX_INSTALLED 128
 #define MAX_DEFAULTS 32
 
 // GENERIC BUFFER SIZES
-// Fixed-size buffers used across the C implementation.
 #define MAX_NAME_LEN 32
 #define MAX_ENTRY_LEN 64
 #define MAX_PLATFORM_LEN 64
@@ -21,15 +19,25 @@
 #define MAX_MANIFEST_LINE_LEN 1024
 #define MAX_MANIFEST_KEY_LEN 128
 #define MAX_MANIFEST_VALUE_LEN 512
-
-// URL templates can be much longer than ordinary manifest values.
-// This limit is derived from the manifest line size while preserving
-// room for the maximum key length.
 #define MAX_MANIFEST_URL_LEN 896
 
 // INFO FILE
 #define MAX_INFO_LINE_LEN 512
 #define MAX_INFO_VALUE_LEN 384
 #define MAX_INFO_KEY_LEN 128
+
+// SHARED FILE NAMES AND DEVELOPMENT PATHS
+#define CUP_MANIFEST_FILENAME "packages.cfg"
+#define CUP_INFO_FILENAME "info.txt"
+
+#if defined(_WIN32)
+#define CUP_UNINSTALL_FILENAME "uninstall.ps1"
+#define CUP_DEVELOPMENT_UNINSTALL_PATH \
+    "scripts/install/uninstall-cup-windows.ps1"
+#else
+#define CUP_UNINSTALL_FILENAME "uninstall.sh"
+#define CUP_DEVELOPMENT_UNINSTALL_PATH \
+    "scripts/install/uninstall-cup.sh"
+#endif
 
 #endif /* CUP_CONSTANTS_H */

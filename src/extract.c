@@ -4,7 +4,7 @@
 #include "interrupt.h"
 #include "package_archive.h"
 #include "path.h"
-#include "util.h"
+#include "text.h"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -13,11 +13,12 @@
 #include <sys/types.h>
 
 // ARCHIVE PATHS
-static CupError split_archive_path(const char *path, char *root, size_t root_size, const char **relative) {
+static CupError split_archive_path(const char *path, char *root,
+    size_t root_size, const char **relative) {
     const char *slash;
     size_t length;
 
-    if (is_empty_string(path) || root == NULL || root_size == 0 || relative == NULL ||
+    if (text_is_empty(path) || root == NULL || root_size == 0 || relative == NULL ||
         path[0] == '/' || path[0] == '\\' ||
         strchr(path, '\\') != NULL || strchr(path, ':') != NULL) {
         return CUP_ERR_ARCHIVE_UNSAFE;
@@ -65,13 +66,13 @@ static int symlink_target_is_internal(const char *entry_path, const char *target
     size_t count = 0;
     char *cursor;
 
-    if (is_empty_string(entry_path) || is_empty_string(target) ||
+    if (text_is_empty(entry_path) || text_is_empty(target) ||
         target[0] == '/' || target[0] == '\\' ||
         strchr(target, '\\') != NULL || strchr(target, ':') != NULL) {
         return 0;
     }
 
-    if (checked_snprintf(copy, sizeof(copy), "%s", entry_path) != CUP_OK) {
+    if (text_format(copy, sizeof(copy), "%s", entry_path) != CUP_OK) {
         return 0;
     }
 
@@ -86,10 +87,10 @@ static int symlink_target_is_internal(const char *entry_path, const char *target
     }
 
     if (copy[0] == '\0') {
-        if (checked_snprintf(combined, sizeof(combined), "%s", target) != CUP_OK) {
+        if (text_format(combined, sizeof(combined), "%s", target) != CUP_OK) {
             return 0;
         }
-    } else if (checked_snprintf(combined, sizeof(combined),
+    } else if (text_format(combined, sizeof(combined),
         "%s/%s", copy, target) != CUP_OK) {
         return 0;
     }
@@ -128,11 +129,11 @@ static int symlink_target_is_internal(const char *entry_path, const char *target
 static CupError normalize_entry_path(const char *input, char *output, size_t size) {
     size_t length;
 
-    if (is_empty_string(input) || output == NULL || size == 0) {
+    if (text_is_empty(input) || output == NULL || size == 0) {
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
-    if (checked_snprintf(output, size, "%s", input) != CUP_OK) {
+    if (text_format(output, size, "%s", input) != CUP_OK) {
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
@@ -294,7 +295,7 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
     int status;
     int skip;
 
-    if (is_empty_string(archive_path) || is_empty_string(tmp_path)) {
+    if (text_is_empty(archive_path) || text_is_empty(tmp_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

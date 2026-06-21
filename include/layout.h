@@ -3,20 +3,9 @@
 
 #include <stddef.h>
 
+#include "constants.h"
 #include "error.h"
 #include "package.h"
-
-#define CUP_BIN_DIR "bin"
-#define CUP_COMPONENTS_DIR "components"
-#define CUP_TMP_DIR "tmp"
-#define CUP_CACHE_DIR "cache"
-#define CUP_CONFIG_DIR "config"
-#define CUP_SCRIPTS_DIR "scripts"
-#define CUP_STATE_FILE "state.txt"
-#define CUP_LOCK_FILE "cup.lock"
-#define CUP_TRANSACTION_FILE "transaction.txt"
-#define CUP_MANIFEST_FILE "packages.cfg"
-#define CUP_INFO_FILE "info.txt"
 
 typedef enum {
     LAYOUT_RUNTIME_MISSING,
@@ -39,8 +28,6 @@ CupError layout_get_binary_path(char *buffer, size_t size);
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity);
 CupError layout_build_cache_archive_path(char *buffer, size_t size,
     const PackageIdentity *identity, const char *format);
-CupError layout_build_tmp_path(char *buffer, size_t size, const char *operation,
-    const PackageIdentity *identity, const char *suffix);
 
 /* Inspect or create the bootstrap and runtime portions of ~/.cup. */
 CupError layout_get_runtime_status(LayoutRuntimeStatus *status);
@@ -50,6 +37,9 @@ CupError layout_ensure_runtime(void);
 CupError layout_ensure_bootstrap(void);
 CupError layout_ensure_package_parent(const PackageIdentity *identity);
 CupError layout_ensure_cache_parent(const PackageIdentity *identity);
-CupError layout_create_tmp_dir(char *buffer, size_t size, const char *operation, const PackageIdentity *identity);
+CupError layout_create_tmp_dir(char *buffer, size_t size,
+    const char *operation, const PackageIdentity *identity);
+CupError layout_make_tmp_path(char *buffer, size_t size,
+    const char *operation, const PackageIdentity *identity);
 
 #endif /* CUP_LAYOUT_H */

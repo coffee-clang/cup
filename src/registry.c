@@ -1,6 +1,6 @@
 #include "registry.h"
 
-#include "util.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,7 +33,7 @@ static const SupportedComponent *find_supported_component(const char *component)
     size_t count;
     size_t i;
 
-    if (is_empty_string(component)) {
+    if (text_is_empty(component)) {
         return NULL;
     }
 
@@ -49,10 +49,10 @@ static const SupportedComponent *find_supported_component(const char *component)
 }
 
 // PUBLIC API
-CupError validate_component(const char *component) {
+CupError registry_validate_component(const char *component) {
     const SupportedComponent *supported;
 
-    if (is_empty_string(component)) {
+    if (text_is_empty(component)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -65,11 +65,11 @@ CupError validate_component(const char *component) {
     return CUP_ERR_UNSUPPORTED_COMPONENT;
 }
 
-CupError validate_tool_for_component(const char *component, const char *tool) {
+CupError registry_validate_tool(const char *component, const char *tool) {
     const SupportedComponent *supported;
     size_t i;
 
-    if (is_empty_string(component) || is_empty_string(tool)) {
+    if (text_is_empty(component) || text_is_empty(tool)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

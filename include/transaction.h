@@ -30,7 +30,8 @@ typedef struct {
 void transaction_init(Transaction *transaction);
 
 /* Create and persist a new transaction journal. */
-CupError transaction_begin(TransactionOperation operation, const PackageIdentity *package, const char *temporary_path);
+CupError transaction_begin(TransactionOperation operation,
+    const PackageIdentity *package, const char *temporary_path);
 
 /* Load and fully validate the current transaction journal. */
 CupError transaction_load(Transaction *transaction, TransactionFileStatus *status);

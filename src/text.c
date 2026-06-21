@@ -1,11 +1,126 @@
 #include "text.h"
 
-#include "util.h"
-
 #include <limits.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
+
+int text_is_empty(const char *value) {
+    return value == NULL || value[0] == '\0';
+}
+
+char *text_trim(char *text) {
+    char *end;
+
+    if (text == NULL) {
+        return NULL;
+    }
+
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
+
+    if (*text == '\0') {
+        return text;
+    }
+
+    end = text + strlen(text) - 1;
+    while (end > text && (*end == ' ' || *end == '\t')) {
+        *end = '\0';
+        end--;
+    }
+
+    return text;
+}
+
+// STRING SPLITTING
+CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size_t output_count) {
+    CupError err;
+    char *cursor;
+    char *part;
+    size_t count;
+
+    if (text_is_empty(input) || separator == '\0' || outputs == NULL || output_count == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    cursor = input;
+    count = 0;
+
+    while (1) {
+        if (count >= output_count) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        part = cursor;
+        while (*cursor != '\0' && *cursor != separator) {
+            cursor++;
+        }
+
+        if (*cursor == separator) {
+            *cursor = '\0';
+            cursor++;
+        } else {
+            cursor = NULL;
+        }
+
+        part = text_trim(part);
+        if (text_is_empty(part)) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        if (outputs[count].data == NULL || outputs[count].capacity == 0) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+
+        err = text_format(outputs[count].data, outputs[count].capacity, "%s", part);
+        if (err != CUP_OK) {
+            return err;
+        }
+
+        count++;
+
+        if (cursor == NULL) {
+            break;
+        }
+    }
+
+    if (count != output_count) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    return CUP_OK;
+}
+
+// SAFE FORMATTING
+CupError text_format(char *buffer, size_t size, const char *format, ...) {
+    va_list args;
+    int written;
+
+    if (buffer == NULL || size == 0 || text_is_empty(format)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    va_start(args, format);
+    written = vsnprintf(buffer, size, format, args);
+    va_end(args);
+
+    if (written < 0) {
+        fprintf(stderr, "Error: could not format string.\n");
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if ((size_t)written >= size) {
+        fprintf(stderr, "Error: formatted string is too long.\n");
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    return CUP_OK;
+}
+
 // LINE READING
+
 static void trim_line_end(char *line) {
     size_t length;
 
@@ -20,7 +135,8 @@ CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, si
     size_t len;
     int ch;
 
-    if (file == NULL || buffer == NULL || size < 2 || size > INT_MAX || has_line == NULL || line_number == NULL) {
+    if (file == NULL || buffer == NULL || size < 2 || size > INT_MAX ||
+        has_line == NULL || line_number == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -44,7 +160,7 @@ CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, si
         }
 
         trim_line_end(buffer);
-        text = trim_spaces(buffer);
+        text = text_trim(buffer);
 
         if (text[0] == '\0' || text[0] == '#') {
             continue;
@@ -60,7 +176,8 @@ CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, si
 }
 
 // KEY/VALUE PARSING
-CupError text_parse_key_value(char *line, char *key, size_t key_size, char *value, size_t value_size) {
+CupError text_parse_key_value(char *line, char *key, size_t key_size,
+    char *value, size_t value_size) {
     CupError err;
     char *separator;
     char *trimmed_key;
@@ -76,18 +193,18 @@ CupError text_parse_key_value(char *line, char *key, size_t key_size, char *valu
     }
 
     *separator = '\0';
-    trimmed_key = trim_spaces(line);
-    trimmed_value = trim_spaces(separator + 1);
+    trimmed_key = text_trim(line);
+    trimmed_value = text_trim(separator + 1);
 
-    if (is_empty_string(trimmed_key) || is_empty_string(trimmed_value)) {
+    if (text_is_empty(trimmed_key) || text_is_empty(trimmed_value)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = checked_snprintf(key, key_size, "%s", trimmed_key);
+    err = text_format(key, key_size, "%s", trimmed_key);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = checked_snprintf(value, value_size, "%s", trimmed_value);
+    err = text_format(value, value_size, "%s", trimmed_value);
     return err;
 }
