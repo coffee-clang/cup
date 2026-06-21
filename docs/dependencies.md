@@ -120,10 +120,12 @@ windows-x64
 Release builds use:
 
 ```sh
-make PLATFORM=linux-x64 LINK_MODE=static
-make PLATFORM=macos-arm64 LINK_MODE=static
-make PLATFORM=windows-x64 LINK_MODE=static
+make PLATFORM=linux-x64 LINK_MODE=static BUILD_MODE=release
+make PLATFORM=macos-arm64 LINK_MODE=static BUILD_MODE=release
+make PLATFORM=windows-x64 LINK_MODE=static BUILD_MODE=release
 ```
+
+Development builds use `BUILD_MODE=development`, the default. They compile with `-O0 -g3`; release builds compile with `-O2 -DNDEBUG`. A mode stamp under `build/<platform>/<link-mode>/` forces object recompilation when the build mode changes while preserving the established output layout.
 
 A dynamic link mode is available only for local development and troubleshooting, where using system libraries makes iteration easier. It is not the bootstrap installation mode.
 
@@ -178,15 +180,16 @@ x86_64-w64-mingw32-gcc
 MinGW-w64 headers and import libraries
 ```
 
-The project is compiled with:
+All configurations use:
 
 ```text
 -Wall
 -Wextra
 -Werror
 -std=c11
--g
 ```
+
+Development and release optimization/debug flags are selected through `BUILD_MODE` rather than being mixed into every build.
 
 ## 5. Linked libraries
 
@@ -262,7 +265,7 @@ include/ca_bundle.h
 src/ca_bundle.c
 ```
 
-This keeps the release binary independent from distribution-specific CA bundle paths where the configured libcurl backend requires an explicit certificate bundle.
+The update script downloads and validates the PEM, generates the header and a byte-array source in a temporary directory on the repository filesystem, compiles the generated source, and replaces tracked files only after every step succeeds. This keeps the release binary independent from distribution-specific CA bundle paths where the configured libcurl backend requires an explicit certificate bundle.
 
 ## 6. Static dependency bootstrap
 
@@ -289,7 +292,7 @@ Default install prefix:
 ~/deps/<platform>/install
 ```
 
-The bootstrap scripts build or install the libraries needed to link the `cup` executable, such as:
+The bootstrap scripts pin and verify SHA-256 values for every downloaded source archive before extraction. They also record platform, toolchain, dependency versions and hashes in the dependency prefix. An interrupted or incompatible prefix is rejected with an explicit request for a clean rebuild. The scripts build or install the libraries needed to link the `cup` executable, such as:
 
 ```text
 zlib
@@ -300,7 +303,7 @@ libarchive
 pkg-config metadata used by the Makefile
 ```
 
-The Makefile reads dependency metadata from:
+After installation, each bootstrap script requires non-empty static link metadata. The Makefile also fails immediately when the expected metadata tools or flags are missing. It reads dependency metadata from:
 
 ```text
 $(DEPS_PREFIX)/bin/curl-config
@@ -334,7 +337,7 @@ The repository contains one coordinated executable build and publication workflo
 .github/workflows/build-cup.yml
 ```
 
-Its Linux, macOS and Windows jobs produce static platform assets. A single dependent publication job uploads the complete asset set to the mutable bootstrap release, avoiding partially mixed platform releases.
+Its Linux, macOS and Windows jobs produce optimized static platform assets. Build jobs use read-only repository permissions; only the dependent publication job receives write permission. The publication job verifies the complete asset set and all checksum files before issuing one release upload command.
 
 Release assets for the bootstrap installer include:
 
@@ -354,6 +357,15 @@ SHA256SUMS.<platform>
 ```
 
 The `packages.cfg` asset is the manifest used by installed copies of `cup` to locate component packages produced by `cup-components`.
+
+
+The destructive development cleanup target is guarded explicitly:
+
+```sh
+CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home
+```
+
+It rejects a missing, relative or root `HOME`.
 
 ## 9. Documentation dependencies
 

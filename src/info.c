@@ -1,5 +1,6 @@
 #include "info.h"
 
+#include "path.h"
 #include "text.h"
 
 #include <stdio.h>
@@ -20,6 +21,44 @@ void info_free(PackageInfo *info) {
 
     free(info->fields);
     info_init(info);
+}
+
+// METADATA VALIDATION
+static int value_is_safe(const char *value) {
+    const unsigned char *cursor;
+
+    if (text_is_empty(value)) {
+        return 0;
+    }
+
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (*cursor < 32 || *cursor == 127) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int key_is_safe(const char *key) {
+    static const char *const groups[] = {
+        "entry.", "features.", "contents.", "config."
+    };
+    size_t i;
+
+    if (!path_is_safe_identifier(key)) {
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(groups) / sizeof(groups[0]); ++i) {
+        size_t length = strlen(groups[i]);
+
+        if (strncmp(key, groups[i], length) == 0) {
+            return path_is_safe_identifier(key + length);
+        }
+    }
+
+    return 1;
 }
 
 // METADATA STORAGE
@@ -111,6 +150,7 @@ CupError info_load(PackageInfo *info, const char *path) {
         }
 
         if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK ||
+            !key_is_safe(key) || !value_is_safe(value) ||
             add_field(info, key, value) != CUP_OK) {
             fprintf(stderr, "Error: invalid package metadata line %zu.\n", line_number);
             fclose(file);

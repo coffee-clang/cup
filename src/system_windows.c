@@ -175,7 +175,12 @@ CupError system_get_home_dir(char *buffer, size_t size) {
     return wide_to_utf8(value, buffer, size);
 }
 
-CupError system_start_uninstall(const char *cup_root, const char *uninstall_script) {
+unsigned long system_get_process_id(void) {
+    return (unsigned long)GetCurrentProcessId();
+}
+
+CupError system_start_uninstall(const char *cup_root,
+    const char *uninstall_script, unsigned long parent_pid) {
     wchar_t temp_directory_wide[MAX_PATH_LEN];
     wchar_t temp_script_wide[MAX_PATH_LEN];
     wchar_t wide_root[MAX_PATH_LEN];
@@ -188,7 +193,8 @@ CupError system_start_uninstall(const char *cup_root, const char *uninstall_scri
     DWORD length;
     int written;
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script)) {
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
+        parent_pid == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -211,8 +217,9 @@ CupError system_start_uninstall(const char *cup_root, const char *uninstall_scri
     written = _snwprintf(wide_command,
         sizeof(wide_command) / sizeof(wide_command[0]),
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass "
-        L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\"",
-        temp_script_wide, wide_root, temp_script_wide);
+        L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\" "
+        L"-ParentPid %lu",
+        temp_script_wide, wide_root, temp_script_wide, parent_pid);
     if (written < 0 || (size_t)written >=
         sizeof(wide_command) / sizeof(wide_command[0])) {
         system_remove_file(temp_script);
@@ -388,6 +395,39 @@ CupError system_sync_parent_directory(const char *path) {
 }
 
 // TEMPORARY OBJECTS
+CupError system_create_file_exclusive(const char *path, FILE **file) {
+    wchar_t wide_path[MAX_PATH_LEN];
+    HANDLE handle;
+    int descriptor;
+
+    if (file == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *file = NULL;
+
+    handle = CreateFileW(wide_path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
+            ? CUP_ERR_LOCK : CUP_ERR_FILESYSTEM;
+    }
+
+    descriptor = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
+    if (descriptor == -1) {
+        CloseHandle(handle);
+        system_remove_file(path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    *file = _fdopen(descriptor, "w+b");
+    if (*file == NULL) {
+        _close(descriptor);
+        system_remove_file(path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
+
 CupError system_create_temp_file(const char *directory, const char *prefix,
     char *path, size_t path_size, FILE **file) {
     HANDLE handle;

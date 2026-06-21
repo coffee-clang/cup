@@ -166,10 +166,52 @@ static CupError prepare_install(InstallOperation *operation,
     return CUP_OK;
 }
 
-static CupError extract_install_package(InstallOperation *operation) {
+static int package_failure_allows_refresh(CupError err) {
+    return err == CUP_ERR_ARCHIVE || err == CUP_ERR_ARCHIVE_UNSAFE ||
+        err == CUP_ERR_VALIDATION;
+}
+
+static CupError reset_install_staging(InstallOperation *operation) {
     CupError err;
 
-    printf("==> Downloading %s@%s...\n",
+    err = filesystem_remove_tree(operation->staging_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return filesystem_ensure_directory(operation->staging_path);
+}
+
+static CupError extract_and_validate_package(InstallOperation *operation) {
+    CupError err;
+
+    printf("==> Extracting package...\n");
+    err = extract_archive(operation->archive_path, operation->staging_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (interrupt_requested()) {
+        return CUP_ERR_INTERRUPT;
+    }
+
+    printf("==> Validating package...\n");
+    return package_validate(operation->staging_path, &operation->package);
+}
+
+static CupError discard_invalid_cache(const InstallOperation *operation,
+    CupError original_error) {
+    CupError discard_error;
+
+    discard_error = fetch_discard_cached_package(operation->archive_path);
+    return discard_error == CUP_OK ? original_error : discard_error;
+}
+
+static CupError extract_install_package(InstallOperation *operation) {
+    FetchSource source;
+    CupError err;
+
+    printf("==> Resolving package archive for %s@%s...\n",
         operation->package.tool, operation->package.version);
 
     err = manifest_build_url(&operation->context.manifest,
@@ -183,7 +225,8 @@ static CupError extract_install_package(InstallOperation *operation) {
 
     err = fetch_package(operation->archive_path,
         sizeof(operation->archive_path), operation->url,
-        &operation->package, operation->format, 0);
+        &operation->package, operation->format,
+        FETCH_ALLOW_CACHE, &source);
     if (err != CUP_OK) {
         return err;
     }
@@ -192,39 +235,44 @@ static CupError extract_install_package(InstallOperation *operation) {
         return CUP_ERR_INTERRUPT;
     }
 
-    printf("==> Extracting package...\n");
-    err = extract_archive(operation->archive_path, operation->staging_path);
-    if (err == CUP_ERR_ARCHIVE) {
-        printf("==> Cached archive is invalid; downloading it again...\n");
+    if (source == FETCH_SOURCE_CACHE) {
+        printf("==> Using cached package archive.\n");
+    } else {
+        printf("==> Downloaded package archive.\n");
+    }
 
-        filesystem_remove_tree(operation->staging_path);
-        err = filesystem_ensure_directory(operation->staging_path);
+    err = extract_and_validate_package(operation);
+    if (err != CUP_OK && source == FETCH_SOURCE_CACHE &&
+        package_failure_allows_refresh(err)) {
+        printf("==> Cached package is invalid; downloading it again...\n");
+
+        err = fetch_discard_cached_package(operation->archive_path);
+        if (err != CUP_OK) {
+            return err;
+        }
+
+        err = reset_install_staging(operation);
         if (err != CUP_OK) {
             return err;
         }
 
         err = fetch_package(operation->archive_path,
             sizeof(operation->archive_path), operation->url,
-            &operation->package, operation->format, 1);
+            &operation->package, operation->format,
+            FETCH_REFRESH_CACHE, &source);
         if (err != CUP_OK) {
             return err;
         }
 
-        err = extract_archive(operation->archive_path,
-            operation->staging_path);
+        printf("==> Downloaded replacement package archive.\n");
+        err = extract_and_validate_package(operation);
     }
 
     if (err != CUP_OK) {
-        return err;
-    }
-
-    if (interrupt_requested()) {
-        return CUP_ERR_INTERRUPT;
-    }
-
-    printf("==> Validating package...\n");
-    err = package_validate(operation->staging_path, &operation->package);
-    if (err != CUP_OK) {
+        if (source == FETCH_SOURCE_NETWORK &&
+            package_failure_allows_refresh(err)) {
+            return discard_invalid_cache(operation, err);
+        }
         return err;
     }
 
@@ -273,10 +321,12 @@ static CupError commit_install(InstallOperation *operation) {
             return err;
         }
 
-        state_remove_installed(&operation->context.state,
+        if (state_remove_installed(&operation->context.state,
             operation->package.component, operation->package.host_platform,
             operation->package.target_platform,
-            operation->request.resolved_entry);
+            operation->request.resolved_entry) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
         return err;
     }
 
@@ -292,19 +342,29 @@ static CupError commit_install(InstallOperation *operation) {
 
 static CupError rollback_install(InstallOperation *operation) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    CupError err;
 
-    if (operation->package_moved &&
-        system_move_path(operation->install_path, operation->staging_path,
-            &commit_state) != CUP_OK) {
-        return CUP_ERR_ROLLBACK;
+    if (operation->package_moved) {
+        err = system_move_path(operation->install_path,
+            operation->staging_path, &commit_state);
+        if (err != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        operation->package_moved = 0;
     }
 
-    if (filesystem_remove_tree(operation->staging_path) != CUP_OK) {
+    err = filesystem_remove_tree(operation->staging_path);
+    if (err != CUP_OK) {
         return CUP_ERR_ROLLBACK;
     }
+    operation->staging_created = 0;
 
-    if (operation->journal_started && transaction_clear() != CUP_OK) {
-        return CUP_ERR_ROLLBACK;
+    if (operation->journal_started) {
+        err = transaction_clear();
+        if (err != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        operation->journal_started = 0;
     }
 
     return CUP_OK;

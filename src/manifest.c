@@ -417,19 +417,27 @@ CupError manifest_load(Manifest *manifest) {
 }
 
 // QUERIES
-static const ManifestPackage *require_package(const Manifest *manifest,
-    const char *component, const char *tool, const char *host, const char *target) {
-    int index;
+static const ManifestPackage *find_package(const Manifest *manifest,
+    const char *component, const char *tool, const char *host,
+    const char *target) {
+    int index = find_package_index(manifest, component, tool, host, target);
 
-    index = find_package_index(manifest, component, tool, host, target);
-    if (index == -1) {
+    return index == -1 ? NULL : &manifest->packages[index];
+}
+
+static const ManifestPackage *require_package(const Manifest *manifest,
+    const char *component, const char *tool, const char *host,
+    const char *target) {
+    const ManifestPackage *package = find_package(manifest, component,
+        tool, host, target);
+
+    if (package == NULL) {
         fprintf(stderr, "Error: tool '%s' for component '%s' is not "
             "configured for host '%s', target '%s'.\n",
             tool, component, host, target);
-        return NULL;
     }
 
-    return &manifest->packages[index];
+    return package;
 }
 
 CupError manifest_resolve_stable(const Manifest *manifest, char *buffer, size_t size,
@@ -453,7 +461,7 @@ CupError manifest_is_stable(const Manifest *manifest, const char *component,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    package = require_package(manifest, component, tool, host, target);
+    package = find_package(manifest, component, tool, host, target);
     if (package == NULL) {
         return CUP_ERR_MANIFEST;
     }
@@ -471,7 +479,7 @@ CupError manifest_has_version(const Manifest *manifest, const char *component,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    package = require_package(manifest, component, tool, host, target);
+    package = find_package(manifest, component, tool, host, target);
     if (package == NULL) {
         return CUP_ERR_MANIFEST;
     }
@@ -501,7 +509,7 @@ CupError manifest_has_format(const Manifest *manifest, const char *component,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    package = require_package(manifest, component, tool, host, target);
+    package = find_package(manifest, component, tool, host, target);
     if (package == NULL) {
         return CUP_ERR_MANIFEST;
     }

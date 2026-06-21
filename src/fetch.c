@@ -18,7 +18,6 @@
 #error "CUP_USE_EMBEDDED_CA_BUNDLE requires libcurl >= 7.77.0"
 #endif
 
-// TLS CONFIGURATION
 static void initialize_tls_runtime(void) {
 #if defined(CUP_USE_OPENSSL_INIT)
     OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
@@ -47,8 +46,8 @@ static CupError configure_tls_trust(CURL *curl) {
     return CUP_OK;
 }
 
-// CURL CALLBACKS
-static size_t write_file_callback(void *ptr, size_t size, size_t count, void *userdata) {
+static size_t write_file_callback(void *data, size_t size,
+    size_t count, void *userdata) {
     FILE *file = userdata;
     size_t bytes;
 
@@ -57,7 +56,7 @@ static size_t write_file_callback(void *ptr, size_t size, size_t count, void *us
     }
 
     bytes = size * count;
-    return fwrite(ptr, 1, bytes, file);
+    return fwrite(data, 1, bytes, file);
 }
 
 static int progress_callback(void *userdata, curl_off_t download_total,
@@ -81,61 +80,179 @@ static int progress_callback(void *userdata, curl_off_t download_total,
     } \
 } while (0)
 
-// DOWNLOADS
-static CupError download_file(const char *url, const char *final_path, int require_archive) {
-    CURL *curl = NULL;
-    CURLcode result = CURLE_OK;
-    FILE *file = NULL;
+static CupError get_parent_path(const char *path, char *parent, size_t size) {
+    char *slash;
+
+    if (text_format(parent, size, "%s", path) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    slash = strrchr(parent, '/');
+    if (slash == NULL) {
+        return text_format(parent, size, ".");
+    }
+
+    if (slash == parent) {
+        slash[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+
+    return CUP_OK;
+}
+
+static CupError remove_temporary_download(const char *path,
+    CupError original_error) {
+    return system_remove_file(path) == CUP_OK
+        ? original_error : CUP_ERR_TEMPORARY;
+}
+
+static CupError validate_download(const char *path,
+    FetchValidation validation) {
     CupError err;
-    char error_buffer[CURL_ERROR_SIZE];
-    char parent[MAX_PATH_LEN];
-    char part_path[MAX_PATH_LEN];
-    long response_code = 0;
-    int close_status;
-    int usable;
+    long long size;
+    int is_regular_file;
+    int is_valid_archive;
 
-    if (text_is_empty(url) || text_is_empty(final_path)) {
-        return CUP_ERR_INVALID_INPUT;
+    err = system_is_regular_file(path, &is_regular_file);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!is_regular_file) {
+        return validation == FETCH_VALIDATE_ARCHIVE
+            ? CUP_ERR_ARCHIVE : CUP_ERR_FETCH;
     }
 
-    error_buffer[0] = '\0';
-
-    if (text_format(parent, sizeof(parent), "%s", final_path) != CUP_OK) {
-        return CUP_ERR_FETCH;
+    err = system_file_size(path, &size);
+    if (err != CUP_OK) {
+        return err;
     }
-    {
-        char *slash = strrchr(parent, '/');
-        if (slash == NULL) {
-            if (text_format(parent, sizeof(parent), ".") != CUP_OK) {
-                return CUP_ERR_FETCH;
-            }
-        } else if (slash == parent) {
-            slash[1] = '\0';
-        } else {
-            *slash = '\0';
+    if (size <= 0) {
+        fprintf(stderr, "Error: downloaded resource is empty.\n");
+        return validation == FETCH_VALIDATE_ARCHIVE
+            ? CUP_ERR_ARCHIVE : CUP_ERR_FETCH;
+    }
+
+    if (validation != FETCH_VALIDATE_ARCHIVE) {
+        return CUP_OK;
+    }
+
+    err = package_archive_is_valid(path, &is_valid_archive);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return is_valid_archive ? CUP_OK : CUP_ERR_ARCHIVE;
+}
+
+static CupError prepare_destination(const char *path, int *restore_read_only) {
+    CupError err;
+    SystemPathKind kind;
+    int is_read_only;
+
+    *restore_read_only = 0;
+
+    err = system_get_path_kind(path, &kind);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (kind == SYSTEM_PATH_MISSING) {
+        return CUP_OK;
+    }
+    if (kind != SYSTEM_PATH_REGULAR_FILE) {
+        fprintf(stderr, "Error: download destination '%s' is not a regular file.\n",
+            path);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = system_is_read_only(path, &is_read_only);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!is_read_only) {
+        return CUP_OK;
+    }
+
+    err = system_set_read_only(path, 0);
+    if (err == CUP_OK) {
+        *restore_read_only = 1;
+    }
+    return err;
+}
+
+static CupError commit_download(const char *temporary_path,
+    const char *destination) {
+    CupError err;
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    int restore_read_only;
+
+    err = prepare_destination(destination, &restore_read_only);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = system_replace_file(temporary_path, destination, &commit_state);
+    if (err == CUP_OK) {
+        return CUP_OK;
+    }
+
+    if (commit_state == SYSTEM_COMMIT_NOT_APPLIED && restore_read_only) {
+        if (system_set_read_only(destination, 1) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
         }
     }
 
-    initialize_tls_runtime();
+    return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
+}
 
+CupError fetch_file(const char *url, const char *destination,
+    FetchValidation validation) {
+    CURL *curl = NULL;
+    CURLcode result = CURLE_OK;
+    CURLcode info_result = CURLE_OK;
+    FILE *file = NULL;
+    CupError sync_err = CUP_OK;
+    CupError err;
+    char error_buffer[CURL_ERROR_SIZE];
+    char parent[MAX_PATH_LEN];
+    char temporary_path[MAX_PATH_LEN] = "";
+    long response_code = 0;
+    int close_status = 0;
+
+    if (text_is_empty(url) || text_is_empty(destination) ||
+        (validation != FETCH_VALIDATE_NONEMPTY &&
+            validation != FETCH_VALIDATE_ARCHIVE)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = get_parent_path(destination, parent, sizeof(parent));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    initialize_tls_runtime();
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         return CUP_ERR_FETCH;
     }
 
-    if (system_create_temp_file(parent, "download", part_path,
-        sizeof(part_path), &file) != CUP_OK) {
+    err = system_create_temp_file(parent, "download", temporary_path,
+        sizeof(temporary_path), &file);
+    if (err != CUP_OK) {
         curl_global_cleanup();
         return CUP_ERR_FETCH;
     }
 
     curl = curl_easy_init();
     if (curl == NULL) {
-        fclose(file);
-        system_remove_file(part_path);
+        int close_failed = fclose(file) != 0;
+        CupError cleanup_error = system_remove_file(temporary_path);
+
         curl_global_cleanup();
-        return CUP_ERR_FETCH;
+        return close_failed || cleanup_error != CUP_OK
+            ? CUP_ERR_TEMPORARY : CUP_ERR_FETCH;
     }
 
+    error_buffer[0] = '\0';
     err = configure_tls_trust(curl);
     if (err != CUP_OK) {
         result = CURLE_FAILED_INIT;
@@ -166,65 +283,62 @@ static CupError download_file(const char *url, const char *final_path, int requi
     SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
 
     result = curl_easy_perform(curl);
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+    if (result == CURLE_OK) {
+        info_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE,
+            &response_code);
+    }
 
 cleanup:
     if (curl != NULL) {
         curl_easy_cleanup(curl);
     }
 
-    err = file != NULL ? system_sync_file(file) : CUP_ERR_FETCH;
-    close_status = file != NULL ? fclose(file) : -1;
+    if (file != NULL) {
+        sync_err = system_sync_file(file);
+        close_status = fclose(file);
+        file = NULL;
+    }
     curl_global_cleanup();
 
     if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
-        system_remove_file(part_path);
-        return CUP_ERR_INTERRUPT;
+        return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
     }
 
-    if (result != CURLE_OK || response_code >= 400 ||
-        err != CUP_OK || close_status != 0) {
-        system_remove_file(part_path);
-        fprintf(stderr, "Error: failed to download package from '%s'%s%s.\n",
-            url, error_buffer[0] ? ": " : "",
+    if (result != CURLE_OK || info_result != CURLE_OK ||
+        response_code != 200 || sync_err != CUP_OK || close_status != 0) {
+        CupError cleanup_error;
+
+        fprintf(stderr,
+            "Error: failed to download '%s' (HTTP %ld)%s%s.\n",
+            url, response_code, error_buffer[0] ? ": " : "",
             error_buffer[0] ? error_buffer : "");
-        return CUP_ERR_FETCH;
+        cleanup_error = remove_temporary_download(temporary_path, CUP_ERR_FETCH);
+        return cleanup_error;
     }
 
-    if (require_archive) {
-        err = package_archive_is_usable(part_path, &usable);
-        if (err != CUP_OK || !usable) {
-            system_remove_file(part_path);
-            return CUP_ERR_ARCHIVE;
-        }
+    err = validate_download(temporary_path, validation);
+    if (err != CUP_OK) {
+        return remove_temporary_download(temporary_path, err);
     }
 
-    system_set_read_only(final_path, 0);
-    system_remove_file(final_path);
-
-    {
-        SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-
-        err = system_move_path(part_path, final_path, &commit_state);
-        if (err != CUP_OK) {
-            if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
-                system_remove_file(part_path);
-            }
-            return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : CUP_ERR_FETCH;
-        }
+    err = commit_download(temporary_path, destination);
+    if (err != CUP_OK && err != CUP_ERR_COMMIT) {
+        return remove_temporary_download(temporary_path, err);
     }
-
-    return CUP_OK;
+    return err;
 }
 
 CupError fetch_package(char *archive_path, size_t archive_path_size,
     const char *package_url, const PackageIdentity *identity,
-    const char *format, int force_download) {
+    const char *format, FetchCachePolicy cache_policy, FetchSource *source) {
     CupError err;
-    int usable;
+    int is_valid_archive;
 
     if (archive_path == NULL || archive_path_size == 0 ||
-        text_is_empty(package_url) || identity == NULL || text_is_empty(format)) {
+        text_is_empty(package_url) || identity == NULL || text_is_empty(format) ||
+        source == NULL ||
+        (cache_policy != FETCH_ALLOW_CACHE &&
+            cache_policy != FETCH_REFRESH_CACHE)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -239,24 +353,68 @@ CupError fetch_package(char *archive_path, size_t archive_path_size,
         return err;
     }
 
-    if (force_download) {
-        system_set_read_only(archive_path, 0);
-        system_remove_file(archive_path);
-        usable = 0;
-    } else {
-        err = package_archive_is_usable(archive_path, &usable);
+    if (cache_policy == FETCH_ALLOW_CACHE) {
+        err = package_archive_is_valid(archive_path, &is_valid_archive);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (is_valid_archive) {
+            *source = FETCH_SOURCE_CACHE;
+            return CUP_OK;
+        }
+
+        err = fetch_discard_cached_package(archive_path);
         if (err != CUP_OK) {
             return err;
         }
     }
 
-    if (!usable) {
-        return download_file(package_url, archive_path, 1);
+    err = fetch_file(package_url, archive_path, FETCH_VALIDATE_ARCHIVE);
+    if (err != CUP_OK) {
+        return err;
     }
 
+    *source = FETCH_SOURCE_NETWORK;
     return CUP_OK;
 }
 
-CupError fetch_resource(const char *url, const char *destination) {
-    return download_file(url, destination, 0);
+CupError fetch_discard_cached_package(const char *archive_path) {
+    CupError err;
+    SystemPathKind kind;
+    int is_read_only;
+
+    if (text_is_empty(archive_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = system_get_path_kind(archive_path, &kind);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (kind == SYSTEM_PATH_MISSING) {
+        return CUP_OK;
+    }
+    if (kind != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = system_is_read_only(archive_path, &is_read_only);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (is_read_only) {
+        err = system_set_read_only(archive_path, 0);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    err = system_remove_file(archive_path);
+    if (err != CUP_OK && is_read_only) {
+        if (system_set_read_only(archive_path, 1) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+    }
+
+    return err;
 }

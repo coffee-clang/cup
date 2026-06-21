@@ -100,7 +100,9 @@ int path_is_safe_segment(const char *value) {
 
     for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
         if (*cursor < 32 || *cursor == 127 || *cursor == '/' ||
-            *cursor == '\\' || *cursor == ':') {
+            *cursor == '\\' || *cursor == ':' || *cursor == '*' ||
+            *cursor == '?' || *cursor == '"' || *cursor == '<' ||
+            *cursor == '>' || *cursor == '|') {
             return 0;
         }
     }

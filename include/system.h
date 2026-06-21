@@ -36,7 +36,9 @@ typedef struct {
 
 /* Process and user environment. */
 CupError system_get_home_dir(char *buffer, size_t size);
-CupError system_start_uninstall(const char *cup_root, const char *uninstall_script);
+unsigned long system_get_process_id(void);
+CupError system_start_uninstall(const char *cup_root,
+    const char *uninstall_script, unsigned long parent_pid);
 
 /* Files and directories. */
 CupError system_make_directory(const char *path);
@@ -51,6 +53,7 @@ CupError system_sync_file(FILE *file);
 CupError system_sync_parent_directory(const char *path);
 
 /* Exclusive temporary objects created below a caller-selected directory. */
+CupError system_create_file_exclusive(const char *path, FILE **file);
 CupError system_create_temp_file(const char *directory, const char *prefix,
     char *path, size_t path_size, FILE **file);
 CupError system_create_temp_directory(const char *directory, const char *prefix,

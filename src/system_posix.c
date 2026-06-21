@@ -136,13 +136,21 @@ CupError system_get_home_dir(char *buffer, size_t size) {
     return text_format(buffer, size, "%s", home);
 }
 
-CupError system_start_uninstall(const char *cup_root, const char *uninstall_script) {
+unsigned long system_get_process_id(void) {
+    return (unsigned long)getpid();
+}
+
+CupError system_start_uninstall(const char *cup_root,
+    const char *uninstall_script, unsigned long parent_pid) {
     CupError err;
     char tmp_script[MAX_PATH_LEN];
     FILE *file = NULL;
     pid_t pid;
+    char parent_pid_text[32];
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script)) {
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
+        parent_pid == 0 || text_format(parent_pid_text,
+            sizeof(parent_pid_text), "%lu", parent_pid) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -177,7 +185,8 @@ CupError system_start_uninstall(const char *cup_root, const char *uninstall_scri
     }
 
     if (pid == 0) {
-        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script, (char *)NULL);
+        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script,
+            parent_pid_text, (char *)NULL);
         _exit(127);
     }
 
@@ -392,6 +401,28 @@ CupError system_sync_parent_directory(const char *path) {
 }
 
 // TEMPORARY OBJECTS
+CupError system_create_file_exclusive(const char *path, FILE **file) {
+    int fd;
+
+    if (text_is_empty(path) || file == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *file = NULL;
+
+    fd = open(path, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return errno == EEXIST ? CUP_ERR_LOCK : CUP_ERR_FILESYSTEM;
+    }
+
+    *file = fdopen(fd, "w+b");
+    if (*file == NULL) {
+        close(fd);
+        unlink(path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
+
 CupError system_create_temp_file(const char *directory, const char *prefix,
     char *path, size_t path_size, FILE **file) {
     int fd;

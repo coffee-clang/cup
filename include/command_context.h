@@ -60,6 +60,10 @@ void entry_request_print(FILE *stream, const EntryRequest *request);
 /* Require a package to be present both in state and on disk. */
 CupError command_require_installed(const CommandContext *context, const PackageIdentity *package);
 
+/* Require an installed package to pass full on-disk validation. */
+CupError command_require_valid_installed(const CommandContext *context,
+    const PackageIdentity *package);
+
 /* Require a package to be absent both from state and disk. */
 CupError command_require_absent(const CommandContext *context, const PackageIdentity *package);
 

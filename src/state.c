@@ -92,15 +92,73 @@ static CupError set_state_entry(StateEntry *state_entry, const char *component,
     return text_format(state_entry->entry, sizeof(state_entry->entry), "%s", entry);
 }
 
+static int state_entries_equal(const StateEntry *left,
+    const StateEntry *right) {
+    return state_entry_matches_scope(left, right->component,
+        right->host_platform, right->target_platform) &&
+        strcmp(left->entry, right->entry) == 0;
+}
+
+static CupError validate_state_entry(const StateEntry *entry) {
+    PackageIdentity package;
+
+    return package_identity_from_entry(&package, entry->component,
+        entry->host_platform, entry->target_platform, entry->entry) == CUP_OK
+        ? CUP_OK : CUP_ERR_STATE_LOAD;
+}
+
 CupError state_validate(const CupState *state) {
     size_t i;
+    size_t j;
 
     if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
+    if (state->installed_count > MAX_INSTALLED ||
+        state->default_count > MAX_DEFAULTS) {
+        fprintf(stderr, "Error: state entry count exceeds its supported capacity.\n");
+        return CUP_ERR_STATE_LOAD;
+    }
+
+    for (i = 0; i < state->installed_count; ++i) {
+        if (validate_state_entry(&state->installed[i]) != CUP_OK) {
+            fprintf(stderr, "Error: installed state entry %zu is invalid.\n", i + 1);
+            return CUP_ERR_STATE_LOAD;
+        }
+
+        for (j = 0; j < i; ++j) {
+            if (state_entries_equal(&state->installed[j],
+                &state->installed[i])) {
+                fprintf(stderr,
+                    "Error: duplicate installed state entry '%s:%s'.\n",
+                    state->installed[i].component,
+                    state->installed[i].entry);
+                return CUP_ERR_STATE_LOAD;
+            }
+        }
+    }
+
     for (i = 0; i < state->default_count; ++i) {
         const StateEntry *default_entry = &state->defaults[i];
+
+        if (validate_state_entry(default_entry) != CUP_OK) {
+            fprintf(stderr, "Error: default state entry %zu is invalid.\n", i + 1);
+            return CUP_ERR_STATE_LOAD;
+        }
+
+        for (j = 0; j < i; ++j) {
+            if (state_entry_matches_scope(&state->defaults[j],
+                default_entry->component, default_entry->host_platform,
+                default_entry->target_platform)) {
+                fprintf(stderr,
+                    "Error: duplicate default scope for component '%s', "
+                    "host '%s', target '%s'.\n",
+                    default_entry->component, default_entry->host_platform,
+                    default_entry->target_platform);
+                return CUP_ERR_STATE_LOAD;
+            }
+        }
 
         if (state_find_installed(state, default_entry->component,
             default_entry->host_platform, default_entry->target_platform,
@@ -109,7 +167,8 @@ CupError state_validate(const CupState *state) {
                 "Error: default state entry '%s' for component '%s', "
                 "host '%s', target '%s' is not installed.\n",
                 default_entry->entry, default_entry->component,
-                default_entry->host_platform, default_entry->target_platform);
+                default_entry->host_platform,
+                default_entry->target_platform);
             return CUP_ERR_STATE_LOAD;
         }
     }
@@ -120,7 +179,7 @@ CupError state_validate(const CupState *state) {
 // LINE PARSING
 static CupError parse_state_line(CupState *state, char *line) {
     PackageIdentity identity;
-    StateRecordType type;
+    StateRecordType type = STATE_RECORD_UNKNOWN;
     CupError err;
     char key[MAX_STATE_LINE_LEN];
     char entry[MAX_ENTRY_LEN];
@@ -142,8 +201,12 @@ static CupError parse_state_line(CupState *state, char *line) {
         host_platform, sizeof(host_platform),
         target_platform, sizeof(target_platform));
     if (err != CUP_OK) {
+        const char *record_name = type == STATE_RECORD_DEFAULT
+            ? "default"
+            : type == STATE_RECORD_INSTALLED ? "installed" : "unknown";
+
         fprintf(stderr, "Error: malformed %s state key '%s'.\n",
-            type == STATE_RECORD_DEFAULT ? "default" : "installed", key);
+            record_name, key);
         return CUP_ERR_STATE_LOAD;
     }
     if (type == STATE_RECORD_UNKNOWN) {

@@ -220,7 +220,7 @@ The manifest is required for package resolution. If `~/.cup/config/packages.cfg`
 
 ## 5. Network and certificate handling
 
-Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes to a process-specific `.part` file, synchronizes and minimally validates it, then moves it into the deterministic cache path. It follows HTTPS release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads are removed after failure or interruption.
+Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes to an exclusive temporary file, requires a successful HTTP 200 response and non-empty content, synchronizes the file, validates package archives completely, and atomically replaces the deterministic cache path. It follows HTTPS release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads are removed after failure or interruption.
 
 The project also contains an embedded CA bundle module:
 
@@ -250,10 +250,15 @@ The canonical per-user structure is:
   tmp/
     transaction.txt   # present only while an operation is pending
   cache/
+  recovery/          # created only when an invalid package is quarantined
   config/
+    packages.cfg
+    SHA256SUMS.common
+    SHA256SUMS.<host_platform>
   scripts/
   state.txt
   cup.lock
+  uninstall.pending  # present only while uninstall is active or incomplete
 ```
 
 The root is always `.cup` in the user home. It is derived from `HOME` or `USERPROFILE`, never from the executable location and never from a configurable `CUP_HOME` environment variable.
@@ -262,14 +267,19 @@ Important files:
 
 ```text
 ~/.cup/config/packages.cfg
+~/.cup/config/SHA256SUMS.common
+~/.cup/config/SHA256SUMS.<host_platform>
 ~/.cup/state.txt
 ~/.cup/cup.lock
 ~/.cup/tmp/transaction.txt
 ~/.cup/scripts/uninstall.sh
 ~/.cup/scripts/uninstall.ps1
+~/.cup/uninstall.pending
 ```
 
-The official manifest, uninstall script and package `info.txt` files are read-only guards against accidental changes. `doctor` verifies the expected protection and `repair` restores permissions when the content remains valid.
+The official manifest, bootstrap checksum files, uninstall script and package `info.txt` files are read-only guards against accidental changes. The installed manifest, executable and uninstall script are verified against the published bootstrap checksum files. `doctor` verifies integrity and protection; `repair` downloads and validates replacement bootstrap assets before committing them.
+
+The bootstrap installer initially creates only `bin`, `config` and `scripts`. The first operational command or `repair` creates the full runtime structure. During bootstrap replacement, installers keep a persistent `.bootstrap` staging directory with per-asset backup and commit markers so a later installer run can recover an interrupted update.
 
 Installed component packages use this path shape:
 
@@ -286,7 +296,9 @@ Cached package archives use this path shape:
 
 The cache filename is constructed locally instead of being derived from the URL.
 
-Staging and removal paths are created under `~/.cup/tmp/`. Mutable operations use a single journal at `~/.cup/tmp/transaction.txt` and an operating-system lock on `~/.cup/cup.lock`. Read commands acquire a shared lock; mutating commands acquire an exclusive non-blocking lock for the complete operation.
+Staging and removal paths are created under `~/.cup/tmp/`. Their generated names include the operation and complete package identity; a journal is accepted only when its recorded temporary name matches that identity. Mutable operations use a single journal at `~/.cup/tmp/transaction.txt` and an operating-system lock on `~/.cup/cup.lock`. Read commands acquire a shared lock; mutating commands acquire an exclusive non-blocking lock for the complete operation.
+
+`~/.cup/recovery/` is not part of the mandatory runtime structure. `repair` creates it lazily when a path has a complete canonical package identity but invalid type or contents. The original object is moved into a unique recovery directory instead of being deleted.
 
 ## 7. State file
 
@@ -315,7 +327,7 @@ installed.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
 default.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
 ```
 
-State loading parses and validates each line, identifier and duplicate independently from semantic validation. A second phase checks global relationships such as defaults pointing to installed entries. Normal commands require both phases; `doctor` can report semantic inconsistencies and `repair` can correct them before saving.
+State loading parses and validates each line, identifier and duplicate independently from semantic validation. A second phase defensively checks entry identities, duplicate installed records, duplicate default scopes and relationships such as defaults pointing to installed entries. Normal commands require both phases; `doctor` can report semantic inconsistencies and `repair` preserves an invalid state file before reconstructing it when no pending transaction makes recovery ambiguous.
 
 State saving validates the final model, synchronizes a temporary file and atomically replaces `state.txt`. Malformed documents replaced by `repair` are preserved as `state.txt.invalid`, `state.txt.invalid.1` and so on.
 
@@ -379,7 +391,7 @@ config.languages=c,c++,lto
 
 ### 8.2 Archive safety
 
-Extraction is performed through libarchive. Every archive must have one common top-level root. Absolute paths, parent traversal, unsafe Windows paths, device/FIFO/socket entries and links that escape the package are rejected. Relative internal symlinks and hardlinks are accepted.
+Extraction is performed through libarchive. Every archive must have one common top-level root. Absolute paths, parent traversal, unsafe Windows paths, duplicate paths, device/FIFO/socket entries and links that escape the package are rejected. Relative internal symlinks are accepted, while hardlinks must reference a regular file that has already been extracted. File permissions are normalized, filesystem flags and privileged mode bits are discarded, and limits are enforced for path depth, entry count and total extracted size.
 
 Packages are extracted into a temporary staging directory first and moved into the final installation path only after validation.
 
@@ -400,9 +412,10 @@ check that the package is not already installed
 create temporary staging directory
 write transaction.txt
 build package URL
-download through a .part file into the deterministic cache path
-extract one safe archive root into staging
+reuse a fully validated cached archive or download and atomically cache a replacement
+extract one bounded and safe archive root into staging
 validate info.txt identity and declared executables
+retry once only when a cached archive extracts to an unsafe or inconsistent package
 protect info.txt as read-only
 move staging into the final install path
 add installed entry to state
@@ -410,7 +423,7 @@ save state (commit point)
 remove transaction.txt
 ```
 
-If a normal failure occurs before the commit, `cup` rolls the operation back immediately. If the process is terminated in a way that cannot be handled, the journal remains. `doctor` reports it and `repair` uses `state.txt` as the commit point to roll the operation back or finish its cleanup.
+If a normal failure occurs before the commit, `cup` rolls the operation back immediately and clears the journal only after every rollback step succeeds. If the process is terminated or a commit result is uncertain, the journal remains. `doctor` reports it and the transaction module uses `state.txt` as the commit point to complete or roll back the interrupted operation deterministically.
 
 ## 10. Remove flow
 
@@ -427,7 +440,7 @@ saves state
 removes temporary files
 ```
 
-If state saving fails, `cup` attempts to move the package back to its original install path. An unhandled termination leaves the journal and temporary package available for deterministic recovery.
+If state saving fails before the state commit, `cup` attempts to move the package back to its original install path. Rollback errors preserve the journal and temporary package for deterministic recovery instead of hiding the incomplete operation. Removal remains available for a package recorded in state even when its canonical on-disk object is corrupted.
 
 ## 11. Default and current
 
@@ -444,18 +457,18 @@ cup current compiler
 cup current compiler --target windows-x64
 ```
 
-A default must point to an installed package. `cup current` reports an inconsistent state if the default points to a missing package.
+A default must point to an installed package whose canonical directory and metadata pass complete validation. `cup current` reports an inconsistent state if the selected package is missing or invalid on disk.
 
 ## 12. List and info
 
-`cup list` prints installed packages for the current host and selected target. It annotates entries that are defaults and entries that match the current manifest stable version.
+`cup list` prints installed packages for the current host and selected target. It annotates entries that are defaults, entries that match the current manifest stable version, and state entries whose package is missing or invalid on disk.
 
 ```sh
 cup list
 cup list --target windows-x64
 ```
 
-`cup info` reads the installed package's `info.txt` and prints identity, entry points, feature metadata, content metadata and build configuration metadata.
+`cup info` first validates the complete installed package, then reads `info.txt` and prints identity, entry points, feature metadata, content metadata and build configuration metadata.
 
 ```sh
 cup info compiler clang@stable
@@ -463,7 +476,7 @@ cup info compiler clang@stable
 
 ## 13. Doctor and repair
 
-`cup doctor` is completely read-only. It checks the canonical directory tree, lock and journal, state syntax and semantics, installed manifest and read-only protection, state-to-package and package-to-state correspondence, package metadata and executable entries, the canonical binary and uninstall script, and direct leftovers in `tmp`. If the installed manifest is missing, a repository checkout may be used only as a development fallback and is reported separately.
+`cup doctor` is completely read-only. It checks the canonical directory tree, lock and journal, state syntax and semantics, bootstrap checksum files, manifest and executable integrity, read-only protection, state-to-package and package-to-state correspondence, package metadata and executable entries, the uninstall script, uninstall marker and direct leftovers in `tmp`. A failed scan or inspection is reported as an incomplete check and causes a failing result. If installed bootstrap files are unavailable, a repository checkout may be used only as a development fallback and is reported separately.
 
 `cup repair` acquires the exclusive lock and applies deterministic corrections only. It can:
 
@@ -471,22 +484,24 @@ cup info compiler clang@stable
 recreate the canonical directory structure
 recover or complete an interrupted install/remove transaction
 preserve malformed text files as .invalid.N
-restore the official manifest, canonical executable and uninstall script
+restore published bootstrap checksum files
+restore checksum-verified manifest, canonical executable and uninstall script
 reconstruct installed state entries from fully valid packages
 remove stale installed entries and defaults
+quarantine canonically identifiable packages with invalid type or contents
 restore read-only and executable permissions
 clean temporary leftovers after transaction recovery
 ```
 
-A package in `components` is adopted only when its canonical path, identity metadata and declared contents all agree. Ambiguous or unrecognized package paths are left unchanged and reported; `repair` does not choose between conflicting valid alternatives.
+A package in `components` is adopted only when its canonical path, identity metadata and declared contents all agree. A path at the complete version level with a valid package identity but invalid type or contents is moved intact under `~/.cup/recovery/`; ambiguous or unrecognized paths are left unchanged and reported. A truncated scan or a valid-package count that cannot be represented by `state.txt` stops reconciliation before packages or state are modified.
 
 ## 14. Uninstall
 
 `cup uninstall` removes `cup` itself and all cup-managed data under the `.cup` root.
 
-On POSIX systems, `cup` copies the uninstall script to a temporary path and starts it after the current process exits. On Windows, it uses the PowerShell uninstall script installed under `.cup/scripts`.
+Before starting the helper, `cup` creates `~/.cup/uninstall.pending` while holding the exclusive lock and passes its process ID to the helper. The helper verifies that the requested root is exactly the canonical root, waits for that process to exit and only then removes the tree. Other commands reject the pending marker, preventing a new operation from racing with deletion. On POSIX the script is copied to a temporary path; on Windows the installed PowerShell script is copied and invoked with the same parent-process protocol.
 
-The uninstall command intentionally does not remove shell or user PATH entries. A remaining PATH entry is harmless and can be reused by a future installation.
+The uninstall command intentionally does not remove shell or user PATH entries. A remaining PATH entry is harmless and can be reused by a future installation. A later installer run removes a stale marker only after a valid bootstrap has been committed.
 
 ## 15. Main modules
 
@@ -521,7 +536,7 @@ package.c / info.c
   package identity, component scanning and immutable metadata validation
 
 transaction.c
-  transaction.txt persistence and identity reconstruction
+  transaction.txt persistence, temporary-path binding and deterministic recovery
 
 state.c / manifest.c / text.c
   state model, structured manifest model and common key/value parsing

@@ -1,6 +1,5 @@
 #include "text.h"
 
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -120,22 +119,17 @@ CupError text_format(char *buffer, size_t size, const char *format, ...) {
 }
 
 // LINE READING
-
-static void trim_line_end(char *line) {
-    size_t length;
-
-    length = strlen(line);
-    while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r')) {
-        line[--length] = '\0';
-    }
+static int is_allowed_text_byte(unsigned char byte) {
+    return byte == '\t' || byte >= 32;
 }
 
-CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, size_t *line_number) {
-    char *text;
-    size_t len;
-    int ch;
+CupError text_read_line(FILE *file, char *buffer, size_t size,
+    int *has_line, size_t *line_number) {
+    size_t length;
+    int byte;
+    int line_too_long;
 
-    if (file == NULL || buffer == NULL || size < 2 || size > INT_MAX ||
+    if (file == NULL || buffer == NULL || size < 2 ||
         has_line == NULL || line_number == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -143,31 +137,60 @@ CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, si
     *has_line = 0;
 
     while (1) {
-        if (fgets(buffer, (int)size, file) == NULL) {
-            if (ferror(file)) {
-                return CUP_ERR_FILESYSTEM;
+        length = 0;
+        line_too_long = 0;
+
+        while ((byte = fgetc(file)) != EOF) {
+            unsigned char value = (unsigned char)byte;
+
+            if (value == '\n') {
+                break;
             }
+            if (value == '\r') {
+                int next = fgetc(file);
+                if (next != '\n' && next != EOF) {
+                    ungetc(next, file);
+                }
+                break;
+            }
+            if (value == '\0' || !is_allowed_text_byte(value)) {
+                while ((byte = fgetc(file)) != EOF && byte != '\n') {
+                }
+                return CUP_ERR_INVALID_INPUT;
+            }
+            if (length + 1 < size) {
+                buffer[length++] = (char)value;
+            } else {
+                line_too_long = 1;
+            }
+        }
+
+        if (byte == EOF && ferror(file)) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        if (byte == EOF && length == 0 && !line_too_long) {
             return CUP_OK;
         }
 
         (*line_number)++;
-        len = strlen(buffer);
-
-        if (len > 0 && buffer[len - 1] != '\n' && buffer[len - 1] != '\r' && !feof(file)) {
-            while ((ch = fgetc(file)) != EOF && ch != '\n') {
-            }
+        if (line_too_long) {
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
 
-        trim_line_end(buffer);
-        text = text_trim(buffer);
+        buffer[length] = '\0';
+        {
+            char *text = text_trim(buffer);
 
-        if (text[0] == '\0' || text[0] == '#') {
-            continue;
-        }
+            if (text[0] == '\0' || text[0] == '#') {
+                if (byte == EOF) {
+                    return CUP_OK;
+                }
+                continue;
+            }
 
-        if (text != buffer) {
-            memmove(buffer, text, strlen(text) + 1);
+            if (text != buffer) {
+                memmove(buffer, text, strlen(text) + 1);
+            }
         }
 
         *has_line = 1;

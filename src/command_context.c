@@ -1,5 +1,6 @@
 #include "command_context.h"
 
+#include "bootstrap.h"
 #include "entry.h"
 #include "layout.h"
 #include "path.h"
@@ -35,74 +36,35 @@ static CupError resolve_platforms(CommandContext *context, const char *target_ov
         "%s", target_override);
 }
 
-static CupError uninstall_script_is_valid(const char *path, int *is_valid) {
-    CupError err;
-    int is_regular_file;
+static CupError validate_bootstrap(void) {
+    BootstrapInspection inspection;
+    CupError err = bootstrap_inspect(&inspection);
 
-    if (text_is_empty(path) || is_valid == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    *is_valid = 0;
-    err = system_is_regular_file(path, &is_regular_file);
     if (err != CUP_OK) {
         return err;
     }
-    if (!is_regular_file) {
+    if (bootstrap_installed_is_valid(&inspection) ||
+        bootstrap_development_is_valid(&inspection)) {
         return CUP_OK;
     }
-
-#if !defined(_WIN32)
-    {
-        int is_executable;
-
-        err = system_is_executable(path, &is_executable);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (!is_executable) {
-            return CUP_OK;
-        }
-    }
-#endif
-
-    *is_valid = 1;
-    return CUP_OK;
+    return CUP_ERR_VALIDATION;
 }
 
-static CupError validate_bootstrap(void) {
-    Manifest manifest;
+static CupError reject_pending_uninstall(void) {
     CupError err;
-    char installed_uninstall[MAX_PATH_LEN];
-    int is_valid;
+    int pending;
 
-    manifest_init(&manifest);
-    err = manifest_load(&manifest);
-    manifest_free(&manifest);
+    err = bootstrap_uninstall_is_pending(&pending);
     if (err != CUP_OK) {
         return err;
     }
-
-    err = layout_get_uninstall_path(installed_uninstall,
-        sizeof(installed_uninstall));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = uninstall_script_is_valid(installed_uninstall, &is_valid);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (is_valid) {
+    if (!pending) {
         return CUP_OK;
     }
 
-    err = uninstall_script_is_valid(CUP_DEVELOPMENT_UNINSTALL_PATH, &is_valid);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return is_valid ? CUP_OK : CUP_ERR_FILESYSTEM;
+    fprintf(stderr, "Error: cup uninstall is in progress or did not finish. "
+        "Run the installer again if the marker is stale.\n");
+    return CUP_ERR_LOCK;
 }
 
 static CupError initialize_runtime(void) {
@@ -132,6 +94,11 @@ CupError command_context_begin(CommandContext *context,
 
     memset(context, 0, sizeof(*context));
     manifest_init(&context->manifest);
+
+    err = reject_pending_uninstall();
+    if (err != CUP_OK) {
+        return err;
+    }
 
     err = resolve_platforms(context, target_override);
     if (err != CUP_OK) {
@@ -393,7 +360,7 @@ static CupError get_package_presence(const CommandContext *context, const Packag
     *in_state = state_find_installed(&context->state, package->component,
         package->host_platform, package->target_platform, entry) != -1;
 
-    return package_directory_exists(package, on_disk);
+    return package_path_exists(package, on_disk);
 }
 
 CupError command_require_installed(const CommandContext *context, const PackageIdentity *package) {
@@ -419,6 +386,40 @@ CupError command_require_installed(const CommandContext *context, const PackageI
 
     fprintf(stderr, "Error: package '%s:%s' is inconsistent between state and components. "
         "Run 'cup doctor' and 'cup repair'.\n", package->component, entry);
+    return CUP_ERR_INCONSISTENT_STATE;
+}
+
+CupError command_require_valid_installed(const CommandContext *context,
+    const PackageIdentity *package) {
+    CupError err;
+    char install_path[MAX_PATH_LEN];
+    char entry[MAX_ENTRY_LEN];
+
+    err = command_require_installed(context, package);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = layout_build_install_path(install_path,
+        sizeof(install_path), package);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = package_validate(install_path, package);
+    if (err == CUP_OK) {
+        return CUP_OK;
+    }
+
+    if (entry_build(entry, sizeof(entry),
+        package->tool, package->version) != CUP_OK) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+
+    fprintf(stderr,
+        "Error: installed package '%s:%s' is invalid on disk. "
+        "Run 'cup doctor' and 'cup repair'.\n",
+        package->component, entry);
     return CUP_ERR_INCONSISTENT_STATE;
 }
 

@@ -19,15 +19,6 @@ RANLIB="${RANLIB:-${HOST_TRIPLE}-ranlib}"
 STRIP="${STRIP:-${HOST_TRIPLE}-strip}"
 WINDRES="${WINDRES:-${HOST_TRIPLE}-windres}"
 
-require_tool() {
-    tool="$1"
-
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Error: required tool '$tool' was not found." >&2
-        exit 1
-    fi
-}
-
 build_zlib() {
     archive="$SRC_DIR/zlib-${ZLIB_VERSION}.tar.gz"
     source="$BUILD_DIR/zlib-${ZLIB_VERSION}"
@@ -38,7 +29,7 @@ build_zlib() {
     echo "==> Building zlib ${ZLIB_VERSION} for ${HOST_TRIPLE}"
     cd "$source"
 
-    make -f win32/Makefile.gcc clean || true
+    make -f win32/Makefile.gcc clean
 
     make -f win32/Makefile.gcc \
         PREFIX="${HOST_TRIPLE}-" \
@@ -162,15 +153,22 @@ verify() {
         exit 1
     fi
 
-    "$PREFIX/bin/curl-config" --static-libs
+    curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
+    archive_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        pkg-config --static --libs libarchive)"
+    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ]; then
+        echo "Error: generated static link metadata is empty." >&2
+        exit 1
+    fi
 
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        pkg-config --static --libs libarchive
+    printf '%s\n' "$curl_flags"
+    printf '%s\n' "$archive_flags"
 
     echo "==> Windows dependencies installed in $PREFIX"
 }
 
 main() {
+    signature="$(dependency_signature "$PLATFORM" "$CC|$AR|$RANLIB")"
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
@@ -178,8 +176,11 @@ main() {
     require_tool curl
     require_tool tar
     require_tool make
+    require_tool mktemp
     require_tool perl
     require_tool pkg-config
+    require_sha256_tool
+    prepare_dependency_prefix "$PREFIX" "$signature"
 
     mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
 
@@ -188,6 +189,7 @@ main() {
     build_curl
     build_libarchive
     verify
+    finish_dependency_prefix "$PREFIX"
 }
 
 main "$@"

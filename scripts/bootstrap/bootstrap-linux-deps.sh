@@ -166,15 +166,31 @@ verify() {
         exit 1
     fi
 
-    "$PREFIX/bin/curl-config" --static-libs
+    curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
+    archive_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        pkg-config --static --libs libarchive)"
+    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ]; then
+        echo "Error: generated static link metadata is empty." >&2
+        exit 1
+    fi
 
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        pkg-config --static --libs libarchive
+    printf '%s\n' "$curl_flags"
+    printf '%s\n' "$archive_flags"
 
     echo "==> Linux dependencies installed in $PREFIX"
 }
 
 main() {
+    signature="$(dependency_signature "$PLATFORM" "${CC:-cc}")"
+    require_tool "${CC:-cc}"
+    require_tool "curl"
+    require_tool "tar"
+    require_tool "make"
+    require_tool "mktemp"
+    require_tool "perl"
+    require_tool "pkg-config"
+    require_sha256_tool
+    prepare_dependency_prefix "$PREFIX" "$signature"
     mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
 
     build_zlib
@@ -183,6 +199,7 @@ main() {
     build_curl
     build_libarchive
     verify
+    finish_dependency_prefix "$PREFIX"
 }
 
 main "$@"

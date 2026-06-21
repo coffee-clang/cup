@@ -2,6 +2,7 @@
 
 #include "filesystem.h"
 #include "path.h"
+#include "platform.h"
 #include "system.h"
 #include "text.h"
 
@@ -13,6 +14,7 @@ static const char BIN_DIRECTORY[] = "bin";
 static const char COMPONENTS_DIRECTORY[] = "components";
 static const char TMP_DIRECTORY[] = "tmp";
 static const char CACHE_DIRECTORY[] = "cache";
+static const char RECOVERY_DIRECTORY[] = "recovery";
 static const char CONFIG_DIRECTORY[] = "config";
 static const char SCRIPTS_DIRECTORY[] = "scripts";
 
@@ -125,6 +127,11 @@ static CupError check_layout_directory(const char *path,
     return CUP_OK;
 }
 
+
+static CupError get_config_dir(char *buffer, size_t size) {
+    return build_root_path(buffer, size, CONFIG_DIRECTORY);
+}
+
 // CANONICAL PATHS
 CupError layout_get_root(char *buffer, size_t size) {
     CupError err;
@@ -150,6 +157,10 @@ CupError layout_get_tmp_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, TMP_DIRECTORY);
 }
 
+static CupError get_recovery_dir(char *buffer, size_t size) {
+    return build_root_path(buffer, size, RECOVERY_DIRECTORY);
+}
+
 CupError layout_get_state_path(char *buffer, size_t size) {
     return build_root_path(buffer, size, STATE_FILENAME);
 }
@@ -162,11 +173,45 @@ CupError layout_get_manifest_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
 
-    err = build_root_path(directory, sizeof(directory), CONFIG_DIRECTORY);
+    err = get_config_dir(directory, sizeof(directory));
     if (err != CUP_OK) {
         return err;
     }
     return path_join(buffer, size, directory, CUP_MANIFEST_FILENAME);
+}
+
+CupError layout_get_common_checksums_path(char *buffer, size_t size) {
+    CupError err;
+    char directory[MAX_PATH_LEN];
+
+    err = get_config_dir(directory, sizeof(directory));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return path_join(buffer, size, directory, CUP_COMMON_CHECKSUMS_FILENAME);
+}
+
+CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
+    CupError err;
+    char directory[MAX_PATH_LEN];
+    char host[MAX_PLATFORM_LEN];
+    char filename[MAX_PATH_LEN];
+
+    err = get_config_dir(directory, sizeof(directory));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = platform_get_host(host, sizeof(host));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = text_format(filename, sizeof(filename), "SHA256SUMS.%s", host);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return path_join(buffer, size, directory, filename);
 }
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
@@ -178,6 +223,10 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
         return err;
     }
     return path_join(buffer, size, directory, TRANSACTION_FILENAME);
+}
+
+CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
+    return build_root_path(buffer, size, CUP_UNINSTALL_MARKER_FILENAME);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
@@ -466,7 +515,7 @@ CupError layout_ensure_cache_parent(const PackageIdentity *identity) {
     return build_path_chain(path, sizeof(path), root, parts, 5, PATH_CHAIN_CREATE_DIRECTORIES);
 }
 
-static CupError build_tmp_prefix(char *buffer, size_t size, const char *operation,
+CupError layout_build_tmp_prefix(char *buffer, size_t size, const char *operation,
     const PackageIdentity *identity) {
     if (buffer == NULL || size == 0 || identity == NULL ||
         !path_is_safe_identifier(operation)) {
@@ -485,7 +534,7 @@ CupError layout_create_tmp_dir(char *buffer, size_t size, const char *operation,
 
     if (buffer == NULL || size == 0 || identity == NULL ||
         layout_get_tmp_dir(root, sizeof(root)) != CUP_OK ||
-        build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
+        layout_build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -499,9 +548,39 @@ CupError layout_make_tmp_path(char *buffer, size_t size, const char *operation,
 
     if (buffer == NULL || size == 0 || identity == NULL ||
         layout_get_tmp_dir(root, sizeof(root)) != CUP_OK ||
-        build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
+        layout_build_tmp_prefix(prefix, sizeof(prefix), operation, identity) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
     return system_make_unique_temp_path(root, prefix, buffer, size);
+}
+
+CupError layout_create_recovery_dir(char *buffer, size_t size,
+    const PackageIdentity *identity) {
+    CupError err;
+    char recovery_dir[MAX_PATH_LEN];
+    char prefix[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0 || identity == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = get_recovery_dir(recovery_dir, sizeof(recovery_dir));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = filesystem_ensure_directory(recovery_dir);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = text_format(prefix, sizeof(prefix),
+        "invalid-%s-%s-%s-%s-%s", identity->component, identity->tool,
+        identity->host_platform, identity->target_platform, identity->version);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    return system_create_temp_directory(recovery_dir, prefix, buffer, size);
 }

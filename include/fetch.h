@@ -6,12 +6,31 @@
 #include "error.h"
 #include "package.h"
 
-/* Resolve the package cache path and download the archive when needed. */
+typedef enum {
+    FETCH_VALIDATE_NONEMPTY,
+    FETCH_VALIDATE_ARCHIVE
+} FetchValidation;
+
+typedef enum {
+    FETCH_ALLOW_CACHE,
+    FETCH_REFRESH_CACHE
+} FetchCachePolicy;
+
+typedef enum {
+    FETCH_SOURCE_CACHE,
+    FETCH_SOURCE_NETWORK
+} FetchSource;
+
+/* Download one HTTPS resource and atomically replace the destination. */
+CupError fetch_file(const char *url, const char *destination,
+    FetchValidation validation);
+
+/* Resolve one package cache path and return a fully validated archive. */
 CupError fetch_package(char *archive_path, size_t archive_path_size,
     const char *package_url, const PackageIdentity *identity,
-    const char *format, int force_download);
+    const char *format, FetchCachePolicy cache_policy, FetchSource *source);
 
-/* Download one non-package resource to a fixed destination. */
-CupError fetch_resource(const char *url, const char *destination);
+/* Remove an archive that failed extraction or package validation. */
+CupError fetch_discard_cached_package(const char *archive_path);
 
 #endif /* CUP_FETCH_H */

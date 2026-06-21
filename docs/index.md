@@ -88,7 +88,7 @@ The host is detected by `cup`. The target defaults to the host and can be overri
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer verifies published SHA-256 checksums and creates the canonical per-user tree under `~/.cup`. It installs the executable, a read-only package manifest, a read-only uninstall script, the state file and the operation lock together.
+The installer verifies published SHA-256 checksums and installs the bootstrap files under `~/.cup`: the executable, package manifest, checksum files and uninstall script. The first operational command or `cup repair` initializes the remaining runtime structure, including state, lock, cache, temporary and component directories.
 
 ### Windows PowerShell
 
@@ -96,7 +96,7 @@ The installer verifies published SHA-256 checksums and creates the canonical per
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The Windows installer creates the same canonical tree under `%USERPROFILE%\.cup` and applies the read-only attribute to the manifest and uninstall script. Git Bash, MSYS2 and Cygwin installation delegates to this native installer rather than creating a second shell-specific root.
+The Windows installer creates the same bootstrap structure under `%USERPROFILE%\.cup` and applies the read-only attribute to the manifest, checksum files and uninstall script. Git Bash, MSYS2 and Cygwin installation delegates to this native installer rather than creating a second shell-specific root.
 
 ## Basic commands
 
@@ -113,7 +113,7 @@ cup repair
 cup uninstall
 ```
 
-`doctor` never modifies the installation. `repair` owns safe structural repair, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
+`doctor` never modifies the installation and explicitly reports incomplete checks. `repair` owns safe structural repair, checksum-verified bootstrap recovery, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
 
 Use `--target` when a command should operate on a non-default target platform:
 

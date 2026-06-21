@@ -18,7 +18,7 @@ typedef struct {
     char install_path[MAX_PATH_LEN];
     char staging_path[MAX_PATH_LEN];
     int package_moved;
-    int state_changed;
+    int journal_started;
 } RemoveOperation;
 
 static CupError prepare_remove(RemoveOperation *operation,
@@ -93,9 +93,14 @@ static CupError prepare_remove(RemoveOperation *operation,
         fprintf(stderr,
             "Error: transaction journal was created, but its durability could "
             "not be confirmed. Run 'cup repair'.\n");
+        return err;
+    }
+    if (err != CUP_OK) {
+        return err;
     }
 
-    return err;
+    operation->journal_started = 1;
+    return CUP_OK;
 }
 
 static CupError stage_removal(RemoveOperation *operation) {
@@ -139,7 +144,6 @@ static CupError commit_removal(RemoveOperation *operation) {
     if (err != CUP_OK) {
         return err;
     }
-    operation->state_changed = 1;
 
     err = state_save(&operation->context.state);
     if (err != CUP_OK) {
@@ -171,21 +175,25 @@ static CupError commit_removal(RemoveOperation *operation) {
 
 static CupError rollback_removal(RemoveOperation *operation) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    CupError err;
 
-    if (operation->state_changed) {
-        state_add_installed(&operation->context.state,
-            operation->package.component, operation->package.host_platform,
-            operation->package.target_platform,
-            operation->request.resolved_entry);
+    if (operation->package_moved) {
+        err = system_move_path(operation->staging_path,
+            operation->install_path, &commit_state);
+        if (err != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        operation->package_moved = 0;
     }
 
-    if (operation->package_moved &&
-        system_move_path(operation->staging_path, operation->install_path,
-            &commit_state) != CUP_OK) {
-        return CUP_ERR_ROLLBACK;
+    if (operation->journal_started) {
+        err = transaction_clear();
+        if (err != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        operation->journal_started = 0;
     }
 
-    transaction_clear();
     return CUP_OK;
 }
 

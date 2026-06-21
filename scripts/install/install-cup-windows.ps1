@@ -11,28 +11,26 @@ $CupConfigDir = Join-Path $CupRoot "config"
 $CupScriptsDir = Join-Path $CupRoot "scripts"
 $CupExe = Join-Path $CupBinDir "cup.exe"
 $PackagesCfg = Join-Path $CupConfigDir "packages.cfg"
-$UninstallScript = Join-Path $CupScriptsDir "uninstall.ps1"
+$CommonChecksums = Join-Path $CupConfigDir "SHA256SUMS.common"
 $Platform = "windows-x64"
+$PlatformChecksums = Join-Path $CupConfigDir "SHA256SUMS.$Platform"
+$UninstallScript = Join-Path $CupScriptsDir "uninstall.ps1"
 $CupAsset = "cup-windows-x64.exe"
+$Staging = Join-Path $CupRoot ".bootstrap"
+$UninstallMarker = Join-Path $CupRoot "uninstall.pending"
 $CupAvailableInPath = $false
 
-function Fail([string]$Message) {
-    throw "Error: $Message"
-}
-
-function Write-Info([string]$Message) {
-    Write-Host $Message
-}
+function Fail([string]$Message) { throw "Error: $Message" }
+function Write-Info([string]$Message) { Write-Host $Message }
 
 function Test-WindowsX64 {
     if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {
         Fail "this installer supports Windows only"
     }
-
-    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        Fail "the Windows user profile could not be determined"
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE) -or
+        -not [System.IO.Path]::IsPathRooted($env:USERPROFILE)) {
+        Fail "the Windows user profile could not be determined as an absolute path"
     }
-
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
     if ($arch.ToString() -ne "X64") {
         Fail "unsupported architecture: $arch. This installer supports x64 only"
@@ -45,44 +43,55 @@ function Download-File([string]$Url, [string]$Output) {
     } catch {
         Fail "failed to download $Url"
     }
+    $file = Get-Item -LiteralPath $Output
+    if ($file.Length -le 0) {
+        Fail "downloaded file is empty: $Url"
+    }
 }
 
-function Assert-Checksums([string]$Directory, [string]$ChecksumFile) {
+function Assert-Checksums(
+    [string]$Directory,
+    [string]$ChecksumFile,
+    [string[]]$ExpectedNames
+) {
+    $entries = [System.Collections.Generic.List[object]]::new()
     foreach ($line in Get-Content -LiteralPath $ChecksumFile) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?([^\s].*)$') {
+            Fail "invalid checksum file: $ChecksumFile"
         }
-        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
-            Fail "invalid checksum file"
+        $entries.Add([pscustomobject]@{
+            Hash = $Matches[1].ToLowerInvariant()
+            Name = $Matches[2].Trim()
+        })
+    }
+
+    if ($entries.Count -ne $ExpectedNames.Count) {
+        Fail "checksum file contains an unexpected number of entries: $ChecksumFile"
+    }
+
+    foreach ($expectedName in $ExpectedNames) {
+        $matching = @($entries | Where-Object { $_.Name -ceq $expectedName })
+        if ($matching.Count -ne 1) {
+            Fail "checksum entry is missing or duplicated: $expectedName"
         }
-
-        $expected = $Matches[1].ToLowerInvariant()
-        $name = $Matches[2].Trim()
-        $path = Join-Path $Directory $name
-
+        $path = Join-Path $Directory $expectedName
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            Fail "checksum asset is missing: $name"
+            Fail "checksum asset is missing: $expectedName"
         }
-
         $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne $expected) {
-            Fail "checksum verification failed for $name"
+        if ($actual -ne $matching[0].Hash) {
+            Fail "checksum verification failed for $expectedName"
         }
     }
 }
 
 function Test-CupBinInUserPath {
     $path = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($null -eq $path) {
-        return $false
-    }
-
+    if ($null -eq $path) { return $false }
     foreach ($entry in ($path -split ';')) {
-        if ($entry.TrimEnd('\') -ieq $CupBinDir.TrimEnd('\')) {
-            return $true
-        }
+        if ($entry.TrimEnd('\') -ieq $CupBinDir.TrimEnd('\')) { return $true }
     }
-
     return $false
 }
 
@@ -92,7 +101,6 @@ function Add-CupToUserPath {
         Write-Info "cup bin directory is already in the user PATH."
         return
     }
-
     $answer = Read-Host "Add $CupBinDir to your user PATH? [y/N]"
     if ($answer -match '^(y|yes)$') {
         $current = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -101,7 +109,6 @@ function Add-CupToUserPath {
         } else {
             "$current;$CupBinDir"
         }
-
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
         $script:CupAvailableInPath = $true
         Write-Info "User PATH updated. Open a new terminal to use cup from PATH."
@@ -111,112 +118,156 @@ function Add-CupToUserPath {
 }
 
 function Clear-ReadOnly([string]$Path) {
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return
+    }
+    Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false
+}
+
+function Assert-DirectoryIsNotReparsePoint([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "bootstrap staging path is a reparse point: $Path"
+    }
+    if (-not $item.PSIsContainer) {
+        Fail "bootstrap staging path is not a directory: $Path"
     }
 }
 
 function Set-BootstrapPermissions {
-    Set-ItemProperty -LiteralPath $PackagesCfg -Name IsReadOnly -Value $true
-    Set-ItemProperty -LiteralPath $UninstallScript -Name IsReadOnly -Value $true
+    foreach ($path in @($PackagesCfg, $CommonChecksums, $PlatformChecksums, $UninstallScript)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            Set-ItemProperty -LiteralPath $path -Name IsReadOnly -Value $true
+        }
+    }
+}
+
+function Get-Assets {
+    return @(
+        @{ Key = "binary"; Source = Join-Path $Staging $CupAsset; Destination = $CupExe },
+        @{ Key = "manifest"; Source = Join-Path $Staging "packages.cfg"; Destination = $PackagesCfg },
+        @{ Key = "common-checksums"; Source = Join-Path $Staging "SHA256SUMS.common"; Destination = $CommonChecksums },
+        @{ Key = "platform-checksums"; Source = Join-Path $Staging "SHA256SUMS.$Platform"; Destination = $PlatformChecksums },
+        @{ Key = "uninstall"; Source = Join-Path $Staging "uninstall.ps1"; Destination = $UninstallScript }
+    )
+}
+
+function Restore-Asset([hashtable]$Asset) {
+    $backup = Join-Path (Join-Path $Staging "backup") $Asset.Key
+    $absent = "$backup.absent"
+    $installed = Join-Path (Join-Path $Staging "installed") $Asset.Key
+
+    Clear-ReadOnly $Asset.Destination
+    if (Test-Path -LiteralPath $installed -PathType Leaf) {
+        if (Test-Path -LiteralPath $Asset.Destination) {
+            Remove-Item -LiteralPath $Asset.Destination -Force
+        }
+    }
+    if (Test-Path -LiteralPath $backup) {
+        Move-Item -LiteralPath $backup -Destination $Asset.Destination -Force
+    } elseif (Test-Path -LiteralPath $absent -PathType Leaf) {
+        if (Test-Path -LiteralPath $Asset.Destination) {
+            Remove-Item -LiteralPath $Asset.Destination -Force
+        }
+    }
+}
+
+function Recover-Staging {
+    if (-not (Test-Path -LiteralPath $Staging -PathType Container)) { return }
+    Write-Info "Recovering an interrupted cup bootstrap installation."
+    $errors = [System.Collections.Generic.List[string]]::new()
+    foreach ($asset in (Get-Assets)) {
+        try { Restore-Asset $asset } catch { $errors.Add($_.Exception.Message) }
+    }
+    try { Set-BootstrapPermissions } catch { $errors.Add($_.Exception.Message) }
+
+    if ($errors.Count -gt 0) {
+        Fail "the previous bootstrap installation could not be recovered; staging was preserved at $Staging"
+    }
+    Remove-Item -LiteralPath $Staging -Recurse -Force
+}
+
+function Backup-Asset([hashtable]$Asset) {
+    $backup = Join-Path (Join-Path $Staging "backup") $Asset.Key
+    Clear-ReadOnly $Asset.Destination
+    if (Test-Path -LiteralPath $Asset.Destination) {
+        Move-Item -LiteralPath $Asset.Destination -Destination $backup -Force
+    } else {
+        New-Item -ItemType File -Path "$backup.absent" | Out-Null
+    }
+}
+
+function Commit-Asset([hashtable]$Asset) {
+    Move-Item -LiteralPath $Asset.Source -Destination $Asset.Destination -Force
+    New-Item -ItemType File -Path (Join-Path (Join-Path $Staging "installed") $Asset.Key) | Out-Null
 }
 
 function Main {
     Test-WindowsX64
-
     foreach ($directory in @($CupRoot, $CupBinDir, $CupConfigDir, $CupScriptsDir)) {
+        Assert-DirectoryIsNotReparsePoint $directory
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        Assert-DirectoryIsNotReparsePoint $directory
     }
 
-    $staging = Join-Path $CupRoot (".bootstrap-" + [Guid]::NewGuid().ToString("N"))
-    $backup = Join-Path $staging "backup"
-    New-Item -ItemType Directory -Force -Path $backup | Out-Null
+    Assert-DirectoryIsNotReparsePoint $Staging
+    Recover-Staging
+    New-Item -ItemType Directory -Path $Staging | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $Staging "backup") | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $Staging "installed") | Out-Null
     $committed = $false
-    $backedUp = @{}
-    $installedDestinations = [System.Collections.Generic.List[string]]::new()
 
     try {
         Write-Info "Installing cup into $CupRoot"
-        Download-File "$BaseUrl/$CupAsset" (Join-Path $staging $CupAsset)
-        Download-File "$BaseUrl/packages.cfg" (Join-Path $staging "packages.cfg")
-        Download-File "$BaseUrl/uninstall.ps1" (Join-Path $staging "uninstall.ps1")
-        Download-File "$BaseUrl/SHA256SUMS.$Platform" (Join-Path $staging "SHA256SUMS.$Platform")
-        Download-File "$BaseUrl/SHA256SUMS.common" (Join-Path $staging "SHA256SUMS.common")
-        Assert-Checksums $staging (Join-Path $staging "SHA256SUMS.$Platform")
-        Assert-Checksums $staging (Join-Path $staging "SHA256SUMS.common")
+        Download-File "$BaseUrl/$CupAsset" (Join-Path $Staging $CupAsset)
+        Download-File "$BaseUrl/packages.cfg" (Join-Path $Staging "packages.cfg")
+        Download-File "$BaseUrl/uninstall.ps1" (Join-Path $Staging "uninstall.ps1")
+        Download-File "$BaseUrl/SHA256SUMS.$Platform" (Join-Path $Staging "SHA256SUMS.$Platform")
+        Download-File "$BaseUrl/SHA256SUMS.common" (Join-Path $Staging "SHA256SUMS.common")
 
-        $assets = @(
-            @{
-                Source = Join-Path $staging $CupAsset
-                Destination = $CupExe
-                Backup = Join-Path $backup "cup.exe"
-            },
-            @{
-                Source = Join-Path $staging "packages.cfg"
-                Destination = $PackagesCfg
-                Backup = Join-Path $backup "packages.cfg"
-            },
-            @{
-                Source = Join-Path $staging "uninstall.ps1"
-                Destination = $UninstallScript
-                Backup = Join-Path $backup "uninstall.ps1"
-            }
-        )
+        Assert-Checksums -Directory $Staging `
+            -ChecksumFile (Join-Path $Staging "SHA256SUMS.$Platform") `
+            -ExpectedNames @($CupAsset, "uninstall.ps1")
+        Assert-Checksums -Directory $Staging `
+            -ChecksumFile (Join-Path $Staging "SHA256SUMS.common") `
+            -ExpectedNames @("packages.cfg")
 
-        Clear-ReadOnly $PackagesCfg
-        Clear-ReadOnly $UninstallScript
-
-        foreach ($asset in $assets) {
-            if (Test-Path -LiteralPath $asset.Destination) {
-                Move-Item -LiteralPath $asset.Destination -Destination $asset.Backup -Force
-                $backedUp[$asset.Destination] = $asset.Backup
-            }
-
-            Move-Item -LiteralPath $asset.Source -Destination $asset.Destination -Force
-            $installedDestinations.Add($asset.Destination)
-        }
-
+        $assets = Get-Assets
+        foreach ($asset in $assets) { Backup-Asset $asset }
+        foreach ($asset in $assets) { Commit-Asset $asset }
         Set-BootstrapPermissions
+        if (Test-Path -LiteralPath $UninstallMarker) {
+            Remove-Item -LiteralPath $UninstallMarker -Force
+        }
         $committed = $true
     } finally {
-        if (-not $committed) {
-            Clear-ReadOnly $PackagesCfg
-            Clear-ReadOnly $UninstallScript
-
-            foreach ($destination in $installedDestinations) {
-                if (Test-Path -LiteralPath $destination) {
-                    Remove-Item -LiteralPath $destination -Force
-                }
+        if (-not $committed -and (Test-Path -LiteralPath $Staging -PathType Container)) {
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+            foreach ($asset in (Get-Assets)) {
+                try { Restore-Asset $asset } catch { $rollbackErrors.Add($_.Exception.Message) }
             }
-
-            foreach ($destination in $backedUp.Keys) {
-                Move-Item -LiteralPath $backedUp[$destination] -Destination $destination -Force
-            }
-
-            if ((Test-Path -LiteralPath $PackagesCfg -PathType Leaf) -and
-                (Test-Path -LiteralPath $UninstallScript -PathType Leaf)) {
-                Set-BootstrapPermissions
+            try { Set-BootstrapPermissions } catch { $rollbackErrors.Add($_.Exception.Message) }
+            if ($rollbackErrors.Count -eq 0) {
+                Remove-Item -LiteralPath $Staging -Recurse -Force
             } else {
-                if (Test-Path -LiteralPath $PackagesCfg -PathType Leaf) {
-                    Set-ItemProperty -LiteralPath $PackagesCfg -Name IsReadOnly -Value $true
-                }
-                if (Test-Path -LiteralPath $UninstallScript -PathType Leaf) {
-                    Set-ItemProperty -LiteralPath $UninstallScript -Name IsReadOnly -Value $true
-                }
+                throw "rollback was incomplete; staging was preserved at $Staging"
             }
-        }
-
-        if (Test-Path -LiteralPath $staging) {
-            Remove-Item -LiteralPath $staging -Recurse -Force
         }
     }
 
+    Remove-Item -LiteralPath $Staging -Recurse -Force
     Write-Info "cup installed successfully."
     Write-Info "Binary:    $CupExe"
     Write-Info "Manifest:  $PackagesCfg"
+    Write-Info "Checksums: $CommonChecksums"
+    Write-Info "           $PlatformChecksums"
     Write-Info "Uninstall: $UninstallScript"
     Add-CupToUserPath
-
     if ($CupAvailableInPath) {
         Write-Info "Test with: cup help"
     } else {
@@ -227,6 +278,6 @@ function Main {
 try {
     Main
 } catch {
-    Write-Error $_
+    [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
 }

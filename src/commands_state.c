@@ -97,7 +97,7 @@ CupError command_list(const char *target_override) {
         if (package_identity_from_entry(&package, state_entry->component,
             state_entry->host_platform, state_entry->target_platform,
             state_entry->entry) != CUP_OK ||
-            package_directory_exists(&package, &is_on_disk) != CUP_OK) {
+            package_path_exists(&package, &is_on_disk) != CUP_OK) {
             printf(" (invalid)\n");
             continue;
         }
@@ -105,6 +105,17 @@ CupError command_list(const char *target_override) {
         if (!is_on_disk) {
             printf(" (missing on disk)\n");
             continue;
+        }
+
+        {
+            char install_path[MAX_PATH_LEN];
+
+            if (layout_build_install_path(install_path,
+                sizeof(install_path), &package) != CUP_OK ||
+                package_validate(install_path, &package) != CUP_OK) {
+                printf(" (invalid on disk)\n");
+                continue;
+            }
         }
 
         default_entry = state_get_default(&context.state, state_entry->component,
@@ -194,7 +205,7 @@ CupError command_default(const char *component, const char *entry, const char *t
         goto done;
     }
 
-    err = command_require_installed(&context, &package);
+    err = command_require_valid_installed(&context, &package);
     if (err != CUP_OK) {
         goto done;
     }
@@ -261,7 +272,7 @@ CupError command_current(const char *component, const char *target_override) {
         goto done;
     }
 
-    err = command_require_installed(&context, &package);
+    err = command_require_valid_installed(&context, &package);
     if (err != CUP_OK) {
         goto done;
     }
@@ -327,7 +338,7 @@ CupError command_info(const char *component, const char *entry, const char *targ
         goto done;
     }
 
-    err = command_require_installed(&context, &package);
+    err = command_require_valid_installed(&context, &package);
     if (err != CUP_OK) {
         goto done;
     }

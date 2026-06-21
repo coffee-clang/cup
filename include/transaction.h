@@ -5,6 +5,7 @@
 
 #include "error.h"
 #include "package.h"
+#include "state.h"
 
 /* Mutating operations that can be recovered after interruption. */
 typedef enum {
@@ -34,10 +35,15 @@ CupError transaction_begin(TransactionOperation operation,
     const PackageIdentity *package, const char *temporary_path);
 
 /* Load and fully validate the current transaction journal. */
-CupError transaction_load(Transaction *transaction, TransactionFileStatus *status);
+CupError transaction_load(Transaction *transaction,
+    TransactionFileStatus *status);
 
 /* Rebuild the temporary path recorded by the journal. */
-CupError transaction_get_tmp_path(const Transaction *transaction, char *buffer, size_t size);
+CupError transaction_get_tmp_path(const Transaction *transaction,
+    char *buffer, size_t size);
+
+/* Reconcile an interrupted operation using state.txt as the commit point. */
+CupError transaction_recover(const Transaction *transaction, CupState *state);
 
 /* Remove the journal after commit, rollback or recovery. */
 CupError transaction_clear(void);

@@ -19,9 +19,12 @@ CupError layout_get_components_dir(char *buffer, size_t size);
 CupError layout_get_tmp_dir(char *buffer, size_t size);
 CupError layout_get_state_path(char *buffer, size_t size);
 CupError layout_get_manifest_path(char *buffer, size_t size);
+CupError layout_get_common_checksums_path(char *buffer, size_t size);
+CupError layout_get_platform_checksums_path(char *buffer, size_t size);
 CupError layout_get_uninstall_path(char *buffer, size_t size);
 CupError layout_get_lock_path(char *buffer, size_t size);
 CupError layout_get_transaction_path(char *buffer, size_t size);
+CupError layout_get_uninstall_marker_path(char *buffer, size_t size);
 CupError layout_get_binary_path(char *buffer, size_t size);
 
 /* Paths derived from a concrete package identity. */
@@ -41,5 +44,9 @@ CupError layout_create_tmp_dir(char *buffer, size_t size,
     const char *operation, const PackageIdentity *identity);
 CupError layout_make_tmp_path(char *buffer, size_t size,
     const char *operation, const PackageIdentity *identity);
+CupError layout_build_tmp_prefix(char *buffer, size_t size,
+    const char *operation, const PackageIdentity *identity);
+CupError layout_create_recovery_dir(char *buffer, size_t size,
+    const PackageIdentity *identity);
 
 #endif /* CUP_LAYOUT_H */

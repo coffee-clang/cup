@@ -175,17 +175,19 @@ CupError filesystem_clear_directory(const char *path,
 CupError filesystem_backup_invalid(const char *path,
     char *backup_path, size_t backup_size) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    SystemPathKind path_kind;
     CupError err;
     char candidate[MAX_PATH_LEN];
     int path_exists;
+    int restore_read_only = 0;
     unsigned int suffix = 0;
 
     if (text_is_empty(path) || backup_path == NULL || backup_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_path_exists(path, &path_exists);
-    if (err != CUP_OK || !path_exists) {
+    err = system_get_path_kind(path, &path_kind);
+    if (err != CUP_OK || path_kind == SYSTEM_PATH_MISSING) {
         return err;
     }
 
@@ -208,11 +210,28 @@ CupError filesystem_backup_invalid(const char *path,
         suffix++;
     } while (path_exists);
 
-    system_set_read_only(path, 0);
+    if (path_kind == SYSTEM_PATH_REGULAR_FILE) {
+        err = system_is_read_only(path, &restore_read_only);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (restore_read_only &&
+            system_set_read_only(path, 0) != CUP_OK) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+
     err = system_move_path(path, candidate, &commit_state);
     if (err != CUP_OK) {
-        return commit_state == SYSTEM_COMMIT_APPLIED
-            ? CUP_ERR_COMMIT : err;
+        if (commit_state == SYSTEM_COMMIT_APPLIED) {
+            return CUP_ERR_COMMIT;
+        }
+
+        if (restore_read_only &&
+            system_set_read_only(path, 1) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        return err;
     }
 
     return text_format(backup_path, backup_size, "%s", candidate);

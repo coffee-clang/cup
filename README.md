@@ -79,20 +79,15 @@ Bootstrap assets for `cup` are published in the `coffee-clang/cup` repository. T
 curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
 ```
 
-The installer verifies the published SHA-256 files before committing the matching `cup` binary, the manifest and the uninstall script. It creates the canonical per-user tree under `~/.cup`; this location is not configurable:
+The installer verifies the published SHA-256 files before committing the matching `cup` binary, manifest, checksum files and uninstall script. It first creates only the bootstrap portion of the canonical root:
 
 ```text
 ~/.cup/bin
-~/.cup/components
-~/.cup/tmp
-~/.cup/cache
 ~/.cup/config
 ~/.cup/scripts
-~/.cup/state.txt
-~/.cup/cup.lock
 ```
 
-The manifest and uninstall script are installed read-only. The installer can also add `~/.cup/bin` to the shell `PATH`.
+The complete runtime tree, including `components`, `tmp`, `cache`, `state.txt` and `cup.lock`, is initialized by the first operational command or by `cup repair`. The root is always `~/.cup` and is not configurable. The manifest, checksum files and uninstall script are installed read-only. The installer can also add `~/.cup/bin` to the shell `PATH`.
 
 ### Windows PowerShell
 
@@ -100,7 +95,7 @@ The manifest and uninstall script are installed read-only. The installer can als
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
-The installer verifies the published SHA-256 files and creates the complete tree under `%USERPROFILE%\.cup`, including the executable, manifest, state, lock and uninstall script. The manifest and uninstall script are protected with the Windows read-only attribute.
+The installer verifies the published SHA-256 files and installs the bootstrap files under `%USERPROFILE%\.cup`: the executable, manifest, checksum files and uninstall script. The complete runtime tree, including state and lock files, is initialized by the first operational command or by `cup repair`. The manifest, checksum files and uninstall script are protected with the Windows read-only attribute.
 
 It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 
@@ -176,7 +171,7 @@ cup doctor
 cup repair
 ```
 
-`doctor` is read-only and reports structural, state, package, permission and interrupted-transaction problems. `repair` applies only deterministic corrections, including journal recovery and state/component reconciliation.
+`doctor` is read-only and reports structural, state, package, bootstrap checksum, permission and interrupted-transaction problems. It also reports checks that could not be completed instead of treating the diagnosis as complete. `repair` applies only deterministic corrections, including journal recovery, verified bootstrap recovery, state/component reconciliation and quarantine of canonically identifiable invalid packages under `~/.cup/recovery/`. Ambiguous paths are reported and left unchanged.
 
 Uninstall `cup` and all cup-managed data:
 
@@ -184,7 +179,9 @@ Uninstall `cup` and all cup-managed data:
 cup uninstall
 ```
 
-`cup uninstall` removes the `.cup` directory but does not remove PATH entries. Leaving the PATH entry in place is safe; it will be reused if `cup` is installed again.
+`cup uninstall` records an uninstall marker, starts a helper that waits for the current `cup` process to exit, and then removes the canonical `.cup` directory. New commands refuse to start while the marker exists. The command does not remove PATH entries; a remaining entry can be reused by a future installation. Running the installer again removes a stale uninstall marker after restoring a valid bootstrap.
+
+When `cup` is executed from the repository root during development, it can use `config/packages.cfg` and the platform uninstall script under `scripts/install/` if the installed bootstrap files are unavailable. Installed files remain the preferred source.
 
 ## Component packages
 
