@@ -2,7 +2,13 @@ param([Parameter(Mandatory = $true)][string]$CupPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$resolvedCup = (Resolve-Path $CupPath).Path
+if ([string]::IsNullOrWhiteSpace($CupPath)) {
+    throw "cup executable path is empty"
+}
+$resolvedCup = (Resolve-Path -LiteralPath $CupPath).Path
+if ([string]::IsNullOrWhiteSpace($resolvedCup)) {
+    throw "failed to resolve cup executable path"
+}
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 
 $syntaxErrors = [System.Collections.Generic.List[string]]::new()
@@ -24,6 +30,6 @@ Write-Host "PowerShell syntax validation passed."
 $suites = @("harness.ps1", "commands.ps1", "state.ps1", "entrypoints.ps1")
 foreach ($suite in $suites) {
     Write-Host "==> Running Windows $suite"
-    & (Join-Path $PSScriptRoot $suite) -CupPath $resolvedCup
+    & (Join-Path $PSScriptRoot $suite) -CupExecutablePath $resolvedCup
 }
 Write-Host "All native Windows cup tests passed."

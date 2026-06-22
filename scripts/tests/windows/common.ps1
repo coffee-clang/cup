@@ -1,14 +1,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Script:TestScriptDir = $PSScriptRoot
-$Script:ProjectRoot = (Resolve-Path (Join-Path $Script:TestScriptDir "..\..\..")).Path
-$Script:CupPath = $null
-$Script:TestRoot = $null
-$Script:TestHome = $null
-$Script:DevRoot = $null
-$Script:OriginalUserProfile = $null
-$Script:CommandProcessor = $null
+$Script:CupTestScriptDir = $PSScriptRoot
+$Script:CupTestProjectRoot = (Resolve-Path (Join-Path $Script:CupTestScriptDir "..\..\..")).Path
+$Script:CupTestExecutable = $null
+$Script:CupTestRoot = $null
+$Script:CupTestHome = $null
+$Script:CupTestDevRoot = $null
+$Script:CupTestOriginalUserProfile = $null
+$Script:CupTestCommandProcessor = $null
 
 function Fail-Test {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -63,7 +63,7 @@ function Assert-Equals {
 function New-IsolatedTestRoot {
     param([Parameter(Mandatory = $true)][string]$Name)
 
-    $base = Join-Path $Script:ProjectRoot "build\windows-x64\dynamic\tests"
+    $base = Join-Path $Script:CupTestProjectRoot "build\windows-x64\dynamic\tests"
     New-Item -ItemType Directory -Force -Path $base | Out-Null
 
     $root = Join-Path $base ("cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
@@ -96,10 +96,10 @@ function Resolve-CommandProcessor {
 }
 
 function Get-CommandProcessor {
-    if ($null -eq $Script:CommandProcessor) {
-        $Script:CommandProcessor = Resolve-CommandProcessor
+    if ($null -eq $Script:CupTestCommandProcessor) {
+        $Script:CupTestCommandProcessor = Resolve-CommandProcessor
     }
-    return $Script:CommandProcessor
+    return $Script:CupTestCommandProcessor
 }
 
 function ConvertTo-NativeArgument {
@@ -216,35 +216,38 @@ function Write-Utf8NoBom {
 function Initialize-TestEnvironment {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$CupPath
+        [Parameter(Mandatory = $true)][string]$ExecutablePath
     )
 
-    $Script:CupPath = (Resolve-Path $CupPath).Path
-    $Script:TestRoot = New-IsolatedTestRoot -Name $Name
-    $Script:TestHome = Join-Path $Script:TestRoot "home"
-    $Script:DevRoot = Join-Path $Script:TestRoot "development-root"
-    $Script:OriginalUserProfile = $env:USERPROFILE
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        Fail-Test "cup executable path is empty"
+    }
+    $Script:CupTestExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
+    $Script:CupTestRoot = New-IsolatedTestRoot -Name $Name
+    $Script:CupTestHome = Join-Path $Script:CupTestRoot "home"
+    $Script:CupTestDevRoot = Join-Path $Script:CupTestRoot "development-root"
+    $Script:CupTestOriginalUserProfile = $env:USERPROFILE
 
-    New-Item -ItemType Directory -Force -Path $Script:TestHome | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $Script:DevRoot "config") | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $Script:DevRoot "scripts\install") | Out-Null
-    Copy-Item (Join-Path $Script:ProjectRoot "config\packages.cfg") (
-        Join-Path $Script:DevRoot "config\packages.cfg")
-    Copy-Item (Join-Path $Script:ProjectRoot "scripts\install\uninstall-cup-windows.ps1") (
-        Join-Path $Script:DevRoot "scripts\install\uninstall-cup-windows.ps1")
+    New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "config") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "scripts\install") | Out-Null
+    Copy-Item (Join-Path $Script:CupTestProjectRoot "config\packages.cfg") (
+        Join-Path $Script:CupTestDevRoot "config\packages.cfg")
+    Copy-Item (Join-Path $Script:CupTestProjectRoot "scripts\install\uninstall-cup-windows.ps1") (
+        Join-Path $Script:CupTestDevRoot "scripts\install\uninstall-cup-windows.ps1")
 
-    $env:USERPROFILE = $Script:TestHome
+    $env:USERPROFILE = $Script:CupTestHome
 }
 
 function Remove-TestEnvironment {
-    if ($null -eq $Script:OriginalUserProfile) {
+    if ($null -eq $Script:CupTestOriginalUserProfile) {
         Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
     } else {
-        $env:USERPROFILE = $Script:OriginalUserProfile
+        $env:USERPROFILE = $Script:CupTestOriginalUserProfile
     }
 
-    if ($null -ne $Script:TestRoot -and (Test-Path -LiteralPath $Script:TestRoot)) {
-        Remove-Item -LiteralPath $Script:TestRoot -Recurse -Force
+    if ($null -ne $Script:CupTestRoot -and (Test-Path -LiteralPath $Script:CupTestRoot)) {
+        Remove-Item -LiteralPath $Script:CupTestRoot -Recurse -Force
     }
 }
 
@@ -254,8 +257,8 @@ function Invoke-Cup {
         [switch]$ExpectFailure
     )
 
-    $result = Invoke-NativeProcess -FilePath $Script:CupPath `
-        -Arguments $CommandArgs -WorkingDirectory $Script:DevRoot
+    $result = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments $CommandArgs -WorkingDirectory $Script:CupTestDevRoot
 
     if ($ExpectFailure) {
         if ($result.ExitCode -eq 0) {
@@ -274,7 +277,7 @@ function Add-ManifestVersion {
         [Parameter(Mandatory = $true)][string]$Version
     )
 
-    $manifest = Join-Path $Script:DevRoot "config\packages.cfg"
+    $manifest = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
     $key = "$Component.$Tool.windows-x64.windows-x64.available_versions="
     $content = Get-Content -LiteralPath $manifest
     $found = $false
@@ -302,8 +305,8 @@ function New-TestPackage {
 
     $platform = "windows-x64"
     $packageName = "$Tool-$Version-$platform-$platform"
-    $packageRoot = Join-Path $Script:TestRoot "packages\$packageName"
-    $cacheDir = Join-Path $Script:TestHome ".cup\cache\$Component\$Tool\$platform\$platform\$Version"
+    $packageRoot = Join-Path $Script:CupTestRoot "packages\$packageName"
+    $cacheDir = Join-Path $Script:CupTestHome ".cup\cache\$Component\$Tool\$platform\$platform\$Version"
     $archive = Join-Path $cacheDir "$packageName.zip"
 
     Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -330,11 +333,11 @@ function New-TestPackage {
 function Invoke-ManagedCommand {
     param([Parameter(Mandatory = $true)][string]$Name)
 
-    $path = Join-Path $Script:TestHome ".cup\bin\$Name.cmd"
+    $path = Join-Path $Script:CupTestHome ".cup\bin\$Name.cmd"
     Assert-PathExists $path
     $result = Invoke-NativeProcess -FilePath (Get-CommandProcessor) `
         -Arguments @('/d', '/c', 'call', $path) `
-        -WorkingDirectory $Script:TestHome
+        -WorkingDirectory $Script:CupTestHome
     if ($result.ExitCode -ne 0) {
         Fail-Test "managed command failed: $Name`n$($result.Output)"
     }

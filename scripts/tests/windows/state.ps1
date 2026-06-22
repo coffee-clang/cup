@@ -1,8 +1,8 @@
-param([Parameter(Mandatory = $true)][string]$CupPath)
+param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 try {
-    Initialize-TestEnvironment -Name "state" -CupPath $CupPath
+    Initialize-TestEnvironment -Name "state" -ExecutablePath $CupExecutablePath
     Add-ManifestVersion -Component "compiler" -Tool "clang" -Version "21.1.5"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
@@ -16,7 +16,7 @@ try {
     Invoke-Cup -CommandArgs @("install", "debugger", "gdb@stable") | Out-Null
     Invoke-Cup -CommandArgs @("install", "linker", "lld@stable") | Out-Null
 
-    $statePath = Join-Path $Script:TestHome ".cup\state.txt"
+    $statePath = Join-Path $Script:CupTestHome ".cup\state.txt"
     $state = Get-Content -LiteralPath $statePath
     $installedCount = ($state | Where-Object { $_.StartsWith("installed.") }).Count
     $defaultCount = ($state | Where-Object { $_.StartsWith("default.") }).Count
