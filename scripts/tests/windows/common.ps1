@@ -3,6 +3,11 @@ $ErrorActionPreference = "Stop"
 
 $Script:TestScriptDir = $PSScriptRoot
 $Script:ProjectRoot = (Resolve-Path (Join-Path $Script:TestScriptDir "..\..\..")).Path
+$Script:CupPath = $null
+$Script:TestRoot = $null
+$Script:TestHome = $null
+$Script:DevRoot = $null
+$Script:OriginalUserProfile = $null
 
 function Fail-Test {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -53,6 +58,90 @@ function Assert-Equals {
     }
 }
 
+function ConvertTo-NativeArgument {
+    param([AllowEmptyString()][string]$Argument)
+
+    if ($Argument.Length -eq 0) {
+        return '""'
+    }
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes++
+            continue
+        }
+
+        if ($character -eq '"') {
+            [void]$builder.Append([char]'\', ($backslashes * 2 + 1))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+
+        if ($backslashes -gt 0) {
+            [void]$builder.Append([char]'\', $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+
+    if ($backslashes -gt 0) {
+        [void]$builder.Append([char]'\', ($backslashes * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-NativeProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = (($Arguments | ForEach-Object {
+        ConvertTo-NativeArgument -Argument $_
+    }) -join ' ')
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            Fail-Test "failed to start native process: $FilePath"
+        }
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result.TrimEnd([char[]]"`r`n")
+        $stderr = $stderrTask.Result.TrimEnd([char[]]"`r`n")
+
+        $parts = [System.Collections.Generic.List[string]]::new()
+        if ($stdout.Length -gt 0) { $parts.Add($stdout) }
+        if ($stderr.Length -gt 0) { $parts.Add($stderr) }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = ($parts -join "`n")
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
 
 function Write-Utf8NoBom {
     param(
@@ -79,6 +168,7 @@ function Initialize-TestEnvironment {
         "cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
     $Script:TestHome = Join-Path $Script:TestRoot "home"
     $Script:DevRoot = Join-Path $Script:TestRoot "development-root"
+    $Script:OriginalUserProfile = $env:USERPROFILE
 
     New-Item -ItemType Directory -Force -Path $Script:TestHome | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Script:DevRoot "config") | Out-Null
@@ -88,14 +178,16 @@ function Initialize-TestEnvironment {
     Copy-Item (Join-Path $Script:ProjectRoot "scripts\install\uninstall-cup-windows.ps1") (
         Join-Path $Script:DevRoot "scripts\install\uninstall-cup-windows.ps1")
 
-    $Script:OriginalUserProfile = $env:USERPROFILE
     $env:USERPROFILE = $Script:TestHome
 }
 
 function Remove-TestEnvironment {
-    if ($null -ne $Script:OriginalUserProfile) {
+    if ($null -eq $Script:OriginalUserProfile) {
+        Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
+    } else {
         $env:USERPROFILE = $Script:OriginalUserProfile
     }
+
     if ($null -ne $Script:TestRoot -and (Test-Path -LiteralPath $Script:TestRoot)) {
         Remove-Item -LiteralPath $Script:TestRoot -Recurse -Force
     }
@@ -107,23 +199,17 @@ function Invoke-Cup {
         [switch]$ExpectFailure
     )
 
-    Push-Location $Script:DevRoot
-    try {
-        $lines = & $Script:CupPath @CommandArgs 2>&1 | ForEach-Object { $_.ToString() }
-        $exitCode = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
+    $result = Invoke-NativeProcess -FilePath $Script:CupPath `
+        -Arguments $CommandArgs -WorkingDirectory $Script:DevRoot
 
-    $text = ($lines -join "`n").TrimEnd()
     if ($ExpectFailure) {
-        if ($exitCode -eq 0) {
+        if ($result.ExitCode -eq 0) {
             Fail-Test "command unexpectedly succeeded: cup $($CommandArgs -join ' ')"
         }
-    } elseif ($exitCode -ne 0) {
-        Fail-Test "command failed: cup $($CommandArgs -join ' ')`n$text"
+    } elseif ($result.ExitCode -ne 0) {
+        Fail-Test "command failed: cup $($CommandArgs -join ' ')`n$($result.Output)"
     }
-    return $text
+    return $result.Output
 }
 
 function Add-ManifestVersion {
@@ -188,11 +274,14 @@ function New-TestPackage {
 
 function Invoke-ManagedCommand {
     param([Parameter(Mandatory = $true)][string]$Name)
+
     $path = Join-Path $Script:TestHome ".cup\bin\$Name.cmd"
     Assert-PathExists $path
-    $lines = & cmd.exe /d /c $path 2>&1 | ForEach-Object { $_.ToString() }
-    if ($LASTEXITCODE -ne 0) {
-        Fail-Test "managed command failed: $Name"
+    $result = Invoke-NativeProcess -FilePath $env:ComSpec `
+        -Arguments @('/d', '/c', 'call', $path) `
+        -WorkingDirectory $Script:TestHome
+    if ($result.ExitCode -ne 0) {
+        Fail-Test "managed command failed: $Name`n$($result.Output)"
     }
-    return ($lines -join "`n").TrimEnd()
+    return $result.Output
 }

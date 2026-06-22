@@ -1,8 +1,8 @@
 param([Parameter(Mandatory = $true)][string]$CupPath)
 . (Join-Path $PSScriptRoot "common.ps1")
 
-Initialize-TestEnvironment -Name "entrypoints" -CupPath $CupPath
 try {
+    Initialize-TestEnvironment -Name "entrypoints" -CupPath $CupPath
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" -Entries @("clang", "clang++")
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
@@ -14,6 +14,12 @@ try {
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) "entry point"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
+
+    $stale = Join-Path $Script:TestHome ".cup\bin\stale-command.cmd"
+    Set-Content -LiteralPath $stale -Value "@echo off`r`nexit /b 0`r`n" -Encoding ascii -NoNewline
+    Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) "stale or unmanaged entry point"
+    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Assert-PathMissing $stale
 
     New-TestPackage -Component "linker" -Tool "lld" -Version "22.1.5" -Entries @("cup")
     $reserved = Invoke-Cup -CommandArgs @("install", "linker", "lld@stable") -ExpectFailure

@@ -1,8 +1,8 @@
 param([Parameter(Mandatory = $true)][string]$CupPath)
 . (Join-Path $PSScriptRoot "common.ps1")
 
-Initialize-TestEnvironment -Name "state" -CupPath $CupPath
 try {
+    Initialize-TestEnvironment -Name "state" -CupPath $CupPath
     Add-ManifestVersion -Component "compiler" -Tool "clang" -Version "21.1.5"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 

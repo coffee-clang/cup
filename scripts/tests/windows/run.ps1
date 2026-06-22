@@ -3,7 +3,25 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $resolvedCup = (Resolve-Path $CupPath).Path
-$suites = @("commands.ps1", "state.ps1", "entrypoints.ps1")
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+
+$syntaxErrors = [System.Collections.Generic.List[string]]::new()
+foreach ($file in Get-ChildItem (Join-Path $projectRoot "scripts") -Recurse -Filter "*.ps1") {
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile(
+        $file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+    foreach ($parseError in $errors) {
+        $syntaxErrors.Add("$($file.FullName):$($parseError.Extent.StartLineNumber): $($parseError.Message)")
+    }
+}
+if ($syntaxErrors.Count -gt 0) {
+    $details = $syntaxErrors -join [Environment]::NewLine
+    throw "PowerShell syntax validation failed:`n$details"
+}
+Write-Host "PowerShell syntax validation passed."
+
+$suites = @("harness.ps1", "commands.ps1", "state.ps1", "entrypoints.ps1")
 foreach ($suite in $suites) {
     Write-Host "==> Running Windows $suite"
     & (Join-Path $PSScriptRoot $suite) -CupPath $resolvedCup

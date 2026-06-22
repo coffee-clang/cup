@@ -1,8 +1,8 @@
 param([Parameter(Mandatory = $true)][string]$CupPath)
 . (Join-Path $PSScriptRoot "common.ps1")
 
-Initialize-TestEnvironment -Name "commands" -CupPath $CupPath
 try {
+    Initialize-TestEnvironment -Name "commands" -CupPath $CupPath
     Add-ManifestVersion -Component "compiler" -Tool "clang" -Version "21.1.5"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
@@ -34,11 +34,23 @@ try {
     Assert-Contains (Invoke-Cup -CommandArgs @("current", "compiler")) "compiler [windows-x64]: clang@22.1.5 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
 
+    $packageInfo = Invoke-Cup -CommandArgs @("info", "compiler", "clang@stable")
+    Assert-Contains $packageInfo "Package information for compiler clang@stable -> clang@22.1.5"
+    Assert-Contains $packageInfo "component          compiler"
+    Assert-Contains $packageInfo "version            22.1.5"
+
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@21.1.5") | Out-Null
     Assert-Contains (Invoke-Cup -CommandArgs @("current", "compiler")) "compiler [windows-x64]: clang@21.1.5"
+    Invoke-Cup -CommandArgs @("default", "compiler", "clang@stable") | Out-Null
+
+    $output = Invoke-Cup -CommandArgs @("update", "clang")
+    Assert-Contains $output "0 stable package(s) installed, 0 default(s) moved"
 
     $failure = Invoke-Cup -CommandArgs @("default") -ExpectFailure
     Assert-Contains $failure "requires a component and an installed tool release"
+
+    Invoke-Cup -CommandArgs @("remove", "compiler", "clang@21.1.5") | Out-Null
+    Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@21.1.5"
 
     Invoke-Cup -CommandArgs @("doctor") | Out-Null
     Write-Host "Windows command tests passed."
