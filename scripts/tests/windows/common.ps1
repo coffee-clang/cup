@@ -56,9 +56,14 @@ function Assert-Equals {
 
 function Write-Utf8NoBom {
     param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$Lines
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string[]]$Lines
     )
+
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($Path, $Lines, $encoding)
 }
