@@ -153,12 +153,15 @@ jobs:
             make
           pacboy: >-
             gcc:p
+            binutils:p
             curl:p
             libarchive:p
             pkgconf:p
       - name: Build Windows development binary
         shell: msys2 {0}
-        run: make PLATFORM=windows-x64 LINK_MODE=dynamic BUILD_MODE=development
+        run: >-
+          make PLATFORM=windows-x64 LINK_MODE=dynamic BUILD_MODE=development
+          CC=gcc WINDRES=windres
       - name: Run native Windows test suites
         shell: msys2 {0}
         run: make test-windows

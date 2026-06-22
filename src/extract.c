@@ -544,6 +544,8 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         ARCHIVE_EXTRACT_SECURE_NODOTDOT |
         ARCHIVE_EXTRACT_SECURE_SYMLINKS);
     if (status != ARCHIVE_OK) {
+        fprintf(stderr, "Error: failed to configure archive extraction: %s.\n",
+            archive_error_string(writer));
         close_archives(reader, writer);
         return CUP_ERR_EXTRACT;
     }
@@ -597,6 +599,8 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         }
 
         if (archive_write_header(writer, entry) != ARCHIVE_OK) {
+            fprintf(stderr, "Error: failed to create archive entry '%s': %s.\n",
+                archive_entry_pathname(entry), archive_error_string(writer));
             err = CUP_ERR_EXTRACT;
             break;
         }
@@ -608,6 +612,8 @@ CupError extract_archive(const char *archive_path, const char *tmp_path) {
         }
 
         if (archive_write_finish_entry(writer) != ARCHIVE_OK) {
+            fprintf(stderr, "Error: failed to finish archive entry '%s': %s.\n",
+                archive_entry_pathname(entry), archive_error_string(writer));
             err = CUP_ERR_EXTRACT;
             break;
         }

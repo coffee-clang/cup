@@ -65,7 +65,14 @@ export PROJECT_ROOT TEST_PLATFORM TEST_BINARY
 
 test_begin() {
     name=$1
-    TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cup-$name-tests.XXXXXX")
+    temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/cup-$name-tests.XXXXXX") ||
+        fail "failed to create temporary test directory"
+
+    TMP_ROOT=$(CDPATH= cd -- "$temporary_root" && pwd -P) || {
+        rm -rf "$temporary_root"
+        fail "failed to resolve temporary test directory"
+    }
+
     export TMP_ROOT
     trap 'rm -rf "$TMP_ROOT"' 0 HUP INT TERM
 }
