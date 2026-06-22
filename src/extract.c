@@ -213,7 +213,7 @@ static CupError normalize_entry_path(const char *input,
     size_t length;
 
     if (text_is_empty(input) || output == NULL || size == 0 ||
-        text_format(output, size, "%s", input) != CUP_OK) {
+        text_copy(output, size, input) != CUP_OK) {
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
@@ -243,7 +243,7 @@ static int symlink_target_is_internal(const char *entry_path,
         return 0;
     }
 
-    if (text_format(copy, sizeof(copy), "%s", entry_path) != CUP_OK) {
+    if (text_copy(copy, sizeof(copy), entry_path) != CUP_OK) {
         return 0;
     }
 
@@ -258,7 +258,7 @@ static int symlink_target_is_internal(const char *entry_path,
     }
 
     if (copy[0] == '\0') {
-        if (text_format(combined, sizeof(combined), "%s", target) != CUP_OK) {
+        if (text_copy(combined, sizeof(combined), target) != CUP_OK) {
             return 0;
         }
     } else if (text_format(combined, sizeof(combined),

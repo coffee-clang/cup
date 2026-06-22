@@ -74,7 +74,7 @@ static CupError build_path_chain(char *buffer, size_t size, const char *root,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_format(current, sizeof(current), "%s", root);
+    err = text_copy(current, sizeof(current), root);
     if (err != CUP_OK) {
         return err;
     }
@@ -96,13 +96,13 @@ static CupError build_path_chain(char *buffer, size_t size, const char *root,
             }
         }
 
-        err = text_format(current, sizeof(current), "%s", next);
+        err = text_copy(current, sizeof(current), next);
         if (err != CUP_OK) {
             return err;
         }
     }
 
-    return text_format(buffer, size, "%s", current);
+    return text_copy(buffer, size, current);
 }
 
 static CupError check_layout_directory(const char *path,

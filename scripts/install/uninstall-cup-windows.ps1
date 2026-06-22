@@ -35,7 +35,22 @@ try {
     }
 
     if (Test-Path -LiteralPath $requestedRoot) {
-        Remove-Item -LiteralPath $requestedRoot -Recurse -Force
+        $stagingRoot = Join-Path $env:USERPROFILE (
+            ".cup-uninstall." + [Guid]::NewGuid().ToString("N")
+        )
+        $stagedCupRoot = Join-Path $stagingRoot "root"
+
+        [System.IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
+        try {
+            [System.IO.Directory]::Move($requestedRoot, $stagedCupRoot)
+        } catch {
+            if (Test-Path -LiteralPath $stagingRoot) {
+                Remove-Item -LiteralPath $stagingRoot -Force
+            }
+            throw "could not detach $requestedRoot`: $_"
+        }
+
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
     }
 
     if (Test-Path -LiteralPath $SelfPath -PathType Leaf) {

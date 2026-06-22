@@ -37,6 +37,9 @@
 *.x86_64
 *.hex
 
+# Clang static analyzer reports
+/*.plist
+
 # Debug files
 *.dSYM/
 *.su

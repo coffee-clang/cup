@@ -30,14 +30,13 @@ The executable supports:
 ```text
 cup --version
 cup help [command]
-cup list [--target <target-platform>]
+cup list [<component>] [--target <target-platform>]
 cup install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]
 cup update <tool|component>
 cup remove <component> <tool>@<release> [--target <target-platform>]
-cup default [--target <target-platform>]
 cup default <component> <tool>@<release> [--target <target-platform>]
 cup current [<component>] [--target <target-platform>]
-cup info <component> <tool>@<release> [--target <target-platform>]
+cup info [<component> [<tool>@<release>]] [--target <target-platform>]
 cup self-update
 cup doctor
 cup repair
@@ -226,14 +225,13 @@ The manifest is required for package resolution. If `~/.cup/config/packages.cfg`
 
 Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes to an exclusive temporary file, requires a successful HTTP 200 response and non-empty content, synchronizes the file, validates package archives completely, and atomically replaces the deterministic cache path. It follows HTTPS release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads are removed after failure or interruption.
 
-The project also contains an embedded CA bundle module:
+The project embeds a CA bundle generated from the versioned source file:
 
 ```text
-include/ca_bundle.h
-src/ca_bundle.c
+certs/cacert.pem
 ```
 
-`ca_bundle.c` is generated from `certs/cacert.pem` by `scripts/certs/update-ca-bundle.sh` and exposes the certificate data as `cup_ca_bundle` and `cup_ca_bundle_len`. When `CUP_USE_EMBEDDED_CA_BUNDLE` is enabled, `fetch.c` passes this in-memory bundle to libcurl instead of depending on a distribution-specific certificate file path.
+During each configured build, `scripts/certs/generate-ca-bundle.sh` deterministically writes `ca_bundle.h` and `ca_bundle.c` under `build/<platform>/<link-mode>/generated`. These generated files are not tracked. Before a push or manually requested release build proceeds on `main`, the workflow runs `scripts/certs/update-ca-bundle.sh`. If the validated curl/Mozilla extract differs, the workflow commits only `certs/cacert.pem` as `Update certs`, pushes that commit and makes every test, platform build and release job use the resulting commit. Local and pull-request builds continue to use the versioned PEM without requiring network access. When `CUP_USE_EMBEDDED_CA_BUNDLE` is enabled, `fetch.c` passes the generated in-memory bundle to libcurl instead of depending on a distribution-specific certificate file path.
 
 This is part of the executable design, not part of component packaging. It helps the released `cup` binary remain independent from build-machine paths and from platform-specific CA bundle locations where the selected libcurl backend requires an explicit certificate bundle.
 
@@ -450,45 +448,54 @@ If state saving fails before the state commit, `cup` attempts to move the packag
 
 ## 11. Default and current
 
-`cup default` sets the default installed package for a component, host and target tuple. The first installation in a scope creates its default automatically; later installations do not replace an existing choice.
+`cup default` is a mutating command. It selects one installed package as the default for a `component + host + target` scope and rebuilds the managed entry points derived from the resulting state. The first installation in a scope still creates its default automatically; later installations do not replace an existing choice.
 
 ```sh
 cup default compiler gcc@stable
-cup default
-cup default --target windows-x64
+cup default compiler gcc@stable --target windows-x64
 ```
 
-`cup current` prints one selected component default or, without a component, all defaults for the current host.
+`cup current` is the read-only view of those defaults. Without filters it includes every target scope configured for the current host. A component or `--target` restricts the view. Each entry is validated against the installed package and the managed commands currently exposed through `~/.cup/bin`.
 
 ```sh
-cup current compiler
-cup current compiler --target windows-x64
 cup current
+cup current compiler
+cup current --target windows-x64
+cup current compiler --target windows-x64
 ```
 
-A default must point to an installed package whose canonical directory and metadata pass complete validation. Managed wrappers are derived from all defaults for the current host and rebuilt under `~/.cup/bin`. Native entries keep their declared names; cross-target entries are prefixed with `<target>-`. `doctor` diagnoses missing, altered and stale wrappers, while `repair` rebuilds them from `state.txt`.
+A default must point to an installed package whose canonical directory and metadata pass complete validation. Managed wrappers are planned once from the candidate state, validated before the state commit and then applied from that same immutable plan. Native entries keep their declared names; cross-target entries are prefixed with `<target>-`. `doctor` diagnoses missing, altered and stale wrappers, while `repair` rebuilds them from `state.txt`.
 
 ## 12. List and info
 
-`cup list` prints installed packages for the current host and selected target. It annotates entries that are defaults, entries that match the current manifest stable version, and state entries whose package is missing or invalid on disk.
+`cup list` prints packages installed for the current host and selected target. It can be restricted to one component and annotates defaults, manifest-stable releases, missing packages and invalid packages.
 
 ```sh
 cup list
+cup list compiler
 cup list --target windows-x64
 ```
 
-`cup info` first validates the complete installed package, then reads `info.txt` and prints identity, entry points, feature metadata, content metadata and build configuration metadata.
+`cup info` without a concrete package reads the manifest catalog. With no positional arguments it groups all installable tools for the current host by component; with a component it restricts the catalog. `--target` can restrict either catalog form.
+
+```sh
+cup info
+cup info compiler
+cup info compiler --target windows-x64
+```
+
+With `<component> <tool>@<release>`, `cup info` resolves the requested release, requires the package to be installed and valid, then prints the immutable `info.txt` metadata supplied by `cup-components`.
 
 ```sh
 cup info compiler clang@stable
+cup info compiler gcc@16.1.0-rev1 --target windows-x64
 ```
-
 
 ## 12.1 Update and self-update
 
-`cup update <tool>` plans one update for every installed host/target scope of that tool. `cup update <component>` does the same for every installed tool in the component. Each plan resolves the active manifest `stable` version, installs it when absent, retains previous versions and moves a default only when the previous default belonged to that same tool. Default replacement uses compare-and-swap semantics so a concurrent user choice is not overwritten.
+`cup update <tool>` identifies every installed host/target scope of that tool. `cup update <component>` does the same for every installed tool in the component. Each scope is then re-read and updated while holding one exclusive lock: the active manifest `stable` version is installed idempotently when absent, previous versions are retained, and the default moves only when it still belongs to the same tool. This avoids applying stale conclusions from the initial scan. A component-wide update is atomic per scope, not across every tool in the component.
 
-`cup self-update` downloads the published platform checksum file, validates its exact platform asset set, and compares the canonical executable and uninstall script with the verified release assets. When either differs, it downloads and verifies both assets, then starts a deferred platform helper that waits for the current process to exit and replaces the executable, uninstall script and matching platform checksum file together.
+`cup self-update` downloads `release.txt` and the published platform checksum file, requires an official semantic version that is not older than the embedded version, and validates the exact platform asset set. When an update or bootstrap repair is needed, it downloads and verifies the executable and uninstall script, persists a `self-update` transaction in the existing journal, and starts a deferred helper. After the current process exits, the helper reacquires the operating-system lock, backs up all canonical assets, replaces the executable, uninstall script and platform checksum as one recoverable operation, records the commit, clears the journal and removes staging. `repair` deterministically rolls back or completes an interrupted self-update from the same journal.
 
 ## 13. Doctor and repair
 
@@ -498,7 +505,7 @@ cup info compiler clang@stable
 
 ```text
 recreate the canonical directory structure
-recover or complete an interrupted install/remove transaction
+recover or complete an interrupted install, remove or self-update transaction
 preserve malformed text files as .invalid.N
 restore published bootstrap checksum files
 restore checksum-verified manifest, canonical executable and uninstall script
@@ -515,7 +522,7 @@ A package in `components` is adopted only when its canonical path, identity meta
 
 `cup uninstall` removes `cup` itself and all cup-managed data under the `.cup` root.
 
-Before starting the helper, `cup` creates `~/.cup/uninstall.pending` while holding the exclusive lock and passes its process ID to the helper. The helper verifies that the requested root is exactly the canonical root, waits for that process to exit and only then removes the tree. Other commands reject the pending marker, preventing a new operation from racing with deletion. On POSIX the script is copied to a temporary path; on Windows the installed PowerShell script is copied and invoked with the same parent-process protocol.
+Before starting the helper, `cup` creates `~/.cup/uninstall.pending` while holding the exclusive lock and passes its process ID to the helper. The helper verifies that the requested root is exactly the canonical root, waits for that process to exit, atomically moves the root to a unique sibling staging directory, and removes the detached tree. Other commands reject the pending marker, while the atomic detach prevents them from observing a partially deleted canonical root. On POSIX the script is copied to a temporary path; on Windows the installed PowerShell script is copied and invoked with the same parent-process protocol.
 
 The uninstall command intentionally does not remove shell or user PATH entries. A remaining PATH entry is harmless and can be reused by a future installation. A later installer run removes a stale marker only after a valid bootstrap has been committed.
 
@@ -567,7 +574,13 @@ entry.c / path.c / registry.c / platform.c / interrupt.c
   focused domain and platform helpers
 ```
 
-## 16. Design boundaries
+## 16. Build version model
+
+The build generates `version.h`, `release.txt` and the Windows version resource from one Git-derived value. A clean commit exactly matching `v<major>.<minor>.<patch>` is an official release. Other commits use a development identifier containing the nearest release, first-parent distance, abbreviated commit and optional dirty state. A source archive without Git metadata receives an archive development suffix unless `CUP_VERSION_OVERRIDE` supplies an official version.
+
+The release workflow runs for every push to `main`. It first refreshes the versioned CA bundle and, when needed, creates an `Update certs` commit that is excluded from the release-distance count. If at least ten other first-parent commits have accumulated since the latest release tag and all tests and platform builds succeed, the workflow creates the next patch tag on the exact commit that was built and publishes the coherent asset set. Minor and major increments are explicit manual workflow choices. `BUILD_MODE=release` controls optimization only; it does not by itself turn an arbitrary commit into an official release.
+
+## 17. Design boundaries
 
 `cup` is a C toolchain installer, not a system package manager.
 

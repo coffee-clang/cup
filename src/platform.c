@@ -85,7 +85,7 @@ CupError platform_validate(const char *platform) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_format(platform_copy, sizeof(platform_copy), "%s", platform);
+    err = text_copy(platform_copy, sizeof(platform_copy), platform);
     if (err != CUP_OK) {
         return err;
     }

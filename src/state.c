@@ -43,7 +43,7 @@ static CupError parse_state_key(const char *key, StateRecordType *type,
         return CUP_OK;
     }
 
-    if (text_format(body, sizeof(body), "%s", scope) != CUP_OK) {
+    if (text_copy(body, sizeof(body), scope) != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
 
@@ -72,24 +72,23 @@ static CupError set_state_entry(StateEntry *state_entry, const char *component,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_format(state_entry->component, sizeof(state_entry->component), "%s", component);
+    err = text_copy(state_entry->component, sizeof(state_entry->component), component);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = text_format(state_entry->host_platform,
-        sizeof(state_entry->host_platform), "%s", host_platform);
+    err = text_copy(state_entry->host_platform, sizeof(state_entry->host_platform), host_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = text_format(state_entry->target_platform,
-        sizeof(state_entry->target_platform), "%s", target_platform);
+    err = text_copy(state_entry->target_platform,
+        sizeof(state_entry->target_platform), target_platform);
     if (err != CUP_OK) {
         return err;
     }
 
-    return text_format(state_entry->entry, sizeof(state_entry->entry), "%s", entry);
+    return text_copy(state_entry->entry, sizeof(state_entry->entry), entry);
 }
 
 static int state_entries_equal(const StateEntry *left,
@@ -493,8 +492,7 @@ CupError state_set_default(CupState *state, const char *component,
 
     index = state_find_default(state, component, host_platform, target_platform);
     if (index != -1) {
-        return text_format(state->defaults[index].entry,
-            sizeof(state->defaults[index].entry), "%s", entry);
+        return text_copy(state->defaults[index].entry, sizeof(state->defaults[index].entry), entry);
     }
 
     if (state->default_count >= MAX_DEFAULTS) {

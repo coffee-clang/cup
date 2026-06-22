@@ -38,8 +38,17 @@
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
 #define CUP_UNINSTALL_MARKER_FILENAME "uninstall.pending"
-#define CUP_BOOTSTRAP_URL \
-    "https://github.com/coffee-clang/cup/releases/download/cup-bootstrap"
+#define CUP_RELEASE_URL \
+    "https://github.com/coffee-clang/cup/releases/latest/download"
+#define CUP_RELEASE_METADATA_FILENAME "release.txt"
+
+#define CUP_SELF_UPDATE_BINARY_NEW "binary.new"
+#define CUP_SELF_UPDATE_UNINSTALL_NEW "uninstall.new"
+#define CUP_SELF_UPDATE_CHECKSUMS_NEW "checksums.new"
+#define CUP_SELF_UPDATE_BINARY_OLD "binary.old"
+#define CUP_SELF_UPDATE_UNINSTALL_OLD "uninstall.old"
+#define CUP_SELF_UPDATE_CHECKSUMS_OLD "checksums.old"
+#define CUP_SELF_UPDATE_COMMITTED "committed"
 
 #if defined(_WIN32)
 #define CUP_UNINSTALL_FILENAME "uninstall.ps1"

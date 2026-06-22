@@ -236,15 +236,19 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
     }
 
     sha256_init(&context);
-    while ((read_count = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        sha256_update(&context, buffer, read_count);
-    }
-    {
-        int read_failed = ferror(file);
-        int close_failed = fclose(file) != 0;
+    while (1) {
+        read_count = fread(buffer, 1, sizeof(buffer), file);
+        if (read_count > 0) {
+            sha256_update(&context, buffer, read_count);
+        }
+        if (read_count < sizeof(buffer)) {
+            int read_failed = ferror(file) != 0;
+            int close_failed = fclose(file) != 0;
 
-        if (read_failed || close_failed) {
-            return CUP_ERR_FILESYSTEM;
+            if (read_failed || close_failed) {
+                return CUP_ERR_FILESYSTEM;
+            }
+            break;
         }
     }
 
@@ -300,7 +304,7 @@ CupError checksum_find_expected(const char *checksum_path,
             fclose(file);
             return CUP_ERR_VALIDATION;
         }
-        if (text_format(hex, size, "%s", digest) != CUP_OK) {
+        if (text_copy(hex, size, digest) != CUP_OK) {
             fclose(file);
             return CUP_ERR_BUFFER_TOO_SMALL;
         }

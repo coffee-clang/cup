@@ -48,7 +48,7 @@ static CupError download_asset(const char *asset_name,
     char url[MAX_MANIFEST_URL_LEN];
 
     if (create_repair_temp(path, path_size) != CUP_OK ||
-        text_format(url, sizeof(url), "%s/%s", CUP_BOOTSTRAP_URL, asset_name) != CUP_OK) {
+        text_format(url, sizeof(url), "%s/%s", CUP_RELEASE_URL, asset_name) != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -217,7 +217,7 @@ static CupError repair_bootstrap_checksums(void) {
     char platform_name[MAX_NAME_LEN];
     char binary_asset[MAX_NAME_LEN];
     const char *common_assets[] = {CUP_MANIFEST_FILENAME};
-    const char *platform_assets[2];
+    const char *platform_assets[3];
 
     if (layout_get_common_checksums_path(common_path,
             sizeof(common_path)) != CUP_OK ||
@@ -232,6 +232,7 @@ static CupError repair_bootstrap_checksums(void) {
 
     platform_assets[0] = binary_asset;
     platform_assets[1] = CUP_UNINSTALL_FILENAME;
+    platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
 
     err = repair_checksum_file(common_path, CUP_COMMON_CHECKSUMS_FILENAME,
         common_assets, sizeof(common_assets) / sizeof(common_assets[0]));
@@ -585,9 +586,10 @@ static CupError repair_load_state(RepairContext *context) {
 
     transaction_init(&pending_transaction);
     err = transaction_load(&pending_transaction, &transaction_status);
-    if (err == CUP_OK && transaction_status == TRANSACTION_FILE_LOADED) {
-        fprintf(stderr, "Error: state.txt is invalid while a transaction is pending; "
-            "automatic recovery would be ambiguous.\n");
+    if (err == CUP_OK && transaction_status == TRANSACTION_FILE_LOADED &&
+        pending_transaction.operation != TRANSACTION_SELF_UPDATE) {
+        fprintf(stderr, "Error: state.txt is invalid while a package transaction "
+            "is pending; automatic recovery would be ambiguous.\n");
         return CUP_ERR_TRANSACTION;
     }
 
@@ -869,7 +871,14 @@ CupError command_repair(void) {
         err = repair_save_state(&context);
     }
     if (err == CUP_OK) {
-        err = entrypoints_sync(&context.state);
+        EntryPointPlan entrypoints;
+
+        entrypoint_plan_init(&entrypoints);
+        err = entrypoint_plan_build(&entrypoints, &context.state);
+        if (err == CUP_OK) {
+            err = entrypoint_plan_apply(&entrypoints);
+        }
+        entrypoint_plan_free(&entrypoints);
         if (err == CUP_OK) {
             printf("Rebuilt managed entry points.\n");
         }

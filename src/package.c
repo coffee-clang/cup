@@ -51,13 +51,13 @@ CupError package_identity_init(PackageIdentity *identity, const char *component,
 
     memset(identity, 0, sizeof(*identity));
 
-    if (text_format(identity->component, sizeof(identity->component), "%s", component) != CUP_OK ||
-        text_format(identity->tool, sizeof(identity->tool), "%s", tool) != CUP_OK ||
-        text_format(identity->host_platform,
-            sizeof(identity->host_platform), "%s", host_platform) != CUP_OK ||
-        text_format(identity->target_platform, sizeof(identity->target_platform),
-            "%s", target_platform) != CUP_OK ||
-        text_format(identity->version, sizeof(identity->version), "%s", version) != CUP_OK) {
+    if (text_copy(identity->component, sizeof(identity->component), component) != CUP_OK ||
+        text_copy(identity->tool, sizeof(identity->tool), tool) != CUP_OK ||
+        text_copy(identity->host_platform,
+            sizeof(identity->host_platform), host_platform) != CUP_OK ||
+        text_copy(identity->target_platform,
+            sizeof(identity->target_platform), target_platform) != CUP_OK ||
+        text_copy(identity->version, sizeof(identity->version), version) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -314,7 +314,7 @@ static void record_scan_issue(PackageScanContext *context, const char *path,
         PackageIssue *issue = &packages->issues[packages->issue_count++];
 
         memset(issue, 0, sizeof(*issue));
-        if (text_format(issue->path, sizeof(issue->path), "%s", path) != CUP_OK) {
+        if (text_copy(issue->path, sizeof(issue->path), path) != CUP_OK) {
             packages->complete = 0;
             packages->issue_count--;
             return;
@@ -361,7 +361,7 @@ static CupError scan_version_path(PackageScanContext *context,
     PackageIdentity package = context->identity;
 
     if (!path_is_safe_identifier(name) ||
-        text_format(package.version, sizeof(package.version), "%s", name) != CUP_OK) {
+        text_copy(package.version, sizeof(package.version), name) != CUP_OK) {
         record_scan_issue(context, path, PACKAGE_ISSUE_INVALID_VERSION, 0, NULL);
         return CUP_OK;
     }
@@ -414,8 +414,7 @@ static CupError scan_package_path(const char *path,
     switch (context->level) {
         case PACKAGE_LEVEL_COMPONENT:
             if (registry_validate_component(name) == CUP_OK) {
-                err = text_format(child.identity.component,
-                    sizeof(child.identity.component), "%s", name);
+                err = text_copy(child.identity.component, sizeof(child.identity.component), name);
             } else {
                 err = CUP_ERR_VALIDATION;
             }
@@ -423,8 +422,7 @@ static CupError scan_package_path(const char *path,
 
         case PACKAGE_LEVEL_TOOL:
             if (registry_validate_tool(context->identity.component, name) == CUP_OK) {
-                err = text_format(child.identity.tool,
-                    sizeof(child.identity.tool), "%s", name);
+                err = text_copy(child.identity.tool, sizeof(child.identity.tool), name);
             } else {
                 err = CUP_ERR_VALIDATION;
             }
@@ -432,8 +430,8 @@ static CupError scan_package_path(const char *path,
 
         case PACKAGE_LEVEL_HOST:
             if (platform_validate(name) == CUP_OK) {
-                err = text_format(child.identity.host_platform,
-                    sizeof(child.identity.host_platform), "%s", name);
+                err = text_copy(child.identity.host_platform,
+                    sizeof(child.identity.host_platform), name);
             } else {
                 err = CUP_ERR_VALIDATION;
             }
@@ -441,8 +439,8 @@ static CupError scan_package_path(const char *path,
 
         case PACKAGE_LEVEL_TARGET:
             if (platform_validate(name) == CUP_OK) {
-                err = text_format(child.identity.target_platform,
-                    sizeof(child.identity.target_platform), "%s", name);
+                err = text_copy(child.identity.target_platform,
+                    sizeof(child.identity.target_platform), name);
             } else {
                 err = CUP_ERR_VALIDATION;
             }

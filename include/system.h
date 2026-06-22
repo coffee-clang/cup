@@ -39,10 +39,10 @@ CupError system_get_home_dir(char *buffer, size_t size);
 unsigned long system_get_process_id(void);
 CupError system_start_uninstall(const char *cup_root,
     const char *uninstall_script, unsigned long parent_pid);
-CupError system_start_self_update(const char *staged_binary,
-    const char *installed_binary, const char *staged_uninstall,
-    const char *installed_uninstall, const char *staged_checksums,
-    const char *installed_checksums, unsigned long parent_pid);
+CupError system_start_self_update(const char *staging_directory,
+    const char *installed_binary, const char *installed_uninstall,
+    const char *installed_checksums, const char *lock_path,
+    const char *journal_path, unsigned long parent_pid);
 
 /* Files and directories. */
 CupError system_make_directory(const char *path);

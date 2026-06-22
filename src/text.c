@@ -73,7 +73,7 @@ CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size
             return CUP_ERR_INVALID_INPUT;
         }
 
-        err = text_format(outputs[count].data, outputs[count].capacity, "%s", part);
+        err = text_copy(outputs[count].data, outputs[count].capacity, part);
         if (err != CUP_OK) {
             return err;
         }
@@ -92,7 +92,24 @@ CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size
     return CUP_OK;
 }
 
-// SAFE FORMATTING
+// SAFE COPYING AND FORMATTING
+CupError text_copy(char *buffer, size_t size, const char *source) {
+    size_t length;
+
+    if (buffer == NULL || size == 0 || source == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    length = strlen(source);
+    if (length >= size) {
+        fprintf(stderr, "Error: copied string is too long.\n");
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    memcpy(buffer, source, length + 1);
+    return CUP_OK;
+}
+
 CupError text_format(char *buffer, size_t size, const char *format, ...) {
     va_list args;
     int written;
@@ -223,11 +240,11 @@ CupError text_parse_key_value(char *line, char *key, size_t key_size,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_format(key, key_size, "%s", trimmed_key);
+    err = text_copy(key, key_size, trimmed_key);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = text_format(value, value_size, "%s", trimmed_value);
+    err = text_copy(value, value_size, trimmed_value);
     return err;
 }

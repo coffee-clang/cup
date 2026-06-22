@@ -85,7 +85,7 @@ The host is detected by `cup`. The target defaults to the host and can be overri
 ### Linux and macOS
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
 The installer verifies published SHA-256 checksums and installs the bootstrap files under `~/.cup`: the executable, package manifest, checksum files and uninstall script. The first operational command or `cup repair` initializes the remaining runtime structure, including state, lock, cache, temporary and component directories.
@@ -93,7 +93,7 @@ The installer verifies published SHA-256 checksums and installs the bootstrap fi
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 The Windows installer creates the same bootstrap structure under `%USERPROFILE%\.cup` and applies the read-only attribute to the manifest, checksum files and uninstall script. Git Bash, MSYS2 and Cygwin installation delegates to this native installer rather than creating a second shell-specific root.
@@ -104,11 +104,15 @@ The Windows installer creates the same bootstrap structure under `%USERPROFILE%\
 cup --version
 cup help install
 cup list
+cup list compiler
 cup install compiler gcc@stable
 cup update gcc
 cup update compiler
 cup default compiler gcc@stable
 cup current
+cup current compiler
+cup info
+cup info compiler
 cup info compiler gcc@stable
 cup self-update
 cup remove compiler gcc@stable
@@ -117,7 +121,7 @@ cup repair
 cup uninstall
 ```
 
-`doctor` never modifies the installation and explicitly reports incomplete checks. `repair` owns safe structural repair, checksum-verified bootstrap recovery, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
+`cup default` only selects an installed package for one scope. `cup current` lists the valid defaults configured for the current host across target scopes and can be filtered by component or target. `cup info` without a concrete package explores the manifest catalog; with `<component> <tool>@<release>` it prints immutable metadata from the installed package. `doctor` never modifies the installation and explicitly reports incomplete checks. `repair` owns safe structural repair, checksum-verified bootstrap recovery, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
 
 Use `--target` when a command should operate on a non-default target platform:
 
@@ -131,4 +135,3 @@ cup current compiler --target windows-x64
 
 - [Specification](specification.md) describes the implemented command model, manifest format, state file, filesystem layout, package metadata, transaction flow and design boundaries.
 - [Dependencies](dependencies.md) describes installer dependencies, local build dependencies, linked libraries, bootstrap scripts and release artifacts.
-- [Known issues and planned hardening](known-issues.md) records intentionally deferred validation and robustness work.

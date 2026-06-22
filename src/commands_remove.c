@@ -22,6 +22,8 @@ typedef struct {
     int package_moved;
     int journal_started;
     int removed_default;
+    EntryPointPlan entrypoints;
+    int entrypoints_ready;
 } RemoveOperation;
 
 static CupError prepare_remove(RemoveOperation *operation,
@@ -155,6 +157,15 @@ static CupError commit_removal(RemoveOperation *operation) {
         return err;
     }
 
+    if (operation->removed_default) {
+        err = entrypoint_plan_build(&operation->entrypoints,
+            &operation->context.state);
+        if (err != CUP_OK) {
+            return err;
+        }
+        operation->entrypoints_ready = 1;
+    }
+
     err = state_save(&operation->context.state);
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
@@ -180,8 +191,8 @@ static CupError commit_removal(RemoveOperation *operation) {
         operation->journal_started = 0;
     }
 
-    if (operation->removed_default &&
-        entrypoints_sync(&operation->context.state) != CUP_OK) {
+    if (operation->entrypoints_ready &&
+        entrypoint_plan_apply(&operation->entrypoints) != CUP_OK) {
         fprintf(stderr,
             "Error: removal was saved, but managed entry points could not "
             "be rebuilt. Run 'cup repair'.\n");
@@ -252,6 +263,7 @@ CupError command_remove(const char *component, const char *entry,
     }
 
 done:
+    entrypoint_plan_free(&operation.entrypoints);
     command_context_end(&operation.context);
     return err;
 }

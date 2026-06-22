@@ -126,5 +126,5 @@ CupError registry_find_tool_component(const char *tool, char *component,
         return CUP_ERR_INVALID_TOOL;
     }
 
-    return text_format(component, component_size, "%s", matched->component);
+    return text_copy(component, component_size, matched->component);
 }

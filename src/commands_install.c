@@ -2,6 +2,7 @@
 
 #include "command_context.h"
 #include "extract.h"
+#include "entry.h"
 #include "entrypoints.h"
 #include "fetch.h"
 #include "filesystem.h"
@@ -15,6 +16,12 @@
 #include "text.h"
 
 #include <stdio.h>
+#include <string.h>
+
+typedef enum {
+    INSTALL_REQUEST_USER,
+    INSTALL_REQUEST_UPDATE
+} InstallRequestKind;
 
 typedef struct {
     CommandContext context;
@@ -29,6 +36,12 @@ typedef struct {
     int package_moved;
     int journal_started;
     int made_default;
+    int package_already_installed;
+    int default_moved;
+    InstallRequestKind kind;
+    char expected_default[MAX_ENTRY_LEN];
+    EntryPointPlan entrypoints;
+    int entrypoints_ready;
 } InstallOperation;
 
 static CupError resolve_archive_format(const Manifest *manifest,
@@ -43,7 +56,7 @@ static CupError resolve_archive_format(const Manifest *manifest,
             package->host_platform, package->target_platform);
     }
 
-    err = text_format(format, size, "%s", format_override);
+    err = text_copy(format, size, format_override);
     if (err != CUP_OK) {
         return err;
     }
@@ -66,9 +79,17 @@ static CupError resolve_archive_format(const Manifest *manifest,
 
 static CupError prepare_install(InstallOperation *operation,
     const char *component, const char *entry, const char *target_override,
-    const char *format_override) {
+    const char *format_override, InstallRequestKind kind,
+    const char *expected_default) {
     CupError err;
     int version_available;
+
+    operation->kind = kind;
+    if (!text_is_empty(expected_default) &&
+        text_copy(operation->expected_default,
+            sizeof(operation->expected_default), expected_default) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
 
     err = entry_request_parse(component, entry, &operation->request);
     if (err != CUP_OK) {
@@ -128,14 +149,33 @@ static CupError prepare_install(InstallOperation *operation,
         return CUP_ERR_NOT_AVAILABLE;
     }
 
-    err = resolve_archive_format(&operation->context.manifest,
-        &operation->package, format_override, operation->format,
-        sizeof(operation->format));
+    err = command_require_absent(&operation->context, &operation->package);
+    if (err == CUP_ERR_ALREADY_INSTALLED) {
+        if (kind == INSTALL_REQUEST_UPDATE) {
+            err = command_require_valid_installed(&operation->context,
+                &operation->package);
+            if (err != CUP_OK) {
+                return err;
+            }
+            operation->package_already_installed = 1;
+            return CUP_OK;
+        }
+
+        fprintf(stderr,
+            "Error: package '%s:%s@%s' is already installed for host '%s', "
+            "target '%s'.\n",
+            operation->package.component, operation->package.tool,
+            operation->package.version, operation->package.host_platform,
+            operation->package.target_platform);
+        return err;
+    }
     if (err != CUP_OK) {
         return err;
     }
 
-    err = command_require_absent(&operation->context, &operation->package);
+    err = resolve_archive_format(&operation->context.manifest,
+        &operation->package, format_override, operation->format,
+        sizeof(operation->format));
     if (err != CUP_OK) {
         return err;
     }
@@ -286,10 +326,86 @@ static CupError extract_install_package(InstallOperation *operation) {
     return layout_ensure_package_parent(&operation->package);
 }
 
+static CupError prepare_default_change(InstallOperation *operation,
+    CupState *candidate, int package_is_new) {
+    const char *current_default;
+    int should_set_default = 0;
+    CupError err;
+
+    current_default = state_get_default(candidate,
+        operation->package.component, operation->package.host_platform,
+        operation->package.target_platform);
+
+    if (current_default == NULL && package_is_new) {
+        should_set_default = 1;
+        operation->made_default = 1;
+    } else if (operation->kind == INSTALL_REQUEST_UPDATE &&
+        operation->expected_default[0] != '\0' &&
+        current_default != NULL &&
+        strcmp(current_default, operation->expected_default) == 0 &&
+        strcmp(current_default, operation->request.resolved_entry) != 0) {
+        should_set_default = 1;
+        operation->default_moved = 1;
+    }
+
+    if (!should_set_default) {
+        return CUP_OK;
+    }
+
+    err = state_set_default(candidate, operation->package.component,
+        operation->package.host_platform, operation->package.target_platform,
+        operation->request.resolved_entry);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = entrypoint_plan_build(&operation->entrypoints, candidate);
+    if (err != CUP_OK) {
+        return err;
+    }
+    operation->entrypoints_ready = 1;
+    return CUP_OK;
+}
+
+static CupError save_default_change(InstallOperation *operation,
+    const CupState *candidate) {
+    CupError err;
+
+    if (!operation->entrypoints_ready) {
+        return CUP_OK;
+    }
+
+    operation->context.state = *candidate;
+    err = state_save(&operation->context.state);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = entrypoint_plan_apply(&operation->entrypoints);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+            "Error: the updated default was saved, but its entry points "
+            "could not be rebuilt. Run 'cup repair'.\n");
+        return CUP_ERR_COMMIT;
+    }
+    return CUP_OK;
+}
+
+static CupError commit_existing_update(InstallOperation *operation) {
+    CupState candidate = operation->context.state;
+    CupError err;
+
+    err = prepare_default_change(operation, &candidate, 0);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return save_default_change(operation, &candidate);
+}
+
 static CupError commit_install(InstallOperation *operation) {
+    CupState candidate;
     CupError err;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-    int had_default;
 
     printf("==> Committing installation...\n");
 
@@ -307,11 +423,8 @@ static CupError commit_install(InstallOperation *operation) {
     }
     operation->package_moved = 1;
 
-    had_default = state_find_default(&operation->context.state,
-        operation->package.component, operation->package.host_platform,
-        operation->package.target_platform) != -1;
-
-    err = state_add_installed(&operation->context.state,
+    candidate = operation->context.state;
+    err = state_add_installed(&candidate,
         operation->package.component, operation->package.host_platform,
         operation->package.target_platform,
         operation->request.resolved_entry);
@@ -319,60 +432,18 @@ static CupError commit_install(InstallOperation *operation) {
         return err;
     }
 
-    if (!had_default) {
-        err = state_set_default(&operation->context.state,
-            operation->package.component, operation->package.host_platform,
-            operation->package.target_platform,
-            operation->request.resolved_entry);
-        if (err != CUP_OK) {
-            state_remove_installed(&operation->context.state,
-                operation->package.component,
-                operation->package.host_platform,
-                operation->package.target_platform,
-                operation->request.resolved_entry);
-            return err;
-        }
-        operation->made_default = 1;
-
-        err = entrypoints_validate(&operation->context.state);
-        if (err != CUP_OK) {
-            state_clear_matching_default(&operation->context.state,
-                operation->package.component,
-                operation->package.host_platform,
-                operation->package.target_platform,
-                operation->request.resolved_entry);
-            state_remove_installed(&operation->context.state,
-                operation->package.component,
-                operation->package.host_platform,
-                operation->package.target_platform,
-                operation->request.resolved_entry);
-            operation->made_default = 0;
-            return err;
-        }
+    err = prepare_default_change(operation, &candidate, 1);
+    if (err != CUP_OK) {
+        return err;
     }
 
+    operation->context.state = candidate;
     err = state_save(&operation->context.state);
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
                 "Error: installation state was applied, but its durability "
                 "could not be confirmed. Run 'cup repair'.\n");
-            return err;
-        }
-
-        if (operation->made_default) {
-            state_clear_matching_default(&operation->context.state,
-                operation->package.component,
-                operation->package.host_platform,
-                operation->package.target_platform,
-                operation->request.resolved_entry);
-            operation->made_default = 0;
-        }
-        if (state_remove_installed(&operation->context.state,
-            operation->package.component, operation->package.host_platform,
-            operation->package.target_platform,
-            operation->request.resolved_entry) != CUP_OK) {
-            return CUP_ERR_ROLLBACK;
         }
         return err;
     }
@@ -386,12 +457,12 @@ static CupError commit_install(InstallOperation *operation) {
         operation->journal_started = 0;
     }
 
-    if (operation->made_default) {
-        err = entrypoints_sync(&operation->context.state);
+    if (operation->entrypoints_ready) {
+        err = entrypoint_plan_apply(&operation->entrypoints);
         if (err != CUP_OK) {
             fprintf(stderr,
-                "Error: installation and its automatic default were saved, "
-                "but entry points could not be rebuilt. Run 'cup repair'.\n");
+                "Error: installation and its default were saved, but entry "
+                "points could not be rebuilt. Run 'cup repair'.\n");
             return CUP_ERR_COMMIT;
         }
     }
@@ -437,47 +508,93 @@ static void print_install_result(const InstallOperation *operation) {
         operation->made_default ? " and set it as the first default" : "");
 }
 
+static CupError run_install(InstallOperation *operation,
+    const char *component, const char *entry, const char *target_override,
+    const char *format_override, InstallRequestKind kind,
+    const char *expected_default) {
+    CupError err;
+
+    interrupt_setup();
+
+    err = prepare_install(operation, component, entry, target_override,
+        format_override, kind, expected_default);
+    if (err != CUP_OK) {
+        if (operation->staging_created && err != CUP_ERR_COMMIT &&
+            rollback_install(operation) != CUP_OK) {
+            fprintf(stderr,
+                "Error: installation failed and rollback could not be "
+                "completed. Run 'cup repair'.\n");
+            err = CUP_ERR_ROLLBACK;
+        }
+        goto done;
+    }
+
+    if (operation->package_already_installed) {
+        err = commit_existing_update(operation);
+    } else {
+        err = extract_install_package(operation);
+        if (err == CUP_OK) {
+            err = commit_install(operation);
+        }
+    }
+
+    if (err != CUP_OK && err != CUP_ERR_COMMIT &&
+        operation->staging_created) {
+        if (rollback_install(operation) != CUP_OK) {
+            fprintf(stderr,
+                "Error: installation failed and rollback could not be "
+                "completed. Run 'cup repair'.\n");
+            err = CUP_ERR_ROLLBACK;
+        }
+    }
+
+done:
+    command_context_end(&operation->context);
+    interrupt_reset();
+    return err;
+}
+
 CupError command_install(const char *component, const char *entry,
     const char *target_override, const char *format_override) {
     InstallOperation operation = {0};
     CupError err;
 
-    interrupt_setup();
-
-    err = prepare_install(&operation, component, entry,
-        target_override, format_override);
-    if (err != CUP_OK) {
-        if (operation.staging_created && err != CUP_ERR_COMMIT &&
-            rollback_install(&operation) != CUP_OK) {
-            fprintf(stderr,
-                "Error: installation failed and rollback could not be "
-                "completed. Run 'cup repair'.\n");
-            err = CUP_ERR_ROLLBACK;
-        }
-        goto done;
-    }
-
-    err = extract_install_package(&operation);
-    if (err == CUP_OK) {
-        err = commit_install(&operation);
-    }
-
-    if (err != CUP_OK && err != CUP_ERR_COMMIT) {
-        if (rollback_install(&operation) != CUP_OK) {
-            fprintf(stderr,
-                "Error: installation failed and rollback could not be "
-                "completed. Run 'cup repair'.\n");
-            err = CUP_ERR_ROLLBACK;
-        }
-        goto done;
-    }
-
+    entrypoint_plan_init(&operation.entrypoints);
+    err = run_install(&operation, component, entry, target_override,
+        format_override, INSTALL_REQUEST_USER, NULL);
     if (err == CUP_OK) {
         print_install_result(&operation);
     }
+    entrypoint_plan_free(&operation.entrypoints);
+    return err;
+}
 
-done:
-    command_context_end(&operation.context);
-    interrupt_reset();
+CupError command_update_scope(const char *component, const char *tool,
+    const char *target_override, const char *expected_default,
+    int *installed, int *default_moved) {
+    InstallOperation operation = {0};
+    CupError err;
+    char entry[MAX_ENTRY_LEN];
+
+    if (installed == NULL || default_moved == NULL ||
+        text_is_empty(component) || text_is_empty(tool)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *installed = 0;
+    *default_moved = 0;
+
+    err = entry_build(entry, sizeof(entry), tool, "stable");
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    entrypoint_plan_init(&operation.entrypoints);
+    err = run_install(&operation, component, entry, target_override, NULL,
+        INSTALL_REQUEST_UPDATE, expected_default);
+    if (err == CUP_OK) {
+        *installed = !operation.package_already_installed;
+        *default_moved = operation.default_moved || operation.made_default;
+    }
+    entrypoint_plan_free(&operation.entrypoints);
     return err;
 }

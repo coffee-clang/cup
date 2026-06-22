@@ -7,6 +7,7 @@
 #include "system.h"
 #include "text.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,14 +80,14 @@ static CupError append_package(Manifest *manifest, const char *component,
     *result = &manifest->packages[manifest->count++];
     memset(*result, 0, sizeof(**result));
 
-    if (text_format((*result)->component,
-        sizeof((*result)->component), "%s", component) != CUP_OK ||
-        text_format((*result)->tool,
-            sizeof((*result)->tool), "%s", tool) != CUP_OK ||
-        text_format((*result)->host_platform,
-            sizeof((*result)->host_platform), "%s", host) != CUP_OK ||
-        text_format((*result)->target_platform,
-            sizeof((*result)->target_platform), "%s", target) != CUP_OK) {
+    if (text_copy((*result)->component,
+        sizeof((*result)->component), component) != CUP_OK ||
+        text_copy((*result)->tool,
+            sizeof((*result)->tool), tool) != CUP_OK ||
+        text_copy((*result)->host_platform,
+            sizeof((*result)->host_platform), host) != CUP_OK ||
+        text_copy((*result)->target_platform,
+            sizeof((*result)->target_platform), target) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -100,7 +101,7 @@ static CupError parse_package_key(const char *key, char *component, size_t compo
     char copy[MAX_MANIFEST_KEY_LEN];
     TextBuffer outputs[5];
 
-    if (text_format(copy, sizeof(copy), "%s", key) != CUP_OK) {
+    if (text_copy(copy, sizeof(copy), key) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -114,46 +115,57 @@ static CupError parse_package_key(const char *key, char *component, size_t compo
         CUP_OK : CUP_ERR_MANIFEST;
 }
 
-static CupError set_package_field(ManifestPackage *package, const char *field, const char *value) {
+typedef struct {
+    const char *name;
     unsigned bit;
-    char *destination;
-    size_t destination_size;
+    size_t offset;
+    size_t capacity;
+} ManifestField;
 
-    if (strcmp(field, "stable_version") == 0) {
-        bit = FIELD_STABLE_VERSION;
-        destination = package->stable_version;
-        destination_size = sizeof(package->stable_version);
-    } else if (strcmp(field, "available_versions") == 0) {
-        bit = FIELD_AVAILABLE_VERSIONS;
-        destination = package->available_versions;
-        destination_size = sizeof(package->available_versions);
-    } else if (strcmp(field, "default_format") == 0) {
-        bit = FIELD_DEFAULT_FORMAT;
-        destination = package->default_format;
-        destination_size = sizeof(package->default_format);
-    } else if (strcmp(field, "formats") == 0) {
-        bit = FIELD_FORMATS;
-        destination = package->formats;
-        destination_size = sizeof(package->formats);
-    } else if (strcmp(field, "url_template") == 0) {
-        bit = FIELD_URL_TEMPLATE;
-        destination = package->url_template;
-        destination_size = sizeof(package->url_template);
-    } else {
+#define MANIFEST_FIELD(name_value, bit_value, member) \
+    {name_value, bit_value, offsetof(ManifestPackage, member), \
+        sizeof(((ManifestPackage *)0)->member)}
+
+static const ManifestField PACKAGE_FIELDS[] = {
+    MANIFEST_FIELD("stable_version", FIELD_STABLE_VERSION, stable_version),
+    MANIFEST_FIELD("available_versions", FIELD_AVAILABLE_VERSIONS, available_versions),
+    MANIFEST_FIELD("default_format", FIELD_DEFAULT_FORMAT, default_format),
+    MANIFEST_FIELD("formats", FIELD_FORMATS, formats),
+    MANIFEST_FIELD("url_template", FIELD_URL_TEMPLATE, url_template)
+};
+
+static const ManifestField *find_manifest_field(const char *name) {
+    size_t i;
+
+    for (i = 0; i < sizeof(PACKAGE_FIELDS) / sizeof(PACKAGE_FIELDS[0]); ++i) {
+        if (strcmp(PACKAGE_FIELDS[i].name, name) == 0) {
+            return &PACKAGE_FIELDS[i];
+        }
+    }
+    return NULL;
+}
+
+static CupError set_package_field(ManifestPackage *package,
+    const char *field, const char *value) {
+    const ManifestField *descriptor;
+    char *destination;
+
+    descriptor = find_manifest_field(field);
+    if (descriptor == NULL) {
         fprintf(stderr, "Error: unknown manifest field '%s'.\n", field);
         return CUP_ERR_MANIFEST;
     }
-
-    if ((package->field_mask & bit) != 0) {
+    if ((package->field_mask & descriptor->bit) != 0) {
         fprintf(stderr, "Error: duplicate manifest field '%s'.\n", field);
         return CUP_ERR_MANIFEST;
     }
 
-    if (text_format(destination, destination_size, "%s", value) != CUP_OK) {
+    destination = (char *)package + descriptor->offset;
+    if (text_copy(destination, descriptor->capacity, value) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
-    package->field_mask |= bit;
+    package->field_mask |= descriptor->bit;
     return CUP_OK;
 }
 
@@ -198,7 +210,7 @@ static CupError validate_value_list(const char *value, const char *expected, int
         *contains = 0;
     }
 
-    if (text_format(copy, sizeof(copy), "%s", value) != CUP_OK) {
+    if (text_copy(copy, sizeof(copy), value) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -324,7 +336,7 @@ CupError manifest_load_path(Manifest *manifest, const char *path, ManifestSource
     manifest_free(manifest);
     manifest->source = source;
 
-    if (text_format(manifest->path, sizeof(manifest->path), "%s", path) != CUP_OK) {
+    if (text_copy(manifest->path, sizeof(manifest->path), path) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -449,7 +461,7 @@ CupError manifest_resolve_stable(const Manifest *manifest, char *buffer, size_t 
         return CUP_ERR_MANIFEST;
     }
 
-    return text_format(buffer, size, "%s", package->stable_version);
+    return text_copy(buffer, size, package->stable_version);
 }
 
 CupError manifest_is_stable(const Manifest *manifest, const char *component,
@@ -497,7 +509,7 @@ CupError manifest_get_default_format(const Manifest *manifest, char *buffer,
         return CUP_ERR_MANIFEST;
     }
 
-    return text_format(buffer, size, "%s", package->default_format);
+    return text_copy(buffer, size, package->default_format);
 }
 
 CupError manifest_has_format(const Manifest *manifest, const char *component,

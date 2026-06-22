@@ -2,7 +2,6 @@
 
 #include "command_context.h"
 #include "entry.h"
-#include "manifest.h"
 #include "registry.h"
 #include "state.h"
 #include "text.h"
@@ -14,9 +13,7 @@ typedef struct {
     char component[MAX_NAME_LEN];
     char tool[MAX_NAME_LEN];
     char target[MAX_PLATFORM_LEN];
-    char stable_entry[MAX_ENTRY_LEN];
     char previous_default[MAX_ENTRY_LEN];
-    int stable_installed;
 } UpdatePlanItem;
 
 typedef struct {
@@ -44,66 +41,42 @@ static CupError plan_add(UpdatePlan *plan, const CommandContext *context,
     const char *default_entry;
     char tool[MAX_NAME_LEN];
     char version[MAX_NAME_LEN];
-    char stable[MAX_NAME_LEN];
     char default_tool[MAX_NAME_LEN];
     char default_version[MAX_NAME_LEN];
-    CupError err;
-    int index;
 
-    err = entry_parse(installed->entry, tool, sizeof(tool),
-        version, sizeof(version));
-    if (err != CUP_OK) {
+    if (entry_parse(installed->entry, tool, sizeof(tool),
+            version, sizeof(version)) != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
-
-    index = plan_find(plan, installed->component, tool,
-        installed->target_platform);
-    if (index < 0) {
-        if (plan->count >= MAX_INSTALLED) {
-            return CUP_ERR_STATE_FULL;
-        }
-        item = &plan->items[plan->count++];
-        memset(item, 0, sizeof(*item));
-        if (text_format(item->component, sizeof(item->component), "%s",
-                installed->component) != CUP_OK ||
-            text_format(item->tool, sizeof(item->tool), "%s", tool) != CUP_OK ||
-            text_format(item->target, sizeof(item->target), "%s",
-                installed->target_platform) != CUP_OK) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-
-        err = manifest_resolve_stable(&context->manifest, stable,
-            sizeof(stable), item->component, item->tool,
-            context->host_platform, item->target);
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = entry_build(item->stable_entry, sizeof(item->stable_entry),
-            item->tool, stable);
-        if (err != CUP_OK) {
-            return err;
-        }
-
-        default_entry = state_get_default(&context->state, item->component,
-            context->host_platform, item->target);
-        if (default_entry != NULL &&
-            entry_parse(default_entry, default_tool, sizeof(default_tool),
-                default_version, sizeof(default_version)) == CUP_OK &&
-            strcmp(default_tool, item->tool) == 0 &&
-            strcmp(default_entry, item->stable_entry) != 0) {
-            if (text_format(item->previous_default,
-                    sizeof(item->previous_default), "%s",
-                    default_entry) != CUP_OK) {
-                return CUP_ERR_BUFFER_TOO_SMALL;
-            }
-        }
-    } else {
-        item = &plan->items[index];
+    if (plan_find(plan, installed->component, tool,
+            installed->target_platform) >= 0) {
+        return CUP_OK;
+    }
+    if (plan->count >= MAX_INSTALLED) {
+        return CUP_ERR_STATE_FULL;
     }
 
-    if (strcmp(installed->entry, item->stable_entry) == 0) {
-        item->stable_installed = 1;
+    item = &plan->items[plan->count++];
+    memset(item, 0, sizeof(*item));
+    if (text_copy(item->component, sizeof(item->component),
+            installed->component) != CUP_OK ||
+        text_copy(item->tool, sizeof(item->tool), tool) != CUP_OK ||
+        text_copy(item->target, sizeof(item->target),
+            installed->target_platform) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
+
+    default_entry = state_get_default(&context->state, item->component,
+        context->host_platform, item->target);
+    if (default_entry != NULL &&
+        entry_parse(default_entry, default_tool, sizeof(default_tool),
+            default_version, sizeof(default_version)) == CUP_OK &&
+        strcmp(default_tool, item->tool) == 0 &&
+        text_copy(item->previous_default, sizeof(item->previous_default),
+            default_entry) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
     return CUP_OK;
 }
 
@@ -118,14 +91,12 @@ static CupError build_update_plan(const char *name, UpdatePlan *plan) {
     memset(plan, 0, sizeof(*plan));
     component_request = registry_is_component(name);
     if (component_request) {
-        err = text_format(requested_component,
-            sizeof(requested_component), "%s", name);
+        err = text_copy(requested_component, sizeof(requested_component), name);
     } else {
         err = registry_find_tool_component(name, requested_component,
             sizeof(requested_component));
         if (err == CUP_OK) {
-            err = text_format(requested_tool, sizeof(requested_tool),
-                "%s", name);
+            err = text_copy(requested_tool, sizeof(requested_tool), name);
         }
     }
     if (err != CUP_OK) {
@@ -137,10 +108,6 @@ static CupError build_update_plan(const char *name, UpdatePlan *plan) {
         goto done;
     }
     err = command_context_load_state(&context);
-    if (err != CUP_OK) {
-        goto done;
-    }
-    err = command_context_load_manifest(&context);
     if (err != CUP_OK) {
         goto done;
     }
@@ -193,33 +160,19 @@ CupError command_update(const char *name) {
 
     for (i = 0; i < plan.count; ++i) {
         UpdatePlanItem *item = &plan.items[i];
+        int installed = 0;
+        int default_moved = 0;
 
-        if (!item->stable_installed) {
-            printf("==> Updating %s:%s for target '%s'...\n",
-                item->component, item->tool, item->target);
-            err = command_install(item->component, item->stable_entry,
-                item->target, NULL);
-            if (err == CUP_OK) {
-                installed_count++;
-            } else if (err != CUP_ERR_ALREADY_INSTALLED) {
-                return err;
-            }
-        } else {
-            printf("%s:%s is already installed at stable for target '%s'.\n",
-                item->component, item->tool, item->target);
+        printf("==> Updating %s:%s for target '%s'...\n",
+            item->component, item->tool, item->target);
+        err = command_update_scope(item->component, item->tool,
+            item->target, item->previous_default,
+            &installed, &default_moved);
+        if (err != CUP_OK) {
+            return err;
         }
-
-        if (item->previous_default[0] != '\0') {
-            int replaced = 0;
-
-            err = command_replace_default(item->component,
-                item->previous_default, item->stable_entry, item->target,
-                &replaced);
-            if (err != CUP_OK) {
-                return err;
-            }
-            default_count += (size_t)replaced;
-        }
+        installed_count += (size_t)installed;
+        default_count += (size_t)default_moved;
     }
 
     printf("Update completed for '%s': %zu stable package(s) installed, "

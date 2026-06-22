@@ -41,13 +41,14 @@ uname
 Install command:
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
 The installer downloads and verifies:
 
 ```text
 cup binary for the detected platform
+release.txt
 packages.cfg
 uninstall.sh
 SHA256SUMS.<platform>
@@ -78,13 +79,14 @@ The Windows installer requires PowerShell and `Invoke-WebRequest`.
 Install command:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 The installer downloads and verifies:
 
 ```text
 cup-windows-x64.exe
+release.txt
 packages.cfg
 uninstall.ps1
 SHA256SUMS.windows-x64
@@ -125,7 +127,7 @@ make PLATFORM=macos-arm64 LINK_MODE=static BUILD_MODE=release
 make PLATFORM=windows-x64 LINK_MODE=static BUILD_MODE=release
 ```
 
-Development builds use `BUILD_MODE=development`, the default. They compile with `-O0 -g3`; release builds compile with `-O2 -DNDEBUG`. A mode stamp under `build/<platform>/<link-mode>/` forces object recompilation when the build mode changes while preserving the established output layout.
+Development builds use `BUILD_MODE=development`, the default. They compile with `-O0 -g3`; release-mode builds compile with `-O2 -DNDEBUG`. Build mode controls compiler settings, not whether a commit is an official release. `scripts/version.sh` derives the embedded version from Git and generates `version.h`, `release.txt` and the Windows `VERSIONINFO` resource under the selected build directory. A mode stamp under `build/<platform>/<link-mode>/` forces object recompilation when the build mode changes while preserving the established output layout.
 
 A dynamic link mode is available only for local development and troubleshooting, where using system libraries makes iteration easier. It is not the bootstrap installation mode.
 
@@ -252,20 +254,21 @@ The CA bundle source is generated from:
 certs/cacert.pem
 ```
 
-The update script is:
+The deterministic build generator and remote update script are:
 
 ```text
+scripts/certs/generate-ca-bundle.sh
 scripts/certs/update-ca-bundle.sh
 ```
 
-Generated files are:
+Generated files are build artifacts:
 
 ```text
-include/ca_bundle.h
-src/ca_bundle.c
+build/<platform>/<link-mode>/generated/ca_bundle.h
+build/<platform>/<link-mode>/generated/ca_bundle.c
 ```
 
-The update script downloads and validates the PEM, generates the header and a byte-array source in a temporary directory on the repository filesystem, compiles the generated source, and replaces tracked files only after every step succeeds. This keeps the release binary independent from distribution-specific CA bundle paths where the configured libcurl backend requires an explicit certificate bundle.
+A normal local or pull-request build reads only the versioned `certs/cacert.pem`, so it remains offline and reproducible. The update script downloads and validates a new PEM, generates and compiles a temporary C representation, and replaces the source PEM only after every check succeeds. On pushes and manually requested release runs targeting `main`, the main build workflow executes this update first. A changed PEM is committed directly as `Update certs`, and the same workflow then checks out that exact commit for tests and every platform build. This keeps release binaries current and reproducible while avoiding a network dependency in ordinary local builds.
 
 ## 6. Static dependency bootstrap
 
@@ -337,7 +340,9 @@ The repository contains one coordinated executable build and publication workflo
 .github/workflows/build-cup.yml
 ```
 
-Its Linux, macOS and Windows jobs produce optimized static platform assets. Build jobs use read-only repository permissions; only the dependent publication job receives write permission. The publication job verifies the complete asset set and all checksum files before issuing one release upload command.
+Every push to `main` first validates the latest CA bundle, then runs native tests for every supported host platform and all optimized static platform builds from one selected commit. If the PEM changed, the preparation job commits it as `Update certs` before selecting that commit. The version planner counts first-parent commits since the latest semantic release tag but excludes that exact automation commit. After ten other commits, a successful run creates the next patch release automatically; minor and major releases are explicit manual workflow choices. Pull requests build and test without publishing. The preparation and publication jobs receive repository write permission only for the certificate commit and immutable release publication; the platform build jobs remain read-only.
+
+The publication job downloads every platform artifact, checks that all expected assets are present, validates `release.txt` and all checksum files, creates an immutable versioned draft release, and publishes it only after the complete set has been uploaded successfully.
 
 Release assets for the bootstrap installer include:
 
@@ -352,12 +357,26 @@ install.sh
 install.ps1
 uninstall.sh
 uninstall.ps1
+release.txt
 SHA256SUMS.common
 SHA256SUMS.<platform>
 ```
 
 The `packages.cfg` asset is the manifest used by installed copies of `cup` to locate component packages produced by `cup-components`.
 
+
+
+The generated version is also embedded in `cup --version` and, for Windows, in the executable `VERSIONINFO` resource. A clean tagged commit reports the exact semantic version. Untagged, post-release or dirty source builds report a development identifier derived from the nearest tag, first-parent distance and abbreviated commit. `CUP_VERSION_OVERRIDE` is reserved for the coordinated official release build and for reproducible builds from source archives.
+
+The POSIX development regression suite is available through:
+
+```sh
+make test
+```
+
+The orchestrator under `scripts/tests/run.sh` invokes focused suites for version planning, compiler builds, CA generation, command behavior, state persistence, managed entry points, transaction recovery and detached uninstall cleanup. Linux runs the build checks with GCC and Clang; macOS uses Clang. Each suite can also be executed independently.
+
+The workflow executes those POSIX suites natively on Linux x64, Linux ARM64, macOS x64 and macOS ARM64. A separate PowerShell suite under `scripts/tests/windows/` builds and runs the Windows executable on `windows-latest`, exercising native state, command and `.cmd` entry-point behavior. The optimized static build jobs run only after every native test job succeeds.
 
 The destructive development cleanup target is guarded explicitly:
 

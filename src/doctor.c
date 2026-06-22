@@ -387,18 +387,27 @@ CupError command_doctor(void) {
         printf("Issue: transaction journal is invalid.\n");
         report.issue_count++;
     } else if (transaction_status == TRANSACTION_FILE_LOADED) {
-        printf("Issue: interrupted %s transaction detected for %s@%s.\n",
-            transaction_operation_name(transaction.operation),
-            transaction.package.tool, transaction.package.version);
+        if (transaction.operation == TRANSACTION_SELF_UPDATE) {
+            printf("Issue: interrupted self-update transaction detected.\n");
+        } else {
+            printf("Issue: interrupted %s transaction detected for %s@%s.\n",
+                transaction_operation_name(transaction.operation),
+                transaction.package.tool, transaction.package.version);
+        }
         report.issue_count++;
     }
 
     if (state_loaded) {
+        EntryPointPlan entrypoints;
         size_t entrypoint_issues = 0;
 
+        entrypoint_plan_init(&entrypoints);
         check_state_packages(&state, &manifest, has_manifest, &report);
         if (state_validate(&state) == CUP_OK) {
-            err = entrypoints_check(&state, &entrypoint_issues);
+            err = entrypoint_plan_build(&entrypoints, &state);
+            if (err == CUP_OK) {
+                err = entrypoint_plan_check(&entrypoints, &entrypoint_issues);
+            }
             if (err != CUP_OK) {
                 report_incomplete(&report, "managed entry points");
             } else {
@@ -408,6 +417,7 @@ CupError command_doctor(void) {
                 }
             }
         }
+        entrypoint_plan_free(&entrypoints);
     }
 
     err = package_scan(&packages);

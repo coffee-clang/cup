@@ -55,7 +55,7 @@ static CupError inspect_installed_assets(BootstrapInspection *inspection) {
     char platform_checksums[MAX_PATH_LEN];
     char binary_asset[MAX_NAME_LEN];
     const char *common_assets[] = {CUP_MANIFEST_FILENAME};
-    const char *platform_assets[2];
+    const char *platform_assets[3];
     int valid;
 
     if (layout_get_binary_path(binary, sizeof(binary)) != CUP_OK ||
@@ -71,6 +71,7 @@ static CupError inspect_installed_assets(BootstrapInspection *inspection) {
 
     platform_assets[0] = binary_asset;
     platform_assets[1] = CUP_UNINSTALL_FILENAME;
+    platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
 
     err = inspect_checksum_file(common_checksums,
         common_assets, sizeof(common_assets) / sizeof(common_assets[0]),
@@ -259,7 +260,7 @@ CupError bootstrap_find_uninstall(char *path, size_t size,
     }
     if (inspection.development_uninstall_valid) {
         *source = BOOTSTRAP_SOURCE_DEVELOPMENT;
-        return text_format(path, size, "%s", CUP_DEVELOPMENT_UNINSTALL_PATH);
+        return text_copy(path, size, CUP_DEVELOPMENT_UNINSTALL_PATH);
     }
     return CUP_ERR_FILESYSTEM;
 }

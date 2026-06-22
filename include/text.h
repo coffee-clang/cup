@@ -13,6 +13,7 @@ typedef struct {
 
 int text_is_empty(const char *value);
 char *text_trim(char *value);
+CupError text_copy(char *buffer, size_t size, const char *source);
 CupError text_format(char *buffer, size_t size, const char *format, ...);
 CupError text_split_exact(char *input, char separator,
     TextBuffer *outputs, size_t output_count);

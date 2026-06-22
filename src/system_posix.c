@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef O_CLOEXEC
@@ -28,7 +29,7 @@ static CupError get_parent_path(const char *path, char *parent, size_t size) {
     char *slash;
 
     if (text_is_empty(path) || parent == NULL || size == 0 ||
-        text_format(parent, size, "%s", path) != CUP_OK) {
+        text_copy(parent, size, path) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -124,7 +125,7 @@ CupError system_get_home_dir(char *buffer, size_t size) {
     }
 
     home = getenv("HOME");
-    if (text_is_empty(home)) {
+    if (home == NULL || home[0] == '\0') {
         fprintf(stderr, "Error: HOME environment variable is not set.\n");
         return CUP_ERR_FILESYSTEM;
     }
@@ -133,8 +134,12 @@ CupError system_get_home_dir(char *buffer, size_t size) {
         fprintf(stderr, "Error: HOME must contain an absolute path.\n");
         return CUP_ERR_FILESYSTEM;
     }
+    if (strcmp(home, "/") == 0) {
+        fprintf(stderr, "Error: HOME must not be the filesystem root.\n");
+        return CUP_ERR_FILESYSTEM;
+    }
 
-    return text_format(buffer, size, "%s", home);
+    return text_copy(buffer, size, home);
 }
 
 unsigned long system_get_process_id(void) {
@@ -195,15 +200,168 @@ CupError system_start_uninstall(const char *cup_root,
 }
 
 
-CupError system_start_self_update(const char *staged_binary,
-    const char *installed_binary, const char *staged_uninstall,
-    const char *installed_uninstall, const char *staged_checksums,
-    const char *installed_checksums, unsigned long parent_pid) {
+typedef struct {
+    const char *new_name;
+    const char *old_name;
+    const char *destination;
+    mode_t mode;
+} DeferredUpdateAsset;
+
+static CupError build_update_asset_path(const char *staging,
+    const char *name, char *path, size_t size) {
+    return path_join(path, size, staging, name);
+}
+
+static CupError sync_update_destinations(const DeferredUpdateAsset *assets,
+    size_t count) {
+    char previous[MAX_PATH_LEN] = "";
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        char parent[MAX_PATH_LEN];
+
+        if (get_parent_path(assets[i].destination, parent,
+                sizeof(parent)) != CUP_OK) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        if (strcmp(parent, previous) != 0) {
+            if (sync_directory(parent) != CUP_OK ||
+                text_copy(previous, sizeof(previous), parent) != CUP_OK) {
+                return CUP_ERR_FILESYSTEM;
+            }
+        }
+    }
+    return CUP_OK;
+}
+
+static CupError rollback_deferred_update(const char *staging,
+    const DeferredUpdateAsset *assets, size_t count) {
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        char backup[MAX_PATH_LEN];
+        struct stat info;
+
+        if (build_update_asset_path(staging, assets[i].old_name,
+                backup, sizeof(backup)) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+        if (lstat(backup, &info) != 0) {
+            if (errno == ENOENT) {
+                continue;
+            }
+            return CUP_ERR_ROLLBACK;
+        }
+        if (!S_ISREG(info.st_mode)) {
+            return CUP_ERR_ROLLBACK;
+        }
+        if (unlink(assets[i].destination) != 0 && errno != ENOENT) {
+            return CUP_ERR_ROLLBACK;
+        }
+        if (rename(backup, assets[i].destination) != 0 ||
+            chmod(assets[i].destination, assets[i].mode) != 0) {
+            return CUP_ERR_ROLLBACK;
+        }
+    }
+
+    return sync_update_destinations(assets, count) == CUP_OK
+        ? CUP_OK : CUP_ERR_ROLLBACK;
+}
+
+static void cleanup_deferred_update(const char *staging,
+    const DeferredUpdateAsset *assets, size_t count) {
+    static const char *const extra_files[] = {
+        CUP_RELEASE_METADATA_FILENAME,
+        CUP_SELF_UPDATE_COMMITTED
+    };
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        char path[MAX_PATH_LEN];
+
+        if (build_update_asset_path(staging, assets[i].new_name,
+                path, sizeof(path)) == CUP_OK) {
+            unlink(path);
+        }
+        if (build_update_asset_path(staging, assets[i].old_name,
+                path, sizeof(path)) == CUP_OK) {
+            unlink(path);
+        }
+    }
+    for (i = 0; i < sizeof(extra_files) / sizeof(extra_files[0]); ++i) {
+        char path[MAX_PATH_LEN];
+
+        if (build_update_asset_path(staging, extra_files[i],
+                path, sizeof(path)) == CUP_OK) {
+            unlink(path);
+        }
+    }
+    rmdir(staging);
+}
+
+static CupError clear_deferred_update_journal(const char *journal_path) {
+    if (unlink(journal_path) != 0 ||
+        system_sync_parent_directory(journal_path) != CUP_OK) {
+        return CUP_ERR_COMMIT;
+    }
+    return CUP_OK;
+}
+
+static CupError commit_deferred_update(const char *staging,
+    const DeferredUpdateAsset *assets, size_t count,
+    const char *journal_path) {
+    char marker[MAX_PATH_LEN];
+    FILE *marker_file = NULL;
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        char backup[MAX_PATH_LEN];
+
+        if (build_update_asset_path(staging, assets[i].old_name,
+                backup, sizeof(backup)) != CUP_OK ||
+            rename(assets[i].destination, backup) != 0) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+
+    for (i = 0; i < count; ++i) {
+        char source[MAX_PATH_LEN];
+
+        if (build_update_asset_path(staging, assets[i].new_name,
+                source, sizeof(source)) != CUP_OK ||
+            rename(source, assets[i].destination) != 0 ||
+            chmod(assets[i].destination, assets[i].mode) != 0) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+    if (sync_update_destinations(assets, count) != CUP_OK ||
+        build_update_asset_path(staging, CUP_SELF_UPDATE_COMMITTED,
+            marker, sizeof(marker)) != CUP_OK ||
+        system_create_file_exclusive(marker, &marker_file) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    {
+        int sync_failed = system_sync_file(marker_file) != CUP_OK;
+        int close_failed = fclose(marker_file) != 0;
+
+        if (sync_failed || close_failed ||
+            system_sync_parent_directory(marker) != CUP_OK) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+
+    return clear_deferred_update_journal(journal_path);
+}
+
+CupError system_start_self_update(const char *staging_directory,
+    const char *installed_binary, const char *installed_uninstall,
+    const char *installed_checksums, const char *lock_path,
+    const char *journal_path, unsigned long parent_pid) {
     pid_t pid;
 
-    if (text_is_empty(staged_binary) || text_is_empty(installed_binary) ||
-        text_is_empty(staged_uninstall) || text_is_empty(installed_uninstall) ||
-        text_is_empty(staged_checksums) || text_is_empty(installed_checksums) ||
+    if (text_is_empty(staging_directory) || text_is_empty(installed_binary) ||
+        text_is_empty(installed_uninstall) || text_is_empty(installed_checksums) ||
+        text_is_empty(lock_path) || text_is_empty(journal_path) ||
         parent_pid == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -213,38 +371,55 @@ CupError system_start_self_update(const char *staged_binary,
         return CUP_ERR_FILESYSTEM;
     }
     if (pid == 0) {
-        char binary_parent[MAX_PATH_LEN];
-        char uninstall_parent[MAX_PATH_LEN];
-        char checksums_parent[MAX_PATH_LEN];
+        DeferredUpdateAsset assets[] = {
+            {CUP_SELF_UPDATE_BINARY_NEW, CUP_SELF_UPDATE_BINARY_OLD,
+                installed_binary, 0755},
+            {CUP_SELF_UPDATE_UNINSTALL_NEW, CUP_SELF_UPDATE_UNINSTALL_OLD,
+                installed_uninstall, 0555},
+            {CUP_SELF_UPDATE_CHECKSUMS_NEW, CUP_SELF_UPDATE_CHECKSUMS_OLD,
+                installed_checksums, 0444}
+        };
+        SystemLock lock = {0};
+        CupError commit_error;
 
         while (kill((pid_t)parent_pid, 0) == 0 || errno == EPERM) {
             sleep(1);
         }
 
-        if (rename(staged_binary, installed_binary) != 0 ||
-            chmod(installed_binary, 0755) != 0 ||
-            rename(staged_uninstall, installed_uninstall) != 0 ||
-            chmod(installed_uninstall, 0555) != 0 ||
-            rename(staged_checksums, installed_checksums) != 0 ||
-            chmod(installed_checksums, 0444) != 0 ||
-            get_parent_path(installed_binary, binary_parent,
-                sizeof(binary_parent)) != CUP_OK ||
-            get_parent_path(installed_uninstall, uninstall_parent,
-                sizeof(uninstall_parent)) != CUP_OK ||
-            get_parent_path(installed_checksums, checksums_parent,
-                sizeof(checksums_parent)) != CUP_OK ||
-            sync_directory(binary_parent) != CUP_OK ||
-            (strcmp(binary_parent, uninstall_parent) != 0 &&
-                sync_directory(uninstall_parent) != CUP_OK) ||
-            (strcmp(binary_parent, checksums_parent) != 0 &&
-                strcmp(uninstall_parent, checksums_parent) != 0 &&
-                sync_directory(checksums_parent) != CUP_OK)) {
+        while (system_lock_acquire(&lock, lock_path,
+                SYSTEM_LOCK_EXCLUSIVE) == CUP_ERR_LOCK) {
+            struct timespec pause = {0, 100000000L};
+            nanosleep(&pause, NULL);
+        }
+        if (!lock.active) {
             fprintf(stderr,
-                "Error: deferred cup self-update could not commit all "
-                "verified assets. Run 'cup repair'.\n");
+                "Error: deferred cup self-update could not acquire the lock. "
+                "Run 'cup repair'.\n");
             _exit(1);
         }
-        _exit(0);
+
+        commit_error = commit_deferred_update(staging_directory, assets,
+            sizeof(assets) / sizeof(assets[0]), journal_path);
+        if (commit_error == CUP_OK) {
+            cleanup_deferred_update(staging_directory, assets,
+                sizeof(assets) / sizeof(assets[0]));
+            system_lock_release(&lock);
+            _exit(0);
+        }
+
+        if (commit_error != CUP_ERR_COMMIT &&
+            rollback_deferred_update(staging_directory, assets,
+                sizeof(assets) / sizeof(assets[0])) == CUP_OK &&
+            clear_deferred_update_journal(journal_path) == CUP_OK) {
+            cleanup_deferred_update(staging_directory, assets,
+                sizeof(assets) / sizeof(assets[0]));
+        } else {
+            fprintf(stderr,
+                "Error: deferred cup self-update requires recovery. "
+                "Run 'cup repair'.\n");
+        }
+        system_lock_release(&lock);
+        _exit(1);
     }
 
     return CUP_OK;
@@ -407,15 +582,18 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
         return CUP_ERR_FILESYSTEM;
     }
 
-    while ((count = fread(buffer, 1, sizeof(buffer), source)) > 0) {
-        if (fwrite(buffer, 1, count, destination) != count) {
+    while (1) {
+        count = fread(buffer, 1, sizeof(buffer), source);
+        if (count > 0 && fwrite(buffer, 1, count, destination) != count) {
             failed = 1;
             break;
         }
-    }
-
-    if (ferror(source) != 0) {
-        failed = 1;
+        if (count < sizeof(buffer)) {
+            if (ferror(source) != 0) {
+                failed = 1;
+            }
+            break;
+        }
     }
     if (fclose(source) != 0) {
         failed = 1;

@@ -2,8 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoOwner = "coffee-clang"
 $RepoName = "cup"
-$ReleaseTag = "cup-bootstrap"
-$BaseUrl = "https://github.com/$RepoOwner/$RepoName/releases/download/$ReleaseTag"
+$BaseUrl = "https://github.com/$RepoOwner/$RepoName/releases/latest/download"
 
 $CupRoot = Join-Path $env:USERPROFILE ".cup"
 $CupBinDir = Join-Path $CupRoot "bin"
@@ -83,6 +82,21 @@ function Assert-Checksums(
         if ($actual -ne $matching[0].Hash) {
             Fail "checksum verification failed for $expectedName"
         }
+    }
+}
+
+function Assert-ReleaseMetadata([string]$Path) {
+    $values = @{}
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -notmatch '^([^=]+)=(.+)$' -or $values.ContainsKey($Matches[1])) {
+            Fail "invalid release metadata: $Path"
+        }
+        $values[$Matches[1]] = $Matches[2]
+    }
+    if ($values.Count -ne 3 -or $values["format"] -cne "1" -or
+        $values["version"] -notmatch '^\d+\.\d+\.\d+$' -or
+        [string]::IsNullOrWhiteSpace($values["commit"])) {
+        Fail "invalid release metadata: $Path"
     }
 }
 
@@ -227,15 +241,17 @@ function Main {
         Download-File "$BaseUrl/$CupAsset" (Join-Path $Staging $CupAsset)
         Download-File "$BaseUrl/packages.cfg" (Join-Path $Staging "packages.cfg")
         Download-File "$BaseUrl/uninstall.ps1" (Join-Path $Staging "uninstall.ps1")
+        Download-File "$BaseUrl/release.txt" (Join-Path $Staging "release.txt")
         Download-File "$BaseUrl/SHA256SUMS.$Platform" (Join-Path $Staging "SHA256SUMS.$Platform")
         Download-File "$BaseUrl/SHA256SUMS.common" (Join-Path $Staging "SHA256SUMS.common")
 
         Assert-Checksums -Directory $Staging `
             -ChecksumFile (Join-Path $Staging "SHA256SUMS.$Platform") `
-            -ExpectedNames @($CupAsset, "uninstall.ps1")
+            -ExpectedNames @($CupAsset, "uninstall.ps1", "release.txt")
         Assert-Checksums -Directory $Staging `
             -ChecksumFile (Join-Path $Staging "SHA256SUMS.common") `
             -ExpectedNames @("packages.cfg")
+        Assert-ReleaseMetadata (Join-Path $Staging "release.txt")
 
         $assets = Get-Assets
         foreach ($asset in $assets) { Backup-Asset $asset }

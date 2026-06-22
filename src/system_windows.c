@@ -243,40 +243,104 @@ CupError system_start_uninstall(const char *cup_root,
 }
 
 
-CupError system_start_self_update(const char *staged_binary,
-    const char *installed_binary, const char *staged_uninstall,
-    const char *installed_uninstall, const char *staged_checksums,
-    const char *installed_checksums, unsigned long parent_pid) {
+CupError system_start_self_update(const char *staging_directory,
+    const char *installed_binary, const char *installed_uninstall,
+    const char *installed_checksums, const char *lock_path,
+    const char *journal_path, unsigned long parent_pid) {
     static const char script_content[] =
-        "param([string]$SourceBinary,[string]$DestinationBinary,"
-        "[string]$SourceUninstall,[string]$DestinationUninstall,"
-        "[string]$SourceChecksums,[string]$DestinationChecksums,"
-        "[int]$ParentPid,[string]$SelfPath)\r\n"
+        "param([string]$Staging,[string]$DestinationBinary,"
+        "[string]$DestinationUninstall,[string]$DestinationChecksums,"
+        "[string]$LockPath,[string]$JournalPath,[int]$ParentPid,"
+        "[string]$SelfPath)\r\n"
         "$ErrorActionPreference = 'Stop'\r\n"
         "Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue\r\n"
-        "foreach ($Path in @($DestinationUninstall,$DestinationChecksums)) { "
-        "if (Test-Path -LiteralPath $Path) { "
-        "Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false } }\r\n"
-        "Move-Item -LiteralPath $SourceBinary -Destination "
-        "$DestinationBinary -Force\r\n"
-        "Move-Item -LiteralPath $SourceUninstall -Destination "
-        "$DestinationUninstall -Force\r\n"
-        "Move-Item -LiteralPath $SourceChecksums -Destination "
-        "$DestinationChecksums -Force\r\n"
-        "Set-ItemProperty -LiteralPath $DestinationUninstall -Name "
-        "IsReadOnly -Value $true\r\n"
-        "Set-ItemProperty -LiteralPath $DestinationChecksums -Name "
-        "IsReadOnly -Value $true\r\n"
-        "Remove-Item -LiteralPath $SelfPath -Force -ErrorAction "
-        "SilentlyContinue\r\n";
+        "$Lock = $null\r\n"
+        "for ($Attempt = 0; $Attempt -lt 600 -and $null -eq $Lock; $Attempt++) {\r\n"
+        "  try {\r\n"
+        "    $Lock = [IO.File]::Open($LockPath,[IO.FileMode]::OpenOrCreate,"
+        "[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)\r\n"
+        "    $Lock.Lock(0,1)\r\n"
+        "  } catch {\r\n"
+        "    if ($null -ne $Lock) { $Lock.Dispose(); $Lock = $null }\r\n"
+        "    Start-Sleep -Milliseconds 100\r\n"
+        "  }\r\n"
+        "}\r\n"
+        "if ($null -eq $Lock) { throw 'could not acquire the cup lock' }\r\n"
+        "$Assets = @(\r\n"
+        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_BINARY_NEW
+            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_BINARY_OLD
+            "'); Destination=$DestinationBinary; ReadOnly=$false },\r\n"
+        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_UNINSTALL_NEW
+            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_UNINSTALL_OLD
+            "'); Destination=$DestinationUninstall; ReadOnly=$true },\r\n"
+        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_CHECKSUMS_NEW
+            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_CHECKSUMS_OLD
+            "'); Destination=$DestinationChecksums; ReadOnly=$true }\r\n"
+        ")\r\n"
+        "function Clear-ReadOnly([string]$Path) {\r\n"
+        "  if (Test-Path -LiteralPath $Path -PathType Leaf) {\r\n"
+        "    Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false\r\n"
+        "  }\r\n"
+        "}\r\n"
+        "function Set-AssetPermissions($Asset) {\r\n"
+        "  Set-ItemProperty -LiteralPath $Asset.Destination -Name IsReadOnly "
+            "-Value $Asset.ReadOnly\r\n"
+        "}\r\n"
+        "function Rollback-Assets {\r\n"
+        "  foreach ($Asset in $Assets) {\r\n"
+        "    if (Test-Path -LiteralPath $Asset.Old -PathType Leaf) {\r\n"
+        "      Clear-ReadOnly $Asset.Destination\r\n"
+        "      if (Test-Path -LiteralPath $Asset.Destination) { "
+            "Remove-Item -LiteralPath $Asset.Destination -Force }\r\n"
+        "      Move-Item -LiteralPath $Asset.Old -Destination "
+            "$Asset.Destination -Force\r\n"
+        "      Set-AssetPermissions $Asset\r\n"
+        "    }\r\n"
+        "  }\r\n"
+        "}\r\n"
+        "$Marker = Join-Path $Staging '" CUP_SELF_UPDATE_COMMITTED "'\r\n"
+        "$Committed = $false\r\n"
+        "try {\r\n"
+        "  foreach ($Asset in $Assets) {\r\n"
+        "    Clear-ReadOnly $Asset.Destination\r\n"
+        "    Move-Item -LiteralPath $Asset.Destination -Destination "
+            "$Asset.Old -Force\r\n"
+        "  }\r\n"
+        "  foreach ($Asset in $Assets) {\r\n"
+        "    Move-Item -LiteralPath $Asset.New -Destination "
+            "$Asset.Destination -Force\r\n"
+        "    Set-AssetPermissions $Asset\r\n"
+        "  }\r\n"
+        "  $MarkerStream = [IO.File]::Open($Marker,[IO.FileMode]::CreateNew,"
+            "[IO.FileAccess]::Write,[IO.FileShare]::None)\r\n"
+        "  try { $MarkerStream.Flush($true) } finally { $MarkerStream.Dispose() }\r\n"
+        "  Remove-Item -LiteralPath $JournalPath -Force\r\n"
+        "  $Committed = $true\r\n"
+        "} catch {\r\n"
+        "  if (-not (Test-Path -LiteralPath $Marker -PathType Leaf)) {\r\n"
+        "    try {\r\n"
+        "      Rollback-Assets\r\n"
+        "      Remove-Item -LiteralPath $JournalPath -Force\r\n"
+        "      Remove-Item -LiteralPath $Staging -Recurse -Force\r\n"
+        "    } catch { }\r\n"
+        "  }\r\n"
+        "  throw\r\n"
+        "} finally {\r\n"
+        "  try { $Lock.Unlock(0,1) } catch { }\r\n"
+        "  $Lock.Dispose()\r\n"
+        "  if ($Committed) { Remove-Item -LiteralPath $Staging -Recurse "
+            "-Force -ErrorAction SilentlyContinue }\r\n"
+        "  Remove-Item -LiteralPath $SelfPath -Force -ErrorAction "
+            "SilentlyContinue\r\n"
+        "}\r\n";
     wchar_t temp_directory_wide[MAX_PATH_LEN];
     wchar_t script_wide[MAX_PATH_LEN];
-    wchar_t source_binary_wide[MAX_PATH_LEN];
-    wchar_t destination_binary_wide[MAX_PATH_LEN];
-    wchar_t source_uninstall_wide[MAX_PATH_LEN];
-    wchar_t destination_uninstall_wide[MAX_PATH_LEN];
-    wchar_t source_checksums_wide[MAX_PATH_LEN];
-    wchar_t destination_checksums_wide[MAX_PATH_LEN];
+    wchar_t staging_wide[MAX_PATH_LEN];
+    wchar_t binary_wide[MAX_PATH_LEN];
+    wchar_t uninstall_wide[MAX_PATH_LEN];
+    wchar_t checksums_wide[MAX_PATH_LEN];
+    wchar_t lock_wide[MAX_PATH_LEN];
+    wchar_t journal_wide[MAX_PATH_LEN];
     wchar_t command[MAX_PATH_LEN * 12];
     char temp_directory[MAX_PATH_LEN];
     char script_path[MAX_PATH_LEN];
@@ -285,10 +349,13 @@ CupError system_start_self_update(const char *staged_binary,
     PROCESS_INFORMATION process;
     DWORD length;
     int written;
+    int write_failed;
+    int sync_failed;
+    int close_failed;
 
-    if (text_is_empty(staged_binary) || text_is_empty(installed_binary) ||
-        text_is_empty(staged_uninstall) || text_is_empty(installed_uninstall) ||
-        text_is_empty(staged_checksums) || text_is_empty(installed_checksums) ||
+    if (text_is_empty(staging_directory) || text_is_empty(installed_binary) ||
+        text_is_empty(installed_uninstall) || text_is_empty(installed_checksums) ||
+        text_is_empty(lock_path) || text_is_empty(journal_path) ||
         parent_pid == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -302,26 +369,23 @@ CupError system_start_self_update(const char *staged_binary,
         return CUP_ERR_FILESYSTEM;
     }
 
-    if (fwrite(script_content, 1, sizeof(script_content) - 1, script) !=
-            sizeof(script_content) - 1 ||
-        system_sync_file(script) != CUP_OK || fclose(script) != 0) {
+    write_failed = fwrite(script_content, 1, sizeof(script_content) - 1,
+        script) != sizeof(script_content) - 1;
+    sync_failed = !write_failed && system_sync_file(script) != CUP_OK;
+    close_failed = fclose(script) != 0;
+    script = NULL;
+    if (write_failed || sync_failed || close_failed) {
         system_remove_file(script_path);
         return CUP_ERR_FILESYSTEM;
     }
-    script = NULL;
 
     if (utf8_to_wide(script_path, script_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(staged_binary, source_binary_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_binary, destination_binary_wide,
-            MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(staged_uninstall, source_uninstall_wide,
-            MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_uninstall, destination_uninstall_wide,
-            MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(staged_checksums, source_checksums_wide,
-            MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_checksums, destination_checksums_wide,
-            MAX_PATH_LEN) != CUP_OK) {
+        utf8_to_wide(staging_directory, staging_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_binary, binary_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_uninstall, uninstall_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_checksums, checksums_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(lock_path, lock_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(journal_path, journal_wide, MAX_PATH_LEN) != CUP_OK) {
         system_remove_file(script_path);
         return CUP_ERR_FILESYSTEM;
     }
@@ -329,14 +393,12 @@ CupError system_start_self_update(const char *staged_binary,
     written = _snwprintf(command,
         sizeof(command) / sizeof(command[0]),
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%ls\" "
-        L"-SourceBinary \"%ls\" -DestinationBinary \"%ls\" "
-        L"-SourceUninstall \"%ls\" -DestinationUninstall \"%ls\" "
-        L"-SourceChecksums \"%ls\" -DestinationChecksums \"%ls\" "
+        L"-Staging \"%ls\" -DestinationBinary \"%ls\" "
+        L"-DestinationUninstall \"%ls\" -DestinationChecksums \"%ls\" "
+        L"-LockPath \"%ls\" -JournalPath \"%ls\" "
         L"-ParentPid %lu -SelfPath \"%ls\"",
-        script_wide, source_binary_wide, destination_binary_wide,
-        source_uninstall_wide, destination_uninstall_wide,
-        source_checksums_wide, destination_checksums_wide,
-        parent_pid, script_wide);
+        script_wide, staging_wide, binary_wide, uninstall_wide,
+        checksums_wide, lock_wide, journal_wide, parent_pid, script_wide);
     if (written < 0 || (size_t)written >=
         sizeof(command) / sizeof(command[0])) {
         system_remove_file(script_path);

@@ -25,7 +25,7 @@ CupError entry_parse(const char *entry, char *tool, size_t tool_size,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_format(buffer, sizeof(buffer), "%s", entry);
+    err = text_copy(buffer, sizeof(buffer), entry);
     if (err != CUP_OK) {
         return err;
     }

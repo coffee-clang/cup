@@ -76,7 +76,7 @@ Bootstrap assets for `cup` are published in the `coffee-clang/cup` repository. T
 ### Linux and macOS
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
 The installer verifies the published SHA-256 files before committing the matching `cup` binary, manifest, checksum files and uninstall script. It first creates only the bootstrap portion of the canonical root:
@@ -92,7 +92,7 @@ The complete runtime tree, including `components`, `tmp`, `cache`, `state.txt` a
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 The installer verifies the published SHA-256 files and installs the bootstrap files under `%USERPROFILE%\.cup`: the executable, manifest, checksum files and uninstall script. The complete runtime tree, including state and lock files, is initialized by the first operational command or by `cup repair`. The manifest, checksum files and uninstall script are protected with the Windows read-only attribute.
@@ -104,13 +104,13 @@ It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 From `cmd.exe`, call the PowerShell installer:
 
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
 ```
 
 ### Windows Git Bash, MSYS2 or Cygwin
 
 ```sh
-curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh
+curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
 When the shell installer detects a Windows Unix-like environment, it delegates to the native PowerShell installer so the canonical root remains `%USERPROFILE%\.cup`.
@@ -125,10 +125,11 @@ cup help install
 cup --version
 ```
 
-List installed tools for the current host and selected target:
+List installed tools for the current host and selected target, optionally by component:
 
 ```sh
 cup list
+cup list compiler
 cup list --target windows-x64
 ```
 
@@ -149,20 +150,22 @@ Install a compiler targeting Windows from a Linux host when a matching package i
 cup install compiler gcc@stable --target windows-x64
 ```
 
-Choose and inspect defaults:
+Choose a persistent default and inspect the configured defaults:
 
 ```sh
 cup default compiler gcc@stable
-cup current compiler
 cup current
-cup default
+cup current compiler
+cup current --target windows-x64
 ```
 
-Setting a default rebuilds managed commands in `~/.cup/bin`. Native defaults use their declared entry names, while cross-target defaults use `<target>-<entry>` names to avoid collisions.
+`cup default` only changes the selected package for one `component + host + target` scope. `cup current` is the read-only view: without filters it lists every configured target scope for the current host, and it can be restricted by component or target. It also verifies and prints the managed commands exposed through `~/.cup/bin`. Native defaults use their declared entry names, while cross-target defaults use `<target>-<entry>` names to avoid collisions.
 
-Show installed package metadata:
+Explore the manifest catalog or inspect immutable metadata from an installed package:
 
 ```sh
+cup info
+cup info compiler
 cup info compiler gcc@stable
 ```
 
@@ -202,9 +205,26 @@ Uninstall `cup` and all cup-managed data:
 cup uninstall
 ```
 
-`cup uninstall` records an uninstall marker, starts a helper that waits for the current `cup` process to exit, and then removes the canonical `.cup` directory. New commands refuse to start while the marker exists. The command does not remove PATH entries; a remaining entry can be reused by a future installation. Running the installer again removes a stale uninstall marker after restoring a valid bootstrap.
+`cup uninstall` records an uninstall marker and starts a helper that waits for the current `cup` process to exit. The helper atomically detaches the canonical `.cup` directory before deleting it, so another process cannot observe a partially removed installation. New commands refuse to start while the marker exists. The command does not remove PATH entries; a remaining entry can be reused by a future installation. Running the installer again removes a stale uninstall marker after restoring a valid bootstrap.
 
 When `cup` is executed from the repository root during development, it can use `config/packages.cfg` and the platform uninstall script under `scripts/install/` if the installed bootstrap files are unavailable. Installed files remain the preferred source.
+
+
+## Versioning and releases
+
+Every build embeds a version generated from Git. A clean commit exactly matching a `v<major>.<minor>.<patch>` tag reports the official release version; other commits report the nearest release, first-parent distance, abbreviated commit and optional dirty state. Source archives without Git metadata use an explicit archive development suffix.
+
+Pushes to `main` first validate the latest curl/Mozilla CA extract. When it differs, the workflow commits only `certs/cacert.pem` as `Update certs` and builds that exact commit. This automation commit is excluded from the version distance. After ten other first-parent commits have accumulated since the latest release tag, a successful workflow publishes the next patch release automatically. Minor and major releases remain explicit choices in the manual workflow. The generated value is shared by `cup --version`, `release.txt` and Windows `VERSIONINFO`; optimized builds made away from a release tag remain development builds.
+
+## Testing
+
+Run the POSIX regression suites with:
+
+```sh
+make test
+```
+
+The focused test scripts live under `scripts/tests/`. CI runs them natively on both Linux architectures and both macOS architectures, and runs the PowerShell suites under `scripts/tests/windows/` against a native Windows build. Static release assets are built only after all native test jobs succeed.
 
 ## Component packages
 

@@ -22,7 +22,17 @@ while kill -0 "$PARENT_PID" 2>/dev/null; do
 done
 
 if [ -e "$CUP_ROOT" ] || [ -L "$CUP_ROOT" ]; then
-    rm -rf -- "$CUP_ROOT" || fail "could not remove $CUP_ROOT"
+    STAGING_ROOT=$(mktemp -d "$HOME/.cup-uninstall.XXXXXX") ||
+        fail "could not create uninstall staging directory"
+    STAGED_CUP_ROOT="$STAGING_ROOT/root"
+
+    if ! mv -- "$CUP_ROOT" "$STAGED_CUP_ROOT"; then
+        rmdir -- "$STAGING_ROOT" 2>/dev/null || true
+        fail "could not detach $CUP_ROOT"
+    fi
+
+    rm -rf -- "$STAGING_ROOT" ||
+        fail "could not remove detached cup installation"
 fi
 
 if [ -n "$SELF_PATH" ]; then

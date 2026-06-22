@@ -3,8 +3,7 @@ set -eu
 
 REPO_OWNER="coffee-clang"
 REPO_NAME="cup"
-RELEASE_TAG="cup-bootstrap"
-BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}"
+BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
 
 CUP_ROOT=""
 CUP_BIN_DIR=""
@@ -101,6 +100,26 @@ verify_checksum_file() {
     else
         fail "neither sha256sum nor shasum is available"
     fi
+}
+
+validate_release_metadata() {
+    metadata="$1"
+    awk -F= '
+        NF != 2 || $1 == "" || $2 == "" { exit 1 }
+        seen[$1]++ > 0 { exit 1 }
+        { count++ }
+        $1 == "format" { format=$2; next }
+        $1 == "version" { version=$2; next }
+        $1 == "commit" { commit=$2; next }
+        { exit 1 }
+        END {
+            if (format != "1" ||
+                version !~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/ ||
+                commit == "" || count != 3) {
+                exit 1
+            }
+        }
+    ' "$metadata" || fail "invalid release metadata: $metadata"
 }
 
 detect_shell_profile() {
@@ -306,10 +325,12 @@ install_assets() {
     download_file "$BASE_URL/$cup_asset" "$staging/$cup_asset"
     download_file "$BASE_URL/packages.cfg" "$staging/packages.cfg"
     download_file "$BASE_URL/$uninstall_asset" "$staging/$uninstall_asset"
+    download_file "$BASE_URL/release.txt" "$staging/release.txt"
     download_file "$BASE_URL/SHA256SUMS.$platform" "$staging/SHA256SUMS.$platform"
     download_file "$BASE_URL/SHA256SUMS.common" "$staging/SHA256SUMS.common"
-    verify_checksum_file "$staging" "SHA256SUMS.$platform" "$cup_asset" "$uninstall_asset"
+    verify_checksum_file "$staging" "SHA256SUMS.$platform" "$cup_asset" "$uninstall_asset" "release.txt"
     verify_checksum_file "$staging" "SHA256SUMS.common" "packages.cfg"
+    validate_release_metadata "$staging/release.txt"
 
     backup_asset binary "$cup_bin" "$staging"
     backup_asset manifest "$PACKAGES_CFG" "$staging"
@@ -351,6 +372,7 @@ install_assets() {
 install_unix() {
     [ -n "${HOME:-}" ] || fail "HOME is not set"
     case "$HOME" in
+        /) fail "HOME must not be the filesystem root" ;;
         /*) ;;
         *) fail "HOME must contain an absolute path" ;;
     esac

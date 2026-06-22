@@ -234,5 +234,5 @@ CupError filesystem_backup_invalid(const char *path,
         return err;
     }
 
-    return text_format(backup_path, backup_size, "%s", candidate);
+    return text_copy(backup_path, backup_size, candidate);
 }

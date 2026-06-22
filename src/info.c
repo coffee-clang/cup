@@ -104,10 +104,10 @@ static CupError add_field(PackageInfo *info, const char *key, const char *value)
         info->capacity = capacity;
     }
 
-    if (text_format(info->fields[info->count].key,
-        sizeof(info->fields[info->count].key), "%s", key) != CUP_OK ||
-        text_format(info->fields[info->count].value,
-            sizeof(info->fields[info->count].value), "%s", value) != CUP_OK) {
+    if (text_copy(info->fields[info->count].key,
+            sizeof(info->fields[info->count].key), key) != CUP_OK ||
+        text_copy(info->fields[info->count].value,
+            sizeof(info->fields[info->count].value), value) != CUP_OK) {
         return CUP_ERR_VALIDATION;
     }
 

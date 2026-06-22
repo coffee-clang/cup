@@ -2,42 +2,170 @@ name: Build cup
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
     paths:
       - "src/**"
       - "include/**"
       - "Makefile"
       - "config/packages.cfg"
       - "certs/**"
-      - "scripts/certs/update-ca-bundle.sh"
-      - "scripts/bootstrap/bootstrap-common.sh"
-      - "scripts/bootstrap/bootstrap-linux-deps.sh"
-      - "scripts/bootstrap/bootstrap-macos-deps.sh"
-      - "scripts/bootstrap/bootstrap-windows-deps.sh"
-      - "scripts/install/install-cup.sh"
-      - "scripts/install/install-cup-windows.ps1"
-      - "scripts/install/uninstall-cup.sh"
-      - "scripts/install/uninstall-cup-windows.ps1"
+      - "scripts/**"
       - ".github/workflows/build-cup.yml"
-
   workflow_dispatch:
     inputs:
-      publish:
-        description: "Upload assets to the cup-bootstrap GitHub Release"
+      release_increment:
+        description: "Publish an explicit semantic release from main"
         required: true
-        default: "false"
+        default: none
         type: choice
-        options:
-          - "false"
-          - "true"
+        options: [none, minor, major]
+
+concurrency:
+  group: cup-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Refresh certificates and resolve version
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      build_sha: ${{ steps.source.outputs.build_sha }}
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install certificate refresh dependencies
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl make
+      - name: Refresh the embedded CA bundle
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        shell: bash
+        run: |
+          make update-ca-bundle
+          if git diff --quiet -- certs/cacert.pem; then
+            echo "Embedded CA bundle is already current."
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add certs/cacert.pem
+          git commit -m "Update certs"
+
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse origin/main)" != "${{ github.sha }}" ]; then
+            echo "main advanced while refreshing certificates; retry on the new head." >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/main
+      - id: source
+        name: Select build commit
+        shell: bash
+        run: echo "build_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: plan
+        name: Plan release
+        shell: bash
+        run: |
+          mode=none
+          if [ "${{ github.event_name }}" = push ]; then
+            mode=auto
+          elif [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            mode='${{ inputs.release_increment }}'
+            if [ "$mode" != none ] && [ "${{ github.ref }}" != refs/heads/main ]; then
+              echo "Minor and major releases must target main." >&2
+              exit 1
+            fi
+          fi
+          ./scripts/version.sh plan "$mode" | tee -a "$GITHUB_OUTPUT"
+
+  test-posix:
+    name: Test ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.build_sha }}
+          fetch-depth: 0
+      - name: Install Linux test dependencies
+        if: ${{ matrix.family == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang git libarchive-dev libcurl4-openssl-dev make
+      - name: Install macOS test dependencies
+        if: ${{ matrix.family == 'macos' }}
+        run: |
+          for package in curl libarchive pkg-config; do
+            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
+          done
+          echo "CPPFLAGS=-I$(brew --prefix curl)/include -I$(brew --prefix libarchive)/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$(brew --prefix curl)/lib -L$(brew --prefix libarchive)/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix curl)/lib/pkgconfig:$(brew --prefix libarchive)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - name: Run POSIX test suites
+        env:
+          CUP_TEST_PLATFORM: ${{ matrix.platform }}
+        run: make test-posix
+
+  test-windows:
+    name: Test windows-x64 natively
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.build_sha }}
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            make
+          pacboy: >-
+            gcc:p
+            curl:p
+            libarchive:p
+            pkgconf:p
+      - name: Build Windows development binary
+        shell: msys2 {0}
+        run: make PLATFORM=windows-x64 LINK_MODE=dynamic BUILD_MODE=development
+      - name: Run native Windows test suites
+        shell: msys2 {0}
+        run: make test-windows
+
   linux:
     name: Build ${{ matrix.platform }}
+    needs: [prepare, test-posix, test-windows]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -51,8 +179,12 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       LINK_MODE: static
       BUILD_MODE: release
+      CUP_VERSION_OVERRIDE: ${{ needs.prepare.outputs.publish == '1' && needs.prepare.outputs.version || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.build_sha }}
+          fetch-depth: 0
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -66,14 +198,17 @@ jobs:
         run: |
           mkdir -p dist
           cp "build/$PLATFORM/$LINK_MODE/bin/cup" "dist/cup-$PLATFORM"
+          cp "build/$PLATFORM/$LINK_MODE/generated/release.txt" dist/release.txt
           cp scripts/install/uninstall-cup.sh dist/uninstall.sh
           chmod +x "dist/cup-$PLATFORM" dist/uninstall.sh
-          (cd dist && sha256sum "cup-$PLATFORM" uninstall.sh > "SHA256SUMS.$PLATFORM")
-          if [ "$PLATFORM" = "linux-x64" ]; then
+          (cd dist && sha256sum "cup-$PLATFORM" uninstall.sh release.txt > "SHA256SUMS.$PLATFORM")
+          if [ "$PLATFORM" = linux-x64 ]; then
             cp config/packages.cfg dist/packages.cfg
             cp scripts/install/install-cup.sh dist/install.sh
             chmod +x dist/install.sh
             (cd dist && sha256sum packages.cfg > SHA256SUMS.common)
+          else
+            rm dist/release.txt
           fi
       - uses: actions/upload-artifact@v7
         with:
@@ -82,6 +217,7 @@ jobs:
 
   macos:
     name: Build ${{ matrix.platform }}
+    needs: [prepare, test-posix, test-windows]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -95,8 +231,12 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       LINK_MODE: static
       BUILD_MODE: release
+      CUP_VERSION_OVERRIDE: ${{ needs.prepare.outputs.publish == '1' && needs.prepare.outputs.version || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.build_sha }}
+          fetch-depth: 0
       - name: Install build tools
         run: |
           brew update
@@ -111,9 +251,11 @@ jobs:
         run: |
           mkdir -p dist
           cp "build/$PLATFORM/$LINK_MODE/bin/cup" "dist/cup-$PLATFORM"
+          cp "build/$PLATFORM/$LINK_MODE/generated/release.txt" dist/release.txt
           cp scripts/install/uninstall-cup.sh dist/uninstall.sh
           chmod +x "dist/cup-$PLATFORM" dist/uninstall.sh
-          (cd dist && shasum -a 256 "cup-$PLATFORM" uninstall.sh > "SHA256SUMS.$PLATFORM")
+          (cd dist && shasum -a 256 "cup-$PLATFORM" uninstall.sh release.txt > "SHA256SUMS.$PLATFORM")
+          rm dist/release.txt
       - uses: actions/upload-artifact@v7
         with:
           name: cup-${{ matrix.platform }}-assets
@@ -121,13 +263,18 @@ jobs:
 
   windows:
     name: Build windows-x64
+    needs: [prepare, test-posix, test-windows]
     runs-on: ubuntu-latest
     env:
       PLATFORM: windows-x64
       LINK_MODE: static
       BUILD_MODE: release
+      CUP_VERSION_OVERRIDE: ${{ needs.prepare.outputs.publish == '1' && needs.prepare.outputs.version || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.build_sha }}
+          fetch-depth: 0
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -141,26 +288,26 @@ jobs:
         run: |
           mkdir -p dist
           cp "build/$PLATFORM/$LINK_MODE/bin/cup.exe" dist/cup-windows-x64.exe
+          cp "build/$PLATFORM/$LINK_MODE/generated/release.txt" dist/release.txt
           cp scripts/install/install-cup-windows.ps1 dist/install.ps1
           cp scripts/install/uninstall-cup-windows.ps1 dist/uninstall.ps1
-          (cd dist && sha256sum cup-windows-x64.exe uninstall.ps1 > SHA256SUMS.windows-x64)
+          (cd dist && sha256sum cup-windows-x64.exe uninstall.ps1 release.txt > SHA256SUMS.windows-x64)
+          rm dist/release.txt
       - uses: actions/upload-artifact@v7
         with:
           name: cup-windows-x64-assets
           path: dist/*
 
   publish:
-    name: Publish bootstrap release
+    name: Publish release
     permissions:
       contents: write
-    needs:
-      - linux
-      - macos
-      - windows
-    if: ${{ github.event_name == 'push' || inputs.publish == 'true' }}
+    needs: [prepare, linux, macos, windows]
+    if: ${{ needs.prepare.outputs.publish == '1' }}
     runs-on: ubuntu-latest
     env:
-      RELEASE_TAG: cup-bootstrap
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -170,34 +317,43 @@ jobs:
           pattern: cup-*-assets
           path: dist
           merge-multiple: true
-      - name: Verify expected assets
+      - name: Verify coherent asset set
         run: |
           for asset in \
             cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64 cup-windows-x64.exe \
-            packages.cfg install.sh install.ps1 uninstall.sh uninstall.ps1 SHA256SUMS.common \
-            SHA256SUMS.linux-x64 SHA256SUMS.linux-arm64 SHA256SUMS.macos-x64 \
-            SHA256SUMS.macos-arm64 SHA256SUMS.windows-x64; do
+            packages.cfg release.txt install.sh install.ps1 uninstall.sh uninstall.ps1 \
+            SHA256SUMS.common SHA256SUMS.linux-x64 SHA256SUMS.linux-arm64 \
+            SHA256SUMS.macos-x64 SHA256SUMS.macos-arm64 SHA256SUMS.windows-x64; do
             test -f "dist/$asset" || { echo "Missing asset: $asset" >&2; exit 1; }
           done
-      - name: Verify asset checksums
-        run: |
+          test "$(sed -n 's/^version=//p' dist/release.txt)" = "$RELEASE_VERSION"
           (cd dist && sha256sum -c SHA256SUMS.common)
           for platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
             (cd dist && sha256sum -c "SHA256SUMS.$platform")
           done
-
-      - name: Ensure release exists
+      - name: Publish immutable versioned release
         run: |
-          if ! gh release view "$RELEASE_TAG" \
-              --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --repo "$GH_REPO" \
-              --title "cup bootstrap" \
-              --notes "Bootstrap assets for installing cup."
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to replace it." >&2
+            exit 1
           fi
-
-      - name: Upload one coherent asset set
-        run: |
-          gh release upload "$RELEASE_TAG" dist/* \
+          cleanup_failed_release() {
+            gh release delete "$RELEASE_TAG" \
+              --repo "$GH_REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
+          }
+          if ! gh release create "$RELEASE_TAG" dist/* \
             --repo "$GH_REPO" \
-            --clobber
+            --target "${{ needs.prepare.outputs.build_sha }}" \
+            --title "cup $RELEASE_VERSION" \
+            --generate-notes \
+            --draft; then
+            cleanup_failed_release
+            exit 1
+          fi
+          if ! gh release edit "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
+            --draft=false \
+            --latest; then
+            cleanup_failed_release
+            exit 1
+          fi

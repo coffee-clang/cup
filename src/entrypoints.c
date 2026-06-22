@@ -15,24 +15,19 @@
 #include <string.h>
 
 typedef struct {
-    char name[MAX_ENTRYPOINT_NAME_LEN];
-    char target[MAX_PATH_LEN];
-} ManagedEntryPoint;
-
-typedef struct {
-    ManagedEntryPoint *items;
-    size_t count;
-    size_t capacity;
-} ManagedEntryPoints;
-
-typedef struct {
-    const ManagedEntryPoints *entrypoints;
+    const EntryPointPlan *entrypoints;
     const char *binary_name;
     int remove_stale;
     size_t *issue_count;
 } ScanContext;
 
-static void entrypoints_free(ManagedEntryPoints *entrypoints) {
+void entrypoint_plan_init(EntryPointPlan *plan) {
+    if (plan != NULL) {
+        memset(plan, 0, sizeof(*plan));
+    }
+}
+
+void entrypoint_plan_free(EntryPointPlan *entrypoints) {
     if (entrypoints == NULL) {
         return;
     }
@@ -55,14 +50,14 @@ static int names_equal_case_insensitive(const char *left,
 }
 
 static int names_equal(const char *left, const char *right) {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     return names_equal_case_insensitive(left, right);
 #else
     return strcmp(left, right) == 0;
 #endif
 }
 
-static int find_entrypoint(const ManagedEntryPoints *entrypoints,
+static int find_entrypoint(const EntryPointPlan *entrypoints,
     const char *name) {
     size_t i;
 
@@ -75,9 +70,9 @@ static int find_entrypoint(const ManagedEntryPoints *entrypoints,
     return -1;
 }
 
-static CupError add_entrypoint(ManagedEntryPoints *entrypoints,
+static CupError add_entrypoint(EntryPointPlan *entrypoints,
     const char *name, const char *target) {
-    ManagedEntryPoint *items;
+    EntryPointSpec *items;
     size_t capacity;
     int existing;
 
@@ -103,10 +98,10 @@ static CupError add_entrypoint(ManagedEntryPoints *entrypoints,
         entrypoints->capacity = capacity;
     }
 
-    if (text_format(entrypoints->items[entrypoints->count].name,
-            sizeof(entrypoints->items[entrypoints->count].name), "%s", name) != CUP_OK ||
-        text_format(entrypoints->items[entrypoints->count].target,
-            sizeof(entrypoints->items[entrypoints->count].target), "%s", target) != CUP_OK) {
+    if (text_copy(entrypoints->items[entrypoints->count].name,
+            sizeof(entrypoints->items[entrypoints->count].name), name) != CUP_OK ||
+        text_copy(entrypoints->items[entrypoints->count].target,
+            sizeof(entrypoints->items[entrypoints->count].target), target) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -120,7 +115,7 @@ static CupError build_entrypoint_name(char *buffer, size_t size,
 
     if (strcmp(default_entry->host_platform,
             default_entry->target_platform) == 0) {
-        err = text_format(buffer, size, "%s", entry_name);
+        err = text_copy(buffer, size, entry_name);
     } else {
         err = text_format(buffer, size, "%s-%s",
             default_entry->target_platform, entry_name);
@@ -137,14 +132,14 @@ static CupError build_entrypoint_name(char *buffer, size_t size,
         if (err != CUP_OK) {
             return err;
         }
-        return text_format(buffer, size, "%s", command_name);
+        return text_copy(buffer, size, command_name);
     }
 #else
     return CUP_OK;
 #endif
 }
 
-static CupError collect_package_entrypoints(ManagedEntryPoints *entrypoints,
+static CupError collect_package_entrypoints(EntryPointPlan *entrypoints,
     const StateEntry *default_entry) {
     PackageIdentity package;
     PackageInfo info;
@@ -207,7 +202,7 @@ static CupError collect_package_entrypoints(ManagedEntryPoints *entrypoints,
 }
 
 static CupError collect_entrypoints(const CupState *state,
-    ManagedEntryPoints *entrypoints) {
+    EntryPointPlan *entrypoints) {
     CupError err;
     char host[MAX_PLATFORM_LEN];
     size_t i;
@@ -216,7 +211,6 @@ static CupError collect_entrypoints(const CupState *state,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    memset(entrypoints, 0, sizeof(*entrypoints));
     err = platform_get_host(host, sizeof(host));
     if (err != CUP_OK) {
         return err;
@@ -230,7 +224,7 @@ static CupError collect_entrypoints(const CupState *state,
         err = collect_package_entrypoints(entrypoints,
             &state->defaults[i]);
         if (err != CUP_OK) {
-            entrypoints_free(entrypoints);
+            entrypoint_plan_free(entrypoints);
             return err;
         }
     }
@@ -252,6 +246,7 @@ static CupError append_text(char *buffer, size_t size, size_t *length,
     return CUP_OK;
 }
 
+#if !defined(_WIN32)
 static CupError append_shell_quoted(char *buffer, size_t size,
     size_t *length, const char *text) {
     const char *cursor;
@@ -276,8 +271,9 @@ static CupError append_shell_quoted(char *buffer, size_t size,
 
     return append_text(buffer, size, length, "'");
 }
+#endif
 
-static CupError build_wrapper_content(const ManagedEntryPoint *entrypoint,
+static CupError build_wrapper_content(const EntryPointSpec *entrypoint,
     char **content, size_t *content_size) {
     size_t capacity;
     size_t length = 0;
@@ -344,7 +340,7 @@ static CupError build_wrapper_content(const ManagedEntryPoint *entrypoint,
 }
 
 static CupError write_entrypoint(const char *bin_dir,
-    const ManagedEntryPoint *entrypoint) {
+    const EntryPointSpec *entrypoint) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     CupError err;
     FILE *file = NULL;
@@ -393,7 +389,7 @@ static CupError write_entrypoint(const char *bin_dir,
     return err;
 }
 
-static int entrypoint_is_expected(const ManagedEntryPoints *entrypoints,
+static int entrypoint_is_expected(const EntryPointPlan *entrypoints,
     const char *name) {
     return find_entrypoint(entrypoints, name) >= 0;
 }
@@ -425,7 +421,7 @@ static CupError scan_bin_entry(const char *path, SystemPathKind kind,
 }
 
 static CupError compare_entrypoint(const char *bin_dir,
-    const ManagedEntryPoint *entrypoint, int *matches) {
+    const EntryPointSpec *entrypoint, int *matches) {
     CupError err;
     SystemPathKind kind;
     FILE *file;
@@ -482,11 +478,16 @@ static CupError compare_entrypoint(const char *bin_dir,
     }
 
     read_size = fread(actual, 1, expected_size, file);
-    extra = fgetc(file);
-    if (ferror(file) || fclose(file) != 0) {
-        free(actual);
-        free(expected);
-        return CUP_ERR_FILESYSTEM;
+    extra = read_size == expected_size ? fgetc(file) : EOF;
+    {
+        int read_failed = ferror(file) != 0;
+        int close_failed = fclose(file) != 0;
+
+        if (read_failed || close_failed) {
+            free(actual);
+            free(expected);
+            return CUP_ERR_FILESYSTEM;
+        }
     }
 
     *matches = read_size == expected_size && extra == EOF &&
@@ -496,19 +497,26 @@ static CupError compare_entrypoint(const char *bin_dir,
     return CUP_OK;
 }
 
-CupError entrypoints_validate(const CupState *state) {
-    ManagedEntryPoints entrypoints;
-    CupError err;
-
-    err = collect_entrypoints(state, &entrypoints);
-    if (err == CUP_OK) {
-        entrypoints_free(&entrypoints);
+CupError entrypoint_plan_build_default(EntryPointPlan *plan,
+    const StateEntry *default_entry) {
+    if (plan == NULL || default_entry == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
-    return err;
+
+    entrypoint_plan_free(plan);
+    return collect_package_entrypoints(plan, default_entry);
 }
 
-CupError entrypoints_sync(const CupState *state) {
-    ManagedEntryPoints entrypoints;
+CupError entrypoint_plan_build(EntryPointPlan *plan, const CupState *state) {
+    if (plan == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    entrypoint_plan_free(plan);
+    return collect_entrypoints(state, plan);
+}
+
+CupError entrypoint_plan_apply(const EntryPointPlan *entrypoints) {
     ScanContext scan;
     CupError err;
     char bin_dir[MAX_PATH_LEN];
@@ -516,43 +524,68 @@ CupError entrypoints_sync(const CupState *state) {
     const char *binary_name;
     size_t i;
 
-    err = collect_entrypoints(state, &entrypoints);
-    if (err != CUP_OK) {
-        return err;
+    if (entrypoints == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
-
     if (layout_get_bin_dir(bin_dir, sizeof(bin_dir)) != CUP_OK ||
         layout_get_binary_path(binary_path, sizeof(binary_path)) != CUP_OK ||
         filesystem_ensure_directory(bin_dir) != CUP_OK) {
-        entrypoints_free(&entrypoints);
         return CUP_ERR_FILESYSTEM;
     }
 
-    for (i = 0; i < entrypoints.count; ++i) {
-        err = write_entrypoint(bin_dir, &entrypoints.items[i]);
+    for (i = 0; i < entrypoints->count; ++i) {
+        err = write_entrypoint(bin_dir, &entrypoints->items[i]);
         if (err != CUP_OK) {
-            entrypoints_free(&entrypoints);
             return err;
         }
     }
 
     binary_name = path_last_segment(binary_path);
     if (binary_name == NULL) {
-        entrypoints_free(&entrypoints);
         return CUP_ERR_FILESYSTEM;
     }
 
-    scan.entrypoints = &entrypoints;
+    scan.entrypoints = entrypoints;
     scan.binary_name = binary_name;
     scan.remove_stale = 1;
     scan.issue_count = NULL;
-    err = system_list_directory(bin_dir, scan_bin_entry, &scan);
-    entrypoints_free(&entrypoints);
-    return err;
+    return system_list_directory(bin_dir, scan_bin_entry, &scan);
 }
 
-CupError entrypoints_check(const CupState *state, size_t *issue_count) {
-    ManagedEntryPoints entrypoints;
+CupError entrypoint_plan_expected_matches(const EntryPointPlan *entrypoints,
+    int *matches) {
+    CupError err;
+    char bin_dir[MAX_PATH_LEN];
+    size_t i;
+
+    if (entrypoints == NULL || matches == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *matches = 0;
+
+    if (layout_get_bin_dir(bin_dir, sizeof(bin_dir)) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    for (i = 0; i < entrypoints->count; ++i) {
+        int entrypoint_matches;
+
+        err = compare_entrypoint(bin_dir, &entrypoints->items[i],
+            &entrypoint_matches);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (!entrypoint_matches) {
+            return CUP_OK;
+        }
+    }
+
+    *matches = 1;
+    return CUP_OK;
+}
+
+CupError entrypoint_plan_check(const EntryPointPlan *entrypoints,
+    size_t *issue_count) {
     ScanContext scan;
     CupError err;
     char bin_dir[MAX_PATH_LEN];
@@ -560,48 +593,38 @@ CupError entrypoints_check(const CupState *state, size_t *issue_count) {
     const char *binary_name;
     size_t i;
 
-    if (issue_count == NULL) {
+    if (entrypoints == NULL || issue_count == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *issue_count = 0;
 
-    err = collect_entrypoints(state, &entrypoints);
-    if (err != CUP_OK) {
-        return err;
-    }
-
     if (layout_get_bin_dir(bin_dir, sizeof(bin_dir)) != CUP_OK ||
         layout_get_binary_path(binary_path, sizeof(binary_path)) != CUP_OK) {
-        entrypoints_free(&entrypoints);
         return CUP_ERR_FILESYSTEM;
     }
 
-    for (i = 0; i < entrypoints.count; ++i) {
+    for (i = 0; i < entrypoints->count; ++i) {
         int matches;
 
-        err = compare_entrypoint(bin_dir, &entrypoints.items[i], &matches);
+        err = compare_entrypoint(bin_dir, &entrypoints->items[i], &matches);
         if (err != CUP_OK) {
-            entrypoints_free(&entrypoints);
             return err;
         }
         if (!matches) {
             printf("Issue: entry point '%s' is missing or inconsistent.\n",
-                entrypoints.items[i].name);
+                entrypoints->items[i].name);
             (*issue_count)++;
         }
     }
 
     binary_name = path_last_segment(binary_path);
     if (binary_name == NULL) {
-        entrypoints_free(&entrypoints);
         return CUP_ERR_FILESYSTEM;
     }
 
-    scan.entrypoints = &entrypoints;
+    scan.entrypoints = entrypoints;
     scan.binary_name = binary_name;
     scan.remove_stale = 0;
     scan.issue_count = issue_count;
-    err = system_list_directory(bin_dir, scan_bin_entry, &scan);
-    entrypoints_free(&entrypoints);
-    return err;
+    return system_list_directory(bin_dir, scan_bin_entry, &scan);
 }

@@ -11,7 +11,8 @@
 typedef enum {
     TRANSACTION_NONE,
     TRANSACTION_INSTALL,
-    TRANSACTION_REMOVE
+    TRANSACTION_REMOVE,
+    TRANSACTION_SELF_UPDATE
 } TransactionOperation;
 
 /* Presence state of the persistent transaction journal. */
@@ -33,6 +34,9 @@ void transaction_init(Transaction *transaction);
 /* Create and persist a new transaction journal. */
 CupError transaction_begin(TransactionOperation operation,
     const PackageIdentity *package, const char *temporary_path);
+
+/* Persist a deferred self-update before the current process releases its lock. */
+CupError transaction_begin_self_update(const char *temporary_path);
 
 /* Load and fully validate the current transaction journal. */
 CupError transaction_load(Transaction *transaction,

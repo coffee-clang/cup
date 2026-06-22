@@ -4,7 +4,7 @@
 #include "error.h"
 
 /* CLI command handlers. */
-CupError command_list(const char *target_override);
+CupError command_list(const char *component, const char *target_override);
 CupError command_install(const char *component, const char *entry,
     const char *target_override, const char *format_override);
 CupError command_remove(const char *component, const char *entry, const char *target_override);
@@ -17,9 +17,10 @@ CupError command_doctor(void);
 CupError command_repair(void);
 CupError command_uninstall(void);
 
-/* Compare-and-swap helper used by update after installing a new stable release. */
-CupError command_replace_default(const char *component,
-    const char *expected_entry, const char *replacement_entry,
-    const char *target_override, int *replaced);
+/* Internal command operation: ensure a tool's stable release is installed
+ * in one scope and move its previous default with compare-and-swap semantics. */
+CupError command_update_scope(const char *component, const char *tool,
+    const char *target_override, const char *expected_default,
+    int *installed, int *default_moved);
 
 #endif /* CUP_COMMANDS_H */

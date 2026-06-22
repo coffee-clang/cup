@@ -83,7 +83,7 @@ static int progress_callback(void *userdata, curl_off_t download_total,
 static CupError get_parent_path(const char *path, char *parent, size_t size) {
     char *slash;
 
-    if (text_format(parent, size, "%s", path) != CUP_OK) {
+    if (text_copy(parent, size, path) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -283,10 +283,8 @@ CupError fetch_file(const char *url, const char *destination,
     SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
 
     result = curl_easy_perform(curl);
-    if (result == CURLE_OK) {
-        info_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE,
-            &response_code);
-    }
+    info_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE,
+        &response_code);
 
 cleanup:
     if (curl != NULL) {
@@ -308,10 +306,14 @@ cleanup:
         response_code != 200 || sync_err != CUP_OK || close_status != 0) {
         CupError cleanup_error;
 
-        fprintf(stderr,
-            "Error: failed to download '%s' (HTTP %ld)%s%s.\n",
-            url, response_code, error_buffer[0] ? ": " : "",
-            error_buffer[0] ? error_buffer : "");
+        fprintf(stderr, "Error: failed to download '%s'", url);
+        if (info_result == CURLE_OK && response_code > 0) {
+            fprintf(stderr, " (HTTP %ld)", response_code);
+        }
+        if (error_buffer[0] != '\0') {
+            fprintf(stderr, ": %s", error_buffer);
+        }
+        fputs(".\n", stderr);
         cleanup_error = remove_temporary_download(temporary_path, CUP_ERR_FETCH);
         return cleanup_error;
     }

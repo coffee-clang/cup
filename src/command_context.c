@@ -23,8 +23,8 @@ static CupError resolve_platforms(CommandContext *context, const char *target_ov
     }
 
     if (text_is_empty(target_override)) {
-        return text_format(context->target_platform, sizeof(context->target_platform),
-            "%s", context->host_platform);
+        return text_copy(context->target_platform,
+            sizeof(context->target_platform), context->host_platform);
     }
 
     err = platform_validate(target_override);
@@ -32,8 +32,7 @@ static CupError resolve_platforms(CommandContext *context, const char *target_ov
         return err;
     }
 
-    return text_format(context->target_platform, sizeof(context->target_platform),
-        "%s", target_override);
+    return text_copy(context->target_platform, sizeof(context->target_platform), target_override);
 }
 
 static CupError validate_bootstrap(void) {
@@ -249,10 +248,16 @@ CupError command_require_no_transaction(void) {
     }
 
     if (status == TRANSACTION_FILE_LOADED) {
-        fprintf(stderr, "Error: an interrupted %s transaction for "
-            "'%s@%s' must be repaired first.\n",
-            transaction_operation_name(transaction.operation), transaction.package.tool,
-            transaction.package.version);
+        if (transaction.operation == TRANSACTION_SELF_UPDATE) {
+            fprintf(stderr,
+                "Error: an interrupted self-update transaction must be "
+                "repaired first.\n");
+        } else {
+            fprintf(stderr, "Error: an interrupted %s transaction for "
+                "'%s@%s' must be repaired first.\n",
+                transaction_operation_name(transaction.operation),
+                transaction.package.tool, transaction.package.version);
+        }
         return CUP_ERR_TRANSACTION;
     }
 
@@ -274,7 +279,7 @@ CupError entry_request_parse(const char *component, const char *entry, EntryRequ
         return err;
     }
 
-    err = text_format(request->input_entry, sizeof(request->input_entry), "%s", entry);
+    err = text_copy(request->input_entry, sizeof(request->input_entry), entry);
     if (err != CUP_OK || entry_parse(entry, request->tool, sizeof(request->tool),
         request->release, sizeof(request->release)) != CUP_OK) {
         fprintf(stderr, "Error: invalid entry '%s'. Expected '<tool>@<release>'.\n", entry);
@@ -314,8 +319,8 @@ CupError entry_request_resolve(const Manifest *manifest, const char *component,
             return err;
         }
     } else {
-        err = text_format(request->resolved_release, sizeof(request->resolved_release),
-            "%s", request->release);
+        err = text_copy(request->resolved_release,
+            sizeof(request->resolved_release), request->release);
         if (err != CUP_OK) {
             return err;
         }
@@ -439,8 +444,6 @@ CupError command_require_absent(const CommandContext *context, const PackageIden
     }
 
     if (in_state && on_disk) {
-        fprintf(stderr, "Error: package '%s:%s' is already installed for host '%s', target '%s'.\n",
-            package->component, entry, package->host_platform, package->target_platform);
         return CUP_ERR_ALREADY_INSTALLED;
     }
 
