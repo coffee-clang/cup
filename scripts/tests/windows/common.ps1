@@ -8,6 +8,7 @@ $Script:TestRoot = $null
 $Script:TestHome = $null
 $Script:DevRoot = $null
 $Script:OriginalUserProfile = $null
+$Script:CommandProcessor = $null
 
 function Fail-Test {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -58,6 +59,49 @@ function Assert-Equals {
     }
 }
 
+
+function New-IsolatedTestRoot {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $base = Join-Path $Script:ProjectRoot "build\windows-x64\dynamic\tests"
+    New-Item -ItemType Directory -Force -Path $base | Out-Null
+
+    $root = Join-Path $base ("cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    return (Resolve-Path -LiteralPath $root).Path
+}
+
+function Resolve-CommandProcessor {
+    if (-not [string]::IsNullOrWhiteSpace($env:ComSpec) -and
+        (Test-Path -LiteralPath $env:ComSpec -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath $env:ComSpec).Path
+    }
+
+    $systemDirectory = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::System)
+    if (-not [string]::IsNullOrWhiteSpace($systemDirectory)) {
+        $candidate = Join-Path $systemDirectory "cmd.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command cmd.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $command -and
+        -not [string]::IsNullOrWhiteSpace($command.Source)) {
+        return $command.Source
+    }
+
+    Fail-Test "could not locate cmd.exe"
+}
+
+function Get-CommandProcessor {
+    if ($null -eq $Script:CommandProcessor) {
+        $Script:CommandProcessor = Resolve-CommandProcessor
+    }
+    return $Script:CommandProcessor
+}
+
 function ConvertTo-NativeArgument {
     param([AllowEmptyString()][string]$Argument)
 
@@ -106,6 +150,17 @@ function Invoke-NativeProcess {
         [Parameter(Mandatory = $true)][string]$WorkingDirectory
     )
 
+    if ([string]::IsNullOrWhiteSpace($FilePath)) {
+        Fail-Test "native process path is empty"
+    }
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        Fail-Test "native process does not exist: $FilePath"
+    }
+    if ([string]::IsNullOrWhiteSpace($WorkingDirectory) -or
+        -not (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) {
+        Fail-Test "invalid native process working directory: $WorkingDirectory"
+    }
+
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $FilePath
     $startInfo.Arguments = (($Arguments | ForEach-Object {
@@ -150,6 +205,7 @@ function Write-Utf8NoBom {
 
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
+        [AllowEmptyCollection()]
         [string[]]$Lines
     )
 
@@ -164,8 +220,7 @@ function Initialize-TestEnvironment {
     )
 
     $Script:CupPath = (Resolve-Path $CupPath).Path
-    $Script:TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
-        "cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
+    $Script:TestRoot = New-IsolatedTestRoot -Name $Name
     $Script:TestHome = Join-Path $Script:TestRoot "home"
     $Script:DevRoot = Join-Path $Script:TestRoot "development-root"
     $Script:OriginalUserProfile = $env:USERPROFILE
@@ -277,7 +332,7 @@ function Invoke-ManagedCommand {
 
     $path = Join-Path $Script:TestHome ".cup\bin\$Name.cmd"
     Assert-PathExists $path
-    $result = Invoke-NativeProcess -FilePath $env:ComSpec `
+    $result = Invoke-NativeProcess -FilePath (Get-CommandProcessor) `
         -Arguments @('/d', '/c', 'call', $path) `
         -WorkingDirectory $Script:TestHome
     if ($result.ExitCode -ne 0) {
