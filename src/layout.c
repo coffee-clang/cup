@@ -153,6 +153,10 @@ CupError layout_get_components_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, COMPONENTS_DIRECTORY);
 }
 
+CupError layout_get_bin_dir(char *buffer, size_t size) {
+    return build_root_path(buffer, size, BIN_DIRECTORY);
+}
+
 CupError layout_get_tmp_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, TMP_DIRECTORY);
 }

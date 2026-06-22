@@ -242,6 +242,122 @@ CupError system_start_uninstall(const char *cup_root,
     return CUP_OK;
 }
 
+
+CupError system_start_self_update(const char *staged_binary,
+    const char *installed_binary, const char *staged_uninstall,
+    const char *installed_uninstall, const char *staged_checksums,
+    const char *installed_checksums, unsigned long parent_pid) {
+    static const char script_content[] =
+        "param([string]$SourceBinary,[string]$DestinationBinary,"
+        "[string]$SourceUninstall,[string]$DestinationUninstall,"
+        "[string]$SourceChecksums,[string]$DestinationChecksums,"
+        "[int]$ParentPid,[string]$SelfPath)\r\n"
+        "$ErrorActionPreference = 'Stop'\r\n"
+        "Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue\r\n"
+        "foreach ($Path in @($DestinationUninstall,$DestinationChecksums)) { "
+        "if (Test-Path -LiteralPath $Path) { "
+        "Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false } }\r\n"
+        "Move-Item -LiteralPath $SourceBinary -Destination "
+        "$DestinationBinary -Force\r\n"
+        "Move-Item -LiteralPath $SourceUninstall -Destination "
+        "$DestinationUninstall -Force\r\n"
+        "Move-Item -LiteralPath $SourceChecksums -Destination "
+        "$DestinationChecksums -Force\r\n"
+        "Set-ItemProperty -LiteralPath $DestinationUninstall -Name "
+        "IsReadOnly -Value $true\r\n"
+        "Set-ItemProperty -LiteralPath $DestinationChecksums -Name "
+        "IsReadOnly -Value $true\r\n"
+        "Remove-Item -LiteralPath $SelfPath -Force -ErrorAction "
+        "SilentlyContinue\r\n";
+    wchar_t temp_directory_wide[MAX_PATH_LEN];
+    wchar_t script_wide[MAX_PATH_LEN];
+    wchar_t source_binary_wide[MAX_PATH_LEN];
+    wchar_t destination_binary_wide[MAX_PATH_LEN];
+    wchar_t source_uninstall_wide[MAX_PATH_LEN];
+    wchar_t destination_uninstall_wide[MAX_PATH_LEN];
+    wchar_t source_checksums_wide[MAX_PATH_LEN];
+    wchar_t destination_checksums_wide[MAX_PATH_LEN];
+    wchar_t command[MAX_PATH_LEN * 12];
+    char temp_directory[MAX_PATH_LEN];
+    char script_path[MAX_PATH_LEN];
+    FILE *script = NULL;
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    DWORD length;
+    int written;
+
+    if (text_is_empty(staged_binary) || text_is_empty(installed_binary) ||
+        text_is_empty(staged_uninstall) || text_is_empty(installed_uninstall) ||
+        text_is_empty(staged_checksums) || text_is_empty(installed_checksums) ||
+        parent_pid == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    length = GetTempPathW(MAX_PATH_LEN, temp_directory_wide);
+    if (length == 0 || length >= MAX_PATH_LEN ||
+        wide_to_utf8(temp_directory_wide, temp_directory,
+            sizeof(temp_directory)) != CUP_OK ||
+        system_create_temp_file(temp_directory, "cup-self-update",
+            script_path, sizeof(script_path), &script) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if (fwrite(script_content, 1, sizeof(script_content) - 1, script) !=
+            sizeof(script_content) - 1 ||
+        system_sync_file(script) != CUP_OK || fclose(script) != 0) {
+        system_remove_file(script_path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    script = NULL;
+
+    if (utf8_to_wide(script_path, script_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(staged_binary, source_binary_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_binary, destination_binary_wide,
+            MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(staged_uninstall, source_uninstall_wide,
+            MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_uninstall, destination_uninstall_wide,
+            MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(staged_checksums, source_checksums_wide,
+            MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide(installed_checksums, destination_checksums_wide,
+            MAX_PATH_LEN) != CUP_OK) {
+        system_remove_file(script_path);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    written = _snwprintf(command,
+        sizeof(command) / sizeof(command[0]),
+        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%ls\" "
+        L"-SourceBinary \"%ls\" -DestinationBinary \"%ls\" "
+        L"-SourceUninstall \"%ls\" -DestinationUninstall \"%ls\" "
+        L"-SourceChecksums \"%ls\" -DestinationChecksums \"%ls\" "
+        L"-ParentPid %lu -SelfPath \"%ls\"",
+        script_wide, source_binary_wide, destination_binary_wide,
+        source_uninstall_wide, destination_uninstall_wide,
+        source_checksums_wide, destination_checksums_wide,
+        parent_pid, script_wide);
+    if (written < 0 || (size_t)written >=
+        sizeof(command) / sizeof(command[0])) {
+        system_remove_file(script_path);
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    ZeroMemory(&process, sizeof(process));
+    if (!CreateProcessW(NULL, command, NULL, NULL, FALSE,
+        CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) {
+        print_windows_error("could not start self-update process", script_path);
+        system_remove_file(script_path);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return CUP_OK;
+}
+
 // FILES AND DIRECTORIES
 CupError system_make_directory(const char *path) {
     wchar_t wide_path[MAX_PATH_LEN];

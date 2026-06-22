@@ -2,6 +2,7 @@
 
 #include "command_context.h"
 #include "entry.h"
+#include "entrypoints.h"
 #include "info.h"
 #include "layout.h"
 #include "manifest.h"
@@ -159,19 +160,104 @@ done:
     return err;
 }
 
-// DEFAULT COMMAND
-CupError command_default(const char *component, const char *entry, const char *target_override) {
+// DEFAULT AND CURRENT COMMANDS
+static CupError list_defaults(const char *target_override) {
+    CommandContext context = {0};
+    CupError err;
+    size_t i;
+    int printed = 0;
+    int invalid = 0;
+
+    err = command_context_begin(&context, target_override, SYSTEM_LOCK_SHARED);
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    err = command_context_load_state(&context);
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    command_context_try_manifest(&context);
+
+    for (i = 0; i < context.state.default_count; ++i) {
+        const StateEntry *state_entry = &context.state.defaults[i];
+        PackageIdentity package;
+        int is_stable = 0;
+
+        if (strcmp(state_entry->host_platform, context.host_platform) != 0 ||
+            (target_override != NULL &&
+                strcmp(state_entry->target_platform,
+                    context.target_platform) != 0)) {
+            continue;
+        }
+
+        if (!printed) {
+            printf("Defaults for host '%s'%s:\n", context.host_platform,
+                target_override != NULL ? " and selected target" : "");
+            printed = 1;
+        }
+
+        printf("- %s [%s]: %s", state_entry->component,
+            state_entry->target_platform, state_entry->entry);
+
+        err = package_identity_from_entry(&package, state_entry->component,
+            state_entry->host_platform, state_entry->target_platform,
+            state_entry->entry);
+        if (err != CUP_OK ||
+            command_require_valid_installed(&context, &package) != CUP_OK) {
+            printf(" (invalid)\n");
+            invalid = 1;
+            continue;
+        }
+
+        if (context.has_manifest) {
+            manifest_is_stable(&context.manifest, package.component,
+                package.tool, package.host_platform, package.target_platform,
+                package.version, &is_stable);
+        }
+        printf("%s\n", is_stable ? " (stable)" : "");
+    }
+
+    if (!printed) {
+        if (target_override != NULL) {
+            printf("No defaults set for host '%s', target '%s'.\n",
+                context.host_platform, context.target_platform);
+        } else {
+            printf("No defaults set for host '%s'.\n",
+                context.host_platform);
+        }
+    }
+
+    err = invalid ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
+
+done:
+    command_context_end(&context);
+    return err;
+}
+
+CupError command_default(const char *component, const char *entry,
+    const char *target_override) {
     CommandContext context = {0};
     EntryRequest request;
     PackageIdentity package;
+    CupState candidate;
     CupError err;
+
+    if (component == NULL && entry == NULL) {
+        return list_defaults(target_override);
+    }
+    if (component == NULL || entry == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     err = entry_request_parse(component, entry, &request);
     if (err != CUP_OK) {
         goto done;
     }
 
-    err = command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+    err = command_context_begin(&context, target_override,
+        SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
         goto done;
     }
@@ -193,14 +279,16 @@ CupError command_default(const char *component, const char *entry, const char *t
         }
     }
 
-    err = entry_request_resolve(context.has_manifest ? &context.manifest : NULL,
+    err = entry_request_resolve(context.has_manifest
+            ? &context.manifest : NULL,
         component, context.host_platform, context.target_platform, &request);
     if (err != CUP_OK) {
         goto done;
     }
 
     err = package_identity_init(&package, component, request.tool,
-        context.host_platform, context.target_platform, request.resolved_release);
+        context.host_platform, context.target_platform,
+        request.resolved_release);
     if (err != CUP_OK) {
         goto done;
     }
@@ -210,14 +298,30 @@ CupError command_default(const char *component, const char *entry, const char *t
         goto done;
     }
 
-    err = state_set_default(&context.state, component,
-        context.host_platform, context.target_platform, request.resolved_entry);
+    candidate = context.state;
+    err = state_set_default(&candidate, component,
+        context.host_platform, context.target_platform,
+        request.resolved_entry);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = entrypoints_validate(&candidate);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    context.state = candidate;
+
+    err = state_save(&context.state);
     if (err != CUP_OK) {
         goto done;
     }
 
-    err = state_save(&context.state);
+    err = entrypoints_sync(&context.state);
     if (err != CUP_OK) {
+        fprintf(stderr,
+            "Error: the default was saved, but its entry points could not "
+            "be rebuilt. Run 'cup repair'.\n");
+        err = CUP_ERR_COMMIT;
         goto done;
     }
 
@@ -231,20 +335,105 @@ done:
     return err;
 }
 
-// CURRENT COMMAND
-CupError command_current(const char *component, const char *target_override) {
+CupError command_replace_default(const char *component,
+    const char *expected_entry, const char *replacement_entry,
+    const char *target_override, int *replaced) {
+    CommandContext context = {0};
+    PackageIdentity package;
+    CupState candidate;
+    const char *current;
+    CupError err;
+
+    if (component == NULL || expected_entry == NULL ||
+        replacement_entry == NULL || replaced == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *replaced = 0;
+
+    err = command_context_begin(&context, target_override,
+        SYSTEM_LOCK_EXCLUSIVE);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = command_require_no_transaction();
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = command_context_load_state(&context);
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    current = state_get_default(&context.state, component,
+        context.host_platform, context.target_platform);
+    if (current == NULL || strcmp(current, expected_entry) != 0) {
+        printf("Default for component '%s', target '%s' changed during "
+            "the update; leaving it unchanged.\n",
+            component, context.target_platform);
+        err = CUP_OK;
+        goto done;
+    }
+
+    err = package_identity_from_entry(&package, component,
+        context.host_platform, context.target_platform, replacement_entry);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = command_require_valid_installed(&context, &package);
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    candidate = context.state;
+    err = state_set_default(&candidate, component,
+        context.host_platform, context.target_platform, replacement_entry);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = entrypoints_validate(&candidate);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    context.state = candidate;
+
+    err = state_save(&context.state);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    err = entrypoints_sync(&context.state);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+            "Error: the updated default was saved, but its entry points "
+            "could not be rebuilt. Run 'cup repair'.\n");
+        err = CUP_ERR_COMMIT;
+    } else {
+        *replaced = 1;
+    }
+
+done:
+    command_context_end(&context);
+    return err;
+}
+
+CupError command_current(const char *component,
+    const char *target_override) {
     CommandContext context = {0};
     PackageIdentity package;
     CupError err;
     const char *default_entry;
     int is_stable = 0;
 
+    if (component == NULL) {
+        return list_defaults(target_override);
+    }
+
     err = registry_validate_component(component);
     if (err != CUP_OK) {
         goto done;
     }
 
-    err = command_context_begin(&context, target_override, SYSTEM_LOCK_SHARED);
+    err = command_context_begin(&context, target_override,
+        SYSTEM_LOCK_SHARED);
     if (err != CUP_OK) {
         goto done;
     }
@@ -259,8 +448,9 @@ CupError command_current(const char *component, const char *target_override) {
     default_entry = state_get_default(&context.state, component,
         context.host_platform, context.target_platform);
     if (default_entry == NULL) {
-        printf("No default set for component '%s' on host '%s', target '%s'.\n",
-            component, context.host_platform, context.target_platform);
+        printf("No default set for component '%s' on host '%s', "
+            "target '%s'.\n", component, context.host_platform,
+            context.target_platform);
         err = CUP_OK;
         goto done;
     }
@@ -279,7 +469,8 @@ CupError command_current(const char *component, const char *target_override) {
 
     if (context.has_manifest) {
         manifest_is_stable(&context.manifest, component, package.tool,
-            package.host_platform, package.target_platform, package.version, &is_stable);
+            package.host_platform, package.target_platform,
+            package.version, &is_stable);
     }
 
     printf("Current %s default for host '%s', target '%s': %s%s\n",

@@ -28,13 +28,17 @@ The installation model is deliberately user-space only. `cup` does not require `
 The executable supports:
 
 ```text
-cup help
+cup --version
+cup help [command]
 cup list [--target <target-platform>]
 cup install <component> <tool>@<release> [--target <target-platform>] [--format|-f <archive-format>]
+cup update <tool|component>
 cup remove <component> <tool>@<release> [--target <target-platform>]
+cup default [--target <target-platform>]
 cup default <component> <tool>@<release> [--target <target-platform>]
-cup current <component> [--target <target-platform>]
+cup current [<component>] [--target <target-platform>]
 cup info <component> <tool>@<release> [--target <target-platform>]
+cup self-update
 cup doctor
 cup repair
 cup uninstall
@@ -419,8 +423,10 @@ retry once only when a cached archive extracts to an unsafe or inconsistent pack
 protect info.txt as read-only
 move staging into the final install path
 add installed entry to state
+create the first default for the scope when none exists
 save state (commit point)
 remove transaction.txt
+rebuild managed entry points when a default was created
 ```
 
 If a normal failure occurs before the commit, `cup` rolls the operation back immediately and clears the journal only after every rollback step succeeds. If the process is terminated or a commit result is uncertain, the journal remains. `doctor` reports it and the transaction module uses `state.txt` as the commit point to complete or roll back the interrupted operation deterministically.
@@ -444,20 +450,23 @@ If state saving fails before the state commit, `cup` attempts to move the packag
 
 ## 11. Default and current
 
-`cup default` sets the default installed package for a component, host and target tuple.
+`cup default` sets the default installed package for a component, host and target tuple. The first installation in a scope creates its default automatically; later installations do not replace an existing choice.
 
 ```sh
 cup default compiler gcc@stable
+cup default
+cup default --target windows-x64
 ```
 
-`cup current` prints the current default for a component on the current host and selected target.
+`cup current` prints one selected component default or, without a component, all defaults for the current host.
 
 ```sh
 cup current compiler
 cup current compiler --target windows-x64
+cup current
 ```
 
-A default must point to an installed package whose canonical directory and metadata pass complete validation. `cup current` reports an inconsistent state if the selected package is missing or invalid on disk.
+A default must point to an installed package whose canonical directory and metadata pass complete validation. Managed wrappers are derived from all defaults for the current host and rebuilt under `~/.cup/bin`. Native entries keep their declared names; cross-target entries are prefixed with `<target>-`. `doctor` diagnoses missing, altered and stale wrappers, while `repair` rebuilds them from `state.txt`.
 
 ## 12. List and info
 
@@ -473,6 +482,13 @@ cup list --target windows-x64
 ```sh
 cup info compiler clang@stable
 ```
+
+
+## 12.1 Update and self-update
+
+`cup update <tool>` plans one update for every installed host/target scope of that tool. `cup update <component>` does the same for every installed tool in the component. Each plan resolves the active manifest `stable` version, installs it when absent, retains previous versions and moves a default only when the previous default belonged to that same tool. Default replacement uses compare-and-swap semantics so a concurrent user choice is not overwritten.
+
+`cup self-update` downloads the published platform checksum file, validates its exact platform asset set, and compares the canonical executable and uninstall script with the verified release assets. When either differs, it downloads and verifies both assets, then starts a deferred platform helper that waits for the current process to exit and replaces the executable, uninstall script and matching platform checksum file together.
 
 ## 13. Doctor and repair
 
@@ -514,11 +530,14 @@ main.c / options.c
 command_context.c
   shared platform, state, manifest and lock context
 
-commands_install.c / commands_remove.c
-  install and remove command orchestration
+commands_install.c / commands_remove.c / commands_update.c
+  install, remove and stable update orchestration
 
-commands_state.c
-  list, default, current and info commands
+commands_state.c / entrypoints.c
+  list, default, current, info and managed command wrappers
+
+self_update.c
+  checksum-verified replacement of canonical platform bootstrap assets
 
 doctor.c / repair.c / uninstall.c
   diagnostics, deterministic recovery and self-removal

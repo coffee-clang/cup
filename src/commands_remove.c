@@ -2,6 +2,7 @@
 
 #include "command_context.h"
 #include "entry.h"
+#include "entrypoints.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "package.h"
@@ -10,6 +11,7 @@
 #include "transaction.h"
 
 #include <stdio.h>
+#include <string.h>
 
 typedef struct {
     CommandContext context;
@@ -19,6 +21,7 @@ typedef struct {
     char staging_path[MAX_PATH_LEN];
     int package_moved;
     int journal_started;
+    int removed_default;
 } RemoveOperation;
 
 static CupError prepare_remove(RemoveOperation *operation,
@@ -128,6 +131,13 @@ static CupError stage_removal(RemoveOperation *operation) {
 
 static CupError commit_removal(RemoveOperation *operation) {
     CupError err;
+    const char *default_entry;
+
+    default_entry = state_get_default(&operation->context.state,
+        operation->package.component, operation->package.host_platform,
+        operation->package.target_platform);
+    operation->removed_default = default_entry != NULL &&
+        strcmp(default_entry, operation->request.resolved_entry) == 0;
 
     err = state_clear_matching_default(&operation->context.state,
         operation->package.component, operation->package.host_platform,
@@ -160,14 +170,22 @@ static CupError commit_removal(RemoveOperation *operation) {
         fprintf(stderr,
             "Warning: package was removed from state, but temporary cleanup "
             "failed. Run 'cup repair'.\n");
-        return CUP_OK;
     }
 
-    err = transaction_clear();
-    if (err != CUP_OK) {
+    if (transaction_clear() != CUP_OK) {
         fprintf(stderr,
             "Warning: package removal committed, but transaction cleanup "
             "failed. Run 'cup repair'.\n");
+    } else {
+        operation->journal_started = 0;
+    }
+
+    if (operation->removed_default &&
+        entrypoints_sync(&operation->context.state) != CUP_OK) {
+        fprintf(stderr,
+            "Error: removal was saved, but managed entry points could not "
+            "be rebuilt. Run 'cup repair'.\n");
+        return CUP_ERR_COMMIT;
     }
 
     return CUP_OK;

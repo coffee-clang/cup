@@ -4,6 +4,7 @@
 #include "checksum.h"
 
 #include "entry.h"
+#include "entrypoints.h"
 #include "fetch.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -17,8 +18,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-#define BOOTSTRAP_URL "https://github.com/coffee-clang/cup/releases/download/cup-bootstrap"
 
 typedef enum {
     REPAIR_ASSET_EXECUTABLE = 1u << 0,
@@ -49,7 +48,7 @@ static CupError download_asset(const char *asset_name,
     char url[MAX_MANIFEST_URL_LEN];
 
     if (create_repair_temp(path, path_size) != CUP_OK ||
-        text_format(url, sizeof(url), "%s/%s", BOOTSTRAP_URL, asset_name) != CUP_OK) {
+        text_format(url, sizeof(url), "%s/%s", CUP_BOOTSTRAP_URL, asset_name) != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -868,6 +867,12 @@ CupError command_repair(void) {
     }
     if (err == CUP_OK) {
         err = repair_save_state(&context);
+    }
+    if (err == CUP_OK) {
+        err = entrypoints_sync(&context.state);
+        if (err == CUP_OK) {
+            printf("Rebuilt managed entry points.\n");
+        }
     }
     if (err == CUP_OK) {
         err = repair_cleanup_tmp(&context);

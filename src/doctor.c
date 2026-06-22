@@ -2,6 +2,7 @@
 
 #include "bootstrap.h"
 #include "entry.h"
+#include "entrypoints.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "manifest.h"
@@ -393,7 +394,20 @@ CupError command_doctor(void) {
     }
 
     if (state_loaded) {
+        size_t entrypoint_issues = 0;
+
         check_state_packages(&state, &manifest, has_manifest, &report);
+        if (state_validate(&state) == CUP_OK) {
+            err = entrypoints_check(&state, &entrypoint_issues);
+            if (err != CUP_OK) {
+                report_incomplete(&report, "managed entry points");
+            } else {
+                report.issue_count += (int)entrypoint_issues;
+                if (entrypoint_issues == 0) {
+                    printf("OK: managed entry points are consistent.\n");
+                }
+            }
+        }
     }
 
     err = package_scan(&packages);

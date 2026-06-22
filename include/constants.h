@@ -9,6 +9,7 @@
 // GENERIC BUFFER SIZES
 #define MAX_NAME_LEN 32
 #define MAX_ENTRY_LEN 64
+#define MAX_ENTRYPOINT_NAME_LEN 128
 #define MAX_PLATFORM_LEN 64
 #define MAX_PATH_LEN 1024
 
@@ -37,6 +38,8 @@
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
 #define CUP_UNINSTALL_MARKER_FILENAME "uninstall.pending"
+#define CUP_BOOTSTRAP_URL \
+    "https://github.com/coffee-clang/cup/releases/download/cup-bootstrap"
 
 #if defined(_WIN32)
 #define CUP_UNINSTALL_FILENAME "uninstall.ps1"

@@ -101,12 +101,16 @@ The Windows installer creates the same bootstrap structure under `%USERPROFILE%\
 ## Basic commands
 
 ```sh
-cup help
+cup --version
+cup help install
 cup list
 cup install compiler gcc@stable
+cup update gcc
+cup update compiler
 cup default compiler gcc@stable
-cup current compiler
+cup current
 cup info compiler gcc@stable
+cup self-update
 cup remove compiler gcc@stable
 cup doctor
 cup repair
@@ -127,3 +131,4 @@ cup current compiler --target windows-x64
 
 - [Specification](specification.md) describes the implemented command model, manifest format, state file, filesystem layout, package metadata, transaction flow and design boundaries.
 - [Dependencies](dependencies.md) describes installer dependencies, local build dependencies, linked libraries, bootstrap scripts and release artifacts.
+- [Known issues and planned hardening](known-issues.md) records intentionally deferred validation and robustness work.

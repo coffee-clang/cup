@@ -40,6 +40,9 @@ MODE_STAMP := $(CONFIG_DIR)/.build-mode-$(BUILD_MODE)
 
 COMMON_SRC := \
     src/main.c \
+    src/entrypoints.c \
+    src/commands_update.c \
+    src/self_update.c \
     src/entry.c \
     src/options.c \
     src/command_context.c \
@@ -70,8 +73,10 @@ COMMON_SRC := \
 
 
 ifeq ($(BUILD_MODE),release)
+    CPPFLAGS += -DCUP_BUILD_RELEASE
     CFLAGS += -O2 -DNDEBUG
 else
+    CPPFLAGS += -DCUP_BUILD_DEVELOPMENT
     CFLAGS += -O0 -g3
 endif
 

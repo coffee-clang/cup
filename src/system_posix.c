@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,6 +189,62 @@ CupError system_start_uninstall(const char *cup_root,
         execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script,
             parent_pid_text, (char *)NULL);
         _exit(127);
+    }
+
+    return CUP_OK;
+}
+
+
+CupError system_start_self_update(const char *staged_binary,
+    const char *installed_binary, const char *staged_uninstall,
+    const char *installed_uninstall, const char *staged_checksums,
+    const char *installed_checksums, unsigned long parent_pid) {
+    pid_t pid;
+
+    if (text_is_empty(staged_binary) || text_is_empty(installed_binary) ||
+        text_is_empty(staged_uninstall) || text_is_empty(installed_uninstall) ||
+        text_is_empty(staged_checksums) || text_is_empty(installed_checksums) ||
+        parent_pid == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (pid == 0) {
+        char binary_parent[MAX_PATH_LEN];
+        char uninstall_parent[MAX_PATH_LEN];
+        char checksums_parent[MAX_PATH_LEN];
+
+        while (kill((pid_t)parent_pid, 0) == 0 || errno == EPERM) {
+            sleep(1);
+        }
+
+        if (rename(staged_binary, installed_binary) != 0 ||
+            chmod(installed_binary, 0755) != 0 ||
+            rename(staged_uninstall, installed_uninstall) != 0 ||
+            chmod(installed_uninstall, 0555) != 0 ||
+            rename(staged_checksums, installed_checksums) != 0 ||
+            chmod(installed_checksums, 0444) != 0 ||
+            get_parent_path(installed_binary, binary_parent,
+                sizeof(binary_parent)) != CUP_OK ||
+            get_parent_path(installed_uninstall, uninstall_parent,
+                sizeof(uninstall_parent)) != CUP_OK ||
+            get_parent_path(installed_checksums, checksums_parent,
+                sizeof(checksums_parent)) != CUP_OK ||
+            sync_directory(binary_parent) != CUP_OK ||
+            (strcmp(binary_parent, uninstall_parent) != 0 &&
+                sync_directory(uninstall_parent) != CUP_OK) ||
+            (strcmp(binary_parent, checksums_parent) != 0 &&
+                strcmp(uninstall_parent, checksums_parent) != 0 &&
+                sync_directory(checksums_parent) != CUP_OK)) {
+            fprintf(stderr,
+                "Error: deferred cup self-update could not commit all "
+                "verified assets. Run 'cup repair'.\n");
+            _exit(1);
+        }
+        _exit(0);
     }
 
     return CUP_OK;

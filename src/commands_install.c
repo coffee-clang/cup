@@ -2,6 +2,7 @@
 
 #include "command_context.h"
 #include "extract.h"
+#include "entrypoints.h"
 #include "fetch.h"
 #include "filesystem.h"
 #include "interrupt.h"
@@ -27,6 +28,7 @@ typedef struct {
     int staging_created;
     int package_moved;
     int journal_started;
+    int made_default;
 } InstallOperation;
 
 static CupError resolve_archive_format(const Manifest *manifest,
@@ -287,6 +289,7 @@ static CupError extract_install_package(InstallOperation *operation) {
 static CupError commit_install(InstallOperation *operation) {
     CupError err;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    int had_default;
 
     printf("==> Committing installation...\n");
 
@@ -304,12 +307,48 @@ static CupError commit_install(InstallOperation *operation) {
     }
     operation->package_moved = 1;
 
+    had_default = state_find_default(&operation->context.state,
+        operation->package.component, operation->package.host_platform,
+        operation->package.target_platform) != -1;
+
     err = state_add_installed(&operation->context.state,
         operation->package.component, operation->package.host_platform,
         operation->package.target_platform,
         operation->request.resolved_entry);
     if (err != CUP_OK) {
         return err;
+    }
+
+    if (!had_default) {
+        err = state_set_default(&operation->context.state,
+            operation->package.component, operation->package.host_platform,
+            operation->package.target_platform,
+            operation->request.resolved_entry);
+        if (err != CUP_OK) {
+            state_remove_installed(&operation->context.state,
+                operation->package.component,
+                operation->package.host_platform,
+                operation->package.target_platform,
+                operation->request.resolved_entry);
+            return err;
+        }
+        operation->made_default = 1;
+
+        err = entrypoints_validate(&operation->context.state);
+        if (err != CUP_OK) {
+            state_clear_matching_default(&operation->context.state,
+                operation->package.component,
+                operation->package.host_platform,
+                operation->package.target_platform,
+                operation->request.resolved_entry);
+            state_remove_installed(&operation->context.state,
+                operation->package.component,
+                operation->package.host_platform,
+                operation->package.target_platform,
+                operation->request.resolved_entry);
+            operation->made_default = 0;
+            return err;
+        }
     }
 
     err = state_save(&operation->context.state);
@@ -321,6 +360,14 @@ static CupError commit_install(InstallOperation *operation) {
             return err;
         }
 
+        if (operation->made_default) {
+            state_clear_matching_default(&operation->context.state,
+                operation->package.component,
+                operation->package.host_platform,
+                operation->package.target_platform,
+                operation->request.resolved_entry);
+            operation->made_default = 0;
+        }
         if (state_remove_installed(&operation->context.state,
             operation->package.component, operation->package.host_platform,
             operation->package.target_platform,
@@ -335,6 +382,18 @@ static CupError commit_install(InstallOperation *operation) {
         fprintf(stderr,
             "Warning: installation committed, but transaction cleanup failed. "
             "Run 'cup repair'.\n");
+    } else {
+        operation->journal_started = 0;
+    }
+
+    if (operation->made_default) {
+        err = entrypoints_sync(&operation->context.state);
+        if (err != CUP_OK) {
+            fprintf(stderr,
+                "Error: installation and its automatic default were saved, "
+                "but entry points could not be rebuilt. Run 'cup repair'.\n");
+            return CUP_ERR_COMMIT;
+        }
     }
 
     return CUP_OK;
@@ -373,8 +432,9 @@ static CupError rollback_install(InstallOperation *operation) {
 static void print_install_result(const InstallOperation *operation) {
     printf("Installed %s ", operation->package.component);
     entry_request_print(stdout, &operation->request);
-    printf(" for host '%s', target '%s'.\n",
-        operation->package.host_platform, operation->package.target_platform);
+    printf(" for host '%s', target '%s'%s.\n",
+        operation->package.host_platform, operation->package.target_platform,
+        operation->made_default ? " and set it as the first default" : "");
 }
 
 CupError command_install(const char *component, const char *entry,

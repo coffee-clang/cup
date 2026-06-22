@@ -15,6 +15,7 @@ typedef enum {
 
 /* Canonical paths inside ~/.cup. */
 CupError layout_get_root(char *buffer, size_t size);
+CupError layout_get_bin_dir(char *buffer, size_t size);
 CupError layout_get_components_dir(char *buffer, size_t size);
 CupError layout_get_tmp_dir(char *buffer, size_t size);
 CupError layout_get_state_path(char *buffer, size_t size);

@@ -117,10 +117,12 @@ When the shell installer detects a Windows Unix-like environment, it delegates t
 
 ## Basic usage
 
-Show help:
+Show general or command-specific help and the embedded version:
 
 ```sh
 cup help
+cup help install
+cup --version
 ```
 
 List installed tools for the current host and selected target:
@@ -139,23 +141,44 @@ cup install debugger gdb@stable
 cup install linker lld@stable
 ```
 
+The first installation in a `component + host + target` scope becomes its default. Later installations in the same scope do not replace that choice automatically.
+
 Install a compiler targeting Windows from a Linux host when a matching package is available:
 
 ```sh
 cup install compiler gcc@stable --target windows-x64
 ```
 
-Choose and inspect the default tool for a component:
+Choose and inspect defaults:
 
 ```sh
 cup default compiler gcc@stable
 cup current compiler
+cup current
+cup default
 ```
+
+Setting a default rebuilds managed commands in `~/.cup/bin`. Native defaults use their declared entry names, while cross-target defaults use `<target>-<entry>` names to avoid collisions.
 
 Show installed package metadata:
 
 ```sh
 cup info compiler gcc@stable
+```
+
+Update installed tools to the manifest `stable` release without deleting older versions:
+
+```sh
+cup update gcc
+cup update compiler
+```
+
+If the previous default belonged to an updated tool, the matching stable package becomes the new default for that scope.
+
+Update the canonical `cup` executable and its verified platform bootstrap assets:
+
+```sh
+cup self-update
 ```
 
 Remove a package:
