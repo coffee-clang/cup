@@ -27,6 +27,11 @@
 #define MAX_INFO_VALUE_LEN 384
 #define MAX_INFO_KEY_LEN 128
 
+// DOWNLOAD LIMITS
+#define MAX_METADATA_DOWNLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
+#define MAX_BINARY_DOWNLOAD_BYTES (256ULL * 1024ULL * 1024ULL)
+#define MAX_PACKAGE_DOWNLOAD_BYTES (16ULL * 1024ULL * 1024ULL * 1024ULL)
+
 // PACKAGE ARCHIVES
 #define MAX_PACKAGE_ARCHIVE_ENTRIES 1000000u
 #define MAX_PACKAGE_EXTRACTED_BYTES \
@@ -38,8 +43,10 @@
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
 #define CUP_UNINSTALL_MARKER_FILENAME "uninstall.pending"
-#define CUP_RELEASE_URL \
+#define CUP_RELEASE_LATEST_URL \
     "https://github.com/coffee-clang/cup/releases/latest/download"
+#define CUP_RELEASE_VERSIONED_URL_TEMPLATE \
+    "https://github.com/coffee-clang/cup/releases/download/v%s"
 #define CUP_RELEASE_METADATA_FILENAME "release.txt"
 
 #define CUP_SELF_UPDATE_BINARY_NEW "binary.new"

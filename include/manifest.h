@@ -24,6 +24,7 @@ typedef struct {
     char default_format[MAX_NAME_LEN];
     char formats[MAX_MANIFEST_VALUE_LEN];
     char url_template[MAX_MANIFEST_URL_LEN];
+    char checksum_url_template[MAX_MANIFEST_URL_LEN];
     unsigned field_mask;
 } ManifestPackage;
 
@@ -72,5 +73,9 @@ CupError manifest_has_format(const Manifest *manifest, const char *component, co
 CupError manifest_build_url(const Manifest *manifest, char *buffer, size_t size,
     const char *component, const char *tool, const char *host_platform,
     const char *target_platform, const char *version, const char *format);
+CupError manifest_build_checksum_url(const Manifest *manifest, char *buffer,
+    size_t size, const char *component, const char *tool,
+    const char *host_platform, const char *target_platform,
+    const char *version);
 
 #endif /* CUP_MANIFEST_H */

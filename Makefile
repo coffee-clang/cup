@@ -9,9 +9,9 @@ SUPPORTED_LINK_MODE := dynamic static
 BUILD_MODE ?= development
 SUPPORTED_BUILD_MODE := development release
 
-CUP_INITIAL_VERSION ?= 0.1.0
+RELEASE_BUILD ?= 0
 
-NON_BUILD_GOALS := clean reset-dev-home docs-assets docs serve version release-metadata test test-posix test-windows update-ca-bundle
+NON_BUILD_GOALS := clean reset-dev-home docs-assets docs serve version release-metadata validate-release test test-posix test-integration test-unit test-release test-windows update-ca-bundle
 ifeq ($(strip $(MAKECMDGOALS)),)
     NEED_BUILD_CONFIG := 1
 else ifneq ($(strip $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS))),)
@@ -52,7 +52,6 @@ COMMON_SRC := \
     src/commands_update.c \
     src/self_update.c \
     src/entry.c \
-    src/options.c \
     src/command_context.c \
     src/commands_install.c \
     src/commands_remove.c \
@@ -66,6 +65,7 @@ COMMON_SRC := \
     src/manifest.c \
     src/info.c \
     src/checksum.c \
+    src/sha256.c \
     src/bootstrap.c \
     src/package.c \
     src/transaction.c \
@@ -112,10 +112,10 @@ ifeq ($(PLATFORM),windows-x64)
     RESOURCE_OBJ := $(OBJ_DIR)/version-resource.o
 endif
 
-ifeq ($(LINK_MODE),static)
-    CPPFLAGS += -I$(DEPS_PREFIX)/include
-    LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64
+CPPFLAGS += -I$(DEPS_PREFIX)/include
+LDFLAGS += -L$(DEPS_PREFIX)/lib -L$(DEPS_PREFIX)/lib64
 
+ifeq ($(LINK_MODE),static)
     CURL_CONFIG := $(DEPS_PREFIX)/bin/curl-config
     ifeq ($(wildcard $(CURL_CONFIG)),)
         $(error Missing $(CURL_CONFIG). Build the static dependencies first)
@@ -128,7 +128,7 @@ ifeq ($(LINK_MODE),static)
     ifeq ($(strip $(ARCHIVE_LIBS)),)
         $(error pkg-config did not return static libarchive link flags)
     endif
-    LDLIBS += $(CURL_LIBS) $(ARCHIVE_LIBS)
+    LDLIBS += -largtable3 $(CURL_LIBS) $(ARCHIVE_LIBS)
 
     ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64),)
         CPPFLAGS += -DCUP_USE_OPENSSL_INIT
@@ -146,7 +146,7 @@ ifeq ($(LINK_MODE),static)
         LDLIBS += -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -liphlpapi -lsecur32
     endif
 else
-    LDLIBS += -lcurl -larchive
+    LDLIBS += -largtable3 -lcurl -larchive
 endif
 
 SRC := $(COMMON_SRC) $(SYSTEM_SRC)
@@ -155,16 +155,15 @@ OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC)) $(CA_BUNDLE_OBJ) $(RESOURCE_OBJ
 DEP := $(filter %.d,$(OBJ:.o=.d))
 MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 
-.PHONY: all clean reset-dev-home docs-assets docs serve version release-metadata test test-posix test-windows update-ca-bundle FORCE
+.PHONY: all clean reset-dev-home docs-assets docs serve version release-metadata validate-release test test-posix test-integration test-unit test-release test-windows update-ca-bundle FORCE
 
 all: $(TARGET)
 
 FORCE:
 
-$(VERSION_STAMP): FORCE scripts/version.sh
+$(VERSION_STAMP): FORCE VERSION scripts/version.sh
 	@mkdir -p $(GENERATED_DIR)
-	@CUP_INITIAL_VERSION='$(CUP_INITIAL_VERSION)' \
-		CUP_VERSION_OVERRIDE='$(CUP_VERSION_OVERRIDE)' \
+	@CUP_RELEASE_BUILD='$(RELEASE_BUILD)' \
 		./scripts/version.sh generate '$(GENERATED_DIR)'
 	@touch $@
 
@@ -209,6 +208,9 @@ endif
 version: $(VERSION_STAMP)
 	@cat $(VERSION_METADATA)
 
+validate-release:
+	@CUP_RELEASE_BUILD=1 ./scripts/version.sh validate-release
+
 release-metadata: $(VERSION_STAMP)
 	@printf '%s\n' '$(VERSION_METADATA)'
 
@@ -228,10 +230,19 @@ reset-dev-home:
 	@rm -rf -- "$(HOME)/.cup"
 	@clear 2>/dev/null || true
 
-test: test-posix
+test: test-unit test-posix
 
-test-posix:
-	@./scripts/tests/run.sh
+test-unit:
+	@./scripts/tests/unit.sh
+
+test-posix: test-integration
+
+test-integration:
+	@./scripts/tests/integration.sh
+
+test-release:
+	@test -n "$(RELEASE_DIR)" || { echo "Set RELEASE_DIR=<candidate-dir>" >&2; exit 2; }
+	@./scripts/tests/release.sh "$(RELEASE_DIR)"
 
 test-windows:
 	@test -f build/windows-x64/dynamic/bin/cup.exe || { \
@@ -239,7 +250,7 @@ test-windows:
 		exit 1; \
 	}
 	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
-		"$$(cygpath -w '$(PROJECT_ROOT)/scripts/tests/windows/run.ps1')" \
+		"$$(cygpath -w '$(PROJECT_ROOT)/scripts/tests/integration/windows/run.ps1')" \
 		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/dynamic/bin/cup.exe')"
 
 update-ca-bundle:

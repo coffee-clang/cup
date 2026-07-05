@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$SCRIPT_DIR/common.sh"
+TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TEST_SCRIPT_DIR/../support/common.sh"
 
 build_with_compiler() {
     compiler=$1
@@ -10,7 +10,7 @@ build_with_compiler() {
     make -C "$PROJECT_ROOT" PLATFORM="$TEST_PLATFORM" LINK_MODE=dynamic \
         BUILD_MODE=development CC="$compiler" -j2 >/dev/null
     output=$("$TEST_BINARY" --version)
-    assert_contains "$output" 'cup 0.1.0-dev'
+    assert_contains "$output" 'cup 0.2.0-dev'
 }
 
 case "$TEST_PLATFORM" in

@@ -17,8 +17,10 @@
 #define FIELD_DEFAULT_FORMAT     (1u << 2)
 #define FIELD_FORMATS            (1u << 3)
 #define FIELD_URL_TEMPLATE       (1u << 4)
+#define FIELD_CHECKSUM_URL        (1u << 5)
 #define REQUIRED_FIELDS (FIELD_STABLE_VERSION | FIELD_AVAILABLE_VERSIONS | \
-    FIELD_DEFAULT_FORMAT | FIELD_FORMATS | FIELD_URL_TEMPLATE)
+    FIELD_DEFAULT_FORMAT | FIELD_FORMATS | FIELD_URL_TEMPLATE | \
+    FIELD_CHECKSUM_URL)
 #define DEVELOPMENT_MANIFEST_PATH "config/packages.cfg"
 
 // MANIFEST LIFECYCLE
@@ -131,7 +133,9 @@ static const ManifestField PACKAGE_FIELDS[] = {
     MANIFEST_FIELD("available_versions", FIELD_AVAILABLE_VERSIONS, available_versions),
     MANIFEST_FIELD("default_format", FIELD_DEFAULT_FORMAT, default_format),
     MANIFEST_FIELD("formats", FIELD_FORMATS, formats),
-    MANIFEST_FIELD("url_template", FIELD_URL_TEMPLATE, url_template)
+    MANIFEST_FIELD("url_template", FIELD_URL_TEMPLATE, url_template),
+    MANIFEST_FIELD("checksum_url_template", FIELD_CHECKSUM_URL,
+        checksum_url_template)
 };
 
 static const ManifestField *find_manifest_field(const char *name) {
@@ -295,9 +299,17 @@ static CupError validate_url_template(const char *url) {
 static CupError validate_manifest_package(const ManifestPackage *package) {
     int contains;
 
-    if (package->field_mask != REQUIRED_FIELDS ||
-        !path_is_safe_identifier(package->stable_version) ||
+    if (package->field_mask != REQUIRED_FIELDS) {
+        fprintf(stderr, "Error: manifest package '%s.%s.%s.%s' is missing "
+            "one or more required fields.\n", package->component, package->tool,
+            package->host_platform, package->target_platform);
+        return CUP_ERR_MANIFEST;
+    }
+    if (!path_is_safe_identifier(package->stable_version) ||
         !path_is_safe_identifier(package->default_format)) {
+        fprintf(stderr, "Error: manifest package '%s.%s.%s.%s' contains an "
+            "invalid version or format identifier.\n", package->component,
+            package->tool, package->host_platform, package->target_platform);
         return CUP_ERR_MANIFEST;
     }
 
@@ -318,7 +330,10 @@ static CupError validate_manifest_package(const ManifestPackage *package) {
         return CUP_ERR_MANIFEST;
     }
 
-    return validate_url_template(package->url_template);
+    if (validate_url_template(package->url_template) != CUP_OK) {
+        return CUP_ERR_MANIFEST;
+    }
+    return validate_url_template(package->checksum_url_template);
 }
 
 // LOADING
@@ -560,22 +575,16 @@ static CupError replace_placeholder(char *buffer, size_t size, const char *input
     return CUP_OK;
 }
 
-CupError manifest_build_url(const Manifest *manifest, char *buffer, size_t size,
-    const char *component, const char *tool, const char *host,
+static CupError expand_package_url(const char *template_value,
+    char *buffer, size_t size, const char *tool, const char *host,
     const char *target, const char *version, const char *format) {
-    const ManifestPackage *package;
     char step1[MAX_MANIFEST_URL_LEN];
     char step2[MAX_MANIFEST_URL_LEN];
     char step3[MAX_MANIFEST_URL_LEN];
     char step4[MAX_MANIFEST_URL_LEN];
 
-    package = require_package(manifest, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_MANIFEST;
-    }
-
-    if (replace_placeholder(step1, sizeof(step1), package->url_template,
-        "{tool}", tool) != CUP_OK ||
+    if (replace_placeholder(step1, sizeof(step1), template_value,
+            "{tool}", tool) != CUP_OK ||
         replace_placeholder(step2, sizeof(step2), step1,
             "{host_platform}", host) != CUP_OK ||
         replace_placeholder(step3, sizeof(step3), step2,
@@ -583,7 +592,7 @@ CupError manifest_build_url(const Manifest *manifest, char *buffer, size_t size,
         replace_placeholder(step4, sizeof(step4), step3,
             "{version}", version) != CUP_OK ||
         replace_placeholder(buffer, size, step4,
-            "{format}", format) != CUP_OK) {
+            "{format}", format == NULL ? "" : format) != CUP_OK) {
         return CUP_ERR_MANIFEST;
     }
 
@@ -591,6 +600,31 @@ CupError manifest_build_url(const Manifest *manifest, char *buffer, size_t size,
         strncmp(buffer, "https://", 8) != 0) {
         return CUP_ERR_MANIFEST;
     }
-
     return CUP_OK;
+}
+
+CupError manifest_build_url(const Manifest *manifest, char *buffer, size_t size,
+    const char *component, const char *tool, const char *host,
+    const char *target, const char *version, const char *format) {
+    const ManifestPackage *package = require_package(manifest, component, tool,
+        host, target);
+
+    if (package == NULL || text_is_empty(format)) {
+        return CUP_ERR_MANIFEST;
+    }
+    return expand_package_url(package->url_template, buffer, size, tool, host,
+        target, version, format);
+}
+
+CupError manifest_build_checksum_url(const Manifest *manifest, char *buffer,
+    size_t size, const char *component, const char *tool, const char *host,
+    const char *target, const char *version) {
+    const ManifestPackage *package = require_package(manifest, component, tool,
+        host, target);
+
+    if (package == NULL) {
+        return CUP_ERR_MANIFEST;
+    }
+    return expand_package_url(package->checksum_url_template, buffer, size,
+        tool, host, target, version, "");
 }

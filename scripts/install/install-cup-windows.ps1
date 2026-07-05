@@ -2,7 +2,15 @@ $ErrorActionPreference = "Stop"
 
 $RepoOwner = "coffee-clang"
 $RepoName = "cup"
-$BaseUrl = "https://github.com/$RepoOwner/$RepoName/releases/latest/download"
+$ReleaseVersion = "@CUP_RELEASE_VERSION@"
+$ReleaseTag = "@CUP_RELEASE_TAG@"
+$ReleaseCommit = "@CUP_RELEASE_COMMIT@"
+$DefaultBaseUrl = "https://github.com/$RepoOwner/$RepoName/releases/download/$ReleaseTag"
+$BaseUrl = if ([string]::IsNullOrWhiteSpace($env:CUP_INSTALL_BASE_URL)) {
+    $DefaultBaseUrl
+} else {
+    $env:CUP_INSTALL_BASE_URL.TrimEnd('/')
+}
 
 $CupRoot = Join-Path $env:USERPROFILE ".cup"
 $CupBinDir = Join-Path $CupRoot "bin"
@@ -21,6 +29,24 @@ $CupAvailableInPath = $false
 
 function Fail([string]$Message) { throw "Error: $Message" }
 function Write-Info([string]$Message) { Write-Host $Message }
+
+function Assert-InstallerIdentity {
+    $PlaceholderMarker = '@' + 'CUP_RELEASE_'
+    if ($ReleaseVersion.Contains($PlaceholderMarker) -or
+        $ReleaseTag.Contains($PlaceholderMarker) -or
+        $ReleaseCommit.Contains($PlaceholderMarker)) {
+        Fail "installer was not prepared for a concrete release"
+    }
+    if ($ReleaseVersion -notmatch '^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$') {
+        Fail "installer has an invalid release version"
+    }
+    if ($ReleaseTag -cne "v$ReleaseVersion") {
+        Fail "installer release tag does not match its version"
+    }
+    if ($ReleaseCommit -notmatch '^[0-9a-f]{40}$') {
+        Fail "installer has an invalid release commit"
+    }
+}
 
 function Test-WindowsX64 {
     if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {
@@ -85,18 +111,34 @@ function Assert-Checksums(
     }
 }
 
-function Assert-ReleaseMetadata([string]$Path) {
+function Assert-ReleaseMetadata(
+    [string]$Path,
+    [string]$ExpectedVersion = "",
+    [string]$ExpectedCommit = ""
+) {
+    $lines = @(Get-Content -LiteralPath $Path)
+    if ($lines.Count -ne 3) {
+        Fail "invalid release metadata: $Path"
+    }
+
     $values = @{}
-    foreach ($line in Get-Content -LiteralPath $Path) {
+    foreach ($line in $lines) {
         if ($line -notmatch '^([^=]+)=(.+)$' -or $values.ContainsKey($Matches[1])) {
             Fail "invalid release metadata: $Path"
         }
         $values[$Matches[1]] = $Matches[2]
     }
-    if ($values.Count -ne 3 -or $values["format"] -cne "1" -or
-        $values["version"] -notmatch '^\d+\.\d+\.\d+$' -or
-        [string]::IsNullOrWhiteSpace($values["commit"])) {
+
+    if ($values.Count -ne 3 -or $values['format'] -cne '1' -or
+        $values['version'] -notmatch '^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$' -or
+        $values['commit'] -notmatch '^[0-9a-f]{7,40}$') {
         Fail "invalid release metadata: $Path"
+    }
+    if ($ExpectedVersion -ne "" -and $values['version'] -cne $ExpectedVersion) {
+        Fail "release metadata version does not match this installer: $Path"
+    }
+    if ($ExpectedCommit -ne "" -and $values['commit'] -cne $ExpectedCommit) {
+        Fail "release metadata commit does not match this installer: $Path"
     }
 }
 
@@ -113,6 +155,10 @@ function Add-CupToUserPath {
     if (Test-CupBinInUserPath) {
         $script:CupAvailableInPath = $true
         Write-Info "cup bin directory is already in the user PATH."
+        return
+    }
+    if ($env:CUP_INSTALL_NO_PATH_PROMPT -eq "1") {
+        Write-Info "PATH not modified. Add this directory manually when needed: $CupBinDir"
         return
     }
     $answer = Read-Host "Add $CupBinDir to your user PATH? [y/N]"
@@ -222,6 +268,7 @@ function Commit-Asset([hashtable]$Asset) {
 }
 
 function Main {
+    Assert-InstallerIdentity
     Test-WindowsX64
     foreach ($directory in @($CupRoot, $CupBinDir, $CupConfigDir, $CupScriptsDir)) {
         Assert-DirectoryIsNotReparsePoint $directory
@@ -251,7 +298,7 @@ function Main {
         Assert-Checksums -Directory $Staging `
             -ChecksumFile (Join-Path $Staging "SHA256SUMS.common") `
             -ExpectedNames @("packages.cfg")
-        Assert-ReleaseMetadata (Join-Path $Staging "release.txt")
+        Assert-ReleaseMetadata (Join-Path $Staging "release.txt") $ReleaseVersion $ReleaseCommit
 
         $assets = Get-Assets
         foreach ($asset in $assets) { Backup-Asset $asset }

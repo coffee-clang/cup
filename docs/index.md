@@ -93,7 +93,7 @@ The installer verifies published SHA-256 checksums and installs the bootstrap fi
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\install-cup.ps1"
 ```
 
 The Windows installer creates the same bootstrap structure under `%USERPROFILE%\.cup` and applies the read-only attribute to the manifest, checksum files and uninstall script. Git Bash, MSYS2 and Cygwin installation delegates to this native installer rather than creating a second shell-specific root.
@@ -109,11 +109,11 @@ cup install compiler gcc@stable
 cup update gcc
 cup update compiler
 cup default compiler gcc@stable
-cup current
-cup current compiler
 cup info
 cup info compiler
-cup info compiler gcc@stable
+cup search
+cup search compiler
+cup inspect compiler gcc@stable
 cup self-update
 cup remove compiler gcc@stable
 cup doctor
@@ -121,14 +121,14 @@ cup repair
 cup uninstall
 ```
 
-`cup default` only selects an installed package for one scope. `cup current` lists the valid defaults configured for the current host across target scopes and can be filtered by component or target. `cup info` without a concrete package explores the manifest catalog; with `<component> <tool>@<release>` it prints immutable metadata from the installed package. `doctor` never modifies the installation and explicitly reports incomplete checks. `repair` owns safe structural repair, checksum-verified bootstrap recovery, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
+`cup default` only selects an installed package for one scope. `cup info` is the read-only view of the valid defaults configured for the current host and can be filtered by component or target. `cup search` explores the manifest catalog, while `cup inspect <component> <tool>@<release>` prints immutable metadata from one installed package. `doctor` never modifies the installation and explicitly reports incomplete checks. `repair` owns safe structural repair, checksum-verified bootstrap recovery, state/component reconciliation and recovery of interrupted transactions recorded in `tmp/transaction.txt`.
 
 Use `--target` when a command should operate on a non-default target platform:
 
 ```sh
 cup install compiler gcc@stable --target windows-x64
 cup list --target windows-x64
-cup current compiler --target windows-x64
+cup info compiler --target windows-x64
 ```
 
 ## Documentation sections

@@ -168,7 +168,7 @@ verify() {
 }
 
 main() {
-    signature="$(dependency_signature "$PLATFORM" "$CC|$AR|$RANLIB")"
+    signature="$(dependency_signature "$PLATFORM" "$CC|$AR|$RANLIB" 0)"
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
@@ -188,6 +188,8 @@ main() {
     build_xz
     build_curl
     build_libarchive
+    build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+        "$CC" "$AR" "$RANLIB"
     verify
     finish_dependency_prefix "$PREFIX"
 }

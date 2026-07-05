@@ -14,12 +14,18 @@ try {
     Assert-Contains $output "set it as the first default"
     Invoke-Cup -CommandArgs @("install", "debugger", "gdb@stable") | Out-Null
 
-    $current = Invoke-Cup -CommandArgs @("current")
+    $embeddedVersion = Invoke-Cup -CommandArgs @("--version")
+    if ($embeddedVersion -like "*-dev*") {
+        $selfUpdateFailure = Invoke-Cup -CommandArgs @("self-update") -ExpectFailure
+        Assert-Contains $selfUpdateFailure "available only from an official cup release"
+    }
+
+    $current = Invoke-Cup -CommandArgs @("info")
     Assert-Contains $current "compiler [windows-x64]: clang@21.1.5"
     Assert-Contains $current "debugger [windows-x64]: gdb@17.1 (stable)"
     Assert-Contains $current "status: active"
 
-    $catalog = Invoke-Cup -CommandArgs @("info", "compiler")
+    $catalog = Invoke-Cup -CommandArgs @("search", "compiler")
     Assert-Contains $catalog "Available tools for component 'compiler'"
     Assert-Contains $catalog "clang"
 
@@ -31,23 +37,23 @@ try {
 
     $output = Invoke-Cup -CommandArgs @("update", "clang")
     Assert-Contains $output "1 stable package(s) installed, 1 default(s) moved"
-    Assert-Contains (Invoke-Cup -CommandArgs @("current", "compiler")) "compiler [windows-x64]: clang@22.1.5 (stable)"
+    Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) "compiler [windows-x64]: clang@22.1.5 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
 
-    $packageInfo = Invoke-Cup -CommandArgs @("info", "compiler", "clang@stable")
+    $packageInfo = Invoke-Cup -CommandArgs @("inspect", "compiler", "clang@stable")
     Assert-Contains $packageInfo "Package information for compiler clang@stable -> clang@22.1.5"
     Assert-Contains $packageInfo "component          compiler"
     Assert-Contains $packageInfo "version            22.1.5"
 
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@21.1.5") | Out-Null
-    Assert-Contains (Invoke-Cup -CommandArgs @("current", "compiler")) "compiler [windows-x64]: clang@21.1.5"
+    Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) "compiler [windows-x64]: clang@21.1.5"
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@stable") | Out-Null
 
     $output = Invoke-Cup -CommandArgs @("update", "clang")
     Assert-Contains $output "0 stable package(s) installed, 0 default(s) moved"
 
     $failure = Invoke-Cup -CommandArgs @("default") -ExpectFailure
-    Assert-Contains $failure "requires a component and an installed tool release"
+    Assert-Contains $failure "missing option <component>"
 
     Invoke-Cup -CommandArgs @("remove", "compiler", "clang@21.1.5") | Out-Null
     Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@21.1.5"

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$SCRIPT_DIR/common.sh"
+TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TEST_SCRIPT_DIR/../support/common.sh"
 
 test_begin state
 prepare_command_environment
@@ -32,13 +32,13 @@ assert_contains "$installed" 'compiler:clang@22.1.5'
 assert_contains "$installed" 'debugger:lldb@22.1.5'
 assert_contains "$installed" 'linker:lld@22.1.5'
 
-current=$(run_cup current)
+current=$(run_cup info)
 assert_contains "$current" "compiler [$TEST_PLATFORM]: clang@21.1.5"
 assert_contains "$current" "debugger [$TEST_PLATFORM]: lldb@22.1.5"
 assert_contains "$current" "linker [$TEST_PLATFORM]: lld@22.1.5"
 
 run_cup default compiler clang@stable >/dev/null
-assert_contains "$(run_cup current compiler)" \
+assert_contains "$(run_cup info compiler)" \
     "compiler [$TEST_PLATFORM]: clang@22.1.5 (stable)"
 
 cp "$state_file" "$TMP_ROOT/state.valid"

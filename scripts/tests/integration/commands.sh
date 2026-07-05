@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$SCRIPT_DIR/common.sh"
+TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TEST_SCRIPT_DIR/../support/common.sh"
 
 test_begin commands
 prepare_command_environment
@@ -24,27 +24,36 @@ fi
 
 run_cup_expect_failure "$TMP_ROOT/default-missing.out" default
 assert_contains "$(cat "$TMP_ROOT/default-missing.out")" \
-    'requires a component and an installed tool release'
+    'missing option <component>'
 
 run_cup_expect_failure "$TMP_ROOT/default-uninstalled.out" \
     default compiler clang@stable
 assert_contains "$(cat "$TMP_ROOT/default-uninstalled.out")" 'is not installed'
 
-current=$(run_cup current)
+embedded_version=$(run_cup --version)
+case "$embedded_version" in
+    *-dev*)
+        run_cup_expect_failure "$TMP_ROOT/self-update-development.out" self-update
+        assert_contains "$(cat "$TMP_ROOT/self-update-development.out")" \
+            'available only from an official cup release'
+        ;;
+esac
+
+current=$(run_cup info)
 assert_contains "$current" "compiler [$TEST_PLATFORM]: clang@21.1.5"
 assert_contains "$current" "debugger [$TEST_PLATFORM]: lldb@22.1.5 (stable)"
 assert_contains "$current" 'commands: clang, clang++'
 assert_contains "$current" 'status: active'
 
-component_current=$(run_cup current compiler)
+component_current=$(run_cup info compiler)
 assert_contains "$component_current" "compiler [$TEST_PLATFORM]: clang@21.1.5"
 assert_not_contains "$component_current" "debugger [$TEST_PLATFORM]"
 
-catalog=$(run_cup info)
+catalog=$(run_cup search)
 assert_contains "$catalog" "Available packages for host '$TEST_PLATFORM'"
 assert_contains "$catalog" 'compiler:'
 assert_contains "$catalog" 'clang'
-component_catalog=$(run_cup info compiler)
+component_catalog=$(run_cup search compiler)
 assert_contains "$component_catalog" "Available tools for component 'compiler'"
 assert_contains "$component_catalog" 'clang'
 assert_not_contains "$component_catalog" 'debugger:'
@@ -60,18 +69,18 @@ output=$(run_cup update clang)
 assert_contains "$output" '1 stable package(s) installed, 1 default(s) moved'
 assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/21.1.5/bin/clang"
 assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5/bin/clang"
-assert_contains "$(run_cup current compiler)" \
+assert_contains "$(run_cup info compiler)" \
     "compiler [$TEST_PLATFORM]: clang@22.1.5 (stable)"
 assert_equals "$(run_native_entrypoint clang)" \
     "clang-22.1.5-$TEST_PLATFORM:clang"
 
-package_info=$(run_cup info compiler clang@stable)
+package_info=$(run_cup inspect compiler clang@stable)
 assert_contains "$package_info" 'Package information for compiler clang@stable -> clang@22.1.5'
 assert_contains "$package_info" 'component          compiler'
 assert_contains "$package_info" 'version            22.1.5'
 
 run_cup default compiler clang@21.1.5 >/dev/null
-assert_contains "$(run_cup current compiler)" \
+assert_contains "$(run_cup info compiler)" \
     "compiler [$TEST_PLATFORM]: clang@21.1.5"
 run_cup default compiler clang@stable >/dev/null
 
@@ -79,7 +88,7 @@ output=$(run_cup update clang)
 assert_contains "$output" '0 stable package(s) installed, 0 default(s) moved'
 
 if [ "$TEST_PLATFORM" = linux-x64 ]; then
-    cross=$(run_cup current --target windows-x64)
+    cross=$(run_cup info --target windows-x64)
     assert_contains "$cross" 'compiler [windows-x64]: gcc@16.1.0-rev1 (stable)'
     assert_contains "$cross" 'commands: windows-x64-gcc, windows-x64-g++'
     assert_equals "$(run_native_entrypoint windows-x64-gcc)" \

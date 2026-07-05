@@ -3,7 +3,11 @@ set -eu
 
 REPO_OWNER="coffee-clang"
 REPO_NAME="cup"
-BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
+CUP_RELEASE_VERSION="@CUP_RELEASE_VERSION@"
+CUP_RELEASE_TAG="@CUP_RELEASE_TAG@"
+CUP_RELEASE_COMMIT="@CUP_RELEASE_COMMIT@"
+DEFAULT_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUP_RELEASE_TAG}"
+BASE_URL="${CUP_INSTALL_BASE_URL:-$DEFAULT_BASE_URL}"
 
 CUP_ROOT=""
 CUP_BIN_DIR=""
@@ -19,6 +23,23 @@ WINDOWS_SHELL_INSTALL=0
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
+
+validate_installer_identity() {
+    placeholder_marker='@''CUP_RELEASE_'
+    case "$CUP_RELEASE_VERSION:$CUP_RELEASE_TAG:$CUP_RELEASE_COMMIT" in
+        *"$placeholder_marker"*) fail "installer was not prepared for a concrete release" ;;
+    esac
+    printf '%s\n' "$CUP_RELEASE_VERSION" |
+        awk 'BEGIN { ok=0 }
+            /^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$/ { ok=1 }
+            END { exit ok ? 0 : 1 }' ||
+        fail "installer has an invalid release version"
+    [ "$CUP_RELEASE_TAG" = "v$CUP_RELEASE_VERSION" ] ||
+        fail "installer release tag does not match its version"
+    printf '%s\n' "$CUP_RELEASE_COMMIT" |
+        awk '/^[0-9a-f]{40}$/ { ok=1 } END { exit ok ? 0 : 1 }' ||
+        fail "installer has an invalid release commit"
+}
 need_command() { command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"; }
 has_tty() { ( : </dev/tty && : >/dev/tty ) 2>/dev/null; }
 
@@ -104,20 +125,41 @@ verify_checksum_file() {
 
 validate_release_metadata() {
     metadata="$1"
-    awk -F= '
-        NF != 2 || $1 == "" || $2 == "" { exit 1 }
-        seen[$1]++ > 0 { exit 1 }
-        { count++ }
-        $1 == "format" { format=$2; next }
-        $1 == "version" { version=$2; next }
-        $1 == "commit" { commit=$2; next }
-        { exit 1 }
-        END {
-            if (format != "1" ||
-                version !~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/ ||
-                commit == "" || count != 3) {
-                exit 1
+    expected_version="${2:-}"
+    expected_commit="${3:-}"
+    awk -F= -v expected_version="$expected_version" -v expected_commit="$expected_commit" '
+        function valid_part(value) {
+            return value ~ /^(0|[1-9][0-9]*)$/ &&
+                length(value) <= 6 && (value + 0) <= 999999
+        }
+        function valid_version(value, parts, count) {
+            count=split(value, parts, ".")
+            return count == 3 && valid_part(parts[1]) &&
+                valid_part(parts[2]) && valid_part(parts[3])
+        }
+        function valid_commit(value) {
+            return value ~ /^[0-9a-f]{7,40}$/
+        }
+        {
+            sub(/\r$/, "", $0)
+            if (NF != 2 || $1 == "" || $2 == "") invalid=1
+            if ($1 == "format") {
+                if (seen_format++ || $2 != "1") invalid=1
+            } else if ($1 == "version") {
+                version=$2
+                if (seen_version++ || !valid_version($2)) invalid=1
+            } else if ($1 == "commit") {
+                commit=$2
+                if (seen_commit++ || !valid_commit($2)) invalid=1
+            } else {
+                invalid=1
             }
+        }
+        END {
+            if (expected_version != "" && version != expected_version) invalid=1
+            if (expected_commit != "" && commit != expected_commit) invalid=1
+            if (NR != 3 || seen_format != 1 || seen_version != 1 ||
+                seen_commit != 1 || invalid) exit 1
         }
     ' "$metadata" || fail "invalid release metadata: $metadata"
 }
@@ -150,6 +192,11 @@ offer_path_update() {
         CUP_AVAILABLE_IN_PATH=1
         info "PATH entry already exists in $profile."
         info "Restart the shell or run:"
+        info "  $path_line"
+        return
+    fi
+    if [ "${CUP_INSTALL_NO_PATH_PROMPT:-0}" = 1 ]; then
+        info "PATH not modified. Add this line manually when needed:"
         info "  $path_line"
         return
     fi
@@ -330,7 +377,7 @@ install_assets() {
     download_file "$BASE_URL/SHA256SUMS.common" "$staging/SHA256SUMS.common"
     verify_checksum_file "$staging" "SHA256SUMS.$platform" "$cup_asset" "$uninstall_asset" "release.txt"
     verify_checksum_file "$staging" "SHA256SUMS.common" "packages.cfg"
-    validate_release_metadata "$staging/release.txt"
+    validate_release_metadata "$staging/release.txt" "$CUP_RELEASE_VERSION" "$CUP_RELEASE_COMMIT"
 
     backup_asset binary "$cup_bin" "$staging"
     backup_asset manifest "$PACKAGES_CFG" "$staging"
@@ -435,6 +482,7 @@ install_windows_from_shell() {
 }
 
 main() {
+    validate_installer_identity
     os="$(uname -s 2>/dev/null || true)"
     case "$os" in
         Linux|Darwin) install_unix ;;

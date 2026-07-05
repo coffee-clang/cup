@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$SCRIPT_DIR/common.sh"
+TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TEST_SCRIPT_DIR/../support/common.sh"
 
 test_begin entrypoints
 prepare_command_environment
@@ -19,7 +19,7 @@ assert_equals "$(run_native_entrypoint lldb)" \
     "lldb-22.1.5-$TEST_PLATFORM:lldb"
 
 printf 'altered\n' > "$(native_entrypoint_path clang)"
-run_cup_expect_failure "$TMP_ROOT/current-altered.out" current
+run_cup_expect_failure "$TMP_ROOT/current-altered.out" info
 assert_contains "$(cat "$TMP_ROOT/current-altered.out")" 'status: invalid'
 run_cup_expect_failure "$TMP_ROOT/doctor-altered.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-altered.out")" 'entry point'

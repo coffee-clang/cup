@@ -9,8 +9,10 @@ CupError command_install(const char *component, const char *entry,
     const char *target_override, const char *format_override);
 CupError command_remove(const char *component, const char *entry, const char *target_override);
 CupError command_default(const char *component, const char *entry, const char *target_override);
-CupError command_current(const char *component, const char *target_override);
-CupError command_info(const char *component, const char *entry, const char *target_override);
+CupError command_search(const char *component, const char *target_override);
+CupError command_info(const char *component, const char *target_override);
+CupError command_inspect(const char *component, const char *entry,
+    const char *target_override);
 CupError command_update(const char *selector);
 CupError command_self_update(void);
 CupError command_doctor(void);

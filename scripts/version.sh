@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-INITIAL_VERSION=${CUP_INITIAL_VERSION:-0.1.0}
-IGNORED_RELEASE_COMMIT_SUBJECT=${CUP_IGNORED_RELEASE_COMMIT_SUBJECT:-Update certs}
+VERSION_FILE=${CUP_VERSION_FILE:-VERSION}
 
 fail() {
     echo "version: $*" >&2
@@ -20,8 +19,18 @@ is_semver() {
     [ "$#" -eq 3 ] || return 1
     for part in "$@"; do
         case "$part" in ''|*[!0-9]*) return 1 ;; esac
+        case "$part" in 0) ;; 0*) return 1 ;; esac
+        [ "$part" -le 999999 ] || return 1
     done
-    return 0
+}
+
+base_version() {
+    [ -f "$VERSION_FILE" ] || fail "missing $VERSION_FILE"
+    version=$(sed -n '1p' "$VERSION_FILE" | tr -d '\r')
+    [ "$(wc -l < "$VERSION_FILE" | tr -d '[:space:]')" -eq 1 ] ||
+        fail "$VERSION_FILE must contain exactly one line"
+    is_semver "$version" || fail "invalid semantic version '$version' in $VERSION_FILE"
+    printf '%s\n' "$version"
 }
 
 split_semver() {
@@ -40,120 +49,97 @@ have_git_repository() {
         git rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-latest_release_tag() {
-    if ! have_git_repository; then
-        return 1
-    fi
-
-    git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null || return 1
-}
-
-release_base() {
-    tag=$(latest_release_tag 2>/dev/null || true)
-    if [ -n "$tag" ]; then
-        base=${tag#v}
-        is_semver "$base" || fail "release tag '$tag' is not v<major>.<minor>.<patch>"
-        printf '%s\n' "$base"
-    else
-        is_semver "$INITIAL_VERSION" || fail "invalid CUP_INITIAL_VERSION '$INITIAL_VERSION'"
-        printf '%s\n' "$INITIAL_VERSION"
-    fi
-}
-
 commit_id() {
     if have_git_repository; then
-        git rev-parse --short=12 HEAD 2>/dev/null || printf '%s\n' unknown
+        git rev-parse --short=7 HEAD 2>/dev/null || printf '%s\n' unknown
     else
         printf '%s\n' archive
     fi
 }
 
-commits_since_release() {
-    if ! have_git_repository; then
-        printf '%s\n' 0
-        return
+metadata_commit_id() {
+    if have_git_repository; then
+        git rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
+    else
+        printf '%s\n' archive
     fi
-
-    tag=$(latest_release_tag 2>/dev/null || true)
-    range=HEAD
-    if [ -n "$tag" ]; then
-        range="$tag..HEAD"
-    fi
-
-    git log --first-parent --format='%s' "$range" | awk \
-        -v ignored="$IGNORED_RELEASE_COMMIT_SUBJECT" '
-            $0 != ignored { count++ }
-            END { print count + 0 }
-        '
 }
 
 working_tree_dirty() {
-    if ! have_git_repository; then
-        return 1
-    fi
+    have_git_repository || return 1
     ! git diff --quiet --ignore-submodules -- 2>/dev/null ||
         ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null
 }
 
-current_version() {
-    if [ -n "${CUP_VERSION_OVERRIDE:-}" ]; then
-        is_semver "$CUP_VERSION_OVERRIDE" ||
-            fail "CUP_VERSION_OVERRIDE must be <major>.<minor>.<patch>"
-        printf '%s\n' "$CUP_VERSION_OVERRIDE"
-        return
-    fi
+matching_tag_exists() {
+    base=$1
+    have_git_repository || return 1
+    git rev-parse -q --verify "refs/tags/v$base^{commit}" >/dev/null 2>&1
+}
 
-    base=$(release_base)
-    commit=$(commit_id)
-    distance=$(commits_since_release)
-    exact=0
+at_matching_tag() {
+    base=$1
+    matching_tag_exists "$base" || return 1
+    [ "$(git rev-parse "v$base^{commit}")" = "$(git rev-parse HEAD)" ]
+}
 
-    if have_git_repository; then
-        tag=$(latest_release_tag 2>/dev/null || true)
-        if [ -n "$tag" ] && [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ] &&
-            ! working_tree_dirty; then
-            exact=1
+latest_reachable_version_tag() {
+    have_git_repository || return 1
+    for tag in $(git tag --merged HEAD --sort=-version:refname); do
+        case "$tag" in
+            v*) version=${tag#v} ;;
+            *) continue ;;
+        esac
+        if is_semver "$version"; then
+            printf '%s\n' "$tag"
+            return 0
         fi
-    fi
+    done
+    return 1
+}
 
-    if [ "$exact" -eq 1 ]; then
+commits_from_latest_tag() {
+    if tag=$(latest_reachable_version_tag); then
+        git rev-list --count "$tag..HEAD"
+    else
+        git rev-list --count HEAD
+    fi
+}
+
+is_official_build() {
+    base=$1
+    [ "${CUP_RELEASE_BUILD:-0}" = 1 ] || return 1
+    at_matching_tag "$base" || return 1
+    ! working_tree_dirty
+}
+
+validate_release() {
+    base=$(base_version)
+    have_git_repository || fail "official releases require a Git checkout"
+    at_matching_tag "$base" ||
+        fail "HEAD must be tagged v$base and VERSION must match the tag"
+    working_tree_dirty && fail "official releases require a clean working tree"
+    printf '%s\n' "$base"
+}
+
+current_version() {
+    base=$(base_version)
+
+    if is_official_build "$base"; then
         printf '%s\n' "$base"
         return
     fi
 
-    if [ "$commit" = archive ]; then
+    if ! have_git_repository; then
         printf '%s-dev+archive\n' "$base"
-    elif working_tree_dirty; then
-        printf '%s-dev.%s+g%s.dirty\n' "$base" "$distance" "$commit"
-    else
-        printf '%s-dev.%s+g%s\n' "$base" "$distance" "$commit"
+        return
     fi
-}
 
-next_version() {
-    increment=$1
-    base=$(release_base)
-    split_semver "$base"
-
-    case "$increment" in
-        patch)
-            VERSION_PATCH=$((VERSION_PATCH + 1))
-            ;;
-        minor)
-            VERSION_MINOR=$((VERSION_MINOR + 1))
-            VERSION_PATCH=0
-            ;;
-        major)
-            VERSION_MAJOR=$((VERSION_MAJOR + 1))
-            VERSION_MINOR=0
-            VERSION_PATCH=0
-            ;;
-        *)
-            fail "unknown increment '$increment' (expected patch, minor or major)"
-            ;;
-    esac
-
-    printf '%s.%s.%s\n' "$VERSION_MAJOR" "$VERSION_MINOR" "$VERSION_PATCH"
+    distance=$(commits_from_latest_tag)
+    commit=$(commit_id)
+    suffix=
+    working_tree_dirty && suffix=.dirty
+    printf '%s-dev.%s+%s%s\n' "$base" "$distance" "$commit" "$suffix"
 }
 
 write_if_changed() {
@@ -170,16 +156,13 @@ generate_files() {
     output_dir=$1
     mkdir -p "$output_dir"
 
+    base=$(base_version)
     version=$(current_version)
-    base=$(release_base)
-    if is_semver "$version"; then
-        base=$version
-        is_release=1
-    else
-        is_release=0
-    fi
     split_semver "$base"
     commit=$(commit_id)
+    metadata_commit=$(metadata_commit_id)
+    official=0
+    is_official_build "$base" && official=1
 
     header_tmp="$output_dir/version.h.tmp.$$"
     cat > "$header_tmp" <<HEADER
@@ -189,7 +172,7 @@ generate_files() {
 #define CUP_VERSION "$version"
 #define CUP_VERSION_BASE "$base"
 #define CUP_VERSION_COMMIT "$commit"
-#define CUP_VERSION_IS_RELEASE $is_release
+#define CUP_VERSION_OFFICIAL $official
 #define CUP_VERSION_MAJOR $VERSION_MAJOR
 #define CUP_VERSION_MINOR $VERSION_MINOR
 #define CUP_VERSION_PATCH $VERSION_PATCH
@@ -201,8 +184,8 @@ HEADER
     metadata_tmp="$output_dir/release.txt.tmp.$$"
     cat > "$metadata_tmp" <<METADATA
 format=1
-version=$version
-commit=$commit
+version=$base
+commit=$metadata_commit
 METADATA
     write_if_changed "$output_dir/release.txt" "$metadata_tmp"
 
@@ -214,10 +197,10 @@ METADATA
 FILEVERSION $VERSION_MAJOR,$VERSION_MINOR,$VERSION_PATCH,0
 PRODUCTVERSION $VERSION_MAJOR,$VERSION_MINOR,$VERSION_PATCH,0
 FILEFLAGSMASK 0x3fL
-#ifdef _DEBUG
-FILEFLAGS VS_FF_DEBUG
-#else
+#if CUP_VERSION_OFFICIAL
 FILEFLAGS 0x0L
+#else
+FILEFLAGS VS_FF_PRERELEASE | VS_FF_PRIVATEBUILD
 #endif
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
@@ -245,53 +228,13 @@ RESOURCE
     write_if_changed "$output_dir/version.rc" "$resource_tmp"
 }
 
-print_plan() {
-    mode=$1
-    publish=0
-    version=$(current_version)
-    tag=
-    distance=$(commits_since_release)
-    latest=$(latest_release_tag 2>/dev/null || true)
-
-    case "$mode" in
-        auto)
-            if [ -z "$latest" ]; then
-                publish=1
-                version=$INITIAL_VERSION
-            elif [ "$distance" -ge 10 ]; then
-                publish=1
-                version=$(next_version patch)
-            fi
-            ;;
-        minor|major)
-            publish=1
-            version=$(next_version "$mode")
-            ;;
-        none)
-            ;;
-        *)
-            fail "unknown release plan '$mode'"
-            ;;
-    esac
-
-    if [ "$publish" -eq 1 ]; then
-        tag="v$version"
-    fi
-
-    printf 'publish=%s\n' "$publish"
-    printf 'version=%s\n' "$version"
-    printf 'tag=%s\n' "$tag"
-    printf 'commits_since_release=%s\n' "$distance"
-}
-
 usage() {
     cat >&2 <<'USAGE'
 Usage:
-  scripts/version.sh current
   scripts/version.sh base
-  scripts/version.sh next <patch|minor|major>
-  scripts/version.sh distance
-  scripts/version.sh plan <auto|minor|major|none>
+  scripts/version.sh current
+  scripts/version.sh official
+  scripts/version.sh validate-release
   scripts/version.sh generate <output-directory>
 USAGE
     exit 2
@@ -299,31 +242,26 @@ USAGE
 
 command=${1:-}
 case "$command" in
+    base)
+        [ "$#" -eq 1 ] || usage
+        base_version
+        ;;
     current)
         [ "$#" -eq 1 ] || usage
         current_version
         ;;
-    base)
+    official)
         [ "$#" -eq 1 ] || usage
-        release_base
+        base=$(base_version)
+        if is_official_build "$base"; then printf '1\n'; else printf '0\n'; fi
         ;;
-    next)
-        [ "$#" -eq 2 ] || usage
-        next_version "$2"
-        ;;
-    distance)
+    validate-release)
         [ "$#" -eq 1 ] || usage
-        commits_since_release
-        ;;
-    plan)
-        [ "$#" -eq 2 ] || usage
-        print_plan "$2"
+        validate_release
         ;;
     generate)
         [ "$#" -eq 2 ] || usage
         generate_files "$2"
         ;;
-    *)
-        usage
-        ;;
+    *) usage ;;
 esac

@@ -28,13 +28,38 @@ typedef struct {
 } ReleaseMetadata;
 
 static CupError parse_version(const char *text, SemanticVersion *version) {
-    char tail;
+    const char *cursor;
+    char *end;
+    unsigned long parts[3];
+    size_t i;
 
-    if (text_is_empty(text) || version == NULL ||
-        sscanf(text, "%u.%u.%u%c", &version->major, &version->minor,
-            &version->patch, &tail) != 3) {
+    if (text_is_empty(text) || version == NULL) {
         return CUP_ERR_VALIDATION;
     }
+
+    cursor = text;
+    for (i = 0; i < 3; ++i) {
+        if (*cursor < '0' || *cursor > '9' ||
+            (*cursor == '0' && cursor[1] >= '0' && cursor[1] <= '9')) {
+            return CUP_ERR_VALIDATION;
+        }
+        parts[i] = strtoul(cursor, &end, 10);
+        if (end == cursor || parts[i] > 999999u) {
+            return CUP_ERR_VALIDATION;
+        }
+        if (i < 2) {
+            if (*end != '.') {
+                return CUP_ERR_VALIDATION;
+            }
+            cursor = end + 1;
+        } else if (*end != '\0') {
+            return CUP_ERR_VALIDATION;
+        }
+    }
+
+    version->major = (unsigned)parts[0];
+    version->minor = (unsigned)parts[1];
+    version->patch = (unsigned)parts[2];
     return CUP_OK;
 }
 
@@ -52,10 +77,30 @@ static int compare_versions(const SemanticVersion *left,
     return 0;
 }
 
+static int commit_is_valid(const char *value) {
+    size_t i;
+    size_t length;
+
+    if (text_is_empty(value)) {
+        return 0;
+    }
+    length = strlen(value);
+    if (length < 7 || length > 40) {
+        return 0;
+    }
+    for (i = 0; i < length; ++i) {
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+            (value[i] >= 'a' && value[i] <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static CupError load_release_metadata(const char *path,
     ReleaseMetadata *metadata) {
     FILE *file;
-    CupError err;
+    CupError err = CUP_OK;
     char line[256];
     size_t line_number = 0;
     unsigned seen = 0;
@@ -67,64 +112,66 @@ static CupError load_release_metadata(const char *path,
 
     file = fopen(path, "r");
     if (file == NULL) {
-        return CUP_ERR_VALIDATION;
+        return CUP_ERR_FILESYSTEM;
     }
 
-    while (1) {
+    while (err == CUP_OK) {
         char key[64];
         char value[128];
         unsigned bit;
         int has_line;
 
         err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
-        if (err != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_VALIDATION;
-        }
-        if (!has_line) {
+        if (err != CUP_OK || !has_line) {
             break;
         }
         if (text_parse_key_value(line, key, sizeof(key),
                 value, sizeof(value)) != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_VALIDATION;
+            err = CUP_ERR_VALIDATION;
+            break;
         }
 
         if (strcmp(key, "format") == 0) {
             bit = 1u << 0;
             if (strcmp(value, "1") != 0) {
-                fclose(file);
-                return CUP_ERR_VALIDATION;
+                err = CUP_ERR_VALIDATION;
+                break;
             }
         } else if (strcmp(key, "version") == 0) {
             bit = 1u << 1;
             if (text_copy(metadata->version, sizeof(metadata->version),
                     value) != CUP_OK) {
-                fclose(file);
-                return CUP_ERR_VALIDATION;
+                err = CUP_ERR_VALIDATION;
+                break;
             }
         } else if (strcmp(key, "commit") == 0) {
             bit = 1u << 2;
             if (text_copy(metadata->commit, sizeof(metadata->commit),
                     value) != CUP_OK) {
-                fclose(file);
-                return CUP_ERR_VALIDATION;
+                err = CUP_ERR_VALIDATION;
+                break;
             }
         } else {
-            fclose(file);
-            return CUP_ERR_VALIDATION;
+            err = CUP_ERR_VALIDATION;
+            break;
         }
 
         if ((seen & bit) != 0) {
-            fclose(file);
-            return CUP_ERR_VALIDATION;
+            err = CUP_ERR_VALIDATION;
+            break;
         }
         seen |= bit;
     }
 
-    if (fclose(file) != 0 || seen != 0x7u ||
+    if (fclose(file) != 0 && err == CUP_OK) {
+        err = CUP_ERR_FILESYSTEM;
+    }
+    if (err != CUP_OK) {
+        return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_VALIDATION;
+    }
+    if (seen != 0x7u ||
         parse_version(metadata->version, &(SemanticVersion){0}) != CUP_OK ||
-        text_is_empty(metadata->commit)) {
+        !commit_is_valid(metadata->commit)) {
         return CUP_ERR_VALIDATION;
     }
     return CUP_OK;
@@ -148,30 +195,21 @@ static CupError verify_downloaded_asset(const char *checksums,
     return CUP_OK;
 }
 
-static CupError installed_asset_matches(const char *checksums,
-    const char *asset_name, const char *path, int *matches) {
-    int regular;
-    CupError err;
-
-    if (matches == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *matches = 0;
-    err = system_is_regular_file(path, &regular);
-    if (err != CUP_OK || !regular) {
-        return err;
-    }
-    return bootstrap_verify_asset(checksums, asset_name, path, matches);
-}
-
 static CupError build_staging_path(const char *staging, const char *name,
     char *path, size_t size) {
     return path_join(path, size, staging, name);
 }
 
+static CupError build_release_asset_url(char *url, size_t size,
+    const char *version, const char *asset) {
+    return text_format(url, size,
+        CUP_RELEASE_VERSIONED_URL_TEMPLATE "/%s", version, asset);
+}
+
 CupError command_self_update(void) {
     CommandContext context = {0};
-    ReleaseMetadata metadata;
+    ReleaseMetadata latest_metadata;
+    ReleaseMetadata versioned_metadata;
     SemanticVersion current_version;
     SemanticVersion remote_version;
     CupError err;
@@ -192,11 +230,17 @@ CupError command_self_update(void) {
     char uninstall_url[MAX_MANIFEST_URL_LEN];
     char checksums_url[MAX_MANIFEST_URL_LEN];
     char metadata_url[MAX_MANIFEST_URL_LEN];
+    char latest_metadata_url[MAX_MANIFEST_URL_LEN];
     const char *platform_assets[3];
-    int binary_matches;
-    int uninstall_matches;
     int transaction_started = 0;
     int helper_started = 0;
+
+#if !CUP_VERSION_OFFICIAL
+    fprintf(stderr,
+        "Error: self-update is available only from an official cup release; "
+        "this build is '%s'.\n", CUP_VERSION);
+    return CUP_ERR_INVALID_INPUT;
+#endif
 
     err = command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
@@ -229,24 +273,60 @@ CupError command_self_update(void) {
             staged_checksums, sizeof(staged_checksums)) != CUP_OK ||
         build_staging_path(staging, CUP_RELEASE_METADATA_FILENAME,
             staged_metadata, sizeof(staged_metadata)) != CUP_OK ||
-        text_format(checksums_url, sizeof(checksums_url), "%s/%s",
-            CUP_RELEASE_URL, checksums_name) != CUP_OK ||
-        text_format(binary_url, sizeof(binary_url), "%s/%s",
-            CUP_RELEASE_URL, binary_name) != CUP_OK ||
-        text_format(uninstall_url, sizeof(uninstall_url), "%s/%s",
-            CUP_RELEASE_URL, CUP_UNINSTALL_FILENAME) != CUP_OK ||
-        text_format(metadata_url, sizeof(metadata_url), "%s/%s",
-            CUP_RELEASE_URL, CUP_RELEASE_METADATA_FILENAME) != CUP_OK) {
+        text_format(latest_metadata_url, sizeof(latest_metadata_url), "%s/%s",
+            CUP_RELEASE_LATEST_URL, CUP_RELEASE_METADATA_FILENAME) != CUP_OK) {
         err = CUP_ERR_TEMPORARY;
         goto done;
     }
 
     printf("==> Checking for a cup update...\n");
-    err = fetch_file(checksums_url, staged_checksums, FETCH_VALIDATE_NONEMPTY);
+    err = fetch_file(latest_metadata_url, staged_metadata,
+        FETCH_VALIDATE_METADATA);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+            "Error: the latest published release does not expose valid "
+            "'%s' metadata. The release may be incomplete or unavailable.\n",
+            CUP_RELEASE_METADATA_FILENAME);
+        goto done;
+    }
+    err = load_release_metadata(staged_metadata, &latest_metadata);
+    if (err != CUP_OK ||
+        parse_version(CUP_VERSION_BASE, &current_version) != CUP_OK ||
+        parse_version(latest_metadata.version, &remote_version) != CUP_OK) {
+        fprintf(stderr, "Error: latest cup release metadata is invalid.\n");
+        err = CUP_ERR_VALIDATION;
+        goto done;
+    }
+
+    if (compare_versions(&remote_version, &current_version) <= 0) {
+        if (compare_versions(&remote_version, &current_version) == 0) {
+            printf("cup is already up to date at %s.\n", CUP_VERSION_BASE);
+        } else {
+            printf("Installed cup version %s is newer than the latest "
+                "published release %s; no downgrade was applied.\n",
+                CUP_VERSION_BASE, latest_metadata.version);
+        }
+        err = CUP_OK;
+        goto done;
+    }
+
+    if (build_release_asset_url(checksums_url, sizeof(checksums_url),
+            latest_metadata.version, checksums_name) != CUP_OK ||
+        build_release_asset_url(metadata_url, sizeof(metadata_url),
+            latest_metadata.version, CUP_RELEASE_METADATA_FILENAME) != CUP_OK ||
+        build_release_asset_url(binary_url, sizeof(binary_url),
+            latest_metadata.version, binary_name) != CUP_OK ||
+        build_release_asset_url(uninstall_url, sizeof(uninstall_url),
+            latest_metadata.version, CUP_UNINSTALL_FILENAME) != CUP_OK) {
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto done;
+    }
+
+    err = fetch_file(checksums_url, staged_checksums, FETCH_VALIDATE_METADATA);
     if (err != CUP_OK) {
         goto done;
     }
-    err = fetch_file(metadata_url, staged_metadata, FETCH_VALIDATE_NONEMPTY);
+    err = fetch_file(metadata_url, staged_metadata, FETCH_VALIDATE_METADATA);
     if (err != CUP_OK) {
         goto done;
     }
@@ -259,48 +339,22 @@ CupError command_self_update(void) {
     if (err != CUP_OK ||
         verify_downloaded_asset(staged_checksums,
             CUP_RELEASE_METADATA_FILENAME, staged_metadata) != CUP_OK ||
-        load_release_metadata(staged_metadata, &metadata) != CUP_OK ||
-        parse_version(CUP_VERSION_BASE, &current_version) != CUP_OK ||
-        parse_version(metadata.version, &remote_version) != CUP_OK) {
-        fprintf(stderr, "Error: remote release metadata is invalid.\n");
+        load_release_metadata(staged_metadata, &versioned_metadata) != CUP_OK ||
+        strcmp(latest_metadata.version, versioned_metadata.version) != 0 ||
+        strcmp(latest_metadata.commit, versioned_metadata.commit) != 0) {
+        fprintf(stderr, "Error: versioned cup release metadata is invalid.\n");
         err = CUP_ERR_VALIDATION;
         goto done;
     }
 
-    if (compare_versions(&remote_version, &current_version) < 0) {
-        printf("Installed cup version %s is newer than the latest published "
-            "release %s; no update was applied.\n",
-            CUP_VERSION, metadata.version);
-        err = CUP_OK;
-        goto done;
-    }
-
-    err = installed_asset_matches(staged_checksums, binary_name,
-        installed_binary, &binary_matches);
+    printf("==> Downloading cup %s (installed: %s)...\n",
+        versioned_metadata.version, CUP_VERSION_BASE);
+    err = fetch_file(binary_url, staged_binary, FETCH_VALIDATE_BINARY);
     if (err != CUP_OK) {
         goto done;
     }
-    err = installed_asset_matches(staged_checksums, CUP_UNINSTALL_FILENAME,
-        installed_uninstall, &uninstall_matches);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    if (compare_versions(&remote_version, &current_version) == 0 &&
-        binary_matches && uninstall_matches) {
-        printf("The canonical cup installation is already up to date at %s.\n",
-            metadata.version);
-        err = CUP_OK;
-        goto done;
-    }
-
-    printf("==> Downloading cup %s (installed build: %s)...\n",
-        metadata.version, CUP_VERSION);
-    err = fetch_file(binary_url, staged_binary, FETCH_VALIDATE_NONEMPTY);
-    if (err != CUP_OK) {
-        goto done;
-    }
-    err = fetch_file(uninstall_url, staged_uninstall, FETCH_VALIDATE_NONEMPTY);
+    err = fetch_file(uninstall_url, staged_uninstall,
+        FETCH_VALIDATE_METADATA);
     if (err != CUP_OK) {
         goto done;
     }
@@ -337,9 +391,9 @@ CupError command_self_update(void) {
     }
     helper_started = 1;
 
-    printf("Verified cup %s update scheduled. The canonical assets will be "
-        "replaced transactionally after this process exits.\n",
-        metadata.version);
+    printf("Verified update from cup %s to %s scheduled. The canonical "
+        "assets will be replaced transactionally after this process exits.\n",
+        CUP_VERSION_BASE, versioned_metadata.version);
     err = CUP_OK;
 
 done:

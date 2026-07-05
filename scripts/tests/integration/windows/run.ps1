@@ -27,7 +27,7 @@ if ($syntaxErrors.Count -gt 0) {
 }
 Write-Host "PowerShell syntax validation passed."
 
-$suites = @("harness.ps1", "commands.ps1", "state.ps1", "entrypoints.ps1")
+$suites = @("harness.ps1", "release-metadata.ps1", "commands.ps1", "state.ps1", "entrypoints.ps1")
 foreach ($suite in $suites) {
     Write-Host "==> Running Windows $suite"
     & (Join-Path $PSScriptRoot $suite) -CupExecutablePath $resolvedCup

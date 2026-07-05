@@ -110,19 +110,21 @@ static int has_command_extension(const char *path) {
 }
 
 static CupError build_temp_candidate(const char *directory, const char *prefix,
-    unsigned long attempt, char *path, size_t path_size) {
+    const char *suffix, unsigned long attempt, char *path, size_t path_size) {
     ULONGLONG tick = GetTickCount64();
     DWORD pid = GetCurrentProcessId();
 
-    return text_format(path, path_size, "%s/%s-%lu-%llu-%lu.tmp",
-        directory, prefix, (unsigned long)pid, (unsigned long long)tick, attempt);
+    return text_format(path, path_size, "%s/%s-%lu-%llu-%lu%s",
+        directory, prefix, (unsigned long)pid, (unsigned long long)tick, attempt,
+        suffix);
 }
 
 static CupError open_temp_handle(const char *directory, const char *prefix,
-    char *path, size_t path_size, HANDLE *handle) {
+    const char *suffix, char *path, size_t path_size, HANDLE *handle) {
     unsigned long attempt;
 
-    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL ||
+    if (text_is_empty(directory) || text_is_empty(prefix) ||
+        text_is_empty(suffix) || suffix[0] != '.' || path == NULL ||
         path_size == 0 || handle == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -130,7 +132,7 @@ static CupError open_temp_handle(const char *directory, const char *prefix,
     for (attempt = 0; attempt < 256; ++attempt) {
         wchar_t wide_path[MAX_PATH_LEN];
 
-        if (build_temp_candidate(directory, prefix, attempt, path, path_size) != CUP_OK ||
+        if (build_temp_candidate(directory, prefix, suffix, attempt, path, path_size) != CUP_OK ||
             utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
             return CUP_ERR_TEMPORARY;
         }
@@ -146,6 +148,35 @@ static CupError open_temp_handle(const char *directory, const char *prefix,
     }
 
     return CUP_ERR_TEMPORARY;
+}
+
+static CupError create_temp_file_with_suffix(const char *directory,
+    const char *prefix, const char *suffix, char *path, size_t path_size,
+    FILE **file) {
+    HANDLE handle;
+    int descriptor;
+
+    if (file == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *file = NULL;
+    if (open_temp_handle(directory, prefix, suffix, path, path_size,
+            &handle) != CUP_OK) {
+        return CUP_ERR_TEMPORARY;
+    }
+    descriptor = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
+    if (descriptor == -1) {
+        CloseHandle(handle);
+        system_remove_file(path);
+        return CUP_ERR_TEMPORARY;
+    }
+    *file = _fdopen(descriptor, "w+b");
+    if (*file == NULL) {
+        _close(descriptor);
+        system_remove_file(path);
+        return CUP_ERR_TEMPORARY;
+    }
+    return CUP_OK;
 }
 
 // PROCESS AND ENVIRONMENT
@@ -201,8 +232,8 @@ CupError system_start_uninstall(const char *cup_root,
     length = GetTempPathW(MAX_PATH_LEN, temp_directory_wide);
     if (length == 0 || length >= MAX_PATH_LEN ||
         wide_to_utf8(temp_directory_wide, temp_directory, sizeof(temp_directory)) != CUP_OK ||
-        system_create_temp_file(temp_directory, "cup-uninstall", temp_script,
-            sizeof(temp_script), &file) != CUP_OK) {
+        create_temp_file_with_suffix(temp_directory, "cup-uninstall", ".ps1",
+            temp_script, sizeof(temp_script), &file) != CUP_OK) {
         print_windows_error("could not create temporary uninstall path", NULL);
         return CUP_ERR_FILESYSTEM;
     }
@@ -364,7 +395,7 @@ CupError system_start_self_update(const char *staging_directory,
     if (length == 0 || length >= MAX_PATH_LEN ||
         wide_to_utf8(temp_directory_wide, temp_directory,
             sizeof(temp_directory)) != CUP_OK ||
-        system_create_temp_file(temp_directory, "cup-self-update",
+        create_temp_file_with_suffix(temp_directory, "cup-self-update", ".ps1",
             script_path, sizeof(script_path), &script) != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
@@ -616,7 +647,8 @@ CupError system_create_temp_file(const char *directory, const char *prefix,
     }
     *file = NULL;
 
-    if (open_temp_handle(directory, prefix, path, path_size, &handle) != CUP_OK) {
+    if (open_temp_handle(directory, prefix, ".tmp", path, path_size,
+            &handle) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -649,7 +681,7 @@ CupError system_create_temp_directory(const char *directory, const char *prefix,
     for (attempt = 0; attempt < 256; ++attempt) {
         wchar_t wide_path[MAX_PATH_LEN];
 
-        if (build_temp_candidate(directory, prefix, attempt, path, path_size) != CUP_OK ||
+        if (build_temp_candidate(directory, prefix, ".tmp", attempt, path, path_size) != CUP_OK ||
             utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
             return CUP_ERR_TEMPORARY;
         }

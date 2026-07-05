@@ -79,7 +79,7 @@ The Windows installer requires PowerShell and `Invoke-WebRequest`.
 Install command:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\install-cup.ps1"
 ```
 
 The installer downloads and verifies:
@@ -127,7 +127,7 @@ make PLATFORM=macos-arm64 LINK_MODE=static BUILD_MODE=release
 make PLATFORM=windows-x64 LINK_MODE=static BUILD_MODE=release
 ```
 
-Development builds use `BUILD_MODE=development`, the default. They compile with `-O0 -g3`; release-mode builds compile with `-O2 -DNDEBUG`. Build mode controls compiler settings, not whether a commit is an official release. `scripts/version.sh` derives the embedded version from Git and generates `version.h`, `release.txt` and the Windows `VERSIONINFO` resource under the selected build directory. A mode stamp under `build/<platform>/<link-mode>/` forces object recompilation when the build mode changes while preserving the established output layout.
+Development builds use `BUILD_MODE=development`, the default. They compile with `-O0 -g3`; release-mode builds compile with `-O2 -DNDEBUG`. Build mode controls compiler settings, not whether a build is official. The root `VERSION` file is the manually maintained semantic version. `scripts/version.sh` combines it with Git metadata for development identifiers and generates `version.h`, `release.txt` and the Windows `VERSIONINFO` resource under the selected build directory. A release is official only when `CUP_RELEASE_BUILD=1` is used on a clean commit whose exact `vX.Y.Z` tag matches `VERSION`; source archives without Git metadata remain `X.Y.Z-dev+archive`. A mode stamp under `build/<platform>/<link-mode>/` forces object recompilation when the build mode changes while preserving the established output layout.
 
 A dynamic link mode is available only for local development and troubleshooting, where using system libraries makes iteration easier. It is not the bootstrap installation mode.
 
@@ -268,7 +268,7 @@ build/<platform>/<link-mode>/generated/ca_bundle.h
 build/<platform>/<link-mode>/generated/ca_bundle.c
 ```
 
-A normal local or pull-request build reads only the versioned `certs/cacert.pem`, so it remains offline and reproducible. The update script downloads and validates a new PEM, generates and compiles a temporary C representation, and replaces the source PEM only after every check succeeds. On pushes and manually requested release runs targeting `main`, the main build workflow executes this update first. A changed PEM is committed directly as `Update certs`, and the same workflow then checks out that exact commit for tests and every platform build. This keeps release binaries current and reproducible while avoiding a network dependency in ordinary local builds.
+Every local, source-test and release build reads only the versioned `certs/cacert.pem`, so the selected commit remains reproducible. `make update-ca-bundle` downloads and validates a new PEM, generates and compiles a temporary C representation, and replaces the source PEM only after every check succeeds. Any update is committed before the release tag is created; release workflows never modify or advance the tagged commit.
 
 ## 6. Static dependency bootstrap
 
@@ -295,16 +295,24 @@ Default install prefix:
 ~/deps/<platform>/install
 ```
 
-The bootstrap scripts pin and verify SHA-256 values for every downloaded source archive before extraction. They also record platform, toolchain, dependency versions and hashes in the dependency prefix. An interrupted or incompatible prefix is rejected with an explicit request for a clean rebuild. The scripts build or install the libraries needed to link the `cup` executable, such as:
+The bootstrap scripts pin and verify SHA-256 values for every downloaded source archive before extraction. They also record platform, toolchain, dependency versions and hashes in the dependency prefix. An interrupted or incompatible prefix is rejected with an explicit request for a clean rebuild. The bootstrap entry points install the dependencies used by cup:
 
 ```text
+Argtable3 for command-line parsing
+uthash for the extractor's path table
+Unity for unit tests only
 zlib
 xz / liblzma
-OpenSSL where required by the selected libcurl build
 libcurl
 libarchive
 pkg-config metadata used by the Makefile
 ```
+
+SHA-256 is implemented in-tree by `src/sha256.c`, adapted from Brad Conte's public-domain `crypto-algorithms` implementation. Cup uses SHA-256, not SHA3-256, because GitHub `SHA256SUMS` assets contain SHA-256 digests. The implementation is used only for integrity checks over public release files; checksum-file parsing, duplicate handling, asset selection and policy remain in cup.
+
+OpenSSL is no longer a direct checksum dependency. The pinned static Linux and macOS stacks still build OpenSSL because it is the selected TLS backend for their static libcurl builds and supports the embedded CA bundle used by cup. Static Windows builds use Schannel and therefore do not build or link OpenSSL directly.
+
+`CUP_DEPS_SCOPE=development` builds only the lightweight dependencies needed alongside system libraries. The release scope builds the complete pinned static dependency stack. Unity is never linked into the `cup` executable.
 
 After installation, each bootstrap script requires non-empty static link metadata. The Makefile also fails immediately when the expected metadata tools or flags are missing. It reads dependency metadata from:
 
@@ -334,15 +342,19 @@ build/windows-x64/static/bin/cup.exe
 
 ## 8. Release workflows
 
-The repository contains one coordinated executable build and publication workflow:
+The workflow set is intentionally small:
 
 ```text
-.github/workflows/build-cup.yml
+.github/workflows/ci.yml
+.github/workflows/release.yml
+.github/workflows/static.yml
 ```
 
-Every push to `main` first validates the latest CA bundle, then runs native tests for every supported host platform and all optimized static platform builds from one selected commit. If the PEM changed, the preparation job commits it as `Update certs` before selecting that commit. The version planner counts first-parent commits since the latest semantic release tag but excludes that exact automation commit. After ten other commits, a successful run creates the next patch release automatically; minor and major releases are explicit manual workflow choices. Pull requests build and test without publishing. The preparation and publication jobs receive repository write permission only for the certificate commit and immutable release publication; the platform build jobs remain read-only.
+`ci.yml` runs on normal pushes and pull requests. It builds from source and runs the source test suites, but never publishes a release.
 
-The publication job downloads every platform artifact, checks that all expected assets are present, validates `release.txt` and all checksum files, creates an immutable versioned draft release, and publishes it only after the complete set has been uploaded successfully.
+`release.yml` also runs on pushes to `main`, but first reads the root `VERSION` file and checks whether remote tag `v<VERSION>` already exists. If the tag exists, it stops without publishing. If the tag does not exist, it treats the pushed commit as a release candidate: it runs source tests, builds the static assets, tests the generated assets natively, then creates tag `v<VERSION>` and publishes the GitHub Release only after all tests pass. Actions artifacts are used only as temporary transport between jobs inside the release workflow; the distributed files are GitHub Release assets.
+
+`static.yml` remains the documentation/static web workflow and was intentionally not renamed.
 
 Release assets for the bootstrap installer include:
 
@@ -362,11 +374,9 @@ SHA256SUMS.common
 SHA256SUMS.<platform>
 ```
 
-The `packages.cfg` asset is the manifest used by installed copies of `cup` to locate component packages produced by `cup-components`.
+The `packages.cfg` asset is the manifest used by installed copies of `cup` to locate component packages produced by `cup-components`. Its entries include `checksum_url_template`, and every corresponding component release must publish a `SHA256SUMS` asset.
 
-
-
-The generated version is also embedded in `cup --version` and, for Windows, in the executable `VERSIONINFO` resource. A clean tagged commit reports the exact semantic version. Untagged, post-release or dirty source builds report a development identifier derived from the nearest tag, first-parent distance and abbreviated commit. `CUP_VERSION_OVERRIDE` is reserved for the coordinated official release build and for reproducible builds from source archives.
+The generated version is embedded in `cup --version` and, for Windows, in the executable `VERSIONINFO` resource. Official builds report the exact value from `VERSION`; untagged, dirty and archive builds report explicit development identifiers. `self-update` is disabled for those development builds and uses immutable version-tagged assets after discovering the current official release.
 
 The POSIX development regression suite is available through:
 
@@ -374,9 +384,9 @@ The POSIX development regression suite is available through:
 make test
 ```
 
-The orchestrator under `scripts/tests/run.sh` invokes focused suites for version planning, compiler builds, CA generation, command behavior, state persistence, managed entry points, transaction recovery and detached uninstall cleanup. Linux runs the build checks with GCC and Clang; macOS uses Clang. Each suite can also be executed independently.
+All repository test code is kept under `scripts/tests/`. The stable entry points are `unit.sh`, `integration.sh`, `release.sh` and `all.sh`; the subdirectories divide the actual coverage by responsibility: `unit/` contains C unit tests and small repository-policy shell tests, `integration/` contains POSIX and Windows CLI tests with isolated homes and fixture packages, `release/` checks generated candidate assets, `support/` contains shared helpers and `workflow/` contains the thin scripts called by GitHub Actions. Linux runs the build checks with GCC and Clang; macOS uses Clang. Each focused suite can also be executed independently.
 
-The workflow executes those POSIX suites natively on Linux x64, Linux ARM64, macOS x64 and macOS ARM64. A separate PowerShell suite under `scripts/tests/windows/` builds and runs the Windows executable on `windows-latest`, exercising native state, command and `.cmd` entry-point behavior. The optimized static build jobs run only after every native test job succeeds.
+The workflow executes those POSIX suites natively on Linux x64, Linux ARM64, macOS x64 and macOS ARM64. The PowerShell suite under `scripts/tests/integration/windows/` builds and runs the Windows executable on `windows-latest`, exercising native state, command and `.cmd` entry-point behavior. The optimized static release jobs run only after the relevant source tests succeed, and release publication occurs only after the generated release assets pass native tests.
 
 The destructive development cleanup target is guarded explicitly:
 

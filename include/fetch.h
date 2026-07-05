@@ -8,6 +8,8 @@
 
 typedef enum {
     FETCH_VALIDATE_NONEMPTY,
+    FETCH_VALIDATE_METADATA,
+    FETCH_VALIDATE_BINARY,
     FETCH_VALIDATE_ARCHIVE
 } FetchValidation;
 
@@ -27,8 +29,9 @@ CupError fetch_file(const char *url, const char *destination,
 
 /* Resolve one package cache path and return a fully validated archive. */
 CupError fetch_package(char *archive_path, size_t archive_path_size,
-    const char *package_url, const PackageIdentity *identity,
-    const char *format, FetchCachePolicy cache_policy, FetchSource *source);
+    const char *package_url, const char *checksum_url,
+    const PackageIdentity *identity, const char *format,
+    FetchCachePolicy cache_policy, FetchSource *source);
 
 /* Remove an archive that failed extraction or package validation. */
 CupError fetch_discard_cached_package(const char *archive_path);

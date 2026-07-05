@@ -10,7 +10,7 @@ try {
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
     $wrapper = Join-Path $Script:CupTestHome ".cup\bin\clang.cmd"
     Set-Content -LiteralPath $wrapper -Value "@echo altered" -Encoding ascii
-    Assert-Contains (Invoke-Cup -CommandArgs @("current") -ExpectFailure) "status: invalid"
+    Assert-Contains (Invoke-Cup -CommandArgs @("info") -ExpectFailure) "status: invalid"
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) "entry point"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"

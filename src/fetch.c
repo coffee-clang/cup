@@ -1,6 +1,9 @@
 #include "fetch.h"
 
 #include "ca_bundle.h"
+#include "checksum.h"
+#include "constants.h"
+#include "path.h"
 #include "interrupt.h"
 #include "layout.h"
 #include "package_archive.h"
@@ -46,17 +49,55 @@ static CupError configure_tls_trust(CURL *curl) {
     return CUP_OK;
 }
 
+typedef struct {
+    FILE *file;
+    curl_off_t limit;
+    curl_off_t written;
+    int too_large;
+    int write_failed;
+} DownloadWriter;
+
 static size_t write_file_callback(void *data, size_t size,
     size_t count, void *userdata) {
-    FILE *file = userdata;
+    DownloadWriter *writer = userdata;
     size_t bytes;
 
-    if (file == NULL || (size != 0 && count > (size_t)-1 / size)) {
+    if (writer == NULL || writer->file == NULL) {
+        return 0;
+    }
+    if (size != 0 && count > (size_t)-1 / size) {
+        writer->write_failed = 1;
         return 0;
     }
 
     bytes = size * count;
-    return fwrite(data, 1, bytes, file);
+    if ((curl_off_t)bytes > writer->limit - writer->written) {
+        writer->too_large = 1;
+        return 0;
+    }
+    if (fwrite(data, 1, bytes, writer->file) != bytes) {
+        writer->write_failed = 1;
+        return 0;
+    }
+    writer->written += (curl_off_t)bytes;
+    return bytes;
+}
+
+static curl_off_t validation_limit(FetchValidation validation) {
+    switch (validation) {
+        case FETCH_VALIDATE_METADATA:
+        case FETCH_VALIDATE_NONEMPTY:
+            return (curl_off_t)MAX_METADATA_DOWNLOAD_BYTES;
+        case FETCH_VALIDATE_BINARY:
+            return (curl_off_t)MAX_BINARY_DOWNLOAD_BYTES;
+        case FETCH_VALIDATE_ARCHIVE:
+            return (curl_off_t)MAX_PACKAGE_DOWNLOAD_BYTES;
+    }
+    return 0;
+}
+
+static long validation_timeout(FetchValidation validation) {
+    return validation == FETCH_VALIDATE_ARCHIVE ? 7200L : 300L;
 }
 
 static int progress_callback(void *userdata, curl_off_t download_total,
@@ -211,6 +252,7 @@ CupError fetch_file(const char *url, const char *destination,
     CURLcode result = CURLE_OK;
     CURLcode info_result = CURLE_OK;
     FILE *file = NULL;
+    DownloadWriter writer = {0};
     CupError sync_err = CUP_OK;
     CupError err;
     char error_buffer[CURL_ERROR_SIZE];
@@ -221,6 +263,8 @@ CupError fetch_file(const char *url, const char *destination,
 
     if (text_is_empty(url) || text_is_empty(destination) ||
         (validation != FETCH_VALIDATE_NONEMPTY &&
+            validation != FETCH_VALIDATE_METADATA &&
+            validation != FETCH_VALIDATE_BINARY &&
             validation != FETCH_VALIDATE_ARCHIVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -252,6 +296,8 @@ CupError fetch_file(const char *url, const char *destination,
             ? CUP_ERR_TEMPORARY : CUP_ERR_FETCH;
     }
 
+    writer.file = file;
+    writer.limit = validation_limit(validation);
     error_buffer[0] = '\0';
     err = configure_tls_trust(curl);
     if (err != CUP_OK) {
@@ -268,6 +314,8 @@ CupError fetch_file(const char *url, const char *destination,
     SETOPT(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     SETOPT(curl, CURLOPT_ACCEPT_ENCODING, "");
     SETOPT(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    SETOPT(curl, CURLOPT_TIMEOUT, validation_timeout(validation));
+    SETOPT(curl, CURLOPT_MAXFILESIZE_LARGE, writer.limit);
     SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
     SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -278,7 +326,7 @@ CupError fetch_file(const char *url, const char *destination,
     SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
     SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
-    SETOPT(curl, CURLOPT_WRITEDATA, file);
+    SETOPT(curl, CURLOPT_WRITEDATA, &writer);
     SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
     SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
 
@@ -301,11 +349,19 @@ cleanup:
     if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
         return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
     }
+    if (writer.too_large || result == CURLE_FILESIZE_EXCEEDED) {
+        fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
+        return remove_temporary_download(temporary_path,
+            CUP_ERR_DOWNLOAD_TOO_LARGE);
+    }
 
+    if (writer.write_failed) {
+        fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n",
+            url);
+        return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
+    }
     if (result != CURLE_OK || info_result != CURLE_OK ||
-        response_code != 200 || sync_err != CUP_OK || close_status != 0) {
-        CupError cleanup_error;
-
+        response_code != 200) {
         fprintf(stderr, "Error: failed to download '%s'", url);
         if (info_result == CURLE_OK && response_code > 0) {
             fprintf(stderr, " (HTTP %ld)", response_code);
@@ -314,8 +370,22 @@ cleanup:
             fprintf(stderr, ": %s", error_buffer);
         }
         fputs(".\n", stderr);
-        cleanup_error = remove_temporary_download(temporary_path, CUP_ERR_FETCH);
-        return cleanup_error;
+        if (result == CURLE_OPERATION_TIMEDOUT) {
+            err = CUP_ERR_TIMEOUT;
+        } else if (result == CURLE_PEER_FAILED_VERIFICATION ||
+            result == CURLE_SSL_CONNECT_ERROR ||
+            result == CURLE_SSL_CERTPROBLEM ||
+            result == CURLE_SSL_CACERT_BADFILE) {
+            err = CUP_ERR_TLS;
+        } else {
+            err = CUP_ERR_FETCH;
+        }
+        return remove_temporary_download(temporary_path, err);
+    }
+    if (sync_err != CUP_OK || close_status != 0) {
+        fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n",
+            url);
+        return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
 
     err = validate_download(temporary_path, validation);
@@ -330,15 +400,61 @@ cleanup:
     return err;
 }
 
-CupError fetch_package(char *archive_path, size_t archive_path_size,
-    const char *package_url, const PackageIdentity *identity,
-    const char *format, FetchCachePolicy cache_policy, FetchSource *source) {
+static CupError build_checksum_cache_path(const char *archive_path,
+    char *checksum_path, size_t size) {
+    const char *slash = strrchr(archive_path, '/');
+    size_t directory_length;
+    char directory[MAX_PATH_LEN];
+
+    if (slash == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    directory_length = (size_t)(slash - archive_path);
+    if (directory_length == 0 || directory_length >= sizeof(directory)) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(directory, archive_path, directory_length);
+    directory[directory_length] = '\0';
+    return path_join(checksum_path, size, directory, "SHA256SUMS");
+}
+
+static const char *archive_filename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash == NULL ? path : slash + 1;
+}
+
+static CupError verify_cached_archive(const char *checksum_path,
+    const char *archive_path, int *valid) {
     CupError err;
-    int is_valid_archive;
+    int archive_valid;
+    int checksum_matches;
+
+    *valid = 0;
+    err = package_archive_is_valid(archive_path, &archive_valid);
+    if (err != CUP_OK || !archive_valid) {
+        return err;
+    }
+    err = checksum_verify_file(checksum_path, archive_filename(archive_path),
+        archive_path, &checksum_matches);
+    if (err != CUP_OK) {
+        return err;
+    }
+    *valid = checksum_matches;
+    return CUP_OK;
+}
+
+CupError fetch_package(char *archive_path, size_t archive_path_size,
+    const char *package_url, const char *checksum_url,
+    const PackageIdentity *identity, const char *format,
+    FetchCachePolicy cache_policy, FetchSource *source) {
+    CupError err;
+    char checksum_path[MAX_PATH_LEN];
+    int checksum_refreshed = 0;
+    int valid_archive;
 
     if (archive_path == NULL || archive_path_size == 0 ||
-        text_is_empty(package_url) || identity == NULL || text_is_empty(format) ||
-        source == NULL ||
+        text_is_empty(package_url) || text_is_empty(checksum_url) ||
+        identity == NULL || text_is_empty(format) || source == NULL ||
         (cache_policy != FETCH_ALLOW_CACHE &&
             cache_policy != FETCH_REFRESH_CACHE)) {
         return CUP_ERR_INVALID_INPUT;
@@ -348,23 +464,84 @@ CupError fetch_package(char *archive_path, size_t archive_path_size,
     if (err != CUP_OK) {
         return err;
     }
-
-    err = layout_build_cache_archive_path(archive_path,
-        archive_path_size, identity, format);
-    if (err != CUP_OK) {
-        return err;
+    err = layout_build_cache_archive_path(archive_path, archive_path_size,
+        identity, format);
+    if (err != CUP_OK || build_checksum_cache_path(archive_path, checksum_path,
+            sizeof(checksum_path)) != CUP_OK) {
+        return err == CUP_OK ? CUP_ERR_BUFFER_TOO_SMALL : err;
     }
 
-    if (cache_policy == FETCH_ALLOW_CACHE) {
-        err = package_archive_is_valid(archive_path, &is_valid_archive);
+    {
+        SystemPathKind checksum_kind;
+
+        err = system_get_path_kind(checksum_path, &checksum_kind);
         if (err != CUP_OK) {
             return err;
         }
-        if (is_valid_archive) {
+        if (cache_policy == FETCH_REFRESH_CACHE ||
+            checksum_kind == SYSTEM_PATH_MISSING) {
+            err = fetch_file(checksum_url, checksum_path,
+                FETCH_VALIDATE_METADATA);
+            if (err != CUP_OK) {
+                return err;
+            }
+            checksum_refreshed = 1;
+        } else if (checksum_kind != SYSTEM_PATH_REGULAR_FILE) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+    err = checksum_find_expected(checksum_path, archive_filename(archive_path),
+        (char[SHA256_HEX_LENGTH + 1]){0}, SHA256_HEX_LENGTH + 1);
+    if (err != CUP_OK && cache_policy == FETCH_ALLOW_CACHE) {
+        CupError refresh_err = fetch_file(checksum_url, checksum_path,
+            FETCH_VALIDATE_METADATA);
+
+        if (refresh_err != CUP_OK) {
+            return refresh_err;
+        }
+        checksum_refreshed = 1;
+        err = checksum_find_expected(checksum_path,
+            archive_filename(archive_path),
+            (char[SHA256_HEX_LENGTH + 1]){0},
+            SHA256_HEX_LENGTH + 1);
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: package checksum metadata has no unique entry "
+            "for '%s'.\n", archive_filename(archive_path));
+        return CUP_ERR_VALIDATION;
+    }
+
+    if (cache_policy == FETCH_ALLOW_CACHE) {
+        err = verify_cached_archive(checksum_path, archive_path, &valid_archive);
+        if (err == CUP_OK && valid_archive) {
             *source = FETCH_SOURCE_CACHE;
             return CUP_OK;
         }
-
+        if (err == CUP_OK && !valid_archive && !checksum_refreshed) {
+            err = fetch_file(checksum_url, checksum_path,
+                FETCH_VALIDATE_METADATA);
+            if (err != CUP_OK) {
+                return err;
+            }
+            checksum_refreshed = 1;
+            err = checksum_find_expected(checksum_path,
+                archive_filename(archive_path),
+                (char[SHA256_HEX_LENGTH + 1]){0},
+                SHA256_HEX_LENGTH + 1);
+            if (err != CUP_OK) {
+                return CUP_ERR_VALIDATION;
+            }
+            err = verify_cached_archive(checksum_path, archive_path,
+                &valid_archive);
+            if (err == CUP_OK && valid_archive) {
+                *source = FETCH_SOURCE_CACHE;
+                return CUP_OK;
+            }
+        }
+        if (err != CUP_OK && err != CUP_ERR_FILESYSTEM &&
+            err != CUP_ERR_ARCHIVE && err != CUP_ERR_VALIDATION) {
+            return err;
+        }
         err = fetch_discard_cached_package(archive_path);
         if (err != CUP_OK) {
             return err;
@@ -374,6 +551,29 @@ CupError fetch_package(char *archive_path, size_t archive_path_size,
     err = fetch_file(package_url, archive_path, FETCH_VALIDATE_ARCHIVE);
     if (err != CUP_OK) {
         return err;
+    }
+    err = verify_cached_archive(checksum_path, archive_path, &valid_archive);
+    if ((err != CUP_OK || !valid_archive) && !checksum_refreshed) {
+        CupError refresh_err = fetch_file(checksum_url, checksum_path,
+            FETCH_VALIDATE_METADATA);
+
+        if (refresh_err == CUP_OK &&
+            checksum_find_expected(checksum_path,
+                archive_filename(archive_path),
+                (char[SHA256_HEX_LENGTH + 1]){0},
+                SHA256_HEX_LENGTH + 1) == CUP_OK) {
+            err = verify_cached_archive(checksum_path, archive_path,
+                &valid_archive);
+        } else {
+            err = refresh_err == CUP_OK ? CUP_ERR_VALIDATION : refresh_err;
+        }
+    }
+    if (err != CUP_OK || !valid_archive) {
+        CupError discard_err = fetch_discard_cached_package(archive_path);
+        fprintf(stderr, "Error: downloaded package failed SHA-256 verification.\n");
+        return discard_err == CUP_OK
+            ? (err == CUP_OK ? CUP_ERR_VALIDATION : err)
+            : discard_err;
     }
 
     *source = FETCH_SOURCE_NETWORK;

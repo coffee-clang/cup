@@ -280,7 +280,7 @@ done:
     return err;
 }
 
-/* Current defaults. */
+/* Current tool information. */
 static CupError print_current_entry(const CommandContext *context,
     const StateEntry *state_entry) {
     PackageIdentity package;
@@ -338,7 +338,7 @@ static CupError print_current_entry(const CommandContext *context,
     return CUP_OK;
 }
 
-CupError command_current(const char *component,
+CupError command_info(const char *component,
     const char *target_override) {
     CommandContext context = {0};
     CupError err;
@@ -555,7 +555,7 @@ static void print_manifest_catalog(const Manifest *manifest,
     }
 }
 
-static CupError show_catalog(const char *component,
+CupError command_search(const char *component,
     const char *target_override) {
     CommandContext context = {0};
     CupError err;
@@ -590,8 +590,8 @@ done:
     return err;
 }
 
-/* Catalog and installed package metadata. */
-CupError command_info(const char *component, const char *entry,
+/* Installed package metadata. */
+CupError command_inspect(const char *component, const char *entry,
     const char *target_override) {
     CommandContext context = {0};
     EntryRequest request;
@@ -601,10 +601,7 @@ CupError command_info(const char *component, const char *entry,
     char install_path[MAX_PATH_LEN];
     char info_path[MAX_PATH_LEN];
 
-    if (entry == NULL) {
-        return show_catalog(component, target_override);
-    }
-    if (component == NULL) {
+    if (component == NULL || entry == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 

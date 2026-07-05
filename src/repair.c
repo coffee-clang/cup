@@ -15,6 +15,7 @@
 #include "system.h"
 #include "transaction.h"
 #include "text.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +27,7 @@ typedef enum {
 
 
 // REPAIR HELPERS
+#if CUP_VERSION_OFFICIAL
 static CupError create_repair_temp(char *path, size_t path_size) {
     char tmp_dir[MAX_PATH_LEN];
     FILE *file = NULL;
@@ -42,17 +44,35 @@ static CupError create_repair_temp(char *path, size_t path_size) {
 
     return CUP_OK;
 }
+#endif
 
 static CupError download_asset(const char *asset_name,
     char *path, size_t path_size) {
+#if !CUP_VERSION_OFFICIAL
+    (void)asset_name;
+    (void)path;
+    (void)path_size;
+    fprintf(stderr,
+        "Error: a development build cannot restore official bootstrap "
+        "assets. Run repair with the installed official cup binary or "
+        "run the official installer.\n");
+    return CUP_ERR_NOT_AVAILABLE;
+#else
+    char release_url[MAX_MANIFEST_URL_LEN];
     char url[MAX_MANIFEST_URL_LEN];
 
-    if (create_repair_temp(path, path_size) != CUP_OK ||
-        text_format(url, sizeof(url), "%s/%s", CUP_RELEASE_URL, asset_name) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
+    if (text_format(release_url, sizeof(release_url),
+            CUP_RELEASE_VERSIONED_URL_TEMPLATE, CUP_VERSION_BASE) != CUP_OK ||
+        text_format(url, sizeof(url), "%s/%s", release_url, asset_name) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    if (create_repair_temp(path, path_size) != CUP_OK) {
+        return CUP_ERR_TEMPORARY;
     }
 
     return fetch_file(url, path, FETCH_VALIDATE_NONEMPTY);
+#endif
 }
 
 static CupError apply_asset_permissions(const char *path,
@@ -170,7 +190,7 @@ static CupError restore_asset(const char *destination,
 
 static CupError repair_checksum_file(const char *destination,
     const char *asset_name, const char *const *required_assets,
-    size_t required_count) {
+    size_t required_count, int force_refresh) {
     CupError err;
     char staged_path[MAX_PATH_LEN];
     int is_regular;
@@ -180,7 +200,7 @@ static CupError repair_checksum_file(const char *destination,
     if (err != CUP_OK) {
         return err;
     }
-    if (is_regular && checksum_validate_assets(destination,
+    if (!force_refresh && is_regular && checksum_validate_assets(destination,
         required_assets, required_count) == CUP_OK) {
         err = system_is_read_only(destination, &is_read_only);
         if (err != CUP_OK) {
@@ -201,6 +221,28 @@ static CupError repair_checksum_file(const char *destination,
         system_set_read_only(staged_path, 1) != CUP_OK) {
         system_remove_file(staged_path);
         return CUP_ERR_VALIDATION;
+    }
+
+    if (is_regular) {
+        char current_hash[SHA256_HEX_LENGTH + 1];
+        char staged_hash[SHA256_HEX_LENGTH + 1];
+
+        if (checksum_sha256_file(staged_path, staged_hash,
+                sizeof(staged_hash)) != CUP_OK) {
+            system_remove_file(staged_path);
+            return CUP_ERR_FILESYSTEM;
+        }
+        if (checksum_sha256_file(destination, current_hash,
+                sizeof(current_hash)) == CUP_OK &&
+            strcmp(current_hash, staged_hash) == 0) {
+            int read_only;
+
+            if (system_remove_file(staged_path) != CUP_OK ||
+                system_is_read_only(destination, &read_only) != CUP_OK) {
+                return CUP_ERR_FILESYSTEM;
+            }
+            return read_only ? CUP_OK : system_set_read_only(destination, 1);
+        }
     }
 
     err = commit_asset(staged_path, destination, "checksum file");
@@ -235,12 +277,42 @@ static CupError repair_bootstrap_checksums(void) {
     platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
 
     err = repair_checksum_file(common_path, CUP_COMMON_CHECKSUMS_FILENAME,
-        common_assets, sizeof(common_assets) / sizeof(common_assets[0]));
+        common_assets, sizeof(common_assets) / sizeof(common_assets[0]), 0);
     if (err != CUP_OK) {
         return err;
     }
     return repair_checksum_file(platform_path, platform_name,
-        platform_assets, sizeof(platform_assets) / sizeof(platform_assets[0]));
+        platform_assets, sizeof(platform_assets) / sizeof(platform_assets[0]), 0);
+}
+
+static CupError refresh_common_checksums(void) {
+    char path[MAX_PATH_LEN];
+    const char *assets[] = {CUP_MANIFEST_FILENAME};
+
+    if (layout_get_common_checksums_path(path, sizeof(path)) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    return repair_checksum_file(path, CUP_COMMON_CHECKSUMS_FILENAME,
+        assets, sizeof(assets) / sizeof(assets[0]), 1);
+}
+
+static CupError refresh_platform_checksums(void) {
+    char path[MAX_PATH_LEN];
+    char name[MAX_NAME_LEN];
+    char binary[MAX_NAME_LEN];
+    const char *assets[3];
+
+    if (layout_get_platform_checksums_path(path, sizeof(path)) != CUP_OK ||
+        bootstrap_platform_checksums_name(name, sizeof(name)) != CUP_OK ||
+        bootstrap_binary_asset_name(binary, sizeof(binary)) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    assets[0] = binary;
+    assets[1] = CUP_UNINSTALL_FILENAME;
+    assets[2] = CUP_RELEASE_METADATA_FILENAME;
+    return repair_checksum_file(path, name, assets,
+        sizeof(assets) / sizeof(assets[0]), 1);
 }
 
 // OFFICIAL FILES
@@ -282,6 +354,10 @@ static CupError repair_manifest(void) {
         }
     }
 
+    err = refresh_common_checksums();
+    if (err != CUP_OK) {
+        return err;
+    }
     err = download_asset(CUP_MANIFEST_FILENAME,
         staged_path, sizeof(staged_path));
     if (err != CUP_OK) {
@@ -349,6 +425,11 @@ static CupError repair_binary(void) {
         return CUP_OK;
     }
 
+    err = refresh_platform_checksums();
+    if (err != CUP_OK) {
+        return err;
+    }
+
 #if defined(_WIN32)
     fprintf(stderr, "Error: the running cup executable is missing or altered. "
         "Run the official installer to replace it safely on Windows.\n");
@@ -380,6 +461,10 @@ static CupError repair_uninstall_script(void) {
     }
     if (!is_regular || bootstrap_verify_asset(checksums_path,
             CUP_UNINSTALL_FILENAME, script_path, &matches) != CUP_OK || !matches) {
+        err = refresh_platform_checksums();
+        if (err != CUP_OK) {
+            return err;
+        }
         printf("Restoring uninstall script.\n");
 #if defined(_WIN32)
         return restore_asset(script_path, CUP_UNINSTALL_FILENAME,

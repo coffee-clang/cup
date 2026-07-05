@@ -13,143 +13,75 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <uthash.h>
 
-typedef struct {
+typedef struct ExtractedPath {
     char *path;
     mode_t type;
+    UT_hash_handle hh;
 } ExtractedPath;
 
 typedef struct {
-    ExtractedPath *slots;
-    size_t capacity;
-    size_t count;
+    ExtractedPath *entries;
 } ExtractedPathTable;
 
-static uint64_t hash_path(const char *path) {
-    const unsigned char *cursor = (const unsigned char *)path;
-    uint64_t hash = UINT64_C(1469598103934665603);
-
-    while (*cursor != '\0') {
-        hash ^= *cursor++;
-        hash *= UINT64_C(1099511628211);
-    }
-
-    return hash;
-}
-
 static void path_table_free(ExtractedPathTable *table) {
-    size_t i;
+    ExtractedPath *entry;
+    ExtractedPath *next;
 
     if (table == NULL) {
         return;
     }
 
-    for (i = 0; i < table->capacity; ++i) {
-        free(table->slots[i].path);
+    entry = table->entries;
+    HASH_CLEAR(hh, table->entries);
+    while (entry != NULL) {
+        next = (ExtractedPath *)entry->hh.next;
+        free(entry->path);
+        free(entry);
+        entry = next;
     }
-    free(table->slots);
-    memset(table, 0, sizeof(*table));
-}
-
-static ExtractedPath *path_table_find_slot(ExtractedPathTable *table,
-    const char *path) {
-    size_t index = (size_t)(hash_path(path) & (table->capacity - 1));
-
-    while (table->slots[index].path != NULL &&
-        strcmp(table->slots[index].path, path) != 0) {
-        index = (index + 1) & (table->capacity - 1);
-    }
-
-    return &table->slots[index];
-}
-
-static CupError path_table_resize(ExtractedPathTable *table, size_t capacity) {
-    ExtractedPath *old_slots = table->slots;
-    size_t old_capacity = table->capacity;
-    size_t i;
-
-    table->slots = calloc(capacity, sizeof(*table->slots));
-    if (table->slots == NULL) {
-        table->slots = old_slots;
-        return CUP_ERR_EXTRACT;
-    }
-
-    table->capacity = capacity;
-    table->count = 0;
-
-    for (i = 0; i < old_capacity; ++i) {
-        if (old_slots[i].path != NULL) {
-            ExtractedPath *slot = path_table_find_slot(table, old_slots[i].path);
-
-            *slot = old_slots[i];
-            table->count++;
-        }
-    }
-
-    free(old_slots);
-    return CUP_OK;
-}
-
-static CupError path_table_ensure_capacity(ExtractedPathTable *table) {
-    size_t capacity;
-
-    if (table->capacity == 0) {
-        return path_table_resize(table, 256);
-    }
-    if ((table->count + 1) * 4 < table->capacity * 3) {
-        return CUP_OK;
-    }
-
-    capacity = table->capacity * 2;
-    if (capacity < table->capacity) {
-        return CUP_ERR_EXTRACT;
-    }
-
-    return path_table_resize(table, capacity);
 }
 
 static const ExtractedPath *path_table_find(const ExtractedPathTable *table,
     const char *path) {
-    size_t index;
+    ExtractedPath *entry = NULL;
 
-    if (table->capacity == 0) {
+    if (table == NULL || path == NULL) {
         return NULL;
     }
 
-    index = (size_t)(hash_path(path) & (table->capacity - 1));
-    while (table->slots[index].path != NULL) {
-        if (strcmp(table->slots[index].path, path) == 0) {
-            return &table->slots[index];
-        }
-        index = (index + 1) & (table->capacity - 1);
-    }
-
-    return NULL;
+    HASH_FIND_STR(table->entries, path, entry);
+    return entry;
 }
 
 static CupError path_table_add(ExtractedPathTable *table,
     const char *path, mode_t type) {
-    ExtractedPath *slot;
+    ExtractedPath *entry;
     size_t length;
 
+    if (table == NULL || path == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     if (path_table_find(table, path) != NULL) {
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
-    if (path_table_ensure_capacity(table) != CUP_OK) {
+    entry = calloc(1, sizeof(*entry));
+    if (entry == NULL) {
         return CUP_ERR_EXTRACT;
     }
 
-    slot = path_table_find_slot(table, path);
     length = strlen(path) + 1;
-    slot->path = malloc(length);
-    if (slot->path == NULL) {
+    entry->path = malloc(length);
+    if (entry->path == NULL) {
+        free(entry);
         return CUP_ERR_EXTRACT;
     }
 
-    memcpy(slot->path, path, length);
-    slot->type = type;
-    table->count++;
+    memcpy(entry->path, path, length);
+    entry->type = type;
+    HASH_ADD_KEYPTR(hh, table->entries, entry->path, length - 1, entry);
     return CUP_OK;
 }
 

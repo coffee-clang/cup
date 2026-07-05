@@ -134,6 +134,7 @@ static CupError stage_removal(RemoveOperation *operation) {
 static CupError commit_removal(RemoveOperation *operation) {
     CupError err;
     const char *default_entry;
+    int cleanup_failed = 0;
 
     default_entry = state_get_default(&operation->context.state,
         operation->package.component, operation->package.host_platform,
@@ -181,12 +182,14 @@ static CupError commit_removal(RemoveOperation *operation) {
         fprintf(stderr,
             "Warning: package was removed from state, but temporary cleanup "
             "failed. Run 'cup repair'.\n");
+        cleanup_failed = 1;
     }
 
     if (transaction_clear() != CUP_OK) {
         fprintf(stderr,
             "Warning: package removal committed, but transaction cleanup "
             "failed. Run 'cup repair'.\n");
+        cleanup_failed = 1;
     } else {
         operation->journal_started = 0;
     }
@@ -199,7 +202,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         return CUP_ERR_COMMIT;
     }
 
-    return CUP_OK;
+    return cleanup_failed ? CUP_ERR_COMMIT : CUP_OK;
 }
 
 static CupError rollback_removal(RemoveOperation *operation) {

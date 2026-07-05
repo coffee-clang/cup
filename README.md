@@ -79,7 +79,7 @@ Bootstrap assets for `cup` are published in the `coffee-clang/cup` repository. T
 curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
-The installer verifies the published SHA-256 files before committing the matching `cup` binary, manifest, checksum files and uninstall script. It first creates only the bootstrap portion of the canonical root:
+The installer belongs to one release. The documented `latest` URL fetches the installer from the latest stable release, but the installer itself downloads the binary, manifest, checksum files and uninstall script from its own immutable `vX.Y.Z` release URL and verifies the published SHA-256 files before committing them. It first creates only the bootstrap portion of the canonical root:
 
 ```text
 ~/.cup/bin
@@ -92,10 +92,10 @@ The complete runtime tree, including `components`, `tmp`, `cache`, `state.txt` a
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\install-cup.ps1"
 ```
 
-The installer verifies the published SHA-256 files and installs the bootstrap files under `%USERPROFILE%\.cup`: the executable, manifest, checksum files and uninstall script. The complete runtime tree, including state and lock files, is initialized by the first operational command or by `cup repair`. The manifest, checksum files and uninstall script are protected with the Windows read-only attribute.
+The installer belongs to one release. The documented `latest` URL fetches the installer from the latest stable release, but the installer itself downloads the executable, manifest, checksum files and uninstall script from its own immutable `vX.Y.Z` release URL and verifies the published SHA-256 files before committing them under `%USERPROFILE%\.cup`. The complete runtime tree, including state and lock files, is initialized by the first operational command or by `cup repair`. The manifest, checksum files and uninstall script are protected with the Windows read-only attribute.
 
 It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 
@@ -104,7 +104,7 @@ It can also add `%USERPROFILE%\.cup\bin` to the user `PATH`.
 From `cmd.exe`, call the PowerShell installer:
 
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; & $env:TEMP\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\install-cup.ps1"
 ```
 
 ### Windows Git Bash, MSYS2 or Cygwin
@@ -154,19 +154,19 @@ Choose a persistent default and inspect the configured defaults:
 
 ```sh
 cup default compiler gcc@stable
-cup current
-cup current compiler
-cup current --target windows-x64
-```
-
-`cup default` only changes the selected package for one `component + host + target` scope. `cup current` is the read-only view: without filters it lists every configured target scope for the current host, and it can be restricted by component or target. It also verifies and prints the managed commands exposed through `~/.cup/bin`. Native defaults use their declared entry names, while cross-target defaults use `<target>-<entry>` names to avoid collisions.
-
-Explore the manifest catalog or inspect immutable metadata from an installed package:
-
-```sh
 cup info
 cup info compiler
-cup info compiler gcc@stable
+cup info --target windows-x64
+```
+
+`cup default` only changes the selected package for one `component + host + target` scope. `cup info` is the read-only view: without filters it lists every configured target scope for the current host, and it can be restricted by component or target. It also verifies and prints the managed commands exposed through `~/.cup/bin`. Native defaults use their declared entry names, while cross-target defaults use `<target>-<entry>` names to avoid collisions.
+
+Search the manifest catalog or inspect immutable metadata from an installed package:
+
+```sh
+cup search
+cup search compiler
+cup inspect compiler gcc@stable
 ```
 
 Update installed tools to the manifest `stable` release without deleting older versions:
@@ -212,9 +212,11 @@ When `cup` is executed from the repository root during development, it can use `
 
 ## Versioning and releases
 
-Every build embeds a version generated from Git. A clean commit exactly matching a `v<major>.<minor>.<patch>` tag reports the official release version; other commits report the nearest release, first-parent distance, abbreviated commit and optional dirty state. Source archives without Git metadata use an explicit archive development suffix.
+The repository root contains a manually maintained `VERSION` file. A build is an official release only when it is explicitly built in release mode from a clean commit tagged `vX.Y.Z`, and the tag exactly matches `VERSION`. Development builds include the Git distance, abbreviated commit and optional dirty marker; source archives without Git metadata use the explicit `-dev+archive` suffix.
 
-Pushes to `main` first validate the latest curl/Mozilla CA extract. When it differs, the workflow commits only `certs/cacert.pem` as `Update certs` and builds that exact commit. This automation commit is excluded from the version distance. After ten other first-parent commits have accumulated since the latest release tag, a successful workflow publishes the next patch release automatically. Minor and major releases remain explicit choices in the manual workflow. The generated value is shared by `cup --version`, `release.txt` and Windows `VERSIONINFO`; optimized builds made away from a release tag remain development builds.
+Normal pushes to `main` run source CI. The release workflow also starts on `main`, but it publishes only when `VERSION` names a release tag that does not already exist. In that case it tests the source, builds the static release assets, tests those exact generated assets on native runners, creates tag `vX.Y.Z` and then publishes the GitHub Release. Repeated pushes with the same `VERSION` do not recreate or overwrite an existing release.
+
+`self-update` is available only in official builds. It uses the latest release metadata to discover an official version, then downloads checksums and assets from the immutable `vX.Y.Z` release URL. Development builds are rejected, downgrades are not applied, and every replacement remains checksum-verified and transactional.
 
 ## Testing
 
@@ -224,13 +226,23 @@ Run the POSIX regression suites with:
 make test
 ```
 
-The focused test scripts live under `scripts/tests/`. CI runs them natively on both Linux architectures and both macOS architectures, and runs the PowerShell suites under `scripts/tests/windows/` against a native Windows build. Static release assets are built only after all native test jobs succeed.
+All repository test code lives under `scripts/tests/`. The top-level entry points are `unit.sh`, `integration.sh`, `release.sh` and `all.sh`; the subdirectories hold the actual suites:
+
+```text
+scripts/tests/unit/         C unit tests and small repository-policy shell tests
+scripts/tests/integration/  POSIX and Windows CLI integration tests
+scripts/tests/release/      checks for generated release candidates
+scripts/tests/support/      shared test helpers
+scripts/tests/workflow/     thin GitHub Actions helper scripts
+```
+
+C unit tests cover internal modules such as checksum, manifest parsing, text/path/entry parsing and package metadata loading. Shell and PowerShell integration tests exercise `cup` as a real CLI with isolated homes and fixture packages. Source tests and release-asset tests are separate. Release publication occurs only after the exact static assets pass the native matrix.
 
 ## Component packages
 
 `cup` does not build GCC, Clang, GDB, LLDB, LLD or other development tools locally during installation. It consumes prebuilt component archives described by `config/packages.cfg`.
 
-Those archives are produced and released by the separate `cup-components` repository. This repository is responsible for the `cup` executable, the manifest format, local installation state, package validation and user-space installation logic; `cup-components` is responsible for building, testing and packaging the tool archives that `cup` downloads.
+Those archives are produced and released by the separate `cup-components` repository. This repository is responsible for the `cup` executable, the manifest format, local installation state, package validation, SHA-256 verification and user-space installation logic; `cup-components` is responsible for building, testing and packaging the tool archives that `cup` downloads.
 
 ## Documentation
 

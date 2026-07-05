@@ -35,8 +35,9 @@ cup install <component> <tool>@<release> [--target <target-platform>] [--format|
 cup update <tool|component>
 cup remove <component> <tool>@<release> [--target <target-platform>]
 cup default <component> <tool>@<release> [--target <target-platform>]
-cup current [<component>] [--target <target-platform>]
-cup info [<component> [<tool>@<release>]] [--target <target-platform>]
+cup info [<component>] [--target <target-platform>]
+cup search [<component>] [--target <target-platform>]
+cup inspect <component> <tool>@<release> [--target <target-platform>]
 cup self-update
 cup doctor
 cup repair
@@ -195,6 +196,7 @@ available_versions
 default_format
 formats
 url_template
+checksum_url_template
 ```
 
 Example:
@@ -205,9 +207,10 @@ compiler.gcc.linux-x64.windows-x64.available_versions=16.1.0-rev1
 compiler.gcc.linux-x64.windows-x64.default_format=tar.gz
 compiler.gcc.linux-x64.windows-x64.formats=tar.xz,tar.gz,zip
 compiler.gcc.linux-x64.windows-x64.url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/gcc-{version}-{host_platform}-{target_platform}.{format}
+compiler.gcc.linux-x64.windows-x64.checksum_url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/SHA256SUMS
 ```
 
-`url_template` supports these placeholders:
+`url_template` and `checksum_url_template` support these placeholders:
 
 ```text
 {tool}
@@ -217,13 +220,13 @@ compiler.gcc.linux-x64.windows-x64.url_template=https://github.com/coffee-clang/
 {format}
 ```
 
-Manifest validation rejects malformed keys, unknown fields, empty values, duplicate keys, invalid component/tool pairs, invalid platforms, invalid archive formats and unsupported placeholders.
+Manifest validation rejects malformed keys, unknown or missing fields, empty values, duplicate keys, invalid component/tool pairs, invalid platforms, invalid archive formats, non-HTTPS URLs and unsupported placeholders. Every package entry must provide a checksum URL so downloaded and cached archives can be verified before extraction.
 
 The manifest is required for package resolution. If `~/.cup/config/packages.cfg` is missing, development builds can fall back to `./config/packages.cfg` from the current repository checkout.
 
 ## 5. Network and certificate handling
 
-Package downloads are implemented in `src/fetch.c` with libcurl. The downloader writes to an exclusive temporary file, requires a successful HTTP 200 response and non-empty content, synchronizes the file, validates package archives completely, and atomically replaces the deterministic cache path. It follows HTTPS release asset redirects, reports HTTP/network failures and cooperates with interrupt handling so partial downloads are removed after failure or interruption.
+Package and release downloads are implemented in `src/fetch.c` with libcurl. The downloader requires HTTPS, allows only HTTPS redirects, applies separate connection and total timeouts, enforces size limits for metadata, bootstrap assets and component archives, writes to an exclusive temporary file and removes partial data after failure or interruption. Component archives, including existing cache entries, are verified against the release's `SHA256SUMS` before extraction; a mismatching cache entry is discarded rather than trusted.
 
 The project embeds a CA bundle generated from the versioned source file:
 
@@ -231,7 +234,7 @@ The project embeds a CA bundle generated from the versioned source file:
 certs/cacert.pem
 ```
 
-During each configured build, `scripts/certs/generate-ca-bundle.sh` deterministically writes `ca_bundle.h` and `ca_bundle.c` under `build/<platform>/<link-mode>/generated`. These generated files are not tracked. Before a push or manually requested release build proceeds on `main`, the workflow runs `scripts/certs/update-ca-bundle.sh`. If the validated curl/Mozilla extract differs, the workflow commits only `certs/cacert.pem` as `Update certs`, pushes that commit and makes every test, platform build and release job use the resulting commit. Local and pull-request builds continue to use the versioned PEM without requiring network access. When `CUP_USE_EMBEDDED_CA_BUNDLE` is enabled, `fetch.c` passes the generated in-memory bundle to libcurl instead of depending on a distribution-specific certificate file path.
+During each configured build, `scripts/certs/generate-ca-bundle.sh` deterministically writes `ca_bundle.h` and `ca_bundle.c` under `build/<platform>/<link-mode>/generated`. These generated files are not tracked. The versioned PEM is updated explicitly with `make update-ca-bundle`, validated before replacement and committed before creating a release tag. Source tests and release builds therefore use the exact PEM stored in the selected commit and do not mutate that commit during CI. When `CUP_USE_EMBEDDED_CA_BUNDLE` is enabled, `fetch.c` passes the generated in-memory bundle to libcurl instead of depending on a distribution-specific certificate file path.
 
 This is part of the executable design, not part of component packaging. It helps the released `cup` binary remain independent from build-machine paths and from platform-specific CA bundle locations where the selected libcurl backend requires an explicit certificate bundle.
 
@@ -387,7 +390,7 @@ contents.self_contained=true
 config.languages=c,c++,lto
 ```
 
-`cup info` prints this metadata for an installed package.
+`cup inspect <component> <tool>@<release>` prints this metadata for an installed package.
 
 `cup doctor` validates installed package metadata, its correspondence with the canonical path, all declared executable entries and the read-only protection. `cup` never rewrites individual `info.txt` fields; an invalid metadata file requires recovery or replacement of the complete package.
 
@@ -446,7 +449,7 @@ removes temporary files
 
 If state saving fails before the state commit, `cup` attempts to move the package back to its original install path. Rollback errors preserve the journal and temporary package for deterministic recovery instead of hiding the incomplete operation. Removal remains available for a package recorded in state even when its canonical on-disk object is corrupted.
 
-## 11. Default and current
+## 11. Default and info
 
 `cup default` is a mutating command. It selects one installed package as the default for a `component + host + target` scope and rebuilds the managed entry points derived from the resulting state. The first installation in a scope still creates its default automatically; later installations do not replace an existing choice.
 
@@ -455,18 +458,18 @@ cup default compiler gcc@stable
 cup default compiler gcc@stable --target windows-x64
 ```
 
-`cup current` is the read-only view of those defaults. Without filters it includes every target scope configured for the current host. A component or `--target` restricts the view. Each entry is validated against the installed package and the managed commands currently exposed through `~/.cup/bin`.
+`cup info` is the read-only view of those defaults. Without filters it includes every target scope configured for the current host. A component or `--target` restricts the view. Each entry is validated against the installed package and the managed commands currently exposed through `~/.cup/bin`.
 
 ```sh
-cup current
-cup current compiler
-cup current --target windows-x64
-cup current compiler --target windows-x64
+cup info
+cup info compiler
+cup info --target windows-x64
+cup info compiler --target windows-x64
 ```
 
 A default must point to an installed package whose canonical directory and metadata pass complete validation. Managed wrappers are planned once from the candidate state, validated before the state commit and then applied from that same immutable plan. Native entries keep their declared names; cross-target entries are prefixed with `<target>-`. `doctor` diagnoses missing, altered and stale wrappers, while `repair` rebuilds them from `state.txt`.
 
-## 12. List and info
+## 12. List, search and inspect
 
 `cup list` prints packages installed for the current host and selected target. It can be restricted to one component and annotates defaults, manifest-stable releases, missing packages and invalid packages.
 
@@ -476,26 +479,26 @@ cup list compiler
 cup list --target windows-x64
 ```
 
-`cup info` without a concrete package reads the manifest catalog. With no positional arguments it groups all installable tools for the current host by component; with a component it restricts the catalog. `--target` can restrict either catalog form.
+`cup search` reads the manifest catalog. With no positional arguments it groups all installable tools for the current host by component; with a component it restricts the catalog. `--target` can restrict either form.
 
 ```sh
-cup info
-cup info compiler
-cup info compiler --target windows-x64
+cup search
+cup search compiler
+cup search compiler --target windows-x64
 ```
 
-With `<component> <tool>@<release>`, `cup info` resolves the requested release, requires the package to be installed and valid, then prints the immutable `info.txt` metadata supplied by `cup-components`.
+`cup inspect <component> <tool>@<release>` resolves the requested release, requires the package to be installed and valid, then prints the immutable `info.txt` metadata supplied by `cup-components`.
 
 ```sh
-cup info compiler clang@stable
-cup info compiler gcc@16.1.0-rev1 --target windows-x64
+cup inspect compiler clang@stable
+cup inspect compiler gcc@16.1.0-rev1 --target windows-x64
 ```
 
 ## 12.1 Update and self-update
 
 `cup update <tool>` identifies every installed host/target scope of that tool. `cup update <component>` does the same for every installed tool in the component. Each scope is then re-read and updated while holding one exclusive lock: the active manifest `stable` version is installed idempotently when absent, previous versions are retained, and the default moves only when it still belongs to the same tool. This avoids applying stale conclusions from the initial scan. A component-wide update is atomic per scope, not across every tool in the component.
 
-`cup self-update` downloads `release.txt` and the published platform checksum file, requires an official semantic version that is not older than the embedded version, and validates the exact platform asset set. When an update or bootstrap repair is needed, it downloads and verifies the executable and uninstall script, persists a `self-update` transaction in the existing journal, and starts a deferred helper. After the current process exits, the helper reacquires the operating-system lock, backs up all canonical assets, replaces the executable, uninstall script and platform checksum as one recoverable operation, records the commit, clears the journal and removes staging. `repair` deterministically rolls back or completes an interrupted self-update from the same journal.
+`cup self-update` is available only in official release builds. It first reads the small `release.txt` asset through GitHub's `latest` alias to discover an official `X.Y.Z` version. Bootstrap installers are different: each generated installer already embeds its own `vX.Y.Z` release URL, so a script downloaded from an older tag installs that older tag. It rejects malformed metadata and development builds, treats an equal version as already current, and refuses downgrades. All checksums and replacement assets are then fetched from the immutable `vX.Y.Z` release URL, so an incomplete or changing `latest` alias cannot mix generations. The downloaded metadata, executable and uninstall script must all match the published platform checksum file. The command persists a `self-update` transaction in the existing journal and starts a deferred helper. After the current process exits, the helper reacquires the operating-system lock, backs up all canonical assets, replaces the executable, uninstall script and platform checksum as one recoverable operation, records the commit, clears the journal and removes staging. `repair` deterministically rolls back or completes an interrupted self-update from the same journal.
 
 ## 13. Doctor and repair
 
@@ -531,8 +534,8 @@ The uninstall command intentionally does not remove shell or user PATH entries. 
 The implementation is split by responsibility:
 
 ```text
-main.c / options.c
-  command dispatch and CLI option parsing
+main.c
+  command dispatch and Argtable3 CLI parsing
 
 command_context.c
   shared platform, state, manifest and lock context
@@ -541,7 +544,7 @@ commands_install.c / commands_remove.c / commands_update.c
   install, remove and stable update orchestration
 
 commands_state.c / entrypoints.c
-  list, default, current, info and managed command wrappers
+  search, list, default, info, inspect and managed command wrappers
 
 self_update.c
   checksum-verified replacement of canonical platform bootstrap assets
@@ -576,9 +579,9 @@ entry.c / path.c / registry.c / platform.c / interrupt.c
 
 ## 16. Build version model
 
-The build generates `version.h`, `release.txt` and the Windows version resource from one Git-derived value. A clean commit exactly matching `v<major>.<minor>.<patch>` is an official release. Other commits use a development identifier containing the nearest release, first-parent distance, abbreviated commit and optional dirty state. A source archive without Git metadata receives an archive development suffix unless `CUP_VERSION_OVERRIDE` supplies an official version.
+The root `VERSION` file is the single manually maintained official version. The build generates `version.h`, `release.txt` and the Windows version resource from that value. A build is official only when release mode is requested explicitly, the working tree is clean, and `HEAD` is exactly tagged `vX.Y.Z` with the same `X.Y.Z` stored in `VERSION`. Other Git builds use `X.Y.Z-dev.N+commit` with an optional `.dirty` suffix; a source archive without Git metadata always uses `X.Y.Z-dev+archive`.
 
-The release workflow runs for every push to `main`. It first refreshes the versioned CA bundle and, when needed, creates an `Update certs` commit that is excluded from the release-distance count. If at least ten other first-parent commits have accumulated since the latest release tag and all tests and platform builds succeed, the workflow creates the next patch tag on the exact commit that was built and publishes the coherent asset set. Minor and major increments are explicit manual workflow choices. `BUILD_MODE=release` controls optimization only; it does not by itself turn an arbitrary commit into an official release.
+The release cycle is deliberate but automated from `VERSION`: update `VERSION`, finish the development commits and push to `main`. The release workflow reads `VERSION`; if tag `vX.Y.Z` already exists, it publishes nothing, while a new `VERSION` is treated as a release candidate. The workflow tests the source, builds the static assets, tests those exact generated assets natively, then creates tag `vX.Y.Z` and publishes the complete release only after all checks pass. There is no commit-count or automatic patch increment. `BUILD_MODE=release` controls optimization only; it does not by itself turn an arbitrary commit into an official release.
 
 ## 17. Design boundaries
 
@@ -592,7 +595,7 @@ no writes to system toolchain directories
 no local builds of component tools during install
 no dependency solving between independently installed packages
 no automatic PATH cleanup during uninstall
-no package trust model beyond configured release URLs and archive validation
+no signature infrastructure beyond HTTPS and published SHA-256 release checksums
 ```
 
 Package completeness is the responsibility of `cup-components`. Local installation correctness, metadata validation and state consistency are the responsibility of `cup`.

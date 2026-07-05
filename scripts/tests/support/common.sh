@@ -2,8 +2,8 @@
 
 # Shared helpers for the POSIX test suites. This file is sourced, not executed.
 
-TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PROJECT_ROOT=$(CDPATH= cd -- "$TEST_SCRIPT_DIR/../.." && pwd)
+: "${TEST_SCRIPT_DIR:=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
+PROJECT_ROOT=$(CDPATH= cd -- "$TEST_SCRIPT_DIR/../../.." && pwd)
 
 fail() {
     printf 'TEST FAILED: %s\n' "$*" >&2
@@ -185,6 +185,9 @@ SCRIPT
     done
 
     tar -czf "$archive" -C "$TMP_ROOT/packages" "$package_name"
+    {
+        printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")"
+    } > "$cache_dir/SHA256SUMS"
 }
 
 native_entrypoint_path() {

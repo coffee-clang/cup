@@ -38,9 +38,16 @@ typedef enum {
 
     // PACKAGE TRANSFER / ARCHIVES
     CUP_ERR_FETCH,
+    CUP_ERR_TLS,
+    CUP_ERR_TIMEOUT,
+    CUP_ERR_DOWNLOAD_TOO_LARGE,
     CUP_ERR_ARCHIVE,
     CUP_ERR_ARCHIVE_UNSAFE,
     CUP_ERR_EXTRACT,
+
+    // RESERVED: keep the historical numeric exit code stable even though
+    // SHA-256 no longer uses an external cryptographic provider.
+    CUP_ERR_CRYPTO,
 
     // INSTALL VALIDATION / TRANSACTIONS
     CUP_ERR_VALIDATION,

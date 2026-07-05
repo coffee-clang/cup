@@ -29,6 +29,7 @@ typedef struct {
     PackageIdentity package;
     char format[MAX_NAME_LEN];
     char url[MAX_MANIFEST_URL_LEN];
+    char checksum_url[MAX_MANIFEST_URL_LEN];
     char archive_path[MAX_PATH_LEN];
     char staging_path[MAX_PATH_LEN];
     char install_path[MAX_PATH_LEN];
@@ -264,10 +265,18 @@ static CupError extract_install_package(InstallOperation *operation) {
     if (err != CUP_OK) {
         return err;
     }
+    err = manifest_build_checksum_url(&operation->context.manifest,
+        operation->checksum_url, sizeof(operation->checksum_url),
+        operation->package.component, operation->package.tool,
+        operation->package.host_platform, operation->package.target_platform,
+        operation->package.version);
+    if (err != CUP_OK) {
+        return err;
+    }
 
     err = fetch_package(operation->archive_path,
         sizeof(operation->archive_path), operation->url,
-        &operation->package, operation->format,
+        operation->checksum_url, &operation->package, operation->format,
         FETCH_ALLOW_CACHE, &source);
     if (err != CUP_OK) {
         return err;
@@ -300,7 +309,7 @@ static CupError extract_install_package(InstallOperation *operation) {
 
         err = fetch_package(operation->archive_path,
             sizeof(operation->archive_path), operation->url,
-            &operation->package, operation->format,
+            operation->checksum_url, &operation->package, operation->format,
             FETCH_REFRESH_CACHE, &source);
         if (err != CUP_OK) {
             return err;
@@ -405,6 +414,7 @@ static CupError commit_existing_update(InstallOperation *operation) {
 static CupError commit_install(InstallOperation *operation) {
     CupState candidate;
     CupError err;
+    int cleanup_failed = 0;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
     printf("==> Committing installation...\n");
@@ -453,6 +463,7 @@ static CupError commit_install(InstallOperation *operation) {
         fprintf(stderr,
             "Warning: installation committed, but transaction cleanup failed. "
             "Run 'cup repair'.\n");
+        cleanup_failed = 1;
     } else {
         operation->journal_started = 0;
     }
@@ -467,7 +478,7 @@ static CupError commit_install(InstallOperation *operation) {
         }
     }
 
-    return CUP_OK;
+    return cleanup_failed ? CUP_ERR_COMMIT : CUP_OK;
 }
 
 static CupError rollback_install(InstallOperation *operation) {

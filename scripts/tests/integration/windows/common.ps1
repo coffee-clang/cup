@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $Script:CupTestScriptDir = $PSScriptRoot
-$Script:CupTestProjectRoot = (Resolve-Path (Join-Path $Script:CupTestScriptDir "..\..\..")).Path
+$Script:CupTestProjectRoot = (Resolve-Path (Join-Path $Script:CupTestScriptDir "..\..\..\..")).Path
 $Script:CupTestExecutable = $null
 $Script:CupTestRoot = $null
 $Script:CupTestHome = $null

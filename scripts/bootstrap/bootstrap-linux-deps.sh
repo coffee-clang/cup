@@ -9,6 +9,7 @@ DEPS_ROOT="${DEPS_ROOT:-$HOME/deps/$PLATFORM}"
 SRC_DIR="$DEPS_ROOT/src"
 BUILD_DIR="$DEPS_ROOT/build"
 PREFIX="${PREFIX:-$DEPS_ROOT/install}"
+DEPS_SCOPE="${CUP_DEPS_SCOPE:-release}"
 
 JOBS="${JOBS:-$(nproc)}"
 
@@ -182,6 +183,8 @@ verify() {
 
 main() {
     signature="$(dependency_signature "$PLATFORM" "${CC:-cc}")"
+    signature="$signature
+scope=$DEPS_SCOPE"
     require_tool "${CC:-cc}"
     require_tool "curl"
     require_tool "tar"
@@ -193,11 +196,24 @@ main() {
     prepare_dependency_prefix "$PREFIX" "$signature"
     mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
 
+    if [ "$DEPS_SCOPE" = development ]; then
+        build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+            "${CC:-cc}" "${AR:-ar}" "${RANLIB:-ranlib}"
+        finish_dependency_prefix "$PREFIX"
+        exit 0
+    fi
+    [ "$DEPS_SCOPE" = release ] || {
+        echo "Error: CUP_DEPS_SCOPE must be development or release." >&2
+        exit 1
+    }
+
     build_zlib
     build_xz
     build_openssl
     build_curl
     build_libarchive
+    build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+        "${CC:-cc}" "${AR:-ar}" "${RANLIB:-ranlib}"
     verify
     finish_dependency_prefix "$PREFIX"
 }

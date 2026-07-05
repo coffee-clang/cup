@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$SCRIPT_DIR/common.sh"
+TEST_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TEST_SCRIPT_DIR/../support/common.sh"
 
 test_begin recovery
 prepare_command_environment
@@ -22,8 +22,8 @@ install_official_bootstrap_fixture() {
     manifest_hash=$(hash_file "$TEST_HOME/.cup/config/packages.cfg")
     uninstall_hash=$(hash_file "$TEST_HOME/.cup/scripts/uninstall.sh")
     metadata='format=1
-version=0.1.0
-commit=test
+version=0.2.0
+commit=abcdef0
 '
     metadata_hash=$(hash_text "$metadata")
 
