@@ -9,20 +9,16 @@ version=$(./scripts/version.sh base)
 tag="v$version"
 sha=$(git rev-parse HEAD)
 
-release_needed=1
+VERSION=$version TAG=$tag SHA=$sha validate_release_inputs
+
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-    release_needed=0
+    fail "remote tag $tag already exists; refusing to build duplicate release assets"
 fi
 
 {
     printf 'version=%s\n' "$version"
     printf 'tag=%s\n' "$tag"
     printf 'sha=%s\n' "$sha"
-    printf 'release_needed=%s\n' "$release_needed"
 } >> "$GITHUB_OUTPUT"
 
-if [ "$release_needed" -eq 1 ]; then
-    info "Release candidate detected: $tag at $sha."
-else
-    info "Tag $tag already exists; release workflow will stop after this check."
-fi
+info "Release candidate: $tag at $sha."

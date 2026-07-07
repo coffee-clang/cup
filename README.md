@@ -214,7 +214,7 @@ When `cup` is executed from the repository root during development, it can use `
 
 The repository root contains a manually maintained `VERSION` file. A build is an official release only when it is explicitly built in release mode from a clean commit tagged `vX.Y.Z`, and the tag exactly matches `VERSION`. Development builds include the Git distance, abbreviated commit and optional dirty marker; source archives without Git metadata use the explicit `-dev+archive` suffix.
 
-Normal pushes to `main` run source CI. The release workflow also starts on `main`, but it publishes only when `VERSION` names a release tag that does not already exist. In that case it tests the source, builds the static release assets, tests those exact generated assets on native runners, creates tag `vX.Y.Z` and then publishes the GitHub Release. Repeated pushes with the same `VERSION` do not recreate or overwrite an existing release.
+The release cycle is explicit and uses `VERSION` as the only version input. `build-release.yml` is started manually; it reads `VERSION`, refuses to build if tag `vX.Y.Z` already exists, builds the static release candidate assets and stores them as GitHub Actions artifacts together with `candidate.env`. `test-release.yml` is the only test workflow: it can run source tests manually, or it can test a release candidate either automatically after `build-release.yml` completes or manually from a selected build run id. Only after the candidate assets pass the native release tests does it create tag `vX.Y.Z` and publish the GitHub Release.
 
 `self-update` is available only in official builds. It uses the latest release metadata to discover an official version, then downloads checksums and assets from the immutable `vX.Y.Z` release URL. Development builds are rejected, downgrades are not applied, and every replacement remains checksum-verified and transactional.
 
@@ -236,7 +236,7 @@ scripts/tests/support/      shared test helpers
 scripts/tests/workflow/     thin GitHub Actions helper scripts
 ```
 
-C unit tests cover internal modules such as checksum, manifest parsing, text/path/entry parsing and package metadata loading. Shell and PowerShell integration tests exercise `cup` as a real CLI with isolated homes and fixture packages. Source tests and release-asset tests are separate. Release publication occurs only after the exact static assets pass the native matrix.
+C unit tests cover internal modules such as checksum, manifest parsing, text/path/entry parsing and package metadata loading. Shell and PowerShell integration tests exercise `cup` as a real CLI with isolated homes and fixture packages. Source tests and release-asset tests are both owned by `test-release.yml`. Release publication occurs only after the exact static assets from a selected `build-release.yml` run pass the native matrix.
 
 ## Component packages
 

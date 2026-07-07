@@ -1,0 +1,91 @@
+name: Build release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve release candidate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      sha: ${{ steps.prepare.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: prepare
+        run: scripts/tests/workflow/release-prepare.sh
+
+  common-assets:
+    name: Prepare common release assets
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - name: Prepare common assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: scripts/tests/workflow/release-common-assets.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-release-common
+          path: dist/common/*
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    name: Build release asset (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+          - platform: windows-x64
+            runner: ubuntu-latest
+            family: windows
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - name: Build release asset
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          FAMILY: ${{ matrix.family }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: scripts/tests/workflow/release-build-platform.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-release-${{ matrix.platform }}
+          path: dist/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 14

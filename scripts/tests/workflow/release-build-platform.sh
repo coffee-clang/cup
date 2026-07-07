@@ -40,20 +40,15 @@ mkdir -p "dist/$PLATFORM"
 
 if [ "$PLATFORM" = windows-x64 ]; then
     cp "build/$PLATFORM/static/bin/cup.exe" "dist/$PLATFORM/cup-$PLATFORM.exe"
-    cp scripts/install/uninstall-cup-windows.ps1 "dist/$PLATFORM/uninstall.ps1"
     binary="cup-$PLATFORM.exe"
-    uninstall="uninstall.ps1"
 else
     cp "build/$PLATFORM/static/bin/cup" "dist/$PLATFORM/cup-$PLATFORM"
-    cp scripts/install/uninstall-cup.sh "dist/$PLATFORM/uninstall.sh"
-    chmod +x "dist/$PLATFORM/cup-$PLATFORM" "dist/$PLATFORM/uninstall.sh"
+    chmod +x "dist/$PLATFORM/cup-$PLATFORM"
     binary="cup-$PLATFORM"
-    uninstall="uninstall.sh"
 fi
 
-cp "build/$PLATFORM/static/generated/release.txt" "dist/$PLATFORM/release.txt"
 checksum=$(checksum_command)
-(cd "dist/$PLATFORM" && $checksum "$binary" "$uninstall" release.txt > "SHA256SUMS.$PLATFORM")
+(cd "dist/$PLATFORM" && $checksum "$binary" > "SHA256SUMS.$PLATFORM")
 
 if [ "$FAMILY" != windows ]; then
     "dist/$PLATFORM/$binary" --version

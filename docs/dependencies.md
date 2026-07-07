@@ -345,14 +345,14 @@ build/windows-x64/static/bin/cup.exe
 The workflow set is intentionally small:
 
 ```text
-.github/workflows/ci.yml
-.github/workflows/release.yml
+.github/workflows/build-release.yml
+.github/workflows/test-release.yml
 .github/workflows/static.yml
 ```
 
-`ci.yml` runs on normal pushes and pull requests. It builds from source and runs the source test suites, but never publishes a release.
+`build-release.yml` is started manually when a release candidate is needed. It reads the root `VERSION` file as the only version input, validates the corresponding `v<VERSION>` tag does not already exist, builds the static release assets and uploads them as GitHub Actions artifacts. The artifacts include `candidate.env`, which records the version, tag and commit that every later test and publish step must use.
 
-`release.yml` also runs on pushes to `main`, but first reads the root `VERSION` file and checks whether remote tag `v<VERSION>` already exists. If the tag exists, it stops without publishing. If the tag does not exist, it treats the pushed commit as a release candidate: it runs source tests, builds the static assets, tests the generated assets natively, then creates tag `v<VERSION>` and publishes the GitHub Release only after all tests pass. Actions artifacts are used only as temporary transport between jobs inside the release workflow; the distributed files are GitHub Release assets.
+`test-release.yml` owns all repository tests. In manual `source` mode it checks the current source tree without publishing anything. In `candidate` mode it downloads the artifacts from a selected `build-release.yml` run, verifies `candidate.env`, checks the candidate assets natively and publishes the official GitHub Release only after those exact assets pass. The same candidate mode also runs automatically when `build-release.yml` completes successfully. Actions artifacts are temporary release candidates; GitHub Release assets are created only for a verified official release.
 
 `static.yml` remains the documentation/static web workflow and was intentionally not renamed.
 
@@ -370,6 +370,7 @@ install.ps1
 uninstall.sh
 uninstall.ps1
 release.txt
+candidate.env
 SHA256SUMS.common
 SHA256SUMS.<platform>
 ```
@@ -386,7 +387,7 @@ make test
 
 All repository test code is kept under `scripts/tests/`. The stable entry points are `unit.sh`, `integration.sh`, `release.sh` and `all.sh`; the subdirectories divide the actual coverage by responsibility: `unit/` contains C unit tests and small repository-policy shell tests, `integration/` contains POSIX and Windows CLI tests with isolated homes and fixture packages, `release/` checks generated candidate assets, `support/` contains shared helpers and `workflow/` contains the thin scripts called by GitHub Actions. Linux runs the build checks with GCC and Clang; macOS uses Clang. Each focused suite can also be executed independently.
 
-The workflow executes those POSIX suites natively on Linux x64, Linux ARM64, macOS x64 and macOS ARM64. The PowerShell suite under `scripts/tests/integration/windows/` builds and runs the Windows executable on `windows-latest`, exercising native state, command and `.cmd` entry-point behavior. The optimized static release jobs run only after the relevant source tests succeed, and release publication occurs only after the generated release assets pass native tests.
+`test-release.yml` executes the POSIX source suites natively on Linux x64, Linux ARM64, macOS x64 and macOS ARM64 when run in source mode. The PowerShell suite under `scripts/tests/integration/windows/` builds and runs the Windows executable on `windows-latest`, exercising native state, command and `.cmd` entry-point behavior. In candidate mode, the same workflow downloads a chosen build artifact set and publishes only after the generated release assets pass native tests.
 
 The destructive development cleanup target is guarded explicitly:
 

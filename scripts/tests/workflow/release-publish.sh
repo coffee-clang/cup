@@ -17,9 +17,10 @@ if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; the
 fi
 
 for asset in \
+    candidate.env packages.cfg release.txt install.sh install.ps1 \
+    uninstall.sh uninstall.ps1 \
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64 \
-    cup-windows-x64.exe packages.cfg release.txt install.sh install.ps1 \
-    uninstall.sh uninstall.ps1 SHA256SUMS.common \
+    cup-windows-x64.exe SHA256SUMS.common \
     SHA256SUMS.linux-x64 SHA256SUMS.linux-arm64 \
     SHA256SUMS.macos-x64 SHA256SUMS.macos-arm64 \
     SHA256SUMS.windows-x64; do
@@ -31,6 +32,9 @@ test "$(sed -n 's/^version=//p' "$dist/release.txt")" = "$VERSION"
 test "$(sed -n 's/^commit=//p' "$dist/release.txt")" = "$SHA"
 test "$(wc -l < "$dist/release.txt" | tr -d '[:space:]')" = 3
 
+grep -F "VERSION=$VERSION" "$dist/candidate.env"
+grep -F "TAG=$TAG" "$dist/candidate.env"
+grep -F "SHA=$SHA" "$dist/candidate.env"
 grep -F "CUP_RELEASE_VERSION=\"$VERSION\"" "$dist/install.sh"
 grep -F "CUP_RELEASE_TAG=\"$TAG\"" "$dist/install.sh"
 grep -F "CUP_RELEASE_COMMIT=\"$SHA\"" "$dist/install.sh"
