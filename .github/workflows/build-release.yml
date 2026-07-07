@@ -1,6 +1,9 @@
 name: Build release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -18,6 +21,7 @@ jobs:
       version: ${{ steps.prepare.outputs.version }}
       tag: ${{ steps.prepare.outputs.tag }}
       sha: ${{ steps.prepare.outputs.sha }}
+      should_release: ${{ steps.prepare.outputs.should_release }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,9 +29,33 @@ jobs:
       - id: prepare
         run: scripts/tests/workflow/release-prepare.sh
 
+  decision:
+    name: Store release decision
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - name: Store release decision
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          SHOULD_RELEASE: ${{ needs.prepare.outputs.should_release }}
+        run: scripts/tests/workflow/release-decision-assets.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-release-decision
+          path: dist/decision/*
+          if-no-files-found: error
+          retention-days: 14
+
   common-assets:
     name: Prepare common release assets
     needs: prepare
+    if: needs.prepare.outputs.should_release == '1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -50,6 +78,7 @@ jobs:
   build:
     name: Build release asset (${{ matrix.platform }})
     needs: prepare
+    if: needs.prepare.outputs.should_release == '1'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

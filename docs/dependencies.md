@@ -350,9 +350,9 @@ The workflow set is intentionally small:
 .github/workflows/static.yml
 ```
 
-`build-release.yml` is started manually when a release candidate is needed. It reads the root `VERSION` file as the only version input, validates the corresponding `v<VERSION>` tag does not already exist, builds the static release assets and uploads them as GitHub Actions artifacts. The artifacts include `candidate.env`, which records the version, tag and commit that every later test and publish step must use.
+`build-release.yml` starts on pushes to `main` and can also be started manually. It reads the root `VERSION` file as the only version input, writes a release-decision artifact, and builds static release assets only if the corresponding `v<VERSION>` tag does not already exist. Candidate artifacts include `candidate.env`, which records the version, tag and commit that every later test and publish step must use.
 
-`test-release.yml` owns all repository tests. In manual `source` mode it checks the current source tree without publishing anything. In `candidate` mode it downloads the artifacts from a selected `build-release.yml` run, verifies `candidate.env`, checks the candidate assets natively and publishes the official GitHub Release only after those exact assets pass. The same candidate mode also runs automatically when `build-release.yml` completes successfully. Actions artifacts are temporary release candidates; GitHub Release assets are created only for a verified official release.
+`test-release.yml` owns all repository tests. In manual `source` mode it checks the current source tree without publishing anything. In `candidate` mode it downloads the artifacts from a selected `build-release.yml` run, reads the release decision, verifies `candidate.env` when a candidate exists, checks the candidate assets natively and publishes the official GitHub Release only after those exact assets pass. The same candidate mode also runs automatically when `build-release.yml` completes successfully. Actions artifacts are temporary release candidates or no-op release decisions; GitHub Release assets are created only for a verified official release.
 
 `static.yml` remains the documentation/static web workflow and was intentionally not renamed.
 

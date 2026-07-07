@@ -131,6 +131,7 @@ jobs:
     if: needs.resolve.outputs.mode == 'candidate'
     runs-on: ubuntu-latest
     outputs:
+      should_release: ${{ steps.info.outputs.should_release }}
       version: ${{ steps.info.outputs.version }}
       tag: ${{ steps.info.outputs.tag }}
       sha: ${{ steps.info.outputs.sha }}
@@ -148,7 +149,7 @@ jobs:
   native-test:
     name: Test release asset (${{ matrix.platform }})
     needs: [resolve, candidate-info]
-    if: needs.resolve.outputs.mode == 'candidate'
+    if: needs.resolve.outputs.mode == 'candidate' && needs.candidate-info.outputs.should_release == '1'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -199,7 +200,7 @@ jobs:
   publish:
     name: Publish release
     needs: [resolve, candidate-info, native-test]
-    if: needs.resolve.outputs.mode == 'candidate'
+    if: needs.resolve.outputs.mode == 'candidate' && needs.candidate-info.outputs.should_release == '1'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
