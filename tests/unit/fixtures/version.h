@@ -1,0 +1,12 @@
+#ifndef CUP_TEST_VERSION_H
+#define CUP_TEST_VERSION_H
+
+#define CUP_VERSION "1.2.3"
+#define CUP_VERSION_BASE "1.2.3"
+#define CUP_VERSION_COMMIT "abcdef0"
+#define CUP_VERSION_OFFICIAL 1
+#define CUP_VERSION_MAJOR 1
+#define CUP_VERSION_MINOR 2
+#define CUP_VERSION_PATCH 3
+
+#endif

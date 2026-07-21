@@ -1,28 +1,53 @@
 #ifndef CUP_COMMANDS_H
 #define CUP_COMMANDS_H
 
+/*
+ * Module contract: Public CLI command handlers. Handlers receive already
+ * parsed arguments and
+ * own command-level validation, locking, output, and state transitions.
+ */
+
 #include "error.h"
 
-/* CLI command handlers. */
+/* List installed packages, optionally restricted by component or target. */
 CupError command_list(const char *component, const char *target_override);
-CupError command_install(const char *component, const char *entry,
-    const char *target_override, const char *format_override);
-CupError command_remove(const char *component, const char *entry, const char *target_override);
-CupError command_default(const char *component, const char *entry, const char *target_override);
+
+/* Install one concrete or stable-resolved package. */
+CupError command_install_request(const char *selector,
+                                 const char *value,
+                                 const char *target_override,
+                                 const char *format_override);
+CupError command_install(const char *component,
+                         const char *selector,
+                         const char *target_override,
+                         const char *format_override);
+
+/* Remove one installed package and reconcile its default and launchers. */
+CupError command_remove(const char *component, const char *selector, const char *target_override);
+
+/* Select one installed package as the default of its exact scope. */
+CupError command_default(const char *component, const char *selector, const char *target_override);
+
+/* Show catalog, default, or immutable installed-package information. */
 CupError command_search(const char *component, const char *target_override);
 CupError command_info(const char *component, const char *target_override);
-CupError command_inspect(const char *component, const char *entry,
-    const char *target_override);
+CupError command_inspect(const char *component, const char *selector, const char *target_override);
+
+/* Update selected installed scopes; cup is updated only by selecting cup. */
 CupError command_update(const char *selector);
-CupError command_self_update(void);
+
+/* Update the immutable cup release generation through a deferred commit. */
+CupError command_update_cup(void);
+
+/* Show or modify install-selection preferences. */
+CupError command_config(const char *action,
+                        const char *name,
+                        const char *value,
+                        const char *target_override);
+
+/* CUP assets, diagnosis, recovery, and complete removal. */
 CupError command_doctor(void);
 CupError command_repair(void);
-CupError command_uninstall(void);
-
-/* Internal command operation: ensure a tool's stable release is installed
- * in one scope and move its previous default with compare-and-swap semantics. */
-CupError command_update_scope(const char *component, const char *tool,
-    const char *target_override, const char *expected_default,
-    int *installed, int *default_moved);
+CupError command_uninstall(int assume_yes);
 
 #endif /* CUP_COMMANDS_H */

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Purpose: Fetches optional remote mdBook theme assets for an offline documentation build.
+# It does not alter application or release artifacts.
 set -euo pipefail
 
 # Fetches remote theme assets from coffee-clang.github.io for offline docs builds.

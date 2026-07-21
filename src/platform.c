@@ -1,3 +1,8 @@
+/*
+ * Detects the native host identifier and validates the finite platform set used by package
+ * catalogs, state and release assets.
+ */
+
 #include "platform.h"
 
 #include "constants.h"
@@ -8,19 +13,17 @@
 
 #define MAX_ARCH_ENTRIES_PER_OS 4
 
-// SUPPORTED PLATFORMS
+/* Supported platforms. */
 typedef struct {
     const char *os;
     const char *arch[MAX_ARCH_ENTRIES_PER_OS];
 } SupportedPlatform;
 
-static const SupportedPlatform SUPPORTED_PLATFORMS[] = {
-    { "linux", { "x64", "arm64", NULL } },
-    { "windows", { "x64", NULL } },
-    { "macos", { "x64", "arm64", NULL } }
-};
+static const SupportedPlatform SUPPORTED_PLATFORMS[] = {{"linux", {"x64", "arm64", NULL}},
+                                                        {"windows", {"x64", NULL}},
+                                                        {"macos", {"x64", "arm64", NULL}}};
 
-// PLATFORM LOOKUP
+/* Platform lookup. */
 static const SupportedPlatform *find_supported_os(const char *os) {
     size_t count;
     size_t i;
@@ -40,7 +43,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     return NULL;
 }
 
-// PUBLIC API
+/* Public API. */
 CupError platform_get_host(char *buffer, size_t size) {
     CupError err;
     const char *os;
@@ -77,8 +80,8 @@ CupError platform_validate(const char *platform) {
     const SupportedPlatform *supported;
     TextBuffer split_outputs[2];
     char platform_copy[MAX_PLATFORM_LEN];
-    char os[MAX_NAME_LEN];
-    char arch[MAX_NAME_LEN];
+    char os[MAX_IDENTIFIER_LEN];
+    char arch[MAX_IDENTIFIER_LEN];
     size_t i;
 
     if (text_is_empty(platform)) {

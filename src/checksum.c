@@ -1,3 +1,8 @@
+/*
+ * Parses SHA256SUMS records and compares selected release assets with the in-tree SHA-256
+ * implementation. Filename selection and duplicate handling remain policy in this module.
+ */
+
 #include "checksum.h"
 
 #include "constants.h"
@@ -8,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Digest generation. The embedded SHA-256 implementation keeps checksum behavior independent from
+ * TLS libraries and host configuration. */
 static CupError digest_file(const char *path, unsigned char *digest) {
     Sha256Context context;
     unsigned char buffer[8192];
@@ -51,20 +58,19 @@ static int is_hex_digest(const char *value) {
     }
     for (i = 0; i < SHA256_HEX_LENGTH; ++i) {
         char c = value[i];
-        if (!((c >= '0' && c <= '9') ||
-            (c >= 'a' && c <= 'f') ||
-            (c >= 'A' && c <= 'F'))) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
             return 0;
         }
     }
     return 1;
 }
 
+/* Strict checksum-file parsing. Duplicate, malformed and unsafe path records are rejected instead
+ * of being ignored. */
 static CupError parse_checksum_line(char *line, char **digest, char **name) {
     char *cursor;
 
-    if (line == NULL || digest == NULL || name == NULL ||
-        strlen(line) < SHA256_HEX_LENGTH + 2) {
+    if (line == NULL || digest == NULL || name == NULL || strlen(line) < SHA256_HEX_LENGTH + 2) {
         return CUP_ERR_VALIDATION;
     }
 
@@ -98,7 +104,11 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
     CupError err;
     size_t i;
 
-    if (path == NULL || hex == NULL || size < SHA256_HEX_LENGTH + 1) {
+    if (hex == NULL || size < SHA256_HEX_LENGTH + 1) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    hex[0] = '\0';
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -116,15 +126,20 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
 }
 
 CupError checksum_find_expected(const char *checksum_path,
-    const char *asset_name, char *hex, size_t size) {
+                                const char *asset_name,
+                                char *hex,
+                                size_t size) {
     FILE *file;
     CupError err;
-    char line[MAX_INFO_LINE_LEN];
+    char line[MAX_METADATA_LINE_LEN];
     size_t line_number = 0;
     int found = 0;
 
-    if (checksum_path == NULL || !path_is_safe_segment(asset_name) ||
-        hex == NULL || size < SHA256_HEX_LENGTH + 1) {
+    if (hex == NULL || size < SHA256_HEX_LENGTH + 1) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    hex[0] = '\0';
+    if (text_is_empty(checksum_path) || !path_is_safe_segment(asset_name)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -179,7 +194,9 @@ CupError checksum_find_expected(const char *checksum_path,
 }
 
 CupError checksum_verify_file(const char *checksum_path,
-    const char *asset_name, const char *asset_path, int *matches) {
+                              const char *asset_name,
+                              const char *asset_path,
+                              int *matches) {
     char expected[SHA256_HEX_LENGTH + 1];
     char actual[SHA256_HEX_LENGTH + 1];
     CupError err;
@@ -188,9 +205,12 @@ CupError checksum_verify_file(const char *checksum_path,
         return CUP_ERR_INVALID_INPUT;
     }
     *matches = 0;
+    if (text_is_empty(checksum_path) || !path_is_safe_segment(asset_name) ||
+        text_is_empty(asset_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
-    err = checksum_find_expected(checksum_path, asset_name,
-        expected, sizeof(expected));
+    err = checksum_find_expected(checksum_path, asset_name, expected, sizeof(expected));
     if (err != CUP_OK) {
         return err;
     }
@@ -203,18 +223,20 @@ CupError checksum_verify_file(const char *checksum_path,
     return CUP_OK;
 }
 
-CupError checksum_validate_file(const char *checksum_path,
-    size_t *entry_count) {
+CupError checksum_validate_file(const char *checksum_path, size_t *entry_count) {
     FILE *file;
     CupError err;
-    char line[MAX_INFO_LINE_LEN];
+    char line[MAX_METADATA_LINE_LEN];
     size_t line_number = 0;
     size_t count = 0;
 
-    if (checksum_path == NULL || entry_count == NULL) {
+    if (entry_count == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *entry_count = 0;
+    if (text_is_empty(checksum_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     file = fopen(checksum_path, "r");
     if (file == NULL) {
@@ -254,15 +276,31 @@ CupError checksum_validate_file(const char *checksum_path,
     return CUP_OK;
 }
 
+/* Asset-set validation. Callers provide the exact expected names so an otherwise valid checksum
+ * file cannot authorize extra files. */
 CupError checksum_validate_assets(const char *checksum_path,
-    const char *const *asset_names, size_t asset_count) {
+                                  const char *const *asset_names,
+                                  size_t asset_count) {
     char digest[SHA256_HEX_LENGTH + 1];
     size_t entry_count;
     size_t i;
     CupError err;
 
-    if (checksum_path == NULL || asset_names == NULL || asset_count == 0) {
+    if (text_is_empty(checksum_path) || asset_names == NULL || asset_count == 0) {
         return CUP_ERR_INVALID_INPUT;
+    }
+
+    for (i = 0; i < asset_count; ++i) {
+        size_t j;
+
+        if (!path_is_safe_segment(asset_names[i])) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+        for (j = 0; j < i; ++j) {
+            if (strcmp(asset_names[j], asset_names[i]) == 0) {
+                return CUP_ERR_INVALID_INPUT;
+            }
+        }
     }
 
     err = checksum_validate_file(checksum_path, &entry_count);
@@ -274,8 +312,7 @@ CupError checksum_validate_assets(const char *checksum_path,
     }
 
     for (i = 0; i < asset_count; ++i) {
-        err = checksum_find_expected(checksum_path, asset_names[i],
-            digest, sizeof(digest));
+        err = checksum_find_expected(checksum_path, asset_names[i], digest, sizeof(digest));
         if (err != CUP_OK) {
             return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_VALIDATION;
         }

@@ -1,6 +1,11 @@
 #ifndef CUP_PLATFORM_H
 #define CUP_PLATFORM_H
 
+/*
+ * Module contract: Host-platform detection and finite identifier
+ * validation.
+ */
+
 #include <stddef.h>
 
 #include "error.h"

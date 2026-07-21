@@ -1,3 +1,7 @@
+# Purpose: Detached Windows helper that removes the canonical cup root after
+# the parent process exits.
+# Inputs: canonical root, copied helper path and parent process id.
+
 param(
     [Parameter(Mandatory = $true)]
     [string]$CupRoot,
@@ -6,6 +10,7 @@ param(
     [string]$SelfPath,
 
     [Parameter(Mandatory = $true)]
+    [ValidateRange(1, [int]::MaxValue)]
     [int]$ParentPid
 )
 
@@ -20,12 +25,20 @@ try {
         (Join-Path $env:USERPROFILE ".cup")
     ).TrimEnd('\')
     $requestedRoot = [System.IO.Path]::GetFullPath($CupRoot).TrimEnd('\')
+    $requestedSelf = [System.IO.Path]::GetFullPath($SelfPath)
+    $runningSelf = [System.IO.Path]::GetFullPath($PSCommandPath)
 
     if (-not $requestedRoot.Equals(
         $expectedRoot,
         [System.StringComparison]::OrdinalIgnoreCase
     )) {
         throw "refusing to remove a non-canonical cup root"
+    }
+    if (-not $requestedSelf.Equals(
+        $runningSelf,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "self path does not match the running uninstall helper"
     }
 
     try {
@@ -53,8 +66,8 @@ try {
         Remove-Item -LiteralPath $stagingRoot -Recurse -Force
     }
 
-    if (Test-Path -LiteralPath $SelfPath -PathType Leaf) {
-        Remove-Item -LiteralPath $SelfPath -Force
+    if (Test-Path -LiteralPath $requestedSelf -PathType Leaf) {
+        Remove-Item -LiteralPath $requestedSelf -Force
     }
 
     exit 0

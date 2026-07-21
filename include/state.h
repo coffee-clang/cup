@@ -1,24 +1,25 @@
 #ifndef CUP_STATE_H
 #define CUP_STATE_H
 
+/*
+ * Module contract: Bounded installed/active state model and atomic
+ * state.txt persistence. The in-memory model uses concrete package
+ * identities; the boundary file retains canonical tool@version values.
+ */
+
 #include <stddef.h>
 
 #include "constants.h"
 #include "error.h"
+#include "package.h"
 
+/* In-memory representation of the complete persistent state. */
 typedef struct {
-    char component[MAX_NAME_LEN];
-    char host_platform[MAX_PLATFORM_LEN];
-    char target_platform[MAX_PLATFORM_LEN];
-    char entry[MAX_ENTRY_LEN];
-} StateEntry;
-
-typedef struct {
-    StateEntry installed[MAX_INSTALLED];
+    PackageIdentity installed[MAX_INSTALLED];
     size_t installed_count;
 
-    StateEntry defaults[MAX_DEFAULTS];
-    size_t default_count;
+    PackageIdentity active[MAX_ACTIVE_PACKAGES];
+    size_t active_count;
 } CupState;
 
 typedef enum {
@@ -26,29 +27,38 @@ typedef enum {
     STATE_FILE_LOADED
 } StateFileStatus;
 
-/* Load, validate and atomically save state.txt. */
+/*
+ * Load the complete syntactically valid file. Missing state is reported
+ * separately and malformed input is never accepted partially. Call
+ * state_validate() when semantic consistency is required; repair uses the
+ * parsed form to reconcile stale active selections and installed identities.
+ */
 CupError state_load(CupState *state, StateFileStatus *status);
+
+/* Validate capacities, uniqueness, identities, and active references. */
 CupError state_validate(const CupState *state);
+
+/* Count records belonging to hosts other than the current host. */
+size_t state_count_foreign_hosts(const CupState *state, const char *current_host);
+
+/* Reject structurally valid state that contains foreign-host records. */
+CupError state_validate_current_host(const CupState *state, const char *current_host);
+
+/* Atomically replace state.txt and report uncertain durability as commit error. */
 CupError state_save(const CupState *state);
 
-/* Installed entries. */
-int state_find_installed(const CupState *state, const char *component,
-    const char *host_platform, const char *target_platform, const char *entry);
-CupError state_add_installed(CupState *state, const char *component,
-    const char *host_platform, const char *target_platform, const char *entry);
-CupError state_remove_installed(CupState *state, const char *component,
-    const char *host_platform, const char *target_platform, const char *entry);
+/* Installed-identity lookup and bounded mutation. */
+int state_find_installed(const CupState *state, const PackageIdentity *identity);
+CupError state_add_installed(CupState *state, const PackageIdentity *identity);
+CupError state_remove_installed(CupState *state, const PackageIdentity *identity);
 
-/* Default entries. */
-int state_find_default(const CupState *state, const char *component,
-    const char *host_platform, const char *target_platform);
-const char *state_get_default(const CupState *state, const char *component,
-    const char *host_platform, const char *target_platform);
-CupError state_set_default(CupState *state, const char *component,
-    const char *host_platform, const char *target_platform, const char *entry);
-CupError state_clear_default(CupState *state, const char *component,
-    const char *host_platform, const char *target_platform);
-CupError state_clear_matching_default(CupState *state, const char *component,
-    const char *host_platform, const char *target_platform, const char *entry);
+/* Active lookup and one-identity-per-scope mutation. */
+int state_find_active(const CupState *state, const PackageScope *scope);
+const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope);
+CupError state_set_active(CupState *state, const PackageIdentity *identity);
+CupError state_clear_active(CupState *state, const PackageScope *scope);
+
+/* Clear the active package only when it still refers to the expected identity. */
+CupError state_clear_matching_active(CupState *state, const PackageIdentity *identity);
 
 #endif /* CUP_STATE_H */

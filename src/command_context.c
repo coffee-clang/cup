@@ -1,19 +1,22 @@
+/*
+ * Owns the shared lifetime of one CLI command: canonical root validation, platform resolution,
+ * lock acquisition, state loading and catalog loading.
+ */
+
 #include "command_context.h"
 
-#include "bootstrap.h"
-#include "entry.h"
+#include "cup_assets.h"
+#include "package_selector.h"
 #include "layout.h"
 #include "path.h"
 #include "platform.h"
 #include "registry.h"
-#include "transaction.h"
 #include "text.h"
 
 #include <stdio.h>
 #include <string.h>
 
-
-// COMMAND LIFECYCLE
+/* Command context initialization and lifetime. */
 static CupError resolve_platforms(CommandContext *context, const char *target_override) {
     CupError err;
 
@@ -23,27 +26,27 @@ static CupError resolve_platforms(CommandContext *context, const char *target_ov
     }
 
     if (text_is_empty(target_override)) {
-        return text_copy(context->target_platform,
-            sizeof(context->target_platform), context->host_platform);
+        return text_copy(
+            context->target_platform, sizeof(context->target_platform), context->host_platform);
     }
 
-    err = platform_validate(target_override);
+    err = text_copy_lower_ascii(
+        context->target_platform, sizeof(context->target_platform), target_override);
     if (err != CUP_OK) {
         return err;
     }
-
-    return text_copy(context->target_platform, sizeof(context->target_platform), target_override);
+    return platform_validate(context->target_platform);
 }
 
-static CupError validate_bootstrap(void) {
-    BootstrapInspection inspection;
-    CupError err = bootstrap_inspect(&inspection);
+static CupError validate_cup_assets(void) {
+    CupAssetsInspection inspection;
+    CupError err = cup_assets_inspect(&inspection);
 
     if (err != CUP_OK) {
         return err;
     }
-    if (bootstrap_installed_is_valid(&inspection) ||
-        bootstrap_development_is_valid(&inspection)) {
+    if (cup_assets_installed_is_valid(&inspection) ||
+        cup_assets_development_is_valid(&inspection)) {
         return CUP_OK;
     }
     return CUP_ERR_VALIDATION;
@@ -53,7 +56,7 @@ static CupError reject_pending_uninstall(void) {
     CupError err;
     int pending;
 
-    err = bootstrap_uninstall_is_pending(&pending);
+    err = cup_assets_uninstall_is_pending(&pending);
     if (err != CUP_OK) {
         return err;
     }
@@ -61,11 +64,14 @@ static CupError reject_pending_uninstall(void) {
         return CUP_OK;
     }
 
-    fprintf(stderr, "Error: cup uninstall is in progress or did not finish. "
-        "Run the installer again if the marker is stale.\n");
+    fprintf(stderr,
+            "Error: cup uninstall is in progress or did not finish. "
+            "Run the installer again if the marker is stale.\n");
     return CUP_ERR_LOCK;
 }
 
+/* Mutable runtime initialization. Directory creation and asset validation happen only after the
+ * caller has selected a mutating context. */
 static CupError initialize_runtime(void) {
     CupState state;
     CupError err;
@@ -80,7 +86,8 @@ static CupError initialize_runtime(void) {
 }
 
 CupError command_context_begin(CommandContext *context,
-    const char *target_override, SystemLockMode mode) {
+                               const char *target_override,
+                               SystemLockMode mode) {
     LayoutRuntimeStatus runtime_status;
     SystemLockMode lock_mode = mode;
     CupError err;
@@ -92,7 +99,7 @@ CupError command_context_begin(CommandContext *context,
     }
 
     memset(context, 0, sizeof(*context));
-    manifest_init(&context->manifest);
+    package_catalog_init(&context->catalog);
 
     err = reject_pending_uninstall();
     if (err != CUP_OK) {
@@ -110,16 +117,18 @@ CupError command_context_begin(CommandContext *context,
     }
 
     if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr, "Error: cup runtime structure is incomplete. "
-            "Run 'cup doctor' and 'cup repair'.\n");
+        fprintf(stderr,
+                "Error: cup runtime structure is incomplete. "
+                "Run 'cup doctor' and 'cup repair'.\n");
         return CUP_ERR_FILESYSTEM;
     }
 
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        err = validate_bootstrap();
+        err = validate_cup_assets();
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: cup bootstrap files are unavailable. "
-                "Run the installer or execute cup from the repository root.\n");
+            fprintf(stderr,
+                    "Error: CUP assets are unavailable. "
+                    "Run the installer or execute cup from the repository root.\n");
             return err;
         }
 
@@ -144,6 +153,17 @@ CupError command_context_begin(CommandContext *context,
         return err;
     }
 
+    /*
+     * The marker can appear while this command is waiting for the lock.
+     * Recheck it while holding the lock so a command cannot start after
+     * uninstall has committed to deferred runtime removal.
+     */
+    err = reject_pending_uninstall();
+    if (err != CUP_OK) {
+        command_context_end(context);
+        return err;
+    }
+
     err = layout_get_runtime_status(&runtime_status);
     if (err != CUP_OK) {
         command_context_end(context);
@@ -151,8 +171,9 @@ CupError command_context_begin(CommandContext *context,
     }
 
     if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr, "Error: cup runtime structure is incomplete. "
-            "Run 'cup doctor' and 'cup repair'.\n");
+        fprintf(stderr,
+                "Error: cup runtime structure is incomplete. "
+                "Run 'cup doctor' and 'cup repair'.\n");
         command_context_end(context);
         return CUP_ERR_FILESYSTEM;
     }
@@ -169,6 +190,82 @@ CupError command_context_begin(CommandContext *context,
         }
     }
 
+    context->runtime_available = 1;
+    return CUP_OK;
+}
+
+/* Read-only context. Missing roots are treated as an uninitialized installation and are never
+ * created as a side effect. */
+CupError command_context_begin_read_only(CommandContext *context, const char *target_override) {
+    LayoutRuntimeStatus runtime_status;
+    CupError err;
+    char lock_path[MAX_PATH_LEN];
+
+    if (context == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(context, 0, sizeof(*context));
+    package_catalog_init(&context->catalog);
+
+    err = resolve_platforms(context, target_override);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = reject_pending_uninstall();
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = layout_get_runtime_status(&runtime_status);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
+        context->runtime_available = 0;
+        return CUP_OK;
+    }
+    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
+        fprintf(stderr,
+                "Error: cup runtime structure is incomplete. "
+                "Run 'cup doctor' and 'cup repair'.\n");
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = layout_get_lock_path(lock_path, sizeof(lock_path));
+    if (err == CUP_OK) {
+        err = system_lock_acquire(&context->lock, lock_path, SYSTEM_LOCK_SHARED);
+    }
+    if (err != CUP_OK) {
+        if (err == CUP_ERR_LOCK) {
+            fprintf(stderr, "Error: another cup operation is currently running.\n");
+        }
+        return err;
+    }
+    err = reject_pending_uninstall();
+    if (err != CUP_OK) {
+        command_context_end(context);
+        return err;
+    }
+
+    err = layout_get_runtime_status(&runtime_status);
+    if (err != CUP_OK) {
+        command_context_end(context);
+        return err;
+    }
+    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
+        fprintf(stderr,
+                "Error: cup runtime structure is incomplete. "
+                "Run 'cup doctor' and 'cup repair'.\n");
+        command_context_end(context);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
+        command_context_end(context);
+        context->runtime_available = 0;
+        err = resolve_platforms(context, target_override);
+        return err;
+    }
+
+    context->runtime_available = 1;
     return CUP_OK;
 }
 
@@ -177,11 +274,13 @@ void command_context_end(CommandContext *context) {
         return;
     }
 
-    manifest_free(&context->manifest);
+    package_catalog_free(&context->catalog);
     system_lock_release(&context->lock);
     memset(context, 0, sizeof(*context));
 }
 
+/* Lazy model loading. State and catalog errors remain separate so query commands can produce
+ * precise degraded output. */
 CupError command_context_load_state(CommandContext *context) {
     StateFileStatus status;
     CupError err;
@@ -204,250 +303,38 @@ CupError command_context_load_state(CommandContext *context) {
     if (err != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
-
-    return CUP_OK;
-}
-
-CupError command_context_load_manifest(CommandContext *context) {
-    CupError err;
-
-    if (context == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = manifest_load(&context->manifest);
+    err = state_validate_current_host(&context->state, context->host_platform);
     if (err != CUP_OK) {
-        return err;
-    }
-
-    context->has_manifest = 1;
-    return CUP_OK;
-}
-
-void command_context_try_manifest(CommandContext *context) {
-    if (context == NULL) {
-        return;
-    }
-
-    if (manifest_load(&context->manifest) == CUP_OK) {
-        context->has_manifest = 1;
-    }
-}
-
-CupError command_require_no_transaction(void) {
-    Transaction transaction;
-    TransactionFileStatus status;
-    CupError err;
-
-    transaction_init(&transaction);
-    err = transaction_load(&transaction, &status);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: transaction journal is invalid. "
-            "Run 'cup doctor' and 'cup repair'.\n");
-        return CUP_ERR_TRANSACTION;
-    }
-
-    if (status == TRANSACTION_FILE_LOADED) {
-        if (transaction.operation == TRANSACTION_SELF_UPDATE) {
-            fprintf(stderr,
-                "Error: an interrupted self-update transaction must be "
-                "repaired first.\n");
-        } else {
-            fprintf(stderr, "Error: an interrupted %s transaction for "
-                "'%s@%s' must be repaired first.\n",
-                transaction_operation_name(transaction.operation),
-                transaction.package.tool, transaction.package.version);
-        }
-        return CUP_ERR_TRANSACTION;
-    }
-
-    return CUP_OK;
-}
-
-// ENTRY REQUESTS
-CupError entry_request_parse(const char *component, const char *entry, EntryRequest *request) {
-    CupError err;
-
-    if (request == NULL || text_is_empty(component) || text_is_empty(entry)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    memset(request, 0, sizeof(*request));
-
-    err = registry_validate_component(component);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = text_copy(request->input_entry, sizeof(request->input_entry), entry);
-    if (err != CUP_OK || entry_parse(entry, request->tool, sizeof(request->tool),
-        request->release, sizeof(request->release)) != CUP_OK) {
-        fprintf(stderr, "Error: invalid entry '%s'. Expected '<tool>@<release>'.\n", entry);
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = registry_validate_tool(component, request->tool);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    if (!entry_is_stable(request->release) && !path_is_safe_identifier(request->release)) {
-        fprintf(stderr, "Error: invalid release identifier '%s'.\n", request->release);
-        return CUP_ERR_INVALID_RELEASE;
-    }
-
-    return CUP_OK;
-}
-
-CupError entry_request_resolve(const Manifest *manifest, const char *component,
-    const char *host_platform, const char *target_platform, EntryRequest *request) {
-    CupError err;
-
-    if (request == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (entry_is_stable(request->release)) {
-        if (manifest == NULL) {
-            return CUP_ERR_MANIFEST;
-        }
-
-        err = manifest_resolve_stable(manifest, request->resolved_release,
-            sizeof(request->resolved_release), component, request->tool,
-            host_platform, target_platform);
-        if (err != CUP_OK) {
-            return err;
-        }
-    } else {
-        err = text_copy(request->resolved_release,
-            sizeof(request->resolved_release), request->release);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-
-    if (!path_is_safe_identifier(request->resolved_release)) {
-        return CUP_ERR_INVALID_RELEASE;
-    }
-
-    return entry_build(request->resolved_entry, sizeof(request->resolved_entry),
-        request->tool, request->resolved_release);
-}
-
-void entry_request_print(FILE *stream, const EntryRequest *request) {
-    if (stream == NULL || request == NULL) {
-        return;
-    }
-
-    if (strcmp(request->input_entry, request->resolved_entry) == 0) {
-        fprintf(stream, "%s", request->input_entry);
-        return;
-    }
-
-    fprintf(stream, "%s -> %s", request->input_entry, request->resolved_entry);
-}
-
-// PACKAGE PRECONDITIONS
-static CupError get_package_presence(const CommandContext *context, const PackageIdentity *package,
-    char *entry, size_t entry_size, int *in_state, int *on_disk) {
-    CupError err;
-
-    if (context == NULL || package == NULL || entry == NULL || entry_size == 0 ||
-        in_state == NULL || on_disk == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = entry_build(entry, entry_size, package->tool, package->version);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    *in_state = state_find_installed(&context->state, package->component,
-        package->host_platform, package->target_platform, entry) != -1;
-
-    return package_path_exists(package, on_disk);
-}
-
-CupError command_require_installed(const CommandContext *context, const PackageIdentity *package) {
-    CupError err;
-    char entry[MAX_ENTRY_LEN];
-    int in_state;
-    int on_disk;
-
-    err = get_package_presence(context, package, entry, sizeof(entry), &in_state, &on_disk);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    if (in_state && on_disk) {
-        return CUP_OK;
-    }
-
-    if (!in_state && !on_disk) {
-        fprintf(stderr, "Error: package '%s:%s' is not installed for host '%s', target '%s'.\n",
-            package->component, entry, package->host_platform, package->target_platform);
-        return CUP_ERR_NOT_INSTALLED;
-    }
-
-    fprintf(stderr, "Error: package '%s:%s' is inconsistent between state and components. "
-        "Run 'cup doctor' and 'cup repair'.\n", package->component, entry);
-    return CUP_ERR_INCONSISTENT_STATE;
-}
-
-CupError command_require_valid_installed(const CommandContext *context,
-    const PackageIdentity *package) {
-    CupError err;
-    char install_path[MAX_PATH_LEN];
-    char entry[MAX_ENTRY_LEN];
-
-    err = command_require_installed(context, package);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = layout_build_install_path(install_path,
-        sizeof(install_path), package);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = package_validate(install_path, package);
-    if (err == CUP_OK) {
-        return CUP_OK;
-    }
-
-    if (entry_build(entry, sizeof(entry),
-        package->tool, package->version) != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    fprintf(stderr,
-        "Error: installed package '%s:%s' is invalid on disk. "
-        "Run 'cup doctor' and 'cup repair'.\n",
-        package->component, entry);
-    return CUP_ERR_INCONSISTENT_STATE;
+    return CUP_OK;
 }
 
-CupError command_require_absent(const CommandContext *context, const PackageIdentity *package) {
+CupError command_context_load_catalog(CommandContext *context) {
     CupError err;
-    char entry[MAX_ENTRY_LEN];
-    int in_state;
-    int on_disk;
 
-    err = get_package_presence(context, package, entry, sizeof(entry), &in_state, &on_disk);
+    if (context == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    context->has_catalog = 0;
+    err = package_catalog_load(&context->catalog);
     if (err != CUP_OK) {
         return err;
     }
 
-    if (!in_state && !on_disk) {
-        return CUP_OK;
+    context->has_catalog = 1;
+    return CUP_OK;
+}
+
+void command_context_try_catalog(CommandContext *context) {
+    if (context == NULL) {
+        return;
     }
 
-    if (in_state && on_disk) {
-        return CUP_ERR_ALREADY_INSTALLED;
+    context->has_catalog = 0;
+    if (package_catalog_load(&context->catalog) == CUP_OK) {
+        context->has_catalog = 1;
     }
-
-    fprintf(stderr, "Error: package '%s:%s' is inconsistent between state and components. "
-        "Run 'cup doctor' and 'cup repair'.\n", package->component, entry);
-    return CUP_ERR_INCONSISTENT_STATE;
 }

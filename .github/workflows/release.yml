@@ -1,0 +1,83 @@
+# Publish only artifacts produced by one successful Tests run for the exact
+# main-branch commit selected by this manual workflow.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests_run_id:
+        description: "Successful Tests run id for this commit; leave empty to resolve it automatically"
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: cup-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish verified release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - id: metadata
+        name: Resolve source metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/main ] || {
+            echo "Release must be dispatched from main, got $GITHUB_REF" >&2
+            exit 1
+          }
+          version=$(./scripts/version.sh base)
+          sha=$(git rev-parse HEAD)
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+      - id: tests
+        name: Resolve successful Tests run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ steps.metadata.outputs.sha }}
+          TESTS_RUN_ID: ${{ inputs.tests_run_id }}
+        run: scripts/release/resolve-tests-run.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ steps.tests.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: cup-release-*
+          path: candidate
+          merge-multiple: true
+      - id: candidate
+        name: Validate tested candidate
+        env:
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
+          EXPECTED_TAG: ${{ steps.metadata.outputs.tag }}
+          EXPECTED_SHA: ${{ steps.metadata.outputs.sha }}
+          EXPECTED_SOURCE_REPOSITORY: ${{ github.repository }}
+          EXPECTED_TESTS_RUN_ID: ${{ steps.tests.outputs.run_id }}
+          EXPECTED_TESTS_RUN_ATTEMPT: ${{ steps.tests.outputs.run_attempt }}
+        run: scripts/release/candidate-info.sh candidate
+      - name: Release already exists
+        if: steps.candidate.outputs.should_release == '0'
+        run: echo '${{ steps.candidate.outputs.tag }} is already published; nothing to release.'
+      - name: Publish tested candidate
+        if: steps.candidate.outputs.should_release == '1'
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          GH_REPO: coffee-clang/cup
+          VERSION: ${{ steps.candidate.outputs.version }}
+          TAG: ${{ steps.candidate.outputs.tag }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          SOURCE_REPOSITORY: ${{ steps.candidate.outputs.source_repository }}
+          TESTS_RUN_ID: ${{ steps.candidate.outputs.tests_run_id }}
+          TESTS_RUN_ATTEMPT: ${{ steps.candidate.outputs.tests_run_attempt }}
+        run: scripts/release/publish.sh candidate

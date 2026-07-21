@@ -1,3 +1,8 @@
+/*
+ * Implements bounded path construction and syntax validation for identifiers and safe relative
+ * package paths.
+ */
+
 #include "path.h"
 
 #include "text.h"
@@ -5,7 +10,7 @@
 #include <ctype.h>
 #include <string.h>
 
-// PATH BUILDING
+/* Path building. */
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child) {
     if (buffer == NULL || size == 0 || text_is_empty(parent) || text_is_empty(child)) {
         return CUP_ERR_INVALID_INPUT;
@@ -44,7 +49,7 @@ const char *path_last_segment(const char *path) {
     return slash == NULL ? path : slash + 1;
 }
 
-// PATH VALIDATION
+/* Path validation. */
 static int equals_ignore_case_n(const char *left, const char *right, size_t length) {
     size_t i;
 
@@ -59,10 +64,8 @@ static int equals_ignore_case_n(const char *left, const char *right, size_t leng
 
 static int is_windows_reserved_name(const char *value) {
     static const char *const reserved[] = {
-        "con", "prn", "aux", "nul",
-        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
-    };
+        "con",  "prn",  "aux",  "nul",  "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+        "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
     const char *dot;
     size_t base_length;
     size_t i;
@@ -93,16 +96,15 @@ int path_is_safe_segment(const char *value) {
     }
 
     length = strlen(value);
-    if ((length == 1 && value[0] == '.') ||
-        (length == 2 && value[0] == '.' && value[1] == '.')) {
+    if ((length == 1 && value[0] == '.') || (length == 2 && value[0] == '.' && value[1] == '.')) {
         return 0;
     }
 
     for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
-        if (*cursor < 32 || *cursor == 127 || *cursor == '/' ||
-            *cursor == '\\' || *cursor == ':' || *cursor == '*' ||
-            *cursor == '?' || *cursor == '"' || *cursor == '<' ||
-            *cursor == '>' || *cursor == '|') {
+        /* Package and managed path segments use printable ASCII only. */
+        if (*cursor < 0x21 || *cursor > 0x7e || *cursor == '/' || *cursor == '\\' ||
+            *cursor == ':' || *cursor == '*' || *cursor == '?' || *cursor == '"' ||
+            *cursor == '<' || *cursor == '>' || *cursor == '|') {
             return 0;
         }
     }
@@ -122,8 +124,8 @@ int path_is_safe_identifier(const char *value) {
     }
 
     for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
-        if (isalnum(*cursor) || *cursor == '.' || *cursor == '_' ||
-            *cursor == '+' || *cursor == '-') {
+        if (isalnum(*cursor) || *cursor == '.' || *cursor == '_' || *cursor == '+' ||
+            *cursor == '-') {
             continue;
         }
 

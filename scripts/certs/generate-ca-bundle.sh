@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+
+# Purpose: Generates deterministic C sources from the versioned PEM CA bundle.
+# Output: ca_bundle.h and ca_bundle.c in the caller-selected generated directory.
 set -eu
 
 if [ "$#" -ne 2 ]; then
@@ -23,7 +26,9 @@ WORK_DIR=$(mktemp -d "$OUTPUT_DIR/.ca-bundle.XXXXXX")
 HEADER_TMP="$WORK_DIR/ca_bundle.h"
 SOURCE_TMP="$WORK_DIR/ca_bundle.c"
 
-cleanup() { rm -rf "$WORK_DIR"; }
+cleanup() {
+    rm -rf "$WORK_DIR"
+}
 trap cleanup EXIT HUP INT TERM
 
 cat > "$HEADER_TMP" <<'HEADER'

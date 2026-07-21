@@ -1,0 +1,159 @@
+# Produces non-stripped development binaries and platform-native symbol data.
+# These diagnostics are intentionally separate from official release assets.
+
+name: Debug artifacts
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cup-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  posix:
+    name: Debug build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Prepare Linux dependencies
+        if: matrix.family == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates curl git make perl \
+            pkg-config tar xz-utils
+          make PLATFORM=${{ matrix.platform }} deps
+      - name: Prepare macOS dependencies
+        if: matrix.family == 'macos'
+        run: |
+          for package in perl pkg-config xz; do
+            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
+          done
+          make PLATFORM=${{ matrix.platform }} deps
+      - name: Build diagnostic executable
+        run: |
+          make PLATFORM=${{ matrix.platform }} debug
+          make PLATFORM=${{ matrix.platform }} \
+            CUP_BUILD_CONFIGURATION=debug check-binary
+      - name: Package debug information
+        shell: bash
+        run: |
+          set -eu
+          out="dist/debug/${{ matrix.platform }}"
+          binary="build/${{ matrix.platform }}/debug/bin/cup"
+          generated="build/${{ matrix.platform }}/debug/generated"
+          mkdir -p "$out"
+          cp "$binary" "$out/cup"
+          cp "$generated/release.txt" "$out/release.txt"
+          cp "build/${{ matrix.platform }}/debug/binary-inspection.txt" "$out/binary-inspection.txt"
+          if [ "${{ matrix.family }}" = macos ]; then
+            compiler=clang
+          else
+            compiler=gcc
+          fi
+          make -B -n PLATFORM=${{ matrix.platform }} debug > "$out/rebuild-commands.txt"
+          {
+            echo "platform=${{ matrix.platform }}"
+            echo "compiler=$($compiler --version | head -n 1)"
+            echo "configuration=debug"
+            echo "commit=${GITHUB_SHA}"
+          } > "$out/build-info.txt"
+          if [ "${{ matrix.family }}" = linux ]; then
+            objcopy --only-keep-debug "$binary" "$out/cup.debug"
+            readelf --debug-dump=info "$binary" >/dev/null
+          else
+            dsymutil "$binary" -o "$out/cup.dSYM"
+            dwarfdump --verify "$out/cup.dSYM"
+          fi
+          file "$binary" > "$out/file.txt"
+          tar -czf "dist/debug/cup-debug-${{ matrix.platform }}.tar.gz" \
+            -C "$out" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: dist/debug/cup-debug-${{ matrix.platform }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Debug build (windows-x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            ca-certificates
+            curl
+            file
+            git
+            make
+            perl
+            tar
+            xz
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+      - name: Build pinned dependency prefix
+        shell: msys2 {0}
+        run: JOBS=4 make PLATFORM=windows-x64 deps
+      - name: Build and package diagnostic executable
+        shell: msys2 {0}
+        run: |
+          set -eu
+          make PLATFORM=windows-x64 debug
+          make PLATFORM=windows-x64 CUP_BUILD_CONFIGURATION=debug check-binary
+          out=dist/debug/windows-x64
+          binary=build/windows-x64/debug/bin/cup.exe
+          generated=build/windows-x64/debug/generated
+          mkdir -p "$out"
+          cp "$binary" "$out/cup.exe"
+          cp "$generated/release.txt" "$out/release.txt"
+          cp build/windows-x64/debug/binary-inspection.txt "$out/binary-inspection.txt"
+          objcopy --only-keep-debug "$binary" "$out/cup.debug"
+          objdump -h "$binary" > "$out/sections.txt"
+          file "$binary" > "$out/file.txt"
+          make -B -n PLATFORM=windows-x64 debug > "$out/rebuild-commands.txt"
+          {
+            echo "platform=windows-x64"
+            echo "compiler=$(gcc --version | head -n 1)"
+            echo "configuration=debug"
+            echo "commit=${GITHUB_SHA}"
+          } > "$out/build-info.txt"
+          tar -czf dist/debug/cup-debug-windows-x64.tar.gz -C "$out" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: dist/debug/cup-debug-windows-x64.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 30

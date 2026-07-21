@@ -1,0 +1,249 @@
+/*
+ * Resolves package cache paths, validates archives and checksums, and refreshes stale cache
+ * metadata at most once.
+ */
+
+#include "package_cache.h"
+
+#include "checksum.h"
+#include "download.h"
+#include "layout.h"
+#include "package_archive.h"
+#include "path.h"
+#include "system.h"
+#include "text.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static CupError build_checksum_cache_path(const char *archive_path,
+                                          char *checksum_path,
+                                          size_t size) {
+    const char *slash = strrchr(archive_path, '/');
+    size_t directory_length;
+    char directory[MAX_PATH_LEN];
+
+    if (slash == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    directory_length = (size_t)(slash - archive_path);
+    if (directory_length == 0 || directory_length >= sizeof(directory)) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(directory, archive_path, directory_length);
+    directory[directory_length] = '\0';
+    return path_join(checksum_path, size, directory, "SHA256SUMS");
+}
+
+/* Package cache and checksum validation. */
+static const char *archive_filename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash == NULL ? path : slash + 1;
+}
+
+static CupError checksum_has_archive_entry(const char *checksum_path, const char *archive_path) {
+    char expected[SHA256_HEX_LENGTH + 1];
+
+    return checksum_find_expected(
+        checksum_path, archive_filename(archive_path), expected, sizeof(expected));
+}
+
+static CupError verify_cached_archive(const char *checksum_path,
+                                      const char *archive_path,
+                                      const char *format,
+                                      int *valid) {
+    CupError err;
+    int archive_valid;
+    int checksum_matches;
+
+    *valid = 0;
+    err = package_archive_is_valid(archive_path, format, &archive_valid);
+    if (err != CUP_OK || !archive_valid) {
+        return err;
+    }
+    err = checksum_verify_file(
+        checksum_path, archive_filename(archive_path), archive_path, &checksum_matches);
+    if (err != CUP_OK) {
+        return err;
+    }
+    *valid = checksum_matches;
+    return CUP_OK;
+}
+
+CupError package_cache_fetch(char *archive_path,
+                             size_t archive_path_size,
+                             const char *package_url,
+                             const char *checksum_url,
+                             const PackageIdentity *identity,
+                             const char *format,
+                             PackageCachePolicy cache_policy,
+                             PackageCacheSource *source) {
+    CupError err;
+    char checksum_path[MAX_PATH_LEN];
+    int checksum_refreshed = 0;
+    int valid_archive;
+
+    if (source == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *source = PACKAGE_CACHE_SOURCE_NONE;
+    if (archive_path == NULL || archive_path_size == 0 || text_is_empty(package_url) ||
+        text_is_empty(checksum_url) || identity == NULL || text_is_empty(format) ||
+        (cache_policy != PACKAGE_CACHE_ALLOW && cache_policy != PACKAGE_CACHE_REFRESH)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = layout_ensure_cache_parent(identity);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = layout_build_cache_archive_path(archive_path, archive_path_size, identity, format);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = build_checksum_cache_path(archive_path, checksum_path, sizeof(checksum_path));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    {
+        SystemPathKind checksum_kind;
+
+        err = system_get_path_kind(checksum_path, &checksum_kind);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (cache_policy == PACKAGE_CACHE_REFRESH || checksum_kind == SYSTEM_PATH_MISSING) {
+            err = download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
+            if (err != CUP_OK) {
+                return err;
+            }
+            checksum_refreshed = 1;
+        } else if (checksum_kind != SYSTEM_PATH_REGULAR_FILE) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+    err = checksum_has_archive_entry(checksum_path, archive_path);
+    if (err != CUP_OK && cache_policy == PACKAGE_CACHE_ALLOW) {
+        CupError refresh_err =
+            download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
+
+        if (refresh_err != CUP_OK) {
+            return refresh_err;
+        }
+        checksum_refreshed = 1;
+        err = checksum_has_archive_entry(checksum_path, archive_path);
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: package checksum metadata has no unique entry "
+                "for '%s'.\n",
+                archive_filename(archive_path));
+        return CUP_ERR_VALIDATION;
+    }
+
+    if (cache_policy == PACKAGE_CACHE_ALLOW) {
+        err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+        if (err == CUP_OK && valid_archive) {
+            *source = PACKAGE_CACHE_SOURCE_CACHE;
+            return CUP_OK;
+        }
+        if (err == CUP_OK && !valid_archive && !checksum_refreshed) {
+            err = download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
+            if (err != CUP_OK) {
+                return err;
+            }
+            checksum_refreshed = 1;
+            err = checksum_has_archive_entry(checksum_path, archive_path);
+            if (err != CUP_OK) {
+                return CUP_ERR_VALIDATION;
+            }
+            err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+            if (err == CUP_OK && valid_archive) {
+                *source = PACKAGE_CACHE_SOURCE_CACHE;
+                return CUP_OK;
+            }
+        }
+        if (err != CUP_OK && err != CUP_ERR_FILESYSTEM && err != CUP_ERR_ARCHIVE &&
+            err != CUP_ERR_VALIDATION) {
+            return err;
+        }
+        err = package_cache_discard(archive_path);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    err = download_file(package_url, archive_path, DOWNLOAD_VALIDATE_ARCHIVE);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+    if ((err != CUP_OK || !valid_archive) && !checksum_refreshed) {
+        CupError refresh_err =
+            download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
+
+        if (refresh_err == CUP_OK &&
+            checksum_has_archive_entry(checksum_path, archive_path) == CUP_OK) {
+            err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+        } else {
+            err = refresh_err == CUP_OK ? CUP_ERR_VALIDATION : refresh_err;
+        }
+    }
+    if (err != CUP_OK || !valid_archive) {
+        CupError discard_err = package_cache_discard(archive_path);
+
+        fprintf(stderr, "Error: downloaded package failed SHA-256 verification.\n");
+        if (discard_err != CUP_OK) {
+            return discard_err;
+        }
+        if (err != CUP_OK) {
+            return err;
+        }
+        return CUP_ERR_VALIDATION;
+    }
+
+    *source = PACKAGE_CACHE_SOURCE_NETWORK;
+    return CUP_OK;
+}
+
+CupError package_cache_discard(const char *archive_path) {
+    CupError err;
+    SystemPathKind kind;
+    int is_read_only;
+
+    if (text_is_empty(archive_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = system_get_path_kind(archive_path, &kind);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (kind == SYSTEM_PATH_MISSING) {
+        return CUP_OK;
+    }
+    if (kind != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = system_is_read_only(archive_path, &is_read_only);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (is_read_only) {
+        err = system_set_read_only(archive_path, 0);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
+    err = system_remove_file(archive_path);
+    if (err != CUP_OK && is_read_only) {
+        if (system_set_read_only(archive_path, 1) != CUP_OK) {
+            return CUP_ERR_ROLLBACK;
+        }
+    }
+
+    return err;
+}

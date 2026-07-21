@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+
+# Purpose: Validates a newly downloaded CA bundle before replacing the versioned PEM.
+# The candidate is generated and compiled in a temporary directory before commit.
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -12,9 +15,12 @@ PEM_TMP="$WORK_DIR/cacert.pem"
 GENERATED_DIR="$WORK_DIR/generated"
 OBJECT_TMP="$WORK_DIR/ca_bundle.o"
 
-cleanup() { rm -rf "$WORK_DIR"; }
+cleanup() {
+    rm -rf "$WORK_DIR"
+}
 trap cleanup EXIT HUP INT TERM
 
+# Download into private staging and reject empty or non-PEM input.
 "$CURL" -fsSL "$CACERT_URL" -o "$PEM_TMP"
 [ -s "$PEM_TMP" ] || {
     echo "Error: downloaded CA bundle is empty." >&2
@@ -25,6 +31,7 @@ grep -q '^-----BEGIN CERTIFICATE-----$' "$PEM_TMP" || {
     exit 1
 }
 
+# Compile the generated C representation before replacing the versioned bundle.
 "$ROOT_DIR/scripts/certs/generate-ca-bundle.sh" "$PEM_TMP" "$GENERATED_DIR"
 "$HOSTCC" -std=c11 -Wall -Wextra -Werror -I"$GENERATED_DIR" \
     -c "$GENERATED_DIR/ca_bundle.c" -o "$OBJECT_TMP"

@@ -1,11 +1,17 @@
 #ifndef CUP_SHA256_H
 #define CUP_SHA256_H
 
+/*
+ * Module contract: Incremental in-tree SHA-256 primitive. File handling and
+ * SHA256SUMS parsing belong to checksum.h.
+ */
+
 #include <stddef.h>
 #include <stdint.h>
 
 #define SHA256_DIGEST_SIZE 32u
 
+/* Mutable state of one incremental SHA-256 calculation. */
 typedef struct {
     uint8_t data[64];
     size_t data_length;
@@ -13,6 +19,7 @@ typedef struct {
     uint32_t state[8];
 } Sha256Context;
 
+/* Initialize, extend, and finalize one digest calculation. */
 void sha256_init(Sha256Context *context);
 void sha256_update(Sha256Context *context, const uint8_t *data, size_t length);
 void sha256_final(Sha256Context *context, uint8_t digest[SHA256_DIGEST_SIZE]);

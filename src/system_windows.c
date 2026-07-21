@@ -1,3 +1,8 @@
+/*
+ * Implements the complete system.h contract with native wide-character Windows APIs, including
+ * locking, replacement, attributes, traversal and detached PowerShell helpers.
+ */
+
 #include "system.h"
 
 #include "constants.h"
@@ -5,6 +10,10 @@
 #include "text.h"
 
 #include <ctype.h>
+#include <windows.h>
+#include <sddl.h>
+#include <aclapi.h>
+#include <accctrl.h>
 #include <fcntl.h>
 #include <io.h>
 #include <limits.h>
@@ -13,9 +22,28 @@
 #include <string.h>
 #include <wchar.h>
 #include <wctype.h>
-#include <windows.h>
 
-// INTERNAL HELPERS
+/* UTF-8 boundary conversion and native error reporting. */
+static CupError get_parent_path(const char *path, char *parent, size_t size) {
+    char *slash;
+
+    if (text_is_empty(path) || parent == NULL || size == 0 ||
+        text_copy(parent, size, path) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    slash = strrchr(parent, '/');
+    if (slash == NULL) {
+        return text_format(parent, size, ".");
+    }
+    if (slash == parent) {
+        slash[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    return CUP_OK;
+}
+
 static CupError utf8_to_wide(const char *input, wchar_t *output, size_t output_count) {
     int written;
 
@@ -23,9 +51,61 @@ static CupError utf8_to_wide(const char *input, wchar_t *output, size_t output_c
         return CUP_ERR_INVALID_INPUT;
     }
 
-    written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1,
-        output, (int)output_count);
+    written =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1, output, (int)output_count);
     return written == 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
+}
+
+static CupError utf8_to_wide_path(const char *input, wchar_t *output, size_t output_count) {
+    wchar_t converted[MAX_PATH_LEN];
+    wchar_t absolute[MAX_PATH_LEN];
+    DWORD length;
+    size_t i;
+    size_t required;
+
+    if (utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
+        output_count == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    for (i = 0; converted[i] != L'\0'; ++i) {
+        if (converted[i] == L'/') {
+            converted[i] = L'\\';
+        }
+    }
+
+    if (wcsncmp(converted, L"\\\\?\\", 4) == 0) {
+        required = wcslen(converted) + 1;
+        if (required > output_count) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(output, converted, required * sizeof(*output));
+        return CUP_OK;
+    }
+    if (wcsncmp(converted, L"\\\\.\\", 4) == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    length = GetFullPathNameW(converted, MAX_PATH_LEN, absolute, NULL);
+    if (length == 0 || length >= MAX_PATH_LEN) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if (absolute[0] == L'\\' && absolute[1] == L'\\') {
+        required = 8 + wcslen(absolute + 2) + 1;
+        if (required > output_count) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+        wcscpy(output, L"\\\\?\\UNC\\");
+        wcscat(output, absolute + 2);
+    } else {
+        required = 4 + wcslen(absolute) + 1;
+        if (required > output_count) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+        wcscpy(output, L"\\\\?\\");
+        wcscat(output, absolute);
+    }
+    return CUP_OK;
 }
 
 static CupError wide_to_utf8(const wchar_t *input, char *output, size_t output_size) {
@@ -35,8 +115,8 @@ static CupError wide_to_utf8(const wchar_t *input, char *output, size_t output_s
         return CUP_ERR_INVALID_INPUT;
     }
 
-    written = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input, -1,
-        output, (int)output_size, NULL, NULL);
+    written = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, input, -1, output, (int)output_size, NULL, NULL);
     return written == 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
 }
 
@@ -52,18 +132,22 @@ static void print_windows_error(const char *message, const char *path) {
 
     wide_message[0] = L'\0';
     length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL, error_code, 0, wide_message,
-        (DWORD)(sizeof(wide_message) / sizeof(wide_message[0])), NULL);
-    while (length > 0 && (wide_message[length - 1] == L'\r' ||
-        wide_message[length - 1] == L'\n' || wide_message[length - 1] == L' ' ||
-        wide_message[length - 1] == L'\t')) {
+                            NULL,
+                            error_code,
+                            0,
+                            wide_message,
+                            (DWORD)(sizeof(wide_message) / sizeof(wide_message[0])),
+                            NULL);
+    while (length > 0 && (wide_message[length - 1] == L'\r' || wide_message[length - 1] == L'\n' ||
+                          wide_message[length - 1] == L' ' || wide_message[length - 1] == L'\t')) {
         wide_message[--length] = L'\0';
     }
 
-    if (length == 0 || wide_to_utf8(wide_message, error_message,
-        sizeof(error_message)) != CUP_OK) {
-        text_format(error_message, sizeof(error_message),
-            "Windows error code %lu", (unsigned long)error_code);
+    if (length == 0 || wide_to_utf8(wide_message, error_message, sizeof(error_message)) != CUP_OK) {
+        text_format(error_message,
+                    sizeof(error_message),
+                    "Windows error code %lu",
+                    (unsigned long)error_code);
     }
 
     if (text_is_empty(path)) {
@@ -96,8 +180,7 @@ static int has_command_extension(const char *path) {
         const unsigned char *left = (const unsigned char *)extension;
         const unsigned char *right = (const unsigned char *)extensions[i];
 
-        while (*left != '\0' && *right != '\0' &&
-            tolower(*left) == tolower(*right)) {
+        while (*left != '\0' && *right != '\0' && tolower(*left) == tolower(*right)) {
             left++;
             right++;
         }
@@ -109,23 +192,36 @@ static int has_command_extension(const char *path) {
     return 0;
 }
 
-static CupError build_temp_candidate(const char *directory, const char *prefix,
-    const char *suffix, unsigned long attempt, char *path, size_t path_size) {
+static CupError build_temp_candidate(const char *directory,
+                                     const char *prefix,
+                                     const char *suffix,
+                                     unsigned long attempt,
+                                     char *path,
+                                     size_t path_size) {
     ULONGLONG tick = GetTickCount64();
     DWORD pid = GetCurrentProcessId();
 
-    return text_format(path, path_size, "%s/%s-%lu-%llu-%lu%s",
-        directory, prefix, (unsigned long)pid, (unsigned long long)tick, attempt,
-        suffix);
+    return text_format(path,
+                       path_size,
+                       "%s/%s-%lu-%llu-%lu%s",
+                       directory,
+                       prefix,
+                       (unsigned long)pid,
+                       (unsigned long long)tick,
+                       attempt,
+                       suffix);
 }
 
-static CupError open_temp_handle(const char *directory, const char *prefix,
-    const char *suffix, char *path, size_t path_size, HANDLE *handle) {
+static CupError open_temp_handle(const char *directory,
+                                 const char *prefix,
+                                 const char *suffix,
+                                 char *path,
+                                 size_t path_size,
+                                 HANDLE *handle) {
     unsigned long attempt;
 
-    if (text_is_empty(directory) || text_is_empty(prefix) ||
-        text_is_empty(suffix) || suffix[0] != '.' || path == NULL ||
-        path_size == 0 || handle == NULL) {
+    if (text_is_empty(directory) || text_is_empty(prefix) || text_is_empty(suffix) ||
+        suffix[0] != '.' || path == NULL || path_size == 0 || handle == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -133,12 +229,17 @@ static CupError open_temp_handle(const char *directory, const char *prefix,
         wchar_t wide_path[MAX_PATH_LEN];
 
         if (build_temp_candidate(directory, prefix, suffix, attempt, path, path_size) != CUP_OK ||
-            utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+            utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
             return CUP_ERR_TEMPORARY;
         }
 
-        *handle = CreateFileW(wide_path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-            CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, NULL);
+        *handle = CreateFileW(wide_path,
+                              GENERIC_READ | GENERIC_WRITE,
+                              0,
+                              NULL,
+                              CREATE_NEW,
+                              FILE_ATTRIBUTE_TEMPORARY,
+                              NULL);
         if (*handle != INVALID_HANDLE_VALUE) {
             return CUP_OK;
         }
@@ -151,8 +252,11 @@ static CupError open_temp_handle(const char *directory, const char *prefix,
 }
 
 static CupError create_temp_file_with_suffix(const char *directory,
-    const char *prefix, const char *suffix, char *path, size_t path_size,
-    FILE **file) {
+                                             const char *prefix,
+                                             const char *suffix,
+                                             char *path,
+                                             size_t path_size,
+                                             FILE **file) {
     HANDLE handle;
     int descriptor;
 
@@ -160,8 +264,7 @@ static CupError create_temp_file_with_suffix(const char *directory,
         return CUP_ERR_INVALID_INPUT;
     }
     *file = NULL;
-    if (open_temp_handle(directory, prefix, suffix, path, path_size,
-            &handle) != CUP_OK) {
+    if (open_temp_handle(directory, prefix, suffix, path, path_size, &handle) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
     descriptor = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
@@ -179,11 +282,124 @@ static CupError create_temp_file_with_suffix(const char *directory,
     return CUP_OK;
 }
 
-// PROCESS AND ENVIRONMENT
+static CupError load_current_user(TOKEN_USER **user) {
+    HANDLE token = NULL;
+    DWORD size = 0;
+    TOKEN_USER *value;
+
+    if (user == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *user = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    if (size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return CUP_ERR_FILESYSTEM;
+    }
+    value = malloc(size);
+    if (value == NULL) {
+        CloseHandle(token);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!GetTokenInformation(token, TokenUser, value, size, &size)) {
+        free(value);
+        CloseHandle(token);
+        return CUP_ERR_FILESYSTEM;
+    }
+    CloseHandle(token);
+    *user = value;
+    return CUP_OK;
+}
+
+static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descriptor) {
+    TOKEN_USER *user = NULL;
+    LPWSTR sid_text = NULL;
+    wchar_t sddl[2048];
+    CupError err;
+    int written;
+
+    if (descriptor == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *descriptor = NULL;
+    err = load_current_user(&user);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!ConvertSidToStringSidW(user->User.Sid, &sid_text)) {
+        free(user);
+        return CUP_ERR_FILESYSTEM;
+    }
+    written = _snwprintf(sddl,
+                         sizeof(sddl) / sizeof(sddl[0]),
+                         L"O:%lsD:P(A;;FA;;;%ls)(A;;FA;;;SY)(A;;FA;;;BA)",
+                         sid_text,
+                         sid_text);
+    LocalFree(sid_text);
+    free(user);
+    if (written < 0 || (size_t)written >= sizeof(sddl) / sizeof(sddl[0])) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, SDDL_REVISION_1, descriptor, NULL)) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
+
+static int sid_is_private_principal(PSID sid, PSID user_sid) {
+    BYTE system_buffer[SECURITY_MAX_SID_SIZE];
+    BYTE admin_buffer[SECURITY_MAX_SID_SIZE];
+    DWORD system_size = sizeof(system_buffer);
+    DWORD admin_size = sizeof(admin_buffer);
+
+    if (EqualSid(sid, user_sid)) {
+        return 1;
+    }
+    if (CreateWellKnownSid(WinLocalSystemSid, NULL, system_buffer, &system_size) &&
+        EqualSid(sid, system_buffer)) {
+        return 1;
+    }
+    if (CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admin_buffer, &admin_size) &&
+        EqualSid(sid, admin_buffer)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int wide_path_is_volume_root(const wchar_t *path) {
+    wchar_t volume[MAX_PATH_LEN];
+    size_t path_length;
+    size_t volume_length;
+
+    if (path == NULL || !GetVolumePathNameW(path, volume, MAX_PATH_LEN)) {
+        return 0;
+    }
+    path_length = wcslen(path);
+    volume_length = wcslen(volume);
+    while (path_length > 0 && (path[path_length - 1] == L'\\' || path[path_length - 1] == L'/')) {
+        path_length--;
+    }
+    while (volume_length > 0 &&
+           (volume[volume_length - 1] == L'\\' || volume[volume_length - 1] == L'/')) {
+        volume_length--;
+    }
+    return path_length == volume_length && _wcsnicmp(path, volume, path_length) == 0;
+}
+
+/* Process and detached-helper operations. */
+void system_set_restrictive_umask(void) {
+    _umask(0077);
+}
+
 CupError system_get_home_dir(char *buffer, size_t size) {
     wchar_t value[MAX_PATH_LEN];
+    wchar_t absolute[MAX_PATH_LEN];
     DWORD length;
-    int absolute;
+    size_t i;
 
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
@@ -194,16 +410,19 @@ CupError system_get_home_dir(char *buffer, size_t size) {
         print_windows_error("could not read USERPROFILE", NULL);
         return CUP_ERR_FILESYSTEM;
     }
-
-    absolute = (iswalpha(value[0]) && value[1] == L':' &&
-        (value[2] == L'\\' || value[2] == L'/')) ||
-        (value[0] == L'\\' && value[1] == L'\\');
-    if (!absolute) {
-        fprintf(stderr, "Error: USERPROFILE must contain an absolute path.\n");
+    for (i = 0; value[i] != L'\0'; ++i) {
+        if (value[i] == L'/') {
+            value[i] = L'\\';
+        }
+    }
+    length = GetFullPathNameW(value, MAX_PATH_LEN, absolute, NULL);
+    if (length == 0 || length >= MAX_PATH_LEN || wide_path_is_volume_root(absolute)) {
+        fprintf(stderr,
+                "Error: USERPROFILE must be an absolute user directory, not a volume root.\n");
         return CUP_ERR_FILESYSTEM;
     }
 
-    return wide_to_utf8(value, buffer, size);
+    return wide_to_utf8(absolute, buffer, size);
 }
 
 unsigned long system_get_process_id(void) {
@@ -211,7 +430,8 @@ unsigned long system_get_process_id(void) {
 }
 
 CupError system_start_uninstall(const char *cup_root,
-    const char *uninstall_script, unsigned long parent_pid) {
+                                const char *uninstall_script,
+                                unsigned long parent_pid) {
     wchar_t temp_directory_wide[MAX_PATH_LEN];
     wchar_t temp_script_wide[MAX_PATH_LEN];
     wchar_t wide_root[MAX_PATH_LEN];
@@ -224,35 +444,43 @@ CupError system_start_uninstall(const char *cup_root,
     DWORD length;
     int written;
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
-        parent_pid == 0) {
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) || parent_pid == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     length = GetTempPathW(MAX_PATH_LEN, temp_directory_wide);
-    if (length == 0 || length >= MAX_PATH_LEN ||
-        wide_to_utf8(temp_directory_wide, temp_directory, sizeof(temp_directory)) != CUP_OK ||
-        create_temp_file_with_suffix(temp_directory, "cup-uninstall", ".ps1",
-            temp_script, sizeof(temp_script), &file) != CUP_OK) {
-        print_windows_error("could not create temporary uninstall path", NULL);
+    if (length == 0 || length >= MAX_PATH_LEN) {
+        print_windows_error("could not read the temporary directory", NULL);
         return CUP_ERR_FILESYSTEM;
     }
-
-    if (fclose(file) != 0 || system_copy_file(uninstall_script, temp_script) != CUP_OK ||
-        utf8_to_wide(temp_script, temp_script_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(cup_root, wide_root, MAX_PATH_LEN) != CUP_OK) {
+    if (wide_to_utf8(temp_directory_wide, temp_directory, sizeof(temp_directory)) != CUP_OK ||
+        create_temp_file_with_suffix(
+            temp_directory, "cup-uninstall", ".ps1", temp_script, sizeof(temp_script), &file) !=
+            CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (fclose(file) != 0) {
+        system_remove_file(temp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+    file = NULL;
+    if (system_copy_file(uninstall_script, temp_script) != CUP_OK ||
+        utf8_to_wide_path(temp_script, temp_script_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide_path(cup_root, wide_root, MAX_PATH_LEN) != CUP_OK) {
         system_remove_file(temp_script);
         return CUP_ERR_FILESYSTEM;
     }
 
     written = _snwprintf(wide_command,
-        sizeof(wide_command) / sizeof(wide_command[0]),
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass "
-        L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\" "
-        L"-ParentPid %lu",
-        temp_script_wide, wide_root, temp_script_wide, parent_pid);
-    if (written < 0 || (size_t)written >=
-        sizeof(wide_command) / sizeof(wide_command[0])) {
+                         sizeof(wide_command) / sizeof(wide_command[0]),
+                         L"powershell.exe -NoProfile -ExecutionPolicy Bypass "
+                         L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\" "
+                         L"-ParentPid %lu",
+                         temp_script_wide,
+                         wide_root,
+                         temp_script_wide,
+                         parent_pid);
+    if (written < 0 || (size_t)written >= sizeof(wide_command) / sizeof(wide_command[0])) {
         system_remove_file(temp_script);
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
@@ -261,8 +489,7 @@ CupError system_start_uninstall(const char *cup_root,
     startup.cb = sizeof(startup);
     ZeroMemory(&process, sizeof(process));
 
-    if (!CreateProcessW(NULL, wide_command, NULL, NULL, FALSE, 0, NULL, NULL,
-        &startup, &process)) {
+    if (!CreateProcessW(NULL, wide_command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
         print_windows_error("could not start uninstall process", temp_script);
         system_remove_file(temp_script);
         return CUP_ERR_FILESYSTEM;
@@ -273,197 +500,18 @@ CupError system_start_uninstall(const char *cup_root,
     return CUP_OK;
 }
 
-
-CupError system_start_self_update(const char *staging_directory,
-    const char *installed_binary, const char *installed_uninstall,
-    const char *installed_checksums, const char *lock_path,
-    const char *journal_path, unsigned long parent_pid) {
-    static const char script_content[] =
-        "param([string]$Staging,[string]$DestinationBinary,"
-        "[string]$DestinationUninstall,[string]$DestinationChecksums,"
-        "[string]$LockPath,[string]$JournalPath,[int]$ParentPid,"
-        "[string]$SelfPath)\r\n"
-        "$ErrorActionPreference = 'Stop'\r\n"
-        "Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue\r\n"
-        "$Lock = $null\r\n"
-        "for ($Attempt = 0; $Attempt -lt 600 -and $null -eq $Lock; $Attempt++) {\r\n"
-        "  try {\r\n"
-        "    $Lock = [IO.File]::Open($LockPath,[IO.FileMode]::OpenOrCreate,"
-        "[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)\r\n"
-        "    $Lock.Lock(0,1)\r\n"
-        "  } catch {\r\n"
-        "    if ($null -ne $Lock) { $Lock.Dispose(); $Lock = $null }\r\n"
-        "    Start-Sleep -Milliseconds 100\r\n"
-        "  }\r\n"
-        "}\r\n"
-        "if ($null -eq $Lock) { throw 'could not acquire the cup lock' }\r\n"
-        "$Assets = @(\r\n"
-        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_BINARY_NEW
-            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_BINARY_OLD
-            "'); Destination=$DestinationBinary; ReadOnly=$false },\r\n"
-        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_UNINSTALL_NEW
-            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_UNINSTALL_OLD
-            "'); Destination=$DestinationUninstall; ReadOnly=$true },\r\n"
-        "  @{ New=(Join-Path $Staging '" CUP_SELF_UPDATE_CHECKSUMS_NEW
-            "'); Old=(Join-Path $Staging '" CUP_SELF_UPDATE_CHECKSUMS_OLD
-            "'); Destination=$DestinationChecksums; ReadOnly=$true }\r\n"
-        ")\r\n"
-        "function Clear-ReadOnly([string]$Path) {\r\n"
-        "  if (Test-Path -LiteralPath $Path -PathType Leaf) {\r\n"
-        "    Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false\r\n"
-        "  }\r\n"
-        "}\r\n"
-        "function Set-AssetPermissions($Asset) {\r\n"
-        "  Set-ItemProperty -LiteralPath $Asset.Destination -Name IsReadOnly "
-            "-Value $Asset.ReadOnly\r\n"
-        "}\r\n"
-        "function Rollback-Assets {\r\n"
-        "  foreach ($Asset in $Assets) {\r\n"
-        "    if (Test-Path -LiteralPath $Asset.Old -PathType Leaf) {\r\n"
-        "      Clear-ReadOnly $Asset.Destination\r\n"
-        "      if (Test-Path -LiteralPath $Asset.Destination) { "
-            "Remove-Item -LiteralPath $Asset.Destination -Force }\r\n"
-        "      Move-Item -LiteralPath $Asset.Old -Destination "
-            "$Asset.Destination -Force\r\n"
-        "      Set-AssetPermissions $Asset\r\n"
-        "    }\r\n"
-        "  }\r\n"
-        "}\r\n"
-        "$Marker = Join-Path $Staging '" CUP_SELF_UPDATE_COMMITTED "'\r\n"
-        "$Committed = $false\r\n"
-        "try {\r\n"
-        "  foreach ($Asset in $Assets) {\r\n"
-        "    Clear-ReadOnly $Asset.Destination\r\n"
-        "    Move-Item -LiteralPath $Asset.Destination -Destination "
-            "$Asset.Old -Force\r\n"
-        "  }\r\n"
-        "  foreach ($Asset in $Assets) {\r\n"
-        "    Move-Item -LiteralPath $Asset.New -Destination "
-            "$Asset.Destination -Force\r\n"
-        "    Set-AssetPermissions $Asset\r\n"
-        "  }\r\n"
-        "  $MarkerStream = [IO.File]::Open($Marker,[IO.FileMode]::CreateNew,"
-            "[IO.FileAccess]::Write,[IO.FileShare]::None)\r\n"
-        "  try { $MarkerStream.Flush($true) } finally { $MarkerStream.Dispose() }\r\n"
-        "  Remove-Item -LiteralPath $JournalPath -Force\r\n"
-        "  $Committed = $true\r\n"
-        "} catch {\r\n"
-        "  if (-not (Test-Path -LiteralPath $Marker -PathType Leaf)) {\r\n"
-        "    try {\r\n"
-        "      Rollback-Assets\r\n"
-        "      Remove-Item -LiteralPath $JournalPath -Force\r\n"
-        "      Remove-Item -LiteralPath $Staging -Recurse -Force\r\n"
-        "    } catch { }\r\n"
-        "  }\r\n"
-        "  throw\r\n"
-        "} finally {\r\n"
-        "  try { $Lock.Unlock(0,1) } catch { }\r\n"
-        "  $Lock.Dispose()\r\n"
-        "  if ($Committed) { Remove-Item -LiteralPath $Staging -Recurse "
-            "-Force -ErrorAction SilentlyContinue }\r\n"
-        "  Remove-Item -LiteralPath $SelfPath -Force -ErrorAction "
-            "SilentlyContinue\r\n"
-        "}\r\n";
-    wchar_t temp_directory_wide[MAX_PATH_LEN];
-    wchar_t script_wide[MAX_PATH_LEN];
-    wchar_t staging_wide[MAX_PATH_LEN];
-    wchar_t binary_wide[MAX_PATH_LEN];
-    wchar_t uninstall_wide[MAX_PATH_LEN];
-    wchar_t checksums_wide[MAX_PATH_LEN];
-    wchar_t lock_wide[MAX_PATH_LEN];
-    wchar_t journal_wide[MAX_PATH_LEN];
-    wchar_t command[MAX_PATH_LEN * 12];
-    char temp_directory[MAX_PATH_LEN];
-    char script_path[MAX_PATH_LEN];
-    FILE *script = NULL;
-    STARTUPINFOW startup;
-    PROCESS_INFORMATION process;
-    DWORD length;
-    int written;
-    int write_failed;
-    int sync_failed;
-    int close_failed;
-
-    if (text_is_empty(staging_directory) || text_is_empty(installed_binary) ||
-        text_is_empty(installed_uninstall) || text_is_empty(installed_checksums) ||
-        text_is_empty(lock_path) || text_is_empty(journal_path) ||
-        parent_pid == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    length = GetTempPathW(MAX_PATH_LEN, temp_directory_wide);
-    if (length == 0 || length >= MAX_PATH_LEN ||
-        wide_to_utf8(temp_directory_wide, temp_directory,
-            sizeof(temp_directory)) != CUP_OK ||
-        create_temp_file_with_suffix(temp_directory, "cup-self-update", ".ps1",
-            script_path, sizeof(script_path), &script) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    write_failed = fwrite(script_content, 1, sizeof(script_content) - 1,
-        script) != sizeof(script_content) - 1;
-    sync_failed = !write_failed && system_sync_file(script) != CUP_OK;
-    close_failed = fclose(script) != 0;
-    script = NULL;
-    if (write_failed || sync_failed || close_failed) {
-        system_remove_file(script_path);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if (utf8_to_wide(script_path, script_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(staging_directory, staging_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_binary, binary_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_uninstall, uninstall_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(installed_checksums, checksums_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(lock_path, lock_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(journal_path, journal_wide, MAX_PATH_LEN) != CUP_OK) {
-        system_remove_file(script_path);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    written = _snwprintf(command,
-        sizeof(command) / sizeof(command[0]),
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%ls\" "
-        L"-Staging \"%ls\" -DestinationBinary \"%ls\" "
-        L"-DestinationUninstall \"%ls\" -DestinationChecksums \"%ls\" "
-        L"-LockPath \"%ls\" -JournalPath \"%ls\" "
-        L"-ParentPid %lu -SelfPath \"%ls\"",
-        script_wide, staging_wide, binary_wide, uninstall_wide,
-        checksums_wide, lock_wide, journal_wide, parent_pid, script_wide);
-    if (written < 0 || (size_t)written >=
-        sizeof(command) / sizeof(command[0])) {
-        system_remove_file(script_path);
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-
-    ZeroMemory(&startup, sizeof(startup));
-    startup.cb = sizeof(startup);
-    ZeroMemory(&process, sizeof(process));
-    if (!CreateProcessW(NULL, command, NULL, NULL, FALSE,
-        CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) {
-        print_windows_error("could not start self-update process", script_path);
-        system_remove_file(script_path);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    return CUP_OK;
-}
-
-// FILES AND DIRECTORIES
+/* File and directory mutation. */
 CupError system_make_directory(const char *path) {
     wchar_t wide_path[MAX_PATH_LEN];
     SystemPathKind info;
 
-    if (utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (CreateDirectoryW(wide_path, NULL)) {
         return CUP_OK;
     }
-    if (GetLastError() != ERROR_ALREADY_EXISTS ||
-        system_get_path_kind(path, &info) != CUP_OK ||
+    if (GetLastError() != ERROR_ALREADY_EXISTS || system_get_path_kind(path, &info) != CUP_OK ||
         info != SYSTEM_PATH_DIRECTORY) {
         print_windows_error("could not create directory", path);
         return CUP_ERR_FILESYSTEM;
@@ -471,11 +519,132 @@ CupError system_make_directory(const char *path) {
     return CUP_OK;
 }
 
+CupError system_directory_is_private(const char *path, int *is_private) {
+    wchar_t wide_path[MAX_PATH_LEN];
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    PSID owner = NULL;
+    PACL dacl = NULL;
+    TOKEN_USER *user = NULL;
+    DWORD status;
+    DWORD i;
+    SECURITY_DESCRIPTOR_CONTROL control;
+    DWORD revision;
+    CupError err;
+
+    if (text_is_empty(path) || is_private == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *is_private = 0;
+    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = load_current_user(&user);
+    if (err != CUP_OK) {
+        return err;
+    }
+    status = GetNamedSecurityInfoW(wide_path,
+                                   SE_FILE_OBJECT,
+                                   OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                   &owner,
+                                   NULL,
+                                   &dacl,
+                                   NULL,
+                                   &descriptor);
+    if (status != ERROR_SUCCESS) {
+        free(user);
+        return status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND
+                   ? CUP_OK
+                   : CUP_ERR_FILESYSTEM;
+    }
+    if (owner == NULL || !EqualSid(owner, user->User.Sid) || dacl == NULL ||
+        !GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+        (control & SE_DACL_PROTECTED) == 0) {
+        LocalFree(descriptor);
+        free(user);
+        return CUP_OK;
+    }
+
+    *is_private = 1;
+    for (i = 0; i < dacl->AceCount; ++i) {
+        ACE_HEADER *header = NULL;
+
+        if (!GetAce(dacl, i, (void **)&header)) {
+            *is_private = 0;
+            break;
+        }
+        if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+            ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)header;
+            PSID sid = (PSID)&ace->SidStart;
+
+            if (ace->Mask != 0 && !sid_is_private_principal(sid, user->User.Sid)) {
+                *is_private = 0;
+                break;
+            }
+        } else if (header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE) {
+            *is_private = 0;
+            break;
+        }
+    }
+
+    LocalFree(descriptor);
+    free(user);
+    return CUP_OK;
+}
+
+CupError system_make_private_directory(const char *path) {
+    wchar_t wide_path[MAX_PATH_LEN];
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    PACL dacl = NULL;
+    PSID owner = NULL;
+    BOOL owner_defaulted;
+    BOOL dacl_present;
+    BOOL dacl_defaulted;
+    SECURITY_ATTRIBUTES attributes;
+    SystemPathKind kind;
+    CupError err;
+    int is_private;
+
+    if (text_is_empty(path) || utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = build_private_security_descriptor(&descriptor);
+    if (err != CUP_OK) {
+        return err;
+    }
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor;
+
+    if (!CreateDirectoryW(wide_path, &attributes)) {
+        if (GetLastError() != ERROR_ALREADY_EXISTS || system_get_path_kind(path, &kind) != CUP_OK ||
+            kind != SYSTEM_PATH_DIRECTORY ||
+            !GetSecurityDescriptorOwner(descriptor, &owner, &owner_defaulted) || owner == NULL ||
+            !GetSecurityDescriptorDacl(descriptor, &dacl_present, &dacl, &dacl_defaulted) ||
+            !dacl_present || dacl == NULL ||
+            SetNamedSecurityInfoW(wide_path,
+                                  SE_FILE_OBJECT,
+                                  OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
+                                      PROTECTED_DACL_SECURITY_INFORMATION,
+                                  owner,
+                                  NULL,
+                                  dacl,
+                                  NULL) != ERROR_SUCCESS) {
+            LocalFree(descriptor);
+            print_windows_error("could not create or secure private directory", path);
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+    LocalFree(descriptor);
+
+    err = system_directory_is_private(path, &is_private);
+    return err == CUP_OK && is_private ? CUP_OK : CUP_ERR_FILESYSTEM;
+}
+
 CupError system_remove_directory(const char *path) {
     wchar_t wide_path[MAX_PATH_LEN];
     SystemPathKind info;
 
-    if (utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (system_get_path_kind(path, &info) != CUP_OK) {
@@ -494,13 +663,15 @@ CupError system_remove_directory(const char *path) {
     return CUP_OK;
 }
 
-static CupError move_path_with_flags(const char *source, const char *destination,
-    DWORD flags, SystemCommitState *commit_state) {
+static CupError move_path_with_flags(const char *source,
+                                     const char *destination,
+                                     DWORD flags,
+                                     SystemCommitState *commit_state) {
     wchar_t wide_source[MAX_PATH_LEN];
     wchar_t wide_destination[MAX_PATH_LEN];
 
-    if (commit_state == NULL || utf8_to_wide(source, wide_source, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(destination, wide_destination, MAX_PATH_LEN) != CUP_OK) {
+    if (commit_state == NULL || utf8_to_wide_path(source, wide_source, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide_path(destination, wide_destination, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     *commit_state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -514,22 +685,23 @@ static CupError move_path_with_flags(const char *source, const char *destination
     return CUP_OK;
 }
 
-CupError system_move_path(const char *source, const char *destination,
-    SystemCommitState *commit_state) {
+CupError system_move_path(const char *source,
+                          const char *destination,
+                          SystemCommitState *commit_state) {
     return move_path_with_flags(source, destination, 0, commit_state);
 }
 
-CupError system_replace_file(const char *source, const char *destination,
-    SystemCommitState *commit_state) {
-    return move_path_with_flags(source, destination, MOVEFILE_REPLACE_EXISTING,
-        commit_state);
+CupError system_replace_file(const char *source,
+                             const char *destination,
+                             SystemCommitState *commit_state) {
+    return move_path_with_flags(source, destination, MOVEFILE_REPLACE_EXISTING, commit_state);
 }
 
 CupError system_remove_file(const char *path) {
     wchar_t wide_path[MAX_PATH_LEN];
     DWORD attributes;
 
-    if (utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -563,27 +735,45 @@ CupError system_remove_file(const char *path) {
 }
 
 CupError system_copy_file(const char *source_path, const char *destination_path) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     wchar_t source[MAX_PATH_LEN];
-    wchar_t destination[MAX_PATH_LEN];
+    wchar_t temporary_wide[MAX_PATH_LEN];
     SystemPathKind source_info;
-    SystemPathKind destination_info;
+    FILE *temporary_file = NULL;
+    CupError err;
+    char parent[MAX_PATH_LEN];
+    char temporary[MAX_PATH_LEN] = "";
 
-    if (utf8_to_wide(source_path, source, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(destination_path, destination, MAX_PATH_LEN) != CUP_OK ||
-        system_get_path_kind(source_path, &source_info) != CUP_OK ||
-        system_get_path_kind(destination_path, &destination_info) != CUP_OK) {
+    if (text_is_empty(source_path) || text_is_empty(destination_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (source_info != SYSTEM_PATH_REGULAR_FILE ||
-        destination_info == SYSTEM_PATH_LINK ||
-        destination_info == SYSTEM_PATH_DIRECTORY) {
+    if (utf8_to_wide_path(source_path, source, MAX_PATH_LEN) != CUP_OK ||
+        system_get_path_kind(source_path, &source_info) != CUP_OK ||
+        source_info != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_FILESYSTEM;
     }
-    if (!CopyFileW(source, destination, FALSE)) {
+    if (get_parent_path(destination_path, parent, sizeof(parent)) != CUP_OK ||
+        system_create_temp_file(parent, "copy", temporary, sizeof(temporary), &temporary_file) !=
+            CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    if (fclose(temporary_file) != 0 ||
+        utf8_to_wide_path(temporary, temporary_wide, MAX_PATH_LEN) != CUP_OK) {
+        system_remove_file(temporary);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!CopyFileW(source, temporary_wide, FALSE)) {
         print_windows_error("could not copy file", source_path);
+        system_remove_file(temporary);
         return CUP_ERR_FILESYSTEM;
     }
-    return CUP_OK;
+
+    err = system_replace_file(temporary, destination_path, &commit_state);
+    if (err != CUP_OK && commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+        system_remove_file(temporary);
+    }
+    return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -603,23 +793,23 @@ CupError system_sync_parent_directory(const char *path) {
     return CUP_OK;
 }
 
-// TEMPORARY OBJECTS
+/* Exclusive temporary objects. */
 CupError system_create_file_exclusive(const char *path, FILE **file) {
     wchar_t wide_path[MAX_PATH_LEN];
     HANDLE handle;
     int descriptor;
 
-    if (file == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (file == NULL || utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     *file = NULL;
 
-    handle = CreateFileW(wide_path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    handle = CreateFileW(
+        wide_path, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
-        return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
-            ? CUP_ERR_LOCK : CUP_ERR_FILESYSTEM;
+        return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS ? CUP_ERR_LOCK
+                                                                           : CUP_ERR_FILESYSTEM;
     }
 
     descriptor = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
@@ -637,8 +827,8 @@ CupError system_create_file_exclusive(const char *path, FILE **file) {
     return CUP_OK;
 }
 
-CupError system_create_temp_file(const char *directory, const char *prefix,
-    char *path, size_t path_size, FILE **file) {
+CupError system_create_temp_file(
+    const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
     HANDLE handle;
     int descriptor;
 
@@ -647,8 +837,7 @@ CupError system_create_temp_file(const char *directory, const char *prefix,
     }
     *file = NULL;
 
-    if (open_temp_handle(directory, prefix, ".tmp", path, path_size,
-            &handle) != CUP_OK) {
+    if (open_temp_handle(directory, prefix, ".tmp", path, path_size, &handle) != CUP_OK) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -669,12 +858,13 @@ CupError system_create_temp_file(const char *directory, const char *prefix,
     return CUP_OK;
 }
 
-CupError system_create_temp_directory(const char *directory, const char *prefix,
-    char *path, size_t path_size) {
+CupError system_create_temp_directory(const char *directory,
+                                      const char *prefix,
+                                      char *path,
+                                      size_t path_size) {
     unsigned long attempt;
 
-    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL ||
-        path_size == 0) {
+    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL || path_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -682,7 +872,7 @@ CupError system_create_temp_directory(const char *directory, const char *prefix,
         wchar_t wide_path[MAX_PATH_LEN];
 
         if (build_temp_candidate(directory, prefix, ".tmp", attempt, path, path_size) != CUP_OK ||
-            utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+            utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
             return CUP_ERR_TEMPORARY;
         }
         if (CreateDirectoryW(wide_path, NULL)) {
@@ -696,8 +886,10 @@ CupError system_create_temp_directory(const char *directory, const char *prefix,
     return CUP_ERR_TEMPORARY;
 }
 
-CupError system_make_unique_temp_path(const char *directory, const char *prefix,
-    char *path, size_t path_size) {
+CupError system_make_unique_temp_path(const char *directory,
+                                      const char *prefix,
+                                      char *path,
+                                      size_t path_size) {
     FILE *file = NULL;
 
     if (system_create_temp_file(directory, prefix, path, path_size, &file) != CUP_OK) {
@@ -711,13 +903,12 @@ CupError system_make_unique_temp_path(const char *directory, const char *prefix,
     }
 }
 
-// PATH INSPECTION
+/* Path inspection and Windows attributes. */
 CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
     wchar_t wide_path[MAX_PATH_LEN];
     DWORD attributes;
 
-    if (path_kind == NULL ||
-        utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (path_kind == NULL || utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -744,6 +935,7 @@ CupError system_path_exists(const char *path, int *exists) {
     if (exists == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *exists = 0;
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
         return err;
@@ -759,6 +951,7 @@ CupError system_is_directory(const char *path, int *is_directory) {
     if (is_directory == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *is_directory = 0;
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
         return err;
@@ -774,6 +967,7 @@ CupError system_is_regular_file(const char *path, int *is_regular_file) {
     if (is_regular_file == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *is_regular_file = 0;
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
         return err;
@@ -788,13 +982,33 @@ CupError system_file_size(const char *path, long long *file_size) {
     LARGE_INTEGER value;
     SystemPathKind info;
 
-    if (file_size == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
-        system_get_path_kind(path, &info) != CUP_OK ||
-        info != SYSTEM_PATH_REGULAR_FILE) {
+    CupError err;
+
+    if (file_size == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    file = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ, NULL,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    *file_size = 0;
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = system_get_path_kind(path, &info);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (info != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    file = CreateFileW(wide_path,
+                       GENERIC_READ,
+                       FILE_SHARE_READ,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                       NULL);
     if (file == INVALID_HANDLE_VALUE) {
         return CUP_ERR_FILESYSTEM;
     }
@@ -807,12 +1021,16 @@ CupError system_file_size(const char *path, long long *file_size) {
     return CUP_OK;
 }
 
-// PERMISSIONS
+/* Permissions. */
 CupError system_is_executable(const char *path, int *is_executable) {
     SystemPathKind info;
     CupError err;
 
-    if (is_executable == NULL || text_is_empty(path)) {
+    if (is_executable == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *is_executable = 0;
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
     err = system_get_path_kind(path, &info);
@@ -828,10 +1046,25 @@ CupError system_is_read_only(const char *path, int *is_read_only) {
     DWORD attributes;
     SystemPathKind info;
 
-    if (is_read_only == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
-        system_get_path_kind(path, &info) != CUP_OK ||
-        (info != SYSTEM_PATH_REGULAR_FILE && info != SYSTEM_PATH_DIRECTORY)) {
+    CupError err;
+
+    if (is_read_only == NULL) {
         return CUP_ERR_INVALID_INPUT;
+    }
+    *is_read_only = 0;
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = system_get_path_kind(path, &info);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (info != SYSTEM_PATH_REGULAR_FILE && info != SYSTEM_PATH_DIRECTORY) {
+        return CUP_ERR_FILESYSTEM;
     }
     attributes = GetFileAttributesW(wide_path);
     if (attributes == INVALID_FILE_ATTRIBUTES) {
@@ -846,7 +1079,7 @@ CupError system_set_read_only(const char *path, int read_only) {
     DWORD attributes;
     SystemPathKind info;
 
-    if (utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
+    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
         system_get_path_kind(path, &info) != CUP_OK ||
         (info != SYSTEM_PATH_REGULAR_FILE && info != SYSTEM_PATH_DIRECTORY)) {
         return CUP_ERR_INVALID_INPUT;
@@ -880,7 +1113,7 @@ CupError system_set_executable(const char *path, int executable) {
     return CUP_OK;
 }
 
-// DIRECTORY TRAVERSAL
+/* Directory traversal. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
     wchar_t wide_path[MAX_PATH_LEN];
     wchar_t pattern[MAX_PATH_LEN];
@@ -889,7 +1122,7 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
     CupError err;
     SystemPathKind root_info;
 
-    if (callback == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (callback == NULL || utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     err = system_get_path_kind(path, &root_info);
@@ -972,7 +1205,46 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
     return system_list_directory(path, walk_directory_entry, &context);
 }
 
-// FILE LOCKING
+/* Process-scoped native locks. */
+typedef struct {
+    int (*cancelled)(void);
+} RemoveTreeContext;
+
+static CupError remove_tree_callback(const char *path, SystemPathKind kind, void *userdata) {
+    RemoveTreeContext *context = userdata;
+
+    if (context != NULL && context->cancelled != NULL && context->cancelled()) {
+        return CUP_ERR_INTERRUPT;
+    }
+    if (kind == SYSTEM_PATH_DIRECTORY) {
+        return system_remove_directory(path);
+    }
+    return system_remove_file(path);
+}
+
+CupError system_remove_tree(const char *path, int (*cancelled)(void)) {
+    SystemPathKind kind;
+    RemoveTreeContext context;
+    CupError err;
+
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_get_path_kind(path, &kind);
+    if (err != CUP_OK || kind == SYSTEM_PATH_MISSING) {
+        return err;
+    }
+    if (kind != SYSTEM_PATH_DIRECTORY) {
+        return system_remove_file(path);
+    }
+    context.cancelled = cancelled;
+    err = system_walk_directory(path, remove_tree_callback, &context);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return system_remove_directory(path);
+}
+
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     wchar_t wide_path[MAX_PATH_LEN];
     HANDLE handle;
@@ -980,14 +1252,19 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     BY_HANDLE_FILE_INFORMATION info;
     DWORD flags = LOCKFILE_FAIL_IMMEDIATELY;
 
-    if (lock == NULL || utf8_to_wide(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
+    if (lock == NULL || (mode != SYSTEM_LOCK_SHARED && mode != SYSTEM_LOCK_EXCLUSIVE) ||
+        utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     memset(lock, 0, sizeof(*lock));
 
-    handle = CreateFileW(wide_path, GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    handle = CreateFileW(wide_path,
+                         GENERIC_READ | GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         NULL,
+                         OPEN_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
     if (handle == INVALID_HANDLE_VALUE) {
         return CUP_ERR_FILESYSTEM;
     }

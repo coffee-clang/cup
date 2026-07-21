@@ -1,4 +1,7 @@
 #!/bin/sh
+
+# Purpose: Validates VERSION and derives development or official build metadata from Git.
+# Commands generate version.h, release.txt and the Windows VERSIONINFO resource.
 set -eu
 
 VERSION_FILE=${CUP_VERSION_FILE:-VERSION}
@@ -8,6 +11,22 @@ fail() {
     exit 1
 }
 
+validate_build_context() {
+    case "${CUP_OFFICIAL_BUILD:-0}" in
+        0|1) ;;
+        *) fail "CUP_OFFICIAL_BUILD must be 0 or 1" ;;
+    esac
+    case "${CUP_BUILD_CONFIGURATION:-development}" in
+        development|debug|coverage|sanitizers|release) ;;
+        *) fail "invalid CUP_BUILD_CONFIGURATION '${CUP_BUILD_CONFIGURATION}'" ;;
+    esac
+    if [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] &&
+        [ "${CUP_BUILD_CONFIGURATION:-development}" != release ]; then
+        fail "official identity requires the release build configuration"
+    fi
+}
+
+# VERSION and Git identity helpers.
 is_semver() {
     case "$1" in
         ''|*[!0-9.]*|.*|*..*|*.) return 1 ;;
@@ -106,9 +125,11 @@ commits_from_latest_tag() {
     fi
 }
 
+# Official release eligibility.
 is_official_build() {
     base=$1
-    [ "${CUP_RELEASE_BUILD:-0}" = 1 ] || return 1
+    [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] || return 1
+    [ "${CUP_BUILD_CONFIGURATION:-development}" = release ] || return 1
     at_matching_tag "$base" || return 1
     ! working_tree_dirty
 }
@@ -122,6 +143,7 @@ validate_release() {
     printf '%s\n' "$base"
 }
 
+# Development and official version derivation.
 current_version() {
     base=$(base_version)
 
@@ -152,6 +174,7 @@ write_if_changed() {
     fi
 }
 
+# Deterministic generated metadata outputs.
 generate_files() {
     output_dir=$1
     mkdir -p "$output_dir"
@@ -192,6 +215,7 @@ METADATA
     resource_tmp="$output_dir/version.rc.tmp.$$"
     cat > "$resource_tmp" <<RESOURCE
 #include <windows.h>
+#include "version.h"
 
 1 VERSIONINFO
 FILEVERSION $VERSION_MAJOR,$VERSION_MINOR,$VERSION_PATCH,0
@@ -224,6 +248,18 @@ BEGIN
         VALUE "Translation", 0x0409, 1200
     END
 END
+
+1 24
+BEGIN
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
+    "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\r\n"
+    "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">\r\n"
+    "    <windowsSettings>\r\n"
+    "      <longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>\r\n"
+    "    </windowsSettings>\r\n"
+    "  </application>\r\n"
+    "</assembly>\r\n"
+END
 RESOURCE
     write_if_changed "$output_dir/version.rc" "$resource_tmp"
 }
@@ -240,6 +276,8 @@ USAGE
     exit 2
 }
 
+# Command dispatch.
+validate_build_context
 command=${1:-}
 case "$command" in
     base)

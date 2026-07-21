@@ -70,3 +70,6 @@ Doxyfile
 
 # Remote docs theme assets (fetched via make docs-assets)
 /docs/theme/index.hbs
+
+# Generated release artifacts
+/dist/

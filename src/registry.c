@@ -1,3 +1,8 @@
+/*
+ * Defines the supported component/tool relationships compiled into cup. The catalog can restrict
+ * availability but cannot extend this domain.
+ */
+
 #include "registry.h"
 
 #include "text.h"
@@ -7,7 +12,7 @@
 
 #define MAX_TOOLS_PER_COMPONENT 8
 
-// COMPONENT REGISTRY
+/* Component registry. */
 typedef struct {
     const char *component;
     const char *tools[MAX_TOOLS_PER_COMPONENT];
@@ -16,19 +21,17 @@ typedef struct {
 /*
  * Components and tools recognized by this cup build.
  * This registry validates the domain accepted by the CLI and state files;
- * concrete versions, formats and URLs are provided by the manifest.
+ * concrete versions, formats and URLs are provided by the catalog.
  */
-static const SupportedComponent SUPPORTED_COMPONENTS[] = {
-    { "compiler", { "gcc", "clang", NULL } },
-    { "debugger", { "gdb", "lldb", NULL } },
-    { "linker", { "lld", NULL } },
-    { "formatter", { "clang-format", NULL } },
-    { "linter", { "clang-tidy", NULL } },
-    { "language-server", { "clangd", NULL } },
-    { "analyzer", { "valgrind", NULL } }
-};
+static const SupportedComponent SUPPORTED_COMPONENTS[] = {{"compiler", {"gcc", "clang", NULL}},
+                                                          {"debugger", {"gdb", "lldb", NULL}},
+                                                          {"linker", {"lld", "ld", NULL}},
+                                                          {"formatter", {"clang-format", NULL}},
+                                                          {"linter", {"clang-tidy", NULL}},
+                                                          {"language-server", {"clangd", NULL}},
+                                                          {"analyzer", {"valgrind", NULL}}};
 
-// REGISTRY LOOKUP
+/* Registry lookup. */
 static const SupportedComponent *find_supported_component(const char *component) {
     size_t count;
     size_t i;
@@ -48,7 +51,7 @@ static const SupportedComponent *find_supported_component(const char *component)
     return NULL;
 }
 
-// PUBLIC API
+/* Public API. */
 CupError registry_validate_component(const char *component) {
     const SupportedComponent *supported;
 
@@ -89,13 +92,41 @@ CupError registry_validate_tool(const char *component, const char *tool) {
     return CUP_ERR_INVALID_TOOL;
 }
 
-
 int registry_is_component(const char *component) {
     return find_supported_component(component) != NULL;
 }
 
-CupError registry_find_tool_component(const char *tool, char *component,
-    size_t component_size) {
+size_t registry_component_count(void) {
+    return sizeof(SUPPORTED_COMPONENTS) / sizeof(SUPPORTED_COMPONENTS[0]);
+}
+
+const char *registry_component_at(size_t index) {
+    return index < registry_component_count() ? SUPPORTED_COMPONENTS[index].component : NULL;
+}
+
+size_t registry_tool_count(const char *component) {
+    const SupportedComponent *supported = find_supported_component(component);
+    size_t count = 0;
+
+    if (supported == NULL) {
+        return 0;
+    }
+    while (count < MAX_TOOLS_PER_COMPONENT && supported->tools[count] != NULL) {
+        count++;
+    }
+    return count;
+}
+
+const char *registry_tool_at(const char *component, size_t index) {
+    const SupportedComponent *supported = find_supported_component(component);
+
+    if (supported == NULL || index >= MAX_TOOLS_PER_COMPONENT) {
+        return NULL;
+    }
+    return supported->tools[index];
+}
+
+CupError registry_find_tool_component(const char *tool, char *component, size_t component_size) {
     const SupportedComponent *matched = NULL;
     size_t count;
     size_t i;
@@ -107,13 +138,10 @@ CupError registry_find_tool_component(const char *tool, char *component,
 
     count = sizeof(SUPPORTED_COMPONENTS) / sizeof(SUPPORTED_COMPONENTS[0]);
     for (i = 0; i < count; ++i) {
-        for (j = 0; j < MAX_TOOLS_PER_COMPONENT &&
-            SUPPORTED_COMPONENTS[i].tools[j] != NULL; ++j) {
+        for (j = 0; j < MAX_TOOLS_PER_COMPONENT && SUPPORTED_COMPONENTS[i].tools[j] != NULL; ++j) {
             if (strcmp(SUPPORTED_COMPONENTS[i].tools[j], tool) == 0) {
                 if (matched != NULL && matched != &SUPPORTED_COMPONENTS[i]) {
-                    fprintf(stderr,
-                        "Error: tool '%s' belongs to more than one component.\n",
-                        tool);
+                    fprintf(stderr, "Error: tool '%s' belongs to more than one component.\n", tool);
                     return CUP_ERR_INCONSISTENT_STATE;
                 }
                 matched = &SUPPORTED_COMPONENTS[i];

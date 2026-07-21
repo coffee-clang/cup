@@ -1,3 +1,8 @@
+/*
+ * Implements the complete system.h contract with POSIX primitives, including path inspection
+ * without link following, locks, durable replacement and detached helpers.
+ */
+
 #include "system.h"
 
 #include "constants.h"
@@ -24,7 +29,7 @@
 #define O_NOFOLLOW 0
 #endif
 
-// INTERNAL HELPERS
+/* Internal helpers. */
 static CupError get_parent_path(const char *path, char *parent, size_t size) {
     char *slash;
 
@@ -90,8 +95,7 @@ static CupError sync_rename_directories(const char *source, const char *destinat
         source_err = sync_directory(source_parent);
     }
 
-    return destination_err == CUP_OK && source_err == CUP_OK
-        ? CUP_OK : CUP_ERR_FILESYSTEM;
+    return destination_err == CUP_OK && source_err == CUP_OK ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 static CupError open_regular_file_no_follow(const char *path, int flags, mode_t mode, int *fd) {
@@ -116,7 +120,11 @@ static CupError open_regular_file_no_follow(const char *path, int flags, mode_t 
     return CUP_OK;
 }
 
-// PROCESS AND ENVIRONMENT
+/* Process and detached-helper operations. */
+void system_set_restrictive_umask(void) {
+    umask(0077);
+}
+
 CupError system_get_home_dir(char *buffer, size_t size) {
     const char *home;
 
@@ -147,21 +155,20 @@ unsigned long system_get_process_id(void) {
 }
 
 CupError system_start_uninstall(const char *cup_root,
-    const char *uninstall_script, unsigned long parent_pid) {
+                                const char *uninstall_script,
+                                unsigned long parent_pid) {
     CupError err;
     char tmp_script[MAX_PATH_LEN];
     FILE *file = NULL;
     pid_t pid;
     char parent_pid_text[32];
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
-        parent_pid == 0 || text_format(parent_pid_text,
-            sizeof(parent_pid_text), "%lu", parent_pid) != CUP_OK) {
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) || parent_pid == 0 ||
+        text_format(parent_pid_text, sizeof(parent_pid_text), "%lu", parent_pid) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_create_temp_file("/tmp", "cup-uninstall",
-        tmp_script, sizeof(tmp_script), &file);
+    err = system_create_temp_file("/tmp", "cup-uninstall", tmp_script, sizeof(tmp_script), &file);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not create temporary uninstall script.\n");
         return err;
@@ -191,243 +198,17 @@ CupError system_start_uninstall(const char *cup_root,
     }
 
     if (pid == 0) {
-        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script,
-            parent_pid_text, (char *)NULL);
+        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script, parent_pid_text, (char *)NULL);
         _exit(127);
     }
 
     return CUP_OK;
 }
 
-
-typedef struct {
-    const char *new_name;
-    const char *old_name;
-    const char *destination;
-    mode_t mode;
-} DeferredUpdateAsset;
-
-static CupError build_update_asset_path(const char *staging,
-    const char *name, char *path, size_t size) {
-    return path_join(path, size, staging, name);
-}
-
-static CupError sync_update_destinations(const DeferredUpdateAsset *assets,
-    size_t count) {
-    char previous[MAX_PATH_LEN] = "";
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char parent[MAX_PATH_LEN];
-
-        if (get_parent_path(assets[i].destination, parent,
-                sizeof(parent)) != CUP_OK) {
-            return CUP_ERR_FILESYSTEM;
-        }
-        if (strcmp(parent, previous) != 0) {
-            if (sync_directory(parent) != CUP_OK ||
-                text_copy(previous, sizeof(previous), parent) != CUP_OK) {
-                return CUP_ERR_FILESYSTEM;
-            }
-        }
-    }
-    return CUP_OK;
-}
-
-static CupError rollback_deferred_update(const char *staging,
-    const DeferredUpdateAsset *assets, size_t count) {
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char backup[MAX_PATH_LEN];
-        struct stat info;
-
-        if (build_update_asset_path(staging, assets[i].old_name,
-                backup, sizeof(backup)) != CUP_OK) {
-            return CUP_ERR_ROLLBACK;
-        }
-        if (lstat(backup, &info) != 0) {
-            if (errno == ENOENT) {
-                continue;
-            }
-            return CUP_ERR_ROLLBACK;
-        }
-        if (!S_ISREG(info.st_mode)) {
-            return CUP_ERR_ROLLBACK;
-        }
-        if (unlink(assets[i].destination) != 0 && errno != ENOENT) {
-            return CUP_ERR_ROLLBACK;
-        }
-        if (rename(backup, assets[i].destination) != 0 ||
-            chmod(assets[i].destination, assets[i].mode) != 0) {
-            return CUP_ERR_ROLLBACK;
-        }
-    }
-
-    return sync_update_destinations(assets, count) == CUP_OK
-        ? CUP_OK : CUP_ERR_ROLLBACK;
-}
-
-static void cleanup_deferred_update(const char *staging,
-    const DeferredUpdateAsset *assets, size_t count) {
-    static const char *const extra_files[] = {
-        CUP_RELEASE_METADATA_FILENAME,
-        CUP_SELF_UPDATE_COMMITTED
-    };
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char path[MAX_PATH_LEN];
-
-        if (build_update_asset_path(staging, assets[i].new_name,
-                path, sizeof(path)) == CUP_OK) {
-            unlink(path);
-        }
-        if (build_update_asset_path(staging, assets[i].old_name,
-                path, sizeof(path)) == CUP_OK) {
-            unlink(path);
-        }
-    }
-    for (i = 0; i < sizeof(extra_files) / sizeof(extra_files[0]); ++i) {
-        char path[MAX_PATH_LEN];
-
-        if (build_update_asset_path(staging, extra_files[i],
-                path, sizeof(path)) == CUP_OK) {
-            unlink(path);
-        }
-    }
-    rmdir(staging);
-}
-
-static CupError clear_deferred_update_journal(const char *journal_path) {
-    if (unlink(journal_path) != 0 ||
-        system_sync_parent_directory(journal_path) != CUP_OK) {
-        return CUP_ERR_COMMIT;
-    }
-    return CUP_OK;
-}
-
-static CupError commit_deferred_update(const char *staging,
-    const DeferredUpdateAsset *assets, size_t count,
-    const char *journal_path) {
-    char marker[MAX_PATH_LEN];
-    FILE *marker_file = NULL;
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char backup[MAX_PATH_LEN];
-
-        if (build_update_asset_path(staging, assets[i].old_name,
-                backup, sizeof(backup)) != CUP_OK ||
-            rename(assets[i].destination, backup) != 0) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    }
-
-    for (i = 0; i < count; ++i) {
-        char source[MAX_PATH_LEN];
-
-        if (build_update_asset_path(staging, assets[i].new_name,
-                source, sizeof(source)) != CUP_OK ||
-            rename(source, assets[i].destination) != 0 ||
-            chmod(assets[i].destination, assets[i].mode) != 0) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    }
-    if (sync_update_destinations(assets, count) != CUP_OK ||
-        build_update_asset_path(staging, CUP_SELF_UPDATE_COMMITTED,
-            marker, sizeof(marker)) != CUP_OK ||
-        system_create_file_exclusive(marker, &marker_file) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    {
-        int sync_failed = system_sync_file(marker_file) != CUP_OK;
-        int close_failed = fclose(marker_file) != 0;
-
-        if (sync_failed || close_failed ||
-            system_sync_parent_directory(marker) != CUP_OK) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    }
-
-    return clear_deferred_update_journal(journal_path);
-}
-
-CupError system_start_self_update(const char *staging_directory,
-    const char *installed_binary, const char *installed_uninstall,
-    const char *installed_checksums, const char *lock_path,
-    const char *journal_path, unsigned long parent_pid) {
-    pid_t pid;
-
-    if (text_is_empty(staging_directory) || text_is_empty(installed_binary) ||
-        text_is_empty(installed_uninstall) || text_is_empty(installed_checksums) ||
-        text_is_empty(lock_path) || text_is_empty(journal_path) ||
-        parent_pid == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    pid = fork();
-    if (pid < 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (pid == 0) {
-        DeferredUpdateAsset assets[] = {
-            {CUP_SELF_UPDATE_BINARY_NEW, CUP_SELF_UPDATE_BINARY_OLD,
-                installed_binary, 0755},
-            {CUP_SELF_UPDATE_UNINSTALL_NEW, CUP_SELF_UPDATE_UNINSTALL_OLD,
-                installed_uninstall, 0555},
-            {CUP_SELF_UPDATE_CHECKSUMS_NEW, CUP_SELF_UPDATE_CHECKSUMS_OLD,
-                installed_checksums, 0444}
-        };
-        SystemLock lock = {0};
-        CupError commit_error;
-
-        while (kill((pid_t)parent_pid, 0) == 0 || errno == EPERM) {
-            sleep(1);
-        }
-
-        while (system_lock_acquire(&lock, lock_path,
-                SYSTEM_LOCK_EXCLUSIVE) == CUP_ERR_LOCK) {
-            struct timespec pause = {0, 100000000L};
-            nanosleep(&pause, NULL);
-        }
-        if (!lock.active) {
-            fprintf(stderr,
-                "Error: deferred cup self-update could not acquire the lock. "
-                "Run 'cup repair'.\n");
-            _exit(1);
-        }
-
-        commit_error = commit_deferred_update(staging_directory, assets,
-            sizeof(assets) / sizeof(assets[0]), journal_path);
-        if (commit_error == CUP_OK) {
-            cleanup_deferred_update(staging_directory, assets,
-                sizeof(assets) / sizeof(assets[0]));
-            system_lock_release(&lock);
-            _exit(0);
-        }
-
-        if (commit_error != CUP_ERR_COMMIT &&
-            rollback_deferred_update(staging_directory, assets,
-                sizeof(assets) / sizeof(assets[0])) == CUP_OK &&
-            clear_deferred_update_journal(journal_path) == CUP_OK) {
-            cleanup_deferred_update(staging_directory, assets,
-                sizeof(assets) / sizeof(assets[0]));
-        } else {
-            fprintf(stderr,
-                "Error: deferred cup self-update requires recovery. "
-                "Run 'cup repair'.\n");
-        }
-        system_lock_release(&lock);
-        _exit(1);
-    }
-
-    return CUP_OK;
-}
-
-// FILES AND DIRECTORIES
+/* File and directory mutation. */
 CupError system_make_directory(const char *path) {
     SystemPathKind info;
+    int mkdir_error;
 
     if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
@@ -437,12 +218,54 @@ CupError system_make_directory(const char *path) {
         return CUP_OK;
     }
 
-    if (errno != EEXIST || system_get_path_kind(path, &info) != CUP_OK ||
+    mkdir_error = errno;
+    if (mkdir_error != EEXIST || system_get_path_kind(path, &info) != CUP_OK ||
         info != SYSTEM_PATH_DIRECTORY) {
-        fprintf(stderr, "Error: could not create directory '%s': %s.\n", path, strerror(errno));
+        fprintf(
+            stderr, "Error: could not create directory '%s': %s.\n", path, strerror(mkdir_error));
         return CUP_ERR_FILESYSTEM;
     }
 
+    return CUP_OK;
+}
+
+CupError system_directory_is_private(const char *path, int *is_private) {
+    struct stat info;
+
+    if (text_is_empty(path) || is_private == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *is_private = 0;
+    if (lstat(path, &info) != 0) {
+        return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    }
+    if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid()) {
+        return CUP_OK;
+    }
+    *is_private = (info.st_mode & (S_IRWXG | S_IRWXO)) == 0;
+    return CUP_OK;
+}
+
+CupError system_make_private_directory(const char *path) {
+    struct stat info;
+
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (mkdir(path, 0700) == 0) {
+        return CUP_OK;
+    }
+    if (errno != EEXIST || lstat(path, &info) != 0 || !S_ISDIR(info.st_mode) ||
+        info.st_uid != geteuid()) {
+        fprintf(stderr,
+                "Error: private directory '%s' is not owned by the current user or is unsafe.\n",
+                path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if ((info.st_mode & 0777) != 0700 && chmod(path, 0700) != 0) {
+        fprintf(stderr, "Error: could not secure directory '%s': %s.\n", path, strerror(errno));
+        return CUP_ERR_FILESYSTEM;
+    }
     return CUP_OK;
 }
 
@@ -470,8 +293,9 @@ CupError system_remove_directory(const char *path) {
     return CUP_OK;
 }
 
-CupError system_move_path(const char *source, const char *destination,
-    SystemCommitState *commit_state) {
+CupError system_move_path(const char *source,
+                          const char *destination,
+                          SystemCommitState *commit_state) {
     SystemPathKind info;
 
     if (text_is_empty(source) || text_is_empty(destination) || commit_state == NULL) {
@@ -488,8 +312,11 @@ CupError system_move_path(const char *source, const char *destination,
     }
 
     if (rename(source, destination) != 0) {
-        fprintf(stderr, "Error: could not move '%s' to '%s': %s.\n",
-            source, destination, strerror(errno));
+        fprintf(stderr,
+                "Error: could not move '%s' to '%s': %s.\n",
+                source,
+                destination,
+                strerror(errno));
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -502,16 +329,20 @@ CupError system_move_path(const char *source, const char *destination,
     return CUP_OK;
 }
 
-CupError system_replace_file(const char *source, const char *destination,
-    SystemCommitState *commit_state) {
+CupError system_replace_file(const char *source,
+                             const char *destination,
+                             SystemCommitState *commit_state) {
     if (text_is_empty(source) || text_is_empty(destination) || commit_state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
     if (rename(source, destination) != 0) {
-        fprintf(stderr, "Error: could not replace '%s' with '%s': %s.\n",
-            destination, source, strerror(errno));
+        fprintf(stderr,
+                "Error: could not replace '%s' with '%s': %s.\n",
+                destination,
+                source,
+                strerror(errno));
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -521,6 +352,110 @@ CupError system_replace_file(const char *source, const char *destination,
     }
 
     *commit_state = SYSTEM_COMMIT_DURABLE;
+    return CUP_OK;
+}
+
+static CupError split_parent_entry(
+    const char *path, char *parent, size_t parent_size, char *entry, size_t entry_size) {
+    char copy[MAX_PATH_LEN];
+    char *slash;
+    size_t length;
+
+    if (text_is_empty(path) || parent == NULL || parent_size == 0 || entry == NULL ||
+        entry_size == 0 || text_copy(copy, sizeof(copy), path) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    length = strlen(copy);
+    while (length > 1 && copy[length - 1] == '/') {
+        copy[--length] = '\0';
+    }
+    slash = strrchr(copy, '/');
+    if (slash == NULL) {
+        if (text_copy(parent, parent_size, ".") != CUP_OK ||
+            text_copy(entry, entry_size, copy) != CUP_OK) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+    } else {
+        if (slash == copy) {
+            slash[1] = '\0';
+            if (text_copy(parent, parent_size, copy) != CUP_OK ||
+                text_copy(entry, entry_size, slash + 1) != CUP_OK) {
+                return CUP_ERR_BUFFER_TOO_SMALL;
+            }
+        } else {
+            *slash = '\0';
+            if (text_copy(parent, parent_size, copy) != CUP_OK ||
+                text_copy(entry, entry_size, slash + 1) != CUP_OK) {
+                return CUP_ERR_BUFFER_TOO_SMALL;
+            }
+        }
+    }
+
+    if (text_is_empty(entry) || strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return CUP_OK;
+}
+
+static CupError remove_entry_at(int parent_fd, const char *name, int (*cancelled)(void)) {
+    struct stat info;
+
+    if (parent_fd < 0 || text_is_empty(name) || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (cancelled != NULL && cancelled()) {
+        return CUP_ERR_INTERRUPT;
+    }
+
+    if (fstatat(parent_fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    }
+
+    if (S_ISDIR(info.st_mode)) {
+        int child_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        DIR *directory;
+        struct dirent *child;
+        CupError err = CUP_OK;
+
+        if (child_fd < 0) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        directory = fdopendir(child_fd);
+        if (directory == NULL) {
+            close(child_fd);
+            return CUP_ERR_FILESYSTEM;
+        }
+
+        errno = 0;
+        while ((child = readdir(directory)) != NULL) {
+            if (strcmp(child->d_name, ".") == 0 || strcmp(child->d_name, "..") == 0) {
+                continue;
+            }
+            err = remove_entry_at(dirfd(directory), child->d_name, cancelled);
+            if (err != CUP_OK) {
+                break;
+            }
+            errno = 0;
+        }
+        if (err == CUP_OK && errno != 0) {
+            err = CUP_ERR_FILESYSTEM;
+        }
+        if (closedir(directory) != 0 && err == CUP_OK) {
+            err = CUP_ERR_FILESYSTEM;
+        }
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (unlinkat(parent_fd, name, AT_REMOVEDIR) != 0 && errno != ENOENT) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        return CUP_OK;
+    }
+
+    if (unlinkat(parent_fd, name, 0) != 0 && errno != ENOENT) {
+        return CUP_ERR_FILESYSTEM;
+    }
     return CUP_OK;
 }
 
@@ -548,20 +483,49 @@ CupError system_remove_file(const char *path) {
     return CUP_OK;
 }
 
+CupError system_remove_tree(const char *path, int (*cancelled)(void)) {
+    char parent[MAX_PATH_LEN];
+    char entry[MAX_PATH_LEN];
+    int parent_fd;
+    CupError err;
+
+    err = split_parent_entry(path, parent, sizeof(parent), entry, sizeof(entry));
+    if (err != CUP_OK) {
+        return err;
+    }
+    parent_fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (parent_fd < 0) {
+        return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    }
+    err = remove_entry_at(parent_fd, entry, cancelled);
+    if (close(parent_fd) != 0 && err == CUP_OK) {
+        err = CUP_ERR_FILESYSTEM;
+    }
+    return err;
+}
+
 CupError system_copy_file(const char *source_path, const char *destination_path) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     FILE *source = NULL;
     FILE *destination = NULL;
     unsigned char buffer[8192];
     size_t count;
     int source_fd = -1;
-    int destination_fd = -1;
     int failed = 0;
+    struct stat source_info;
+    CupError err;
+    char parent[MAX_PATH_LEN];
+    char temporary[MAX_PATH_LEN] = "";
 
     if (text_is_empty(source_path) || text_is_empty(destination_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (open_regular_file_no_follow(source_path, O_RDONLY, 0, &source_fd) != CUP_OK) {
+    if (open_regular_file_no_follow(source_path, O_RDONLY, 0, &source_fd) != CUP_OK ||
+        fstat(source_fd, &source_info) != 0) {
+        if (source_fd >= 0) {
+            close(source_fd);
+        }
         return CUP_ERR_FILESYSTEM;
     }
     source = fdopen(source_fd, "rb");
@@ -570,14 +534,9 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
         return CUP_ERR_FILESYSTEM;
     }
 
-    if (open_regular_file_no_follow(destination_path,
-        O_WRONLY | O_CREAT | O_TRUNC, 0600, &destination_fd) != CUP_OK) {
-        fclose(source);
-        return CUP_ERR_FILESYSTEM;
-    }
-    destination = fdopen(destination_fd, "wb");
-    if (destination == NULL) {
-        close(destination_fd);
+    if (get_parent_path(destination_path, parent, sizeof(parent)) != CUP_OK ||
+        system_create_temp_file(parent, "copy", temporary, sizeof(temporary), &destination) !=
+            CUP_OK) {
         fclose(source);
         return CUP_ERR_FILESYSTEM;
     }
@@ -600,6 +559,9 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
     }
     source = NULL;
 
+    if (!failed && fchmod(fileno(destination), source_info.st_mode & 0777) != 0) {
+        failed = 1;
+    }
     if (!failed && system_sync_file(destination) != CUP_OK) {
         failed = 1;
     }
@@ -609,11 +571,15 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
     destination = NULL;
 
     if (failed) {
-        system_remove_file(destination_path);
+        system_remove_file(temporary);
         return CUP_ERR_FILESYSTEM;
     }
 
-    return CUP_OK;
+    err = system_replace_file(temporary, destination_path, &commit_state);
+    if (err != CUP_OK && commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+        system_remove_file(temporary);
+    }
+    return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -635,7 +601,7 @@ CupError system_sync_parent_directory(const char *path) {
     return sync_directory(parent);
 }
 
-// TEMPORARY OBJECTS
+/* Exclusive temporary objects. */
 CupError system_create_file_exclusive(const char *path, FILE **file) {
     int fd;
 
@@ -658,13 +624,12 @@ CupError system_create_file_exclusive(const char *path, FILE **file) {
     return CUP_OK;
 }
 
-CupError system_create_temp_file(const char *directory, const char *prefix,
-    char *path, size_t path_size, FILE **file) {
+CupError system_create_temp_file(
+    const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
     int fd;
 
-    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL ||
-        path_size == 0 || file == NULL ||
-        text_format(path, path_size, "%s/%s-XXXXXX", directory, prefix) != CUP_OK) {
+    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL || path_size == 0 ||
+        file == NULL || text_format(path, path_size, "%s/%s-XXXXXX", directory, prefix) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -674,7 +639,7 @@ CupError system_create_temp_file(const char *directory, const char *prefix,
         return CUP_ERR_TEMPORARY;
     }
 
-    if (fchmod(fd, 0600) != 0) {
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0 || fchmod(fd, 0600) != 0) {
         close(fd);
         unlink(path);
         return CUP_ERR_TEMPORARY;
@@ -690,10 +655,11 @@ CupError system_create_temp_file(const char *directory, const char *prefix,
     return CUP_OK;
 }
 
-CupError system_create_temp_directory(const char *directory, const char *prefix,
-    char *path, size_t path_size) {
-    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL ||
-        path_size == 0 ||
+CupError system_create_temp_directory(const char *directory,
+                                      const char *prefix,
+                                      char *path,
+                                      size_t path_size) {
+    if (text_is_empty(directory) || text_is_empty(prefix) || path == NULL || path_size == 0 ||
         text_format(path, path_size, "%s/%s-XXXXXX", directory, prefix) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -708,8 +674,10 @@ CupError system_create_temp_directory(const char *directory, const char *prefix,
     return CUP_OK;
 }
 
-CupError system_make_unique_temp_path(const char *directory, const char *prefix,
-    char *path, size_t path_size) {
+CupError system_make_unique_temp_path(const char *directory,
+                                      const char *prefix,
+                                      char *path,
+                                      size_t path_size) {
     FILE *file = NULL;
     CupError err;
 
@@ -726,7 +694,7 @@ CupError system_make_unique_temp_path(const char *directory, const char *prefix,
     }
 }
 
-// PATH INSPECTION
+/* Path inspection and permissions without link following. */
 CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
     struct stat stat_info;
 
@@ -739,8 +707,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
         if (errno == ENOENT || errno == ENOTDIR) {
             return CUP_OK;
         }
-        fprintf(stderr, "Error: could not inspect path '%s': %s.\n",
-            path, strerror(errno));
+        fprintf(stderr, "Error: could not inspect path '%s': %s.\n", path, strerror(errno));
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -764,6 +731,7 @@ CupError system_path_exists(const char *path, int *exists) {
     if (exists == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *exists = 0;
 
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
@@ -780,6 +748,7 @@ CupError system_is_directory(const char *path, int *is_directory) {
     if (is_directory == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *is_directory = 0;
 
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
@@ -796,6 +765,7 @@ CupError system_is_regular_file(const char *path, int *is_regular_file) {
     if (is_regular_file == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    *is_regular_file = 0;
 
     err = system_get_path_kind(path, &info);
     if (err != CUP_OK) {
@@ -808,7 +778,11 @@ CupError system_is_regular_file(const char *path, int *is_regular_file) {
 CupError system_file_size(const char *path, long long *file_size) {
     struct stat info;
 
-    if (file_size == NULL || text_is_empty(path)) {
+    if (file_size == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *file_size = 0;
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (lstat(path, &info) != 0 || !S_ISREG(info.st_mode)) {
@@ -818,12 +792,16 @@ CupError system_file_size(const char *path, long long *file_size) {
     return CUP_OK;
 }
 
-// PERMISSIONS
+/* Permissions. */
 CupError system_is_executable(const char *path, int *is_executable) {
     SystemPathKind info;
     CupError err;
 
-    if (is_executable == NULL || text_is_empty(path)) {
+    if (is_executable == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *is_executable = 0;
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -839,7 +817,11 @@ CupError system_is_executable(const char *path, int *is_executable) {
 CupError system_is_read_only(const char *path, int *is_read_only) {
     struct stat info;
 
-    if (is_read_only == NULL || text_is_empty(path)) {
+    if (is_read_only == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *is_read_only = 0;
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (lstat(path, &info) != 0 || S_ISLNK(info.st_mode)) {
@@ -862,7 +844,7 @@ CupError system_set_read_only(const char *path, int read_only) {
 
     mode = info.st_mode;
     if (read_only) {
-        mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+        mode &= ~(mode_t)(S_IWUSR | S_IWGRP | S_IWOTH);
     } else {
         mode |= S_IWUSR;
     }
@@ -891,13 +873,13 @@ CupError system_set_executable(const char *path, int executable) {
             mode |= S_IXOTH;
         }
     } else {
-        mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+        mode &= ~(mode_t)(S_IXUSR | S_IXGRP | S_IXOTH);
     }
 
     return chmod(path, mode) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
-// DIRECTORY TRAVERSAL
+/* Directory traversal. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
     DIR *directory;
     struct dirent *entry;
@@ -961,8 +943,7 @@ typedef struct {
     void *userdata;
 } WalkContext;
 
-static CupError walk_directory_entry(const char *path,
-    SystemPathKind path_kind, void *userdata) {
+static CupError walk_directory_entry(const char *path, SystemPathKind path_kind, void *userdata) {
     WalkContext *context = userdata;
     CupError err;
 
@@ -990,13 +971,14 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
     return system_list_directory(path, walk_directory_entry, &context);
 }
 
-// FILE LOCKING
+/* Process-scoped operating-system locks. */
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     struct flock operation;
     struct stat info;
     int fd;
 
-    if (lock == NULL || text_is_empty(path)) {
+    if (lock == NULL || text_is_empty(path) ||
+        (mode != SYSTEM_LOCK_SHARED && mode != SYSTEM_LOCK_EXCLUSIVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
