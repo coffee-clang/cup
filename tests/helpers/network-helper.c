@@ -33,6 +33,14 @@
 
 #define REQUEST_LIMIT 8192U
 
+enum {
+    CUP_TEST_HTTP_OK = 200,
+    CUP_TEST_HTTP_BAD_REQUEST = 400,
+    CUP_TEST_HTTP_FORBIDDEN = 403,
+    CUP_TEST_HTTP_NOT_FOUND = 404,
+    CUP_TEST_HTTP_INTERNAL_ERROR = 500
+};
+
 typedef struct {
     const char *root;
     const char *ready_file;
@@ -198,12 +206,12 @@ static void send_text_reply(struct evhttp_request *request,
     struct evbuffer *body = evbuffer_new();
 
     if (body == NULL) {
-        evhttp_send_error(request, HTTP_INTERNAL, "Internal Server Error");
+        evhttp_send_error(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error");
         return;
     }
     if (evbuffer_add(body, text, strlen(text)) != 0) {
         evbuffer_free(body);
-        evhttp_send_error(request, HTTP_INTERNAL, "Internal Server Error");
+        evhttp_send_error(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error");
         return;
     }
     (void)evhttp_add_header(evhttp_request_get_output_headers(request),
@@ -239,40 +247,40 @@ static void serve_http_request(struct evhttp_request *request, void *context) {
         sleep_milliseconds(options->delay_ms);
     }
     if (evhttp_request_get_command(request) != EVHTTP_REQ_GET) {
-        send_text_reply(request, HTTP_BADREQUEST, "Bad Request", "bad request\n");
+        send_text_reply(request, CUP_TEST_HTTP_BAD_REQUEST, "Bad Request", "bad request\n");
         return;
     }
     if (!safe_request_path(path)) {
-        send_text_reply(request, HTTP_FORBIDDEN, "Forbidden", "forbidden\n");
+        send_text_reply(request, CUP_TEST_HTTP_FORBIDDEN, "Forbidden", "forbidden\n");
         return;
     }
     length = snprintf(file_path, sizeof(file_path), "%s%s", options->root, path);
     if (length < 0 || (size_t)length >= sizeof(file_path)) {
-        send_text_reply(request, HTTP_BADREQUEST, "Bad Request", "path too long\n");
+        send_text_reply(request, CUP_TEST_HTTP_BAD_REQUEST, "Bad Request", "path too long\n");
         return;
     }
 
     file = fopen(file_path, "rb");
     if (file == NULL) {
-        send_text_reply(request, HTTP_NOTFOUND, "Not Found", "not found\n");
+        send_text_reply(request, CUP_TEST_HTTP_NOT_FOUND, "Not Found", "not found\n");
         return;
     }
     body = evbuffer_new();
     if (body == NULL || !read_file_body(file, body)) {
         evbuffer_free(body);
         (void)fclose(file);
-        send_text_reply(request, HTTP_INTERNAL, "Internal Server Error", "read error\n");
+        send_text_reply(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error", "read error\n");
         return;
     }
     if (fclose(file) != 0) {
         evbuffer_free(body);
-        send_text_reply(request, HTTP_INTERNAL, "Internal Server Error", "read error\n");
+        send_text_reply(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error", "read error\n");
         return;
     }
     (void)evhttp_add_header(evhttp_request_get_output_headers(request),
                             "Content-Type",
                             "application/octet-stream");
-    evhttp_send_reply(request, HTTP_OK, "OK", body);
+    evhttp_send_reply(request, CUP_TEST_HTTP_OK, "OK", body);
     evbuffer_free(body);
 }
 
