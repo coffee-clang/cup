@@ -502,9 +502,19 @@ normalize_dependency_metadata() {
     local prefix="$1"
     local staged_prefix="$2"
     local final_prefix="$3"
+    local staged_native=
+    local final_native=
     local metadata
 
     [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] || return 0
+
+    # MSYS configure checks can write drive-letter paths even when the build
+    # itself uses POSIX paths. Normalize that spelling together with the POSIX
+    # staging prefix before the transactional directory is committed.
+    if command -v cygpath >/dev/null 2>&1; then
+        staged_native=$(cygpath -m "$staged_prefix")
+        final_native=$(cygpath -m "$final_prefix")
+    fi
 
     # Configure scripts may preserve dependency search paths even when their
     # own --prefix is the final installation path. Rewrite only generated text
@@ -516,7 +526,16 @@ normalize_dependency_metadata() {
                 's/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g' \
                 "$metadata"
         fi
-        if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata"; then
+        if [ -n "$staged_native" ] && [ "$staged_native" != "$final_native" ] && \
+            LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; then
+            CUP_STAGED_PREFIX="$staged_native" CUP_FINAL_PREFIX="$final_native" \
+                perl -0pi -e \
+                's/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g' \
+                "$metadata"
+        fi
+        if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata" || \
+            { [ -n "$staged_native" ] && \
+              LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; }; then
             echo "Error: generated metadata still contains the staging prefix: $metadata" >&2
             return 1
         fi

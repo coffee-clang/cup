@@ -126,9 +126,6 @@ run_gcovr() {
     jobs=$1
     timeout --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
         gcovr -j "$jobs" "${common_args[@]}" \
-        --fail-under-line "$LINE_THRESHOLD" \
-        --fail-under-branch "$BRANCH_THRESHOLD" \
-        --fail-under-function "$FUNCTION_THRESHOLD" \
         --txt "$REPORT_DIR/summary.txt" \
         --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
         --json "$REPORT_DIR/coverage.json" --json-pretty \
@@ -148,10 +145,11 @@ reports_complete() {
     [ -s "$REPORT_DIR/coverage.xml" ] &&
     [ -s "$REPORT_DIR/coverage-summary.json" ] &&
     [ -s "$REPORT_DIR/summary.txt" ] &&
-    grep -Eq '"files"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{' "$REPORT_DIR/coverage.json"
+    grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
 }
-if [ "$coverage_status" -ne 0 ] && reports_complete; then
-    printf 'Validating reports saved before gcovr exited...\n' >>"$REPORT_DIR/gcovr.log"
+if reports_complete; then
+    printf '==> Validating coverage thresholds from the saved tracefile...\n' \
+        >>"$REPORT_DIR/gcovr.log"
     coverage_status=0
     (cd "$ROOT" && gcovr --root "$ROOT" --merge-mode-functions separate \
         --add-tracefile "$REPORT_DIR/coverage.json" --print-summary \

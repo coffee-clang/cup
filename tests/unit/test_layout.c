@@ -6,6 +6,7 @@
 #include "error.h"
 #include "layout.h"
 #include "package.h"
+#include "platform.h"
 #include "system.h"
 #include "unity.h"
 
@@ -32,6 +33,7 @@ static void test_package_paths(void) {
                                 .version = "22.1.5"};
     char path[1024];
     char expected[1024];
+    char host[64];
 
     /* Root and fixed asset paths share the caller's HOME-derived .cup directory. */
     TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
@@ -56,7 +58,9 @@ static void test_package_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_common_checksums_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "/.cup/config/SHA256SUMS.common") != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(strstr(path, "/.cup/config/SHA256SUMS.linux-x64") != NULL);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
+    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "/.cup/config/SHA256SUMS.%s", host) > 0);
+    TEST_ASSERT_TRUE(strstr(path, expected) != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "/.cup/helpers/uninstall.sh") != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));

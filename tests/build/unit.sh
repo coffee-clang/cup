@@ -15,8 +15,12 @@ case "$PLATFORM" in
     *) CC="${CC:-gcc}" ;;
 esac
 TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}"
+TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L"
 TEST_CFLAGS="${TEST_CFLAGS:-}"
 TEST_LDFLAGS="${TEST_LDFLAGS:-}"
+case "$PLATFORM" in
+    macos-*) TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE" ;;
+esac
 case "$TEST_CONFIGURATION" in
     development) ;;
     coverage)
@@ -63,7 +67,7 @@ compile_test() {
     shift
     output="$TEST_BUILD_DIR/$name"
     printf '==> Compiling C unit test: %s\n' "$name"
-    "$CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror \
+    "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
         $TEST_CFLAGS \
         -I"$ROOT/tests/unit/fixtures" \
         -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
