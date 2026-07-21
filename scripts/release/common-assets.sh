@@ -30,7 +30,7 @@ test "$(sed -n 's/^commit=//p' build/release-common/generated/release.txt)" = "$
 cp build/release-common/generated/release.txt dist/common/release.txt
 cp config/packages.cfg dist/common/packages.cfg
 cp config/install.cfg dist/common/install.cfg
-cp scripts/dependencies/THIRD_PARTY_LICENSES.txt dist/common/THIRD_PARTY_LICENSES.txt
+cp scripts/dependencies/THIRD_PARTY_NOTICES.txt dist/common/THIRD_PARTY_NOTICES.txt
 cp scripts/install/uninstall-cup.sh dist/common/uninstall.sh
 cp scripts/install/uninstall-cup-windows.ps1 dist/common/uninstall.ps1
 prepare_installer scripts/install/install-cup.sh dist/common/install.sh

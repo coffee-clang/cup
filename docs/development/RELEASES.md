@@ -182,7 +182,7 @@ uninstall.sh
 uninstall.ps1
 release.txt
 provenance.txt
-THIRD_PARTY_LICENSES.txt
+THIRD_PARTY_NOTICES.txt
 SHA256SUMS.common
 SHA256SUMS.linux-x64
 SHA256SUMS.linux-arm64
@@ -191,7 +191,7 @@ SHA256SUMS.macos-arm64
 SHA256SUMS.windows-x64
 ```
 
-`THIRD_PARTY_LICENSES.txt` publishes the notices and license texts maintained
+`THIRD_PARTY_NOTICES.txt` publishes the notices and license texts maintained
 beside the dependency source lock. The package catalog points to component
 archives published by `cup-components`; those tool packages are not embedded in
 the `cup` release.

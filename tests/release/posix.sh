@@ -23,7 +23,7 @@ CUP_TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}" \
     "$ROOT/tests/runners/integration-posix.sh"
 
 port=$((18080 + ($$ % 1000)))
-helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/http-server"
+helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
 temporary_root=${RUNNER_TEMP:-/tmp}
 ready="$temporary_root/cup-http-ready.$$"
 server_log="$temporary_root/cup-http.$$.log"
@@ -42,7 +42,7 @@ trap cleanup EXIT HUP INT TERM
 
 [ -x "$helper" ] || fail "HTTP test helper is not built: $helper"
 rm -f "$ready"
-"$helper" --root "$release_dir" --port "$port" --ready-file "$ready" \
+"$helper" http-server --root "$release_dir" --port "$port" --ready-file "$ready" \
     >"$server_log" 2>&1 &
 server_pid=$!
 

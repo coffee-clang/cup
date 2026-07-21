@@ -175,9 +175,8 @@ for required in \
     tests/integration/windows/recovery.ps1 \
     tests/integration/windows/filesystem-archives.ps1 \
     tests/portability/linux-network.sh \
-    tests/helpers/connect-proxy.c \
     tests/helpers/archive-fixture.c \
-    tests/helpers/http-server.c \
+    tests/helpers/network-helper.c \
     scripts/build/inspect-binary.sh \
     scripts/build/validate-toolchain.sh \
     scripts/build/write-config.sh \
@@ -206,6 +205,14 @@ grep -Fq 'test-unit-build' Makefile ||
     fail 'Makefile does not own unit-test compilation'
 grep -Fq 'test-helpers' Makefile ||
     fail 'Makefile does not own test-helper compilation'
+grep -Fq 'pkg-config --static --libs libevent_extra libevent_core' \
+        tests/build/helpers.sh ||
+    fail 'network helper does not use the pinned libevent metadata'
+production_libevent=$(grep -RInE 'event2/|(^|[[:space:]])-levent|libevent_(core|extra)' \
+    include src scripts/build Makefile 2>/dev/null || :)
+[ -z "$production_libevent" ] ||
+    fail "libevent leaked into the CUP application build:
+$production_libevent"
 
 
 legacy_modules=$(find src -maxdepth 1 -type f -name 'commands_*.c' -print)

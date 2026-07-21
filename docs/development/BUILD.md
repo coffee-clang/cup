@@ -102,13 +102,16 @@ run `cup`.
 - **SHA-256** is implemented in-tree by `sha256.c`; OpenSSL is not a direct
   checksum dependency. POSIX builds use OpenSSL as libcurl's TLS backend.
 
-### Test dependency
+### Test dependencies
 
-Unity is linked only into C test binaries. `gcovr` and sanitizer runtime support
-are host tools and are not part of the application prefix contract.
+Unity is linked only into C unit-test binaries. Libevent is linked only into the
+`network-helper` fixture used by release and network-portability tests; it does
+not enter the CUP application link or any published CUP executable. `gcovr` and
+sanitizer runtime support are host tools and are not part of the application
+prefix contract.
 
 The canonical source lock is `scripts/dependencies/sources.sh`. The adjacent
-`scripts/dependencies/THIRD_PARTY_LICENSES.txt` preserves the corresponding
+`scripts/dependencies/THIRD_PARTY_NOTICES.txt` preserves the corresponding
 notices and license texts and is published as a release disclosure; it is not an
 alternate dependency resolver.
 
@@ -198,9 +201,10 @@ prefix is reused. An incomplete
 or path-contaminated staging tree is discarded without exposing it as the
 final prefix.
 
-The complete prefix contains Argtable3, uthash, Unity, curl, libarchive, zlib,
-xz and, on POSIX, OpenSSL. Windows uses Schannel and therefore does not require
-OpenSSL in its prefix.
+The complete prefix contains Argtable3, uthash, Unity, libevent, curl,
+libarchive, zlib, xz and, on POSIX, OpenSSL. Windows uses Schannel and therefore
+does not require OpenSSL in its prefix. Libevent remains test-only even though
+it shares the deterministic platform prefix.
 
 ## Explicit preparation contract
 
@@ -238,9 +242,12 @@ standalone policy for its platform. Linux currently adds global static linking;
 macOS keeps Apple system libraries and frameworks dynamic; Windows uses static
 third-party/runtime libraries with the approved system import libraries.
 
-Unity is linked into C test executables by exact archive path. Unit suites that
-exercise archive code obtain libarchive and its transitive flags from the same
-prefix-scoped metadata instead of using a host `-larchive` fallback.
+Unity is linked into C test executables by exact archive path. The network
+fixture obtains `libevent_extra` and `libevent_core` from prefix-scoped static
+`pkg-config` metadata. Unit suites that exercise archive code obtain libarchive
+and its transitive flags from the same prefix-scoped metadata instead of using
+a host `-larchive` fallback. Production build configuration is checked not to
+contain libevent link inputs.
 
 Only release-configuration executables are eligible for publication. Debug and
 instrumented artifacts remain diagnostic even though their third-party graph is

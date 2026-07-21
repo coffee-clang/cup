@@ -181,6 +181,7 @@ build_libarchive() {
 verify() {
     local curl_flags
     local archive_flags
+    local event_flags
 
     echo "==> Verifying generated link metadata"
 
@@ -194,12 +195,16 @@ verify() {
         PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="" \
         pkg-config --static --libs libarchive)"
-    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ]; then
+    event_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        pkg-config --static --libs libevent_extra libevent_core)"
+    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
         echo "Error: generated static link metadata is empty." >&2
         exit 1
     fi
     if [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
-        case "$curl_flags $archive_flags" in
+        case "$curl_flags $archive_flags $event_flags" in
             *"$CUP_DEPS_STAGE_ROOT"*)
                 echo "Error: generated link metadata contains the staging path." >&2
                 exit 1
@@ -214,6 +219,7 @@ verify() {
 
     printf '%s\n' "$curl_flags"
     printf '%s\n' "$archive_flags"
+    printf '%s\n' "$event_flags"
 
     echo "==> Windows dependencies verified for $CUP_DEPS_FINAL_PREFIX"
 }
@@ -265,6 +271,8 @@ main() {
     build_xz
     build_curl
     build_libarchive
+    build_libevent_static "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+        "$CC" "$AR" "$RANLIB" "$HOST_TRIPLE"
     build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB"
     normalize_dependency_metadata "$PREFIX" \

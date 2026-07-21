@@ -245,9 +245,9 @@ grep -F 'Doctor found no issues.' "$WORK/direct-doctor.out" >/dev/null ||
     fail 'doctor rejected the directly installed package'
 
 printf '==> Downloading and extracting through an HTTP CONNECT proxy...\n'
-proxy_helper="$SOURCE/build/$PLATFORM/release/tests/helpers/connect-proxy"
+proxy_helper="$SOURCE/build/$PLATFORM/release/tests/helpers/network-helper"
 [ -x "$proxy_helper" ] || fail "proxy helper was not built: $proxy_helper"
-"$proxy_helper" "$proxy_port" "$PROXY_LOG" \
+"$proxy_helper" connect-proxy "$proxy_port" "$PROXY_LOG" \
     >"$WORK/proxy-server.out" 2>&1 &
 PIDS+=("$!")
 wait_for_proxy "$proxy_port"

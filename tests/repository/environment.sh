@@ -13,13 +13,19 @@ test_begin environment
 
 create_private_prefix() {
     prefix=$1
-    mkdir -p "$prefix/include" "$prefix/lib"
+    mkdir -p "$prefix/include/event2" "$prefix/lib"
     touch "$prefix/include/argtable3.h" \
         "$prefix/include/uthash.h" \
         "$prefix/include/unity.h" \
         "$prefix/include/unity_internals.h" \
+        "$prefix/include/event2/event.h" \
+        "$prefix/include/event2/http.h" \
+        "$prefix/include/event2/bufferevent.h" \
+        "$prefix/include/event2/listener.h" \
         "$prefix/lib/libargtable3.a" \
-        "$prefix/lib/libunity.a"
+        "$prefix/lib/libunity.a" \
+        "$prefix/lib/libevent_core.a" \
+        "$prefix/lib/libevent_extra.a"
 }
 
 create_complete_prefix() {
@@ -59,6 +65,27 @@ Version: 1
 Libs: \${libdir}/libarchive.a \${libdir}/liblzma.a \${libdir}/libz.a
 Cflags: -I\${includedir}
 EOF_ARCHIVE_PC
+    cat >"$prefix/lib/pkgconfig/libevent_core.pc" <<EOF_EVENT_CORE_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: libevent_core
+Description: test metadata
+Version: 1
+Libs: -L\${libdir} -levent_core
+Cflags: -I\${includedir}
+EOF_EVENT_CORE_PC
+    cat >"$prefix/lib/pkgconfig/libevent_extra.pc" <<EOF_EVENT_EXTRA_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: libevent_extra
+Description: test metadata
+Version: 1
+Requires.private: libevent_core
+Libs: -L\${libdir} -levent_extra
+Cflags: -I\${includedir}
+EOF_EVENT_EXTRA_PC
 }
 
 (
@@ -183,13 +210,18 @@ bash -eu -o pipefail -c '
         prefix=$1
         embedded_prefix=$2
         mkdir -p "$prefix/bin" "$prefix/include/curl" \
-            "$prefix/include/openssl" "$prefix/lib/pkgconfig"
+            "$prefix/include/openssl" "$prefix/include/event2" \
+            "$prefix/lib/pkgconfig"
         touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
             "$prefix/include/unity.h" "$prefix/include/unity_internals.h" \
+            "$prefix/include/event2/event.h" "$prefix/include/event2/http.h" \
+            "$prefix/include/event2/bufferevent.h" \
+            "$prefix/include/event2/listener.h" \
             "$prefix/include/curl/curl.h" "$prefix/include/archive.h" \
             "$prefix/include/archive_entry.h" "$prefix/include/zlib.h" \
             "$prefix/include/lzma.h" "$prefix/include/openssl/ssl.h" \
             "$prefix/lib/libargtable3.a" "$prefix/lib/libunity.a" \
+            "$prefix/lib/libevent_core.a" "$prefix/lib/libevent_extra.a" \
             "$prefix/lib/libcurl.a" "$prefix/lib/libarchive.a" \
             "$prefix/lib/libz.a" "$prefix/lib/liblzma.a" \
             "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a"
@@ -206,6 +238,23 @@ Description: test metadata
 Version: 1
 Libs: -L\${libdir} -larchive
 EOF_LIBARCHIVE_PC
+        cat >"$prefix/lib/pkgconfig/libevent_core.pc" <<EOF_EVENT_CORE_PC
+prefix=$embedded_prefix
+libdir=\${prefix}/lib
+Name: libevent_core
+Description: test metadata
+Version: 1
+Libs: -L\${libdir} -levent_core
+EOF_EVENT_CORE_PC
+        cat >"$prefix/lib/pkgconfig/libevent_extra.pc" <<EOF_EVENT_EXTRA_PC
+prefix=$embedded_prefix
+libdir=\${prefix}/lib
+Name: libevent_extra
+Description: test metadata
+Version: 1
+Requires.private: libevent_core
+Libs: -L\${libdir} -levent_extra
+EOF_EVENT_EXTRA_PC
     }
 
     recipe_root=$(mktemp -d)
@@ -257,6 +306,27 @@ dependency_id=$id"; then
     [ -f "$final/old.txt" ]
     create_complete "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_BUILD_PREFIX"
     printf "new\n" >"$CUP_DEPS_BUILD_PREFIX/new.txt"
+
+    cygpath() {
+        case "$1" in
+            -m) printf "D:/msys64%s\n" "$2" ;;
+            -w)
+                converted=$(printf "%s" "$2" | sed "s#/#\\\\#g")
+                printf "D:\\msys64%s\n" "$converted"
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    staged_native=$(cygpath -m "$CUP_DEPS_BUILD_PREFIX")
+    final_native=$(cygpath -m "$final")
+    staged_windows=$(cygpath -w "$CUP_DEPS_BUILD_PREFIX")
+    final_windows=$(cygpath -w "$final")
+    cat >"$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake" <<EOF_WINDOWS_PATHS
+posix=$CUP_DEPS_BUILD_PREFIX
+native=$staged_native
+windows=$staged_windows
+EOF_WINDOWS_PATHS
+
     normalize_dependency_metadata "$CUP_DEPS_BUILD_PREFIX" \
         "$CUP_DEPS_BUILD_PREFIX" "$final"
     ! find "$CUP_DEPS_BUILD_PREFIX" -type f \
@@ -264,6 +334,13 @@ dependency_id=$id"; then
            -o -name '*-config' -o -name 'curl-config' \) \
         -exec grep -F -l "$CUP_DEPS_STAGE_ROOT" {} + | grep .
     [ "$("$CUP_DEPS_BUILD_PREFIX/bin/curl-config")" = "-L$final/lib -lcurl" ]
+    windows_metadata="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake"
+    grep -F "posix=$final" "$windows_metadata" >/dev/null
+    grep -F "native=$final_native" "$windows_metadata" >/dev/null
+    grep -F "windows=$final_windows" "$windows_metadata" >/dev/null
+    ! grep -F "$CUP_DEPS_BUILD_PREFIX" "$windows_metadata" >/dev/null
+    ! grep -F "$staged_native" "$windows_metadata" >/dev/null
+    ! grep -F "$staged_windows" "$windows_metadata" >/dev/null
     archive_flags=$(PKG_CONFIG_PATH="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="" \
@@ -560,6 +637,50 @@ fi
 assert_contains "$(cat "$TMP_ROOT/windows-deps-runtime.out")" \
     'require an MSYS2 UCRT64 shell'
 printf 'Dependency entry-point and platform rejection tests passed.\n'
+
+printf '==> Testing dependency inventory, scopes and notices...\n'
+DEPENDENCY_SOURCES="$DEPENDENCY_DIR/sources.sh"
+DEPENDENCY_NOTICES="$DEPENDENCY_DIR/THIRD_PARTY_NOTICES.txt"
+[ -f "$DEPENDENCY_NOTICES" ] || fail 'third-party notices file is missing'
+packages=$(sh -eu -c '. "$1"; all_source_packages' sh "$DEPENDENCY_SOURCES")
+expected_packages='zlib
+xz
+openssl
+curl
+libarchive
+argtable3
+uthash
+unity
+libevent'
+[ "$packages" = "$expected_packages" ] ||
+    fail 'canonical dependency inventory changed unexpectedly'
+for package in zlib xz openssl curl libarchive argtable3 uthash; do
+    scope=$(sh -eu -c '. "$1"; dependency_scope_for_package "$2"' \
+        sh "$DEPENDENCY_SOURCES" "$package")
+    [ "$scope" = runtime ] || fail "$package does not have runtime scope"
+done
+for package in unity libevent; do
+    scope=$(sh -eu -c '. "$1"; dependency_scope_for_package "$2"' \
+        sh "$DEPENDENCY_SOURCES" "$package")
+    [ "$scope" = test ] || fail "$package does not have test scope"
+done
+[ "$(sh -eu -c '. "$1"; dependency_usage_for_package uthash' \
+    sh "$DEPENDENCY_SOURCES")" = header-only ] ||
+    fail 'uthash usage classification is incorrect'
+[ "$(sh -eu -c '. "$1"; dependency_usage_for_package libevent' \
+    sh "$DEPENDENCY_SOURCES")" = network-test-library ] ||
+    fail 'libevent usage classification is incorrect'
+if sh -eu -c '. "$1"; dependency_scope_for_package unknown' \
+        sh "$DEPENDENCY_SOURCES" >/dev/null 2>&1; then
+    fail 'dependency scope lookup accepted an unknown package'
+fi
+notices_content=$(cat "$DEPENDENCY_NOTICES")
+assert_contains "$notices_content" 'CUP THIRD-PARTY NOTICES'
+assert_contains "$notices_content" 'Scope: runtime'
+assert_contains "$notices_content" 'Scope: test'
+assert_contains "$notices_content" \
+    'Usage: static libraries linked only into the test network helper'
+printf 'Dependency inventory, scope and notice tests passed.\n'
 
 printf '==> Testing normalized dependency build environment...\n'
 bash -eu -o pipefail -c '

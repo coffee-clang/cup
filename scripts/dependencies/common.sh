@@ -187,7 +187,11 @@ dependency_canonical_config() {
         "unity.version=$UNITY_VERSION" \
         "unity.url=$UNITY_URL" \
         "unity.sha256=$UNITY_SHA256" \
-        "unity.min_bytes=$UNITY_MIN_BYTES"
+        "unity.min_bytes=$UNITY_MIN_BYTES" \
+        "libevent.version=$LIBEVENT_VERSION" \
+        "libevent.url=$LIBEVENT_URL" \
+        "libevent.sha256=$LIBEVENT_SHA256" \
+        "libevent.min_bytes=$LIBEVENT_MIN_BYTES"
 }
 
 dependency_id() {
@@ -351,7 +355,17 @@ test_dependency_prefix_complete() {
     application_dependency_prefix_complete "$prefix" &&
         [ -f "$prefix/include/unity.h" ] &&
         [ -f "$prefix/include/unity_internals.h" ] &&
-        dependency_library_exists "$prefix" unity
+        [ -f "$prefix/include/event2/event.h" ] &&
+        [ -f "$prefix/include/event2/http.h" ] &&
+        [ -f "$prefix/include/event2/bufferevent.h" ] &&
+        [ -f "$prefix/include/event2/listener.h" ] &&
+        dependency_library_exists "$prefix" unity &&
+        dependency_library_exists "$prefix" event_core &&
+        dependency_library_exists "$prefix" event_extra &&
+        { [ -f "$prefix/lib/pkgconfig/libevent_core.pc" ] ||
+          [ -f "$prefix/lib64/pkgconfig/libevent_core.pc" ]; } &&
+        { [ -f "$prefix/lib/pkgconfig/libevent_extra.pc" ] ||
+          [ -f "$prefix/lib64/pkgconfig/libevent_extra.pc" ]; }
 }
 
 dependency_link_metadata_valid() {
@@ -360,6 +374,7 @@ dependency_link_metadata_valid() {
     local pkg_config_path="$prefix/lib/pkgconfig:$prefix/lib64/pkgconfig"
     local curl_flags=
     local archive_flags=
+    local event_flags=
 
     [ -x "$prefix/bin/curl-config" ] || return 1
     command -v pkg-config >/dev/null 2>&1 || return 1
@@ -368,7 +383,11 @@ dependency_link_metadata_valid() {
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
         pkg-config --static --libs libarchive 2>/dev/null) || return 1
-    [ -n "$curl_flags" ] && [ -n "$archive_flags" ] || return 1
+    event_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
+        PKG_CONFIG_LIBDIR="$pkg_config_path" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        pkg-config --static --libs libevent_extra libevent_core 2>/dev/null) || return 1
+    [ -n "$curl_flags" ] && [ -n "$archive_flags" ] && [ -n "$event_flags" ] || return 1
     case " $archive_flags " in
         *" -lacl "*)
             return 1
@@ -388,8 +407,15 @@ dependency_link_metadata_valid() {
             return 1
             ;;
     esac
+    case "$event_flags" in
+        *"$expected_prefix"*)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
     if [ "$prefix" != "$expected_prefix" ]; then
-        case "$curl_flags $archive_flags" in
+        case "$curl_flags $archive_flags $event_flags" in
             *"$prefix"*) return 1 ;;
         esac
     fi
@@ -504,38 +530,44 @@ normalize_dependency_metadata() {
     local final_prefix="$3"
     local staged_native=
     local final_native=
+    local staged_windows=
+    local final_windows=
     local metadata
 
     [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] || return 0
 
-    # MSYS configure checks can write drive-letter paths even when the build
-    # itself uses POSIX paths. Normalize that spelling together with the POSIX
-    # staging prefix before the transactional directory is committed.
+    # MSYS-generated metadata can use POSIX paths, drive-letter paths with
+    # forward slashes, or native paths with backslashes. Normalize every
+    # spelling before the transactional directory is committed.
     if command -v cygpath >/dev/null 2>&1; then
         staged_native=$(cygpath -m "$staged_prefix")
         final_native=$(cygpath -m "$final_prefix")
+        staged_windows=$(cygpath -w "$staged_prefix")
+        final_windows=$(cygpath -w "$final_prefix")
     fi
 
     # Configure scripts may preserve dependency search paths even when their
     # own --prefix is the final installation path. Rewrite only generated text
     # metadata; archives and other binary payloads are intentionally untouched.
     while IFS= read -r -d '' metadata; do
-        if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata"; then
-            CUP_STAGED_PREFIX="$staged_prefix" CUP_FINAL_PREFIX="$final_prefix" \
-                perl -0pi -e \
-                's/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g' \
-                "$metadata"
-        fi
-        if [ -n "$staged_native" ] && [ "$staged_native" != "$final_native" ] && \
-            LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; then
-            CUP_STAGED_PREFIX="$staged_native" CUP_FINAL_PREFIX="$final_native" \
-                perl -0pi -e \
-                's/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g' \
-                "$metadata"
-        fi
+        CUP_STAGED_PREFIX="$staged_prefix" CUP_FINAL_PREFIX="$final_prefix" \
+        CUP_STAGED_NATIVE="$staged_native" CUP_FINAL_NATIVE="$final_native" \
+        CUP_STAGED_WINDOWS="$staged_windows" CUP_FINAL_WINDOWS="$final_windows" \
+            perl -0pi -e '
+                s/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g;
+                if (length $ENV{CUP_STAGED_NATIVE}) {
+                    s/\Q$ENV{CUP_STAGED_NATIVE}\E/$ENV{CUP_FINAL_NATIVE}/g;
+                }
+                if (length $ENV{CUP_STAGED_WINDOWS}) {
+                    s/\Q$ENV{CUP_STAGED_WINDOWS}\E/$ENV{CUP_FINAL_WINDOWS}/g;
+                }
+            ' "$metadata"
+
         if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata" || \
             { [ -n "$staged_native" ] && \
-              LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; }; then
+              LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; } || \
+            { [ -n "$staged_windows" ] && \
+              LC_ALL=C grep -F -I -q -- "$staged_windows" "$metadata"; }; then
             echo "Error: generated metadata still contains the staging prefix: $metadata" >&2
             return 1
         fi
@@ -667,6 +699,40 @@ extract_archive() {
     esac
 }
 
+
+# Test-only portable network dependency shared by platform bootstraps.
+build_libevent_static() {
+    local src_dir="$2"
+    local build_dir="$3"
+    local compiler="$4"
+    local archiver="$5"
+    local ranlib_tool="$6"
+    local host_triple="${7:-}"
+    local archive="$src_dir/libevent-${LIBEVENT_VERSION}.tar.gz"
+    local source="$build_dir/libevent-${LIBEVENT_VERSION}"
+
+    download_source libevent "$archive"
+    extract_archive "$archive" "$source"
+
+    set -- \
+        --prefix="$INSTALL_PREFIX" \
+        --disable-shared \
+        --enable-static \
+        --disable-openssl \
+        --disable-thread-support \
+        --disable-malloc-replacement \
+        --disable-libevent-regress \
+        --disable-samples
+    if [ -n "$host_triple" ]; then
+        set -- --host="$host_triple" "$@"
+    fi
+
+    echo "==> Building libevent ${LIBEVENT_VERSION}"
+    cd "$source"
+    CC="$compiler" AR="$archiver" RANLIB="$ranlib_tool" ./configure "$@"
+    make -j"$JOBS"
+    make install DESTDIR="$DESTDIR"
+}
 
 # Lightweight direct dependencies shared by platform bootstraps.
 build_argtable3_uthash_unity() {

@@ -18,6 +18,7 @@ case "$PLATFORM" in
     *) EXE_SUFFIX= ;;
 esac
 OUT="$ROOT/build/$PLATFORM/$CONFIGURATION/tests/helpers"
+pkg_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
 mkdir -p "$OUT"
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O0 -g3"
 LDFLAGS=""
@@ -37,7 +38,6 @@ esac
 
 if [ "$PLATFORM" != windows-x64 ]; then
     printf '==> Compiling test helper: archive-fixture\n'
-    pkg_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
     archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
         PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
     "$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
@@ -45,16 +45,12 @@ if [ "$PLATFORM" != windows-x64 ]; then
         -o "$OUT/archive-fixture$EXE_SUFFIX"
 fi
 
-printf '==> Compiling test helper: http-server\n'
-http_libs=
-[ "$PLATFORM" != windows-x64 ] || http_libs='-lws2_32'
-"$CC" $CFLAGS "$ROOT/tests/helpers/http-server.c" $LDFLAGS $http_libs \
-    -o "$OUT/http-server$EXE_SUFFIX"
+printf '==> Compiling test helper: network-helper\n'
+event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
+    PKG_CONFIG_SYSROOT_DIR= \
+    pkg-config --static --libs libevent_extra libevent_core)
+"$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
+    "$ROOT/tests/helpers/network-helper.c" $LDFLAGS $event_libs \
+    -o "$OUT/network-helper$EXE_SUFFIX"
 
-if [ "$PLATFORM" != windows-x64 ]; then
-    printf '==> Compiling test helper: connect-proxy\n'
-    "$CC" $CFLAGS -D_POSIX_C_SOURCE=200809L \
-        "$ROOT/tests/helpers/connect-proxy.c" $LDFLAGS \
-        -o "$OUT/connect-proxy"
-fi
 printf 'All test helpers compiled for %s (%s).\n' "$PLATFORM" "$CONFIGURATION"

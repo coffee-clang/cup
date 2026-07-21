@@ -14,13 +14,18 @@ fake_bin=$TMP_ROOT/bin
 prefix=$TMP_ROOT/prefix
 build_root=$TMP_ROOT/build
 mkdir -p "$fake_bin" "$prefix/bin" "$prefix/include/curl" \
-    "$prefix/include/openssl" "$prefix/lib/pkgconfig"
+    "$prefix/include/openssl" "$prefix/include/event2" \
+    "$prefix/lib/pkgconfig"
 touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
     "$prefix/include/unity.h" "$prefix/include/unity_internals.h" \
+    "$prefix/include/event2/event.h" "$prefix/include/event2/http.h" \
+    "$prefix/include/event2/bufferevent.h" \
+    "$prefix/include/event2/listener.h" \
     "$prefix/include/curl/curl.h" "$prefix/include/archive.h" \
     "$prefix/include/archive_entry.h" "$prefix/include/zlib.h" \
     "$prefix/include/lzma.h" "$prefix/include/openssl/ssl.h" \
     "$prefix/lib/libargtable3.a" "$prefix/lib/libunity.a" \
+    "$prefix/lib/libevent_core.a" "$prefix/lib/libevent_extra.a" \
     "$prefix/lib/libcurl.a" "$prefix/lib/libarchive.a" \
     "$prefix/lib/libz.a" "$prefix/lib/liblzma.a" \
     "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a"
@@ -40,6 +45,27 @@ Version: 1
 Libs: \${libdir}/libarchive.a \${libdir}/liblzma.a \${libdir}/libz.a
 Cflags: -I\${includedir}
 EOF_ARCHIVE_PC
+cat >"$prefix/lib/pkgconfig/libevent_core.pc" <<EOF_EVENT_CORE_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: libevent_core
+Description: build-system fixture
+Version: 1
+Libs: -L\${libdir} -levent_core
+Cflags: -I\${includedir}
+EOF_EVENT_CORE_PC
+cat >"$prefix/lib/pkgconfig/libevent_extra.pc" <<EOF_EVENT_EXTRA_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: libevent_extra
+Description: build-system fixture
+Version: 1
+Requires.private: libevent_core
+Libs: -L\${libdir} -levent_extra
+Cflags: -I\${includedir}
+EOF_EVENT_EXTRA_PC
 printf '%s\n' Linux >"$TMP_ROOT/host-system"
 printf '%s\n' x86_64 >"$TMP_ROOT/host-machine"
 printf '%s\n' x86_64-unknown-linux-gnu >"$TMP_ROOT/compiler-target"
@@ -119,6 +145,9 @@ assert_contains "$config_text" "$prefix/lib/libcurl.a"
 assert_contains "$config_text" "$prefix/lib/libarchive.a"
 assert_not_contains "$config_text" 'libcurl.so'
 assert_not_contains "$config_text" 'libarchive.so'
+config_ldlibs=$(sed -n 's/^ldlibs=//p' "$config")
+assert_not_contains "$config_ldlibs" '-levent'
+assert_not_contains "$config_ldlibs" 'libevent_'
 assert_contains "$config_text" '-lm'
 assert_contains "$config_text" 'official_build=0'
 assert_not_contains "$config_text" 'dependency_identity=missing'

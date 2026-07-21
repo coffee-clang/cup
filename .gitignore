@@ -74,6 +74,5 @@ Doxyfile
 # Generated release artifacts
 /dist/
 
-# Local formatting configuration
-/.clang-format
-/.editorconfig
+# Fix exec bit script
+fix-exec-bit.sh

@@ -87,13 +87,13 @@ if ($env:CUP_TEST_CONFIGURATION) {
 } else {
     $configuration = "development"
 }
-$helper = Join-Path (Get-Location) "build\windows-x64\$configuration\tests\helpers\http-server.exe"
+$helper = Join-Path (Get-Location) "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
 if (-not (Test-Path -LiteralPath $helper)) {
     throw "HTTP test helper is not built: $helper"
 }
 $ready = Join-Path $env:RUNNER_TEMP "cup-http-ready-$PID"
 Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
-$serverArgs = @('--root', $root, '--port', "$port", '--ready-file', $ready)
+$serverArgs = @('http-server', '--root', $root, '--port', "$port", '--ready-file', $ready)
 $server = Start-Process -FilePath $helper `
     -ArgumentList $serverArgs `
     -PassThru `

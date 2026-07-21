@@ -22,7 +22,7 @@ packages.cfg
 install.cfg
 release.txt
 provenance.txt
-THIRD_PARTY_LICENSES.txt
+THIRD_PARTY_NOTICES.txt
 install.sh
 install.ps1
 uninstall.sh

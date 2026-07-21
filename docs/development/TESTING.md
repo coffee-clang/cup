@@ -169,15 +169,17 @@ make PLATFORM=<platform> deps
 ```
 
 Tests do not download or build dependencies implicitly. They validate the
-complete platform prefix, including Argtable3, uthash, Unity, curl, libarchive
-and their configured transitive libraries, and fail with the explicit
+complete platform prefix, including Argtable3, uthash, Unity, libevent, curl,
+libarchive and their configured transitive libraries, and fail with the explicit
 preparation command when the prefix is incomplete.
 
 The prefix is complete and is the only third-party graph used by development,
 debug, coverage, sanitizer and release configurations. CUP and archive-related
 unit suites consume the prefix headers, static archives and scoped link metadata;
 host libcurl and libarchive development libraries are not part of the build.
-Unity is linked by exact archive path.
+Unity is linked by exact archive path. Libevent is linked only into the combined
+`network-helper`, which supplies the local HTTP server and HTTP CONNECT proxy
+fixtures without becoming a CUP runtime dependency.
 
 A native CI environment may override `DEPS_PREFIX`. The Windows source, debug
 and release jobs all run `JOBS=4 make PLATFORM=windows-x64 deps` inside MSYS2

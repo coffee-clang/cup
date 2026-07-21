@@ -59,16 +59,16 @@ test_scoped_preferences() {
     assert_contains "$(run_cup config set compiler gcc --target windows-x64)" \
         "Preferred tool for 'compiler' on target 'windows-x64' set to 'gcc'."
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        'preferred.linux-x64.linux-x64.compiler=gcc'
+        "preferred.$TEST_PLATFORM.$TEST_PLATFORM.compiler=gcc"
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        'preferred.linux-x64.windows-x64.compiler=gcc'
+        "preferred.$TEST_PLATFORM.windows-x64.compiler=gcc"
 
     assert_contains "$(run_cup config reset compiler)" \
         "Preference for 'compiler' on target '$TEST_PLATFORM' was reset."
     assert_not_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        'preferred.linux-x64.linux-x64.compiler='
+        "preferred.$TEST_PLATFORM.$TEST_PLATFORM.compiler="
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        'preferred.linux-x64.windows-x64.compiler=gcc'
+        "preferred.$TEST_PLATFORM.windows-x64.compiler=gcc"
 
     assert_contains "$(run_cup config reset --target windows-x64)" \
         "Reset 1 preference(s) for target 'windows-x64'."

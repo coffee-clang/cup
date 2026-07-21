@@ -74,6 +74,10 @@ cup_test_dependencies_ready() {
         [ -f "$DEPS_PREFIX/include/uthash.h" ] &&
         [ -f "$DEPS_PREFIX/include/unity.h" ] &&
         [ -f "$DEPS_PREFIX/include/unity_internals.h" ] &&
+        [ -f "$DEPS_PREFIX/include/event2/event.h" ] &&
+        [ -f "$DEPS_PREFIX/include/event2/http.h" ] &&
+        [ -f "$DEPS_PREFIX/include/event2/bufferevent.h" ] &&
+        [ -f "$DEPS_PREFIX/include/event2/listener.h" ] &&
         [ -f "$DEPS_PREFIX/include/curl/curl.h" ] &&
         [ -f "$DEPS_PREFIX/include/archive.h" ] &&
         [ -f "$DEPS_PREFIX/include/archive_entry.h" ] &&
@@ -82,8 +86,14 @@ cup_test_dependencies_ready() {
         [ -x "$DEPS_PREFIX/bin/curl-config" ] &&
         { [ -f "$DEPS_PREFIX/lib/pkgconfig/libarchive.pc" ] ||
           [ -f "$DEPS_PREFIX/lib64/pkgconfig/libarchive.pc" ]; } &&
+        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_core.pc" ] ||
+          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libevent_core.pc" ]; } &&
+        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_extra.pc" ] ||
+          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libevent_extra.pc" ]; } &&
         cup_test_find_static_library argtable3 >/dev/null &&
         cup_test_find_static_library unity >/dev/null &&
+        cup_test_find_static_library event_core >/dev/null &&
+        cup_test_find_static_library event_extra >/dev/null &&
         cup_test_find_static_library curl >/dev/null &&
         cup_test_find_static_library archive >/dev/null &&
         cup_test_find_static_library z >/dev/null &&

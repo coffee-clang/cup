@@ -276,6 +276,7 @@ verify() {
     local pkg_dirs
     local curl_flags
     local archive_flags
+    local event_flags
 
     pkg_dirs="$(pkg_config_dirs)"
 
@@ -290,12 +291,16 @@ verify() {
         PKG_CONFIG_LIBDIR="$pkg_dirs" \
         PKG_CONFIG_SYSROOT_DIR="" \
         pkg-config --static --libs libarchive)"
-    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ]; then
+    event_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
+        PKG_CONFIG_LIBDIR="$pkg_dirs" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        pkg-config --static --libs libevent_extra libevent_core)"
+    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
         echo "Error: generated static link metadata is empty." >&2
         exit 1
     fi
     if [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
-        case "$curl_flags $archive_flags" in
+        case "$curl_flags $archive_flags $event_flags" in
             *"$CUP_DEPS_STAGE_ROOT"*)
                 echo "Error: generated link metadata contains the staging path." >&2
                 exit 1
@@ -310,6 +315,7 @@ verify() {
 
     printf '%s\n' "$curl_flags"
     printf '%s\n' "$archive_flags"
+    printf '%s\n' "$event_flags"
     echo "==> $CUP_POSIX_BOOTSTRAP_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
 }
 
@@ -351,6 +357,8 @@ main() {
     build_openssl
     build_curl
     build_libarchive
+    build_libevent_static "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+        "$CC" "$AR" "$RANLIB"
     build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB"
     normalize_dependency_metadata "$PREFIX" \

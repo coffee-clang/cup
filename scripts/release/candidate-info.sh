@@ -129,7 +129,7 @@ done < "$dist/candidate.env"
 [ "$candidate_sha" = "$SHA" ] || fail 'candidate SHA does not match release decision'
 
 for asset in \
-    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_LICENSES.txt \
+    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_NOTICES.txt \
     install.sh install.ps1 uninstall.sh uninstall.ps1 \
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64 \
     cup-windows-x64.exe SHA256SUMS.common \

@@ -248,7 +248,7 @@ A resumed draft is accepted only when it belongs to the expected tag/commit;
 unexpected or partial assets are replaced and the final remote set is compared
 with the verified candidate before publication.
 
-`THIRD_PARTY_LICENSES.txt` accompanies the release with the notices and license
+`THIRD_PARTY_NOTICES.txt` accompanies the release with the notices and license
 texts for the pinned build. The copy maintained beside the dependency source
 lock also identifies the corresponding archives; integrity still comes from the
 tested candidate, published checksums and exact remote byte comparison.
