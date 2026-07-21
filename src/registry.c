@@ -12,7 +12,7 @@
 
 #define MAX_TOOLS_PER_COMPONENT 8
 
-/* Component registry. */
+/* Closed component/tool registry. Tool names remain globally unique for `cup update <tool>`. */
 typedef struct {
     const char *component;
     const char *tools[MAX_TOOLS_PER_COMPONENT];
@@ -23,15 +23,17 @@ typedef struct {
  * This registry validates the domain accepted by the CLI and state files;
  * concrete versions, formats and URLs are provided by the catalog.
  */
-static const SupportedComponent SUPPORTED_COMPONENTS[] = {{"compiler", {"gcc", "clang", NULL}},
-                                                          {"debugger", {"gdb", "lldb", NULL}},
-                                                          {"linker", {"lld", "ld", NULL}},
-                                                          {"formatter", {"clang-format", NULL}},
-                                                          {"linter", {"clang-tidy", NULL}},
-                                                          {"language-server", {"clangd", NULL}},
-                                                          {"analyzer", {"valgrind", NULL}}};
+static const SupportedComponent SUPPORTED_COMPONENTS[] = {
+    {"compiler", {"gcc", "clang", NULL}},
+    {"debugger", {"gdb", "lldb", NULL}},
+    {"linker", {"lld", "ld", NULL}},
+    {"formatter", {"clang-format", NULL}},
+    {"linter", {"clang-tidy", NULL}},
+    {"language-server", {"clangd", NULL}},
+    {"analyzer", {"valgrind", NULL}},
+};
 
-/* Registry lookup. */
+/* Case-insensitive lookup normalizes user input to the canonical compiled spelling. */
 static const SupportedComponent *find_supported_component(const char *component) {
     size_t count;
     size_t i;
@@ -51,7 +53,7 @@ static const SupportedComponent *find_supported_component(const char *component)
     return NULL;
 }
 
-/* Public API. */
+/* Public component/tool validation and relationship queries. */
 CupError registry_validate_component(const char *component) {
     const SupportedComponent *supported;
 

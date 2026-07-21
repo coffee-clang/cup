@@ -453,16 +453,9 @@ are written to standard error; command results and reports use standard output.
 
 ## Implementation and verification
 
-Argtable3 parsing and command dispatch are owned by `main.c`. Shared command
-setup is in `command_context.c`. Public handlers use singular `command_*.c`
-modules, while reusable package installation lives in `package_install.c`.
-`command_doctor.c`, `command_repair.c`, `cup_update.c` and
-`command_uninstall.c` own the corresponding maintenance commands.
-
-Public command behavior is exercised through the real executable by the POSIX
-and Windows integration suites. Focused C tests cover deterministic branches
-such as context setup, remove rollback, CUP-update validation and CUP assets
-selection. See [TESTING](../development/TESTING.md) for the boundary between those levels.
+Command-module ownership is listed in
+[ARCHITECTURE](../design/ARCHITECTURE.md). Public CLI and focused module
+verification are described in [TESTING](../development/TESTING.md).
 
 ## Related documents
 

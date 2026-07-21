@@ -69,6 +69,97 @@ static CupError show_configuration(const InstallPolicy *policy,
     return CUP_OK;
 }
 
+static CupError set_preference(const InstallPolicy *policy,
+                               ToolPreferences *preferences,
+                               const CommandContext *context,
+                               const char *component,
+                               const char *tool) {
+    CupError err;
+
+    if (text_is_empty(component) || text_is_empty(tool)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = tool_preferences_set(preferences,
+                               context->host_platform,
+                               context->target_platform,
+                               component,
+                               tool);
+    if (err == CUP_OK) {
+        err = tool_preferences_save(policy, preferences);
+    }
+    if (err == CUP_OK) {
+        printf("Preferred tool for '%s' on target '%s' set to '%s'.\n",
+               component,
+               context->target_platform,
+               tool);
+    }
+    return err;
+}
+
+static CupError reset_scope_preferences(const InstallPolicy *policy,
+                                        ToolPreferences *preferences,
+                                        const CommandContext *context) {
+    size_t removed_count;
+    CupError err;
+
+    err = tool_preferences_reset_scope(preferences,
+                                       context->host_platform,
+                                       context->target_platform,
+                                       &removed_count);
+    if (err == CUP_OK) {
+        err = tool_preferences_save(policy, preferences);
+    }
+    if (err == CUP_OK) {
+        printf("Reset %zu preference(s) for target '%s'.\n",
+               removed_count,
+               context->target_platform);
+    }
+    return err;
+}
+
+static CupError reset_component_preference(const InstallPolicy *policy,
+                                           ToolPreferences *preferences,
+                                           const CommandContext *context,
+                                           const char *component) {
+    CupError err;
+    int removed;
+
+    if (registry_validate_component(component) != CUP_OK) {
+        return CUP_ERR_UNSUPPORTED_COMPONENT;
+    }
+
+    err = tool_preferences_reset(preferences,
+                                 context->host_platform,
+                                 context->target_platform,
+                                 component,
+                                 &removed);
+    if (err == CUP_OK) {
+        err = tool_preferences_save(policy, preferences);
+    }
+    if (err == CUP_OK) {
+        printf(removed ? "Preference for '%s' on target '%s' was reset.\n"
+                       : "No preference was set for '%s' on target '%s'.\n",
+               component,
+               context->target_platform);
+    }
+    return err;
+}
+
+static CupError reset_preferences(const InstallPolicy *policy,
+                                  ToolPreferences *preferences,
+                                  const CommandContext *context,
+                                  const char *component,
+                                  const char *unexpected_value) {
+    if (!text_is_empty(unexpected_value)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (text_is_empty(component)) {
+        return reset_scope_preferences(policy, preferences, context);
+    }
+    return reset_component_preference(policy, preferences, context, component);
+}
+
 /* View uses a read-only context; set/reset acquire the exclusive mutation lock. */
 CupError command_config(const char *action_input,
                         const char *name_input,
@@ -93,6 +184,7 @@ CupError command_config(const char *action_input,
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
+    /* Load policy and preferences under the least permissive context required by the action. */
     err = is_view ? command_context_begin_read_only(&context, target_override)
                   : command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
     if (err == CUP_OK) {
@@ -108,62 +200,10 @@ CupError command_config(const char *action_input,
     if (is_view) {
         err = show_configuration(
             &policy, &preferences, context.host_platform, context.target_platform);
-        goto done;
-    }
-
-    if (strcmp(action, "set") == 0) {
-        if (text_is_empty(name) || text_is_empty(value)) {
-            err = CUP_ERR_INVALID_INPUT;
-            goto done;
-        }
-        err = tool_preferences_set(
-            &preferences, context.host_platform, context.target_platform, name, value);
-        if (err == CUP_OK) {
-            err = tool_preferences_save(&policy, &preferences);
-        }
-        if (err == CUP_OK) {
-            printf("Preferred tool for '%s' on target '%s' set to '%s'.\n",
-                   name,
-                   context.target_platform,
-                   value);
-        }
+    } else if (strcmp(action, "set") == 0) {
+        err = set_preference(&policy, &preferences, &context, name, value);
     } else if (strcmp(action, "reset") == 0) {
-        if (!text_is_empty(value)) {
-            err = CUP_ERR_INVALID_INPUT;
-            goto done;
-        }
-        if (text_is_empty(name)) {
-            size_t removed_count;
-
-            err = tool_preferences_reset_scope(
-                &preferences, context.host_platform, context.target_platform, &removed_count);
-            if (err == CUP_OK) {
-                err = tool_preferences_save(&policy, &preferences);
-            }
-            if (err == CUP_OK) {
-                printf("Reset %zu preference(s) for target '%s'.\n",
-                       removed_count,
-                       context.target_platform);
-            }
-        } else {
-            int removed;
-
-            if (registry_validate_component(name) != CUP_OK) {
-                err = CUP_ERR_UNSUPPORTED_COMPONENT;
-                goto done;
-            }
-            err = tool_preferences_reset(
-                &preferences, context.host_platform, context.target_platform, name, &removed);
-            if (err == CUP_OK) {
-                err = tool_preferences_save(&policy, &preferences);
-            }
-            if (err == CUP_OK) {
-                printf(removed ? "Preference for '%s' on target '%s' was reset.\n"
-                               : "No preference was set for '%s' on target '%s'.\n",
-                       name,
-                       context.target_platform);
-            }
-        }
+        err = reset_preferences(&policy, &preferences, &context, name, value);
     } else {
         fprintf(stderr, "Error: unknown config action '%s'.\n", action);
         err = CUP_ERR_INVALID_INPUT;

@@ -11,7 +11,7 @@
 
 #include <string.h>
 
-/* Package selectors. */
+/* Parse symbolic or concrete tool selectors without consulting the catalog. */
 CupError package_selector_init(PackageSelector *selector, const char *tool, const char *release) {
     if (selector == NULL || text_is_empty(tool) || text_is_empty(release)) {
         return CUP_ERR_INVALID_INPUT;
@@ -61,7 +61,7 @@ int package_selector_is_symbolic(const PackageSelector *selector) {
     return selector != NULL && package_release_is_stable(selector->release);
 }
 
-/* Entry format. */
+/* Build and split canonical <tool>@<release> strings used at CLI and persistence boundaries. */
 int package_release_is_stable(const char *release) {
     if (text_is_empty(release)) {
         return 0;

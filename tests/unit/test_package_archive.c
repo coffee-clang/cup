@@ -15,15 +15,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Shared fixture state used by the cases in this suite. */
+
 static char temp_dir[] = "/tmp/cup-package-archive-test-XXXXXX";
+
+/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
 }
+
 void tearDown(void) {
 }
 
 static void build_path(char *out, size_t size, const char *name) {
-    TEST_ASSERT_TRUE(snprintf(out, size, "%s/%s", temp_dir, name) > 0);
+    int written = snprintf(out, size, "%s/%s", temp_dir, name);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void write_bytes(const char *path, const void *data, size_t size) {
@@ -83,6 +90,8 @@ static void create_archive(const char *path, const char *format, int include_pay
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_write_close(writer));
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_write_free(writer));
 }
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_format_parser(void) {
     PackageArchiveFormat format = PACKAGE_ARCHIVE_FORMAT_ANY;
@@ -201,6 +210,8 @@ static void test_payload_required(void) {
     assert_validity(invalid, "tar.gz", 0);
     assert_validity(directories_only, "tar.gz", 0);
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

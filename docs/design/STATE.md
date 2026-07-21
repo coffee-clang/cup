@@ -308,16 +308,9 @@ operation. See [TRANSACTIONS](TRANSACTIONS.md).
 
 ## Implementation and verification
 
-`layout.c` derives canonical paths, `state.c` parses and atomically persists the
-model, and `wrappers.c` rebuilds derived command wrappers. Filesystem and
-locking primitives are supplied by `filesystem.c` and the native `system_*`
-implementation. Commands obtain this model through `command_context.c`.
-
-Focused C tests cover state syntax, semantic validation, layout and storage
-operations. Integration tests cover corruption, managed wrappers,
-concurrency and crash recovery against the real executable. PackageTransaction-specific
-cases are described in [TRANSACTIONS](TRANSACTIONS.md), and test ownership in
-[TESTING](../development/TESTING.md).
+State-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). Persistence,
+recovery and process-level verification are described in
+[TRANSACTIONS](TRANSACTIONS.md) and [TESTING](../development/TESTING.md).
 
 ## Related documents
 

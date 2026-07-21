@@ -2,13 +2,14 @@
 #define CUP_PACKAGE_EXTRACT_H
 
 /*
- * Module contract: Safe extraction of one supported package archive into a
- * caller-provided fresh staging directory. Paths are validated for every
- * supported filesystem before any entry can escape or alias another entry.
+ * Safe extraction of one supported package archive into a caller-provided fresh staging
+ * directory. Paths are validated for every supported filesystem before any entry can escape
+ * or alias another entry.
  */
 
 #include "error.h"
 
+/* Preflight and extract the complete archive below the fresh staging directory. */
 CupError package_extract_archive(const char *archive_path,
                                  const char *staging_path,
                                  const char *format);

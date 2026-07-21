@@ -27,6 +27,11 @@
 
 #define MAX_STEPS 4
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupState loaded_state;
 static StateFileStatus loaded_status;
 static CupError root_result;
@@ -95,9 +100,16 @@ static int install_policy_replace_override;
 static CupError install_policy_replace_result;
 static SystemCommitState install_policy_replace_state;
 
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
+
 static void reset_scenario(void) {
     size_t i;
 
+    /* Command, runtime, and persistent-state defaults. */
     memset(&loaded_state, 0, sizeof(loaded_state));
     loaded_status = STATE_FILE_LOADED;
     root_result = CUP_OK;
@@ -110,6 +122,7 @@ static void reset_scenario(void) {
     state_validate_result = CUP_OK;
     transaction_calls = 0;
     recover_result = CUP_OK;
+    /* CUP asset, package-scan, and reconciliation outcomes. */
     memset(&cup_assets_inspection, 0, sizeof(cup_assets_inspection));
     cup_assets_result = CUP_OK;
     has_installed_assets = 0;
@@ -127,6 +140,7 @@ static void reset_scenario(void) {
     cup_assets_executable = 1;
     verify_matches = 1;
     cup_assets_files_regular = 1;
+    /* Observed side effects begin at zero for every case. */
     fetch_calls = 0;
     lock_release_calls = 0;
     backup_calls = 0;
@@ -143,6 +157,7 @@ static void reset_scenario(void) {
     replace_result = CUP_OK;
     replace_state = SYSTEM_COMMIT_DURABLE;
     restore_move_result = CUP_OK;
+    /* Official install-policy repair behavior and scripted retries. */
     install_policy_regular_override = 0;
     install_policy_regular_result = CUP_OK;
     install_policy_regular = 1;
@@ -164,6 +179,7 @@ static void reset_scenario(void) {
     install_policy_replace_result = CUP_OK;
     install_policy_replace_state = SYSTEM_COMMIT_DURABLE;
 
+    /* Per-phase transaction and scan sequences support ordered recovery scenarios. */
     for (i = 0; i < MAX_STEPS; ++i) {
         transaction_results[i] = CUP_OK;
         transaction_statuses[i] = PACKAGE_TRANSACTION_MISSING;
@@ -174,8 +190,13 @@ static void reset_scenario(void) {
     }
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError platform_get_host(char *buffer, size_t size) {
-    return snprintf(buffer, size, "linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "linux-x64"), size);
 }
 
 CupError cup_update_helper_prepare(void) {
@@ -226,7 +247,7 @@ CupError layout_get_lock_path(char *buffer, size_t size) {
     if (lock_path_result != CUP_OK) {
         return lock_path_result;
     }
-    return snprintf(buffer, size, "/tmp/cup.lock") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/cup.lock"), size);
 }
 
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
@@ -319,11 +340,11 @@ CupError package_transaction_recover(const PackageTransaction *transaction, CupS
 }
 
 CupError layout_get_state_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/state.txt") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/state.txt"), size);
 }
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/transaction.txt") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/transaction.txt"), size);
 }
 
 CupError filesystem_backup_invalid(const char *path, char *backup_path, size_t backup_size) {
@@ -331,8 +352,7 @@ CupError filesystem_backup_invalid(const char *path, char *backup_path, size_t b
     if (backup_result != CUP_OK) {
         return backup_result;
     }
-    return snprintf(backup_path, backup_size, "%s.invalid", path) > 0 ? CUP_OK
-                                                                      : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(backup_path, backup_size, "%s.invalid", path), backup_size);
 }
 
 CupError cup_assets_inspect(CupAssetsInspection *inspection) {
@@ -499,9 +519,8 @@ CupError state_clear_matching_active(CupState *state, const PackageIdentity *ide
 }
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *package) {
-    return snprintf(buffer, size, "/tmp/%s-%s", package->tool, package->version) > 0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(
+        snprintf(buffer, size, "/tmp/%s-%s", package->tool, package->version), size);
 }
 
 CupError package_metadata_is_read_only(const char *base_path, int *is_read_only) {
@@ -522,9 +541,8 @@ CupError package_quarantine(const PackageIssue *issue, char *recovery_path, size
     if (quarantine_result != CUP_OK) {
         return quarantine_result;
     }
-    return snprintf(recovery_path, recovery_size, "%s.invalid", issue->path) > 0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(
+        snprintf(recovery_path, recovery_size, "%s.invalid", issue->path), recovery_size);
 }
 
 const char *package_issue_reason_name(PackageIssueReason reason) {
@@ -560,7 +578,7 @@ CupError wrapper_plan_apply(const WrapperPlan *plan) {
 }
 
 CupError layout_get_staging_dir(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/cup-tmp") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/cup-tmp"), size);
 }
 
 CupError filesystem_clear_directory(const char *directory, const char *preserved_path) {
@@ -571,35 +589,35 @@ CupError filesystem_clear_directory(const char *directory, const char *preserved
 }
 
 CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/common.sum") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/common.sum"), size);
 }
 
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/platform.sum") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/platform.sum"), size);
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/cup") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/cup"), size);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/uninstall.sh") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/uninstall.sh"), size);
 }
 
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/packages.cfg") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/packages.cfg"), size);
 }
 
 CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/tmp/install.cfg") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/install.cfg"), size);
 }
 
 CupError cup_assets_platform_checksums_name(char *name, size_t size) {
-    return snprintf(name, size, "SHA256SUMS-linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(name, size, "SHA256SUMS-linux-x64"), size);
 }
 
 CupError cup_assets_binary_asset_name(char *name, size_t size) {
-    return snprintf(name, size, "cup-linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(name, size, "cup-linux-x64"), size);
 }
 
 CupError system_is_regular_file(const char *path, int *is_regular) {
@@ -719,14 +737,17 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
 
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
+    int written;
+
     (void)directory;
     (void)prefix;
-    *file = tmpfile();
-    if (*file == NULL) {
-        return CUP_ERR_TEMPORARY;
+
+    written = snprintf(path, path_size, "/tmp/staged-%d", fetch_calls);
+    if (written < 0 || (size_t)written >= path_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return snprintf(path, path_size, "/tmp/staged-%d", fetch_calls) > 0 ? CUP_OK
-                                                                        : CUP_ERR_BUFFER_TOO_SMALL;
+    *file = tmpfile();
+    return *file == NULL ? CUP_ERR_TEMPORARY : CUP_OK;
 }
 
 CupError system_remove_file(const char *path) {
@@ -764,11 +785,17 @@ CupError system_replace_file(const char *source,
 
 CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
     (void)path;
-    return snprintf(hex, size, "0000000000000000000000000000000000000000000000000000000000000000") >
-                   0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(
+        snprintf(hex,
+                 size,
+                 "0000000000000000000000000000000000000000000000000000000000000000"),
+        size);
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_success_reconciles(void) {
     PackageList *packages = &scan_lists[0];
@@ -995,6 +1022,8 @@ static void test_late_failures(void) {
     cleanup_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

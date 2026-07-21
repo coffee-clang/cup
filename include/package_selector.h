@@ -2,8 +2,8 @@
 #define CUP_PACKAGE_SELECTOR_H
 
 /*
- * Module contract: Validation and construction of symbolic or concrete
- * '<tool>@<release>' strings used by CLI and state layers.
+ * Validation and construction of symbolic or concrete '<tool>@<release>' selectors used by CLI
+ * and state layers.
  */
 
 #include <stddef.h>

@@ -2,8 +2,8 @@
 #define CUP_PACKAGE_REQUEST_H
 
 /*
- * Module contract: Command-boundary package selector validation and catalog
- * resolution without owning command lifetime or installation policy.
+ * Command-boundary package selector validation and catalog resolution without owning command
+ * lifetime or installation policy.
  */
 
 #include <stdio.h>
@@ -20,6 +20,7 @@ typedef struct {
     char resolved_selector[MAX_SELECTOR_LEN];
 } PackageRequest;
 
+/* Parse CLI syntax, resolve symbolic stable, then render the chosen selector when needed. */
 CupError package_request_parse(const char *component,
                                const char *selector_text,
                                PackageRequest *request);

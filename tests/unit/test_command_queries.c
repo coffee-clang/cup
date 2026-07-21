@@ -24,6 +24,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupState scenario_state;
 static PackageCatalogEntry package_catalog_items[12];
 static size_t package_catalog_count;
@@ -48,6 +53,12 @@ static int plan_matches;
 static int end_calls;
 static WrapperSpec plan_items[3];
 static size_t plan_count;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     memset(&scenario_state, 0, sizeof(scenario_state));
@@ -145,18 +156,27 @@ static void add_info(const char *key, const char *value) {
 static char *capture_result(CupError (*operation)(void), CupError *result) {
     FILE *capture = tmpfile();
     int saved;
+    int capture_flush_result;
+    int restore_result;
+    int close_result;
     long length;
     char *output;
 
     TEST_ASSERT_NOT_NULL(capture);
-    fflush(stdout);
+    TEST_ASSERT_EQUAL_INT(0, fflush(stdout));
     saved = dup(STDOUT_FILENO);
     TEST_ASSERT_TRUE(saved >= 0);
     TEST_ASSERT_TRUE(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+
     *result = operation();
-    fflush(stdout);
-    TEST_ASSERT_TRUE(dup2(saved, STDOUT_FILENO) >= 0);
-    close(saved);
+
+    capture_flush_result = fflush(stdout);
+    restore_result = dup2(saved, STDOUT_FILENO);
+    close_result = close(saved);
+    TEST_ASSERT_EQUAL_INT(0, capture_flush_result);
+    TEST_ASSERT_TRUE(restore_result >= 0);
+    TEST_ASSERT_EQUAL_INT(0, close_result);
+
     TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_END));
     length = ftell(capture);
     TEST_ASSERT_TRUE(length >= 0);
@@ -164,9 +184,15 @@ static char *capture_result(CupError (*operation)(void), CupError *result) {
     output = calloc((size_t)length + 1, 1);
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_EQUAL_size_t((size_t)length, fread(output, 1, (size_t)length, capture));
+    TEST_ASSERT_FALSE(ferror(capture));
     TEST_ASSERT_EQUAL_INT(0, fclose(capture));
     return output;
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError registry_validate_component(const char *component) {
     if (component == NULL || strcmp(component, "bad") == 0) {
@@ -258,8 +284,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     if (strcmp(identity->tool, "pathbad") == 0) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return snprintf(buffer, size, "/install/%s", identity->tool) > 0 ? CUP_OK
-                                                                     : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/install/%s", identity->tool), size);
 }
 
 CupError package_validate(const char *base_path, const PackageIdentity *expected_identity) {
@@ -524,7 +549,7 @@ CupError path_join(char *buffer, size_t size, const char *left, const char *righ
     if (path_join_result != CUP_OK) {
         return path_join_result;
     }
-    return snprintf(buffer, size, "%s/%s", left, right) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s/%s", left, right), size);
 }
 
 void package_request_print(FILE *stream, const PackageRequest *request) {
@@ -592,6 +617,11 @@ static CupError run_info_component(void) {
 static CupError run_info_target(void) {
     return command_info(NULL, "windows-x64");
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_list_empty(void) {
     CupError result;
@@ -990,6 +1020,8 @@ static void test_inspect_setup(void) {
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_inspect("compiler", "pathbad@1.0", NULL));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

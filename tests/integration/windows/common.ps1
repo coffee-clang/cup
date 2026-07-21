@@ -14,14 +14,20 @@ $Script:CupTestOriginalUserProfile = $null
 $Script:CupTestCommandProcessor = $null
 
 function Fail-Test {
-    param([Parameter(Mandatory = $true)][string]$Message)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
     throw "TEST FAILED: $Message"
 }
 
 function Assert-Contains {
     param(
-        [AllowEmptyString()][string]$Text,
-        [Parameter(Mandatory = $true)][string]$Expected
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Expected
     )
     if (-not $Text.Contains($Expected)) {
         Fail-Test "expected output to contain: $Expected`nActual output:`n$Text"
@@ -30,8 +36,11 @@ function Assert-Contains {
 
 function Assert-NotContains {
     param(
-        [AllowEmptyString()][string]$Text,
-        [Parameter(Mandatory = $true)][string]$Unexpected
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Unexpected
     )
     if ($Text.Contains($Unexpected)) {
         Fail-Test "expected output not to contain: $Unexpected`nActual output:`n$Text"
@@ -39,14 +48,20 @@ function Assert-NotContains {
 }
 
 function Assert-PathExists {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
     if (-not (Test-Path -LiteralPath $Path)) {
         Fail-Test "expected path: $Path"
     }
 }
 
 function Assert-PathMissing {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
     if (Test-Path -LiteralPath $Path) {
         Fail-Test "expected missing path: $Path"
     }
@@ -54,17 +69,23 @@ function Assert-PathMissing {
 
 function Assert-Equals {
     param(
-        [AllowEmptyString()][string]$Actual,
-        [AllowEmptyString()][string]$Expected
+        [AllowEmptyString()]
+        [string]$Actual,
+
+        [AllowEmptyString()]
+        [string]$Expected
     )
     if ($Actual -cne $Expected) {
         Fail-Test "expected '$Expected', got '$Actual'"
     }
 }
 
-
+# Native process invocation and command-line quoting.
 function New-IsolatedTestRoot {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
 
     $base = Join-Path $Script:CupTestProjectRoot "build\windows-x64\dynamic\tests"
     New-Item -ItemType Directory -Force -Path $base | Out-Null
@@ -106,7 +127,10 @@ function Get-CommandProcessor {
 }
 
 function ConvertTo-NativeArgument {
-    param([AllowEmptyString()][string]$Argument)
+    param(
+        [AllowEmptyString()]
+        [string]$Argument
+    )
 
     if ($Argument.Length -eq 0) {
         return '""'
@@ -148,9 +172,13 @@ function ConvertTo-NativeArgument {
 
 function Invoke-NativeProcess {
     param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
         [string[]]$Arguments = @(),
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory
     )
 
     if ([string]::IsNullOrWhiteSpace($FilePath)) {
@@ -189,8 +217,12 @@ function Invoke-NativeProcess {
         $stderr = $stderrTask.Result.TrimEnd([char[]]"`r`n")
 
         $parts = [System.Collections.Generic.List[string]]::new()
-        if ($stdout.Length -gt 0) { $parts.Add($stdout) }
-        if ($stderr.Length -gt 0) { $parts.Add($stderr) }
+        if ($stdout.Length -gt 0) {
+            $parts.Add($stdout)
+        }
+        if ($stderr.Length -gt 0) {
+            $parts.Add($stderr)
+        }
 
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
@@ -201,6 +233,7 @@ function Invoke-NativeProcess {
     }
 }
 
+# Isolated runtime setup and teardown.
 function Write-Utf8NoBom {
     param(
         [Parameter(Mandatory = $true)]
@@ -218,8 +251,11 @@ function Write-Utf8NoBom {
 
 function Initialize-TestEnvironment {
     param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$ExecutablePath
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath
     )
 
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
@@ -267,7 +303,9 @@ function Assert-CupHealthy {
 
 function Invoke-Cup {
     param(
-        [Parameter(Mandatory = $true)][string[]]$CommandArgs,
+        [Parameter(Mandatory = $true)]
+        [string[]]$CommandArgs,
+
         [switch]$ExpectFailure
     )
 
@@ -286,8 +324,12 @@ function Invoke-Cup {
 
 function Assert-CupStatus {
     param(
-        [Parameter(Mandatory = $true)][string[]]$CommandArgs,
-        [Parameter(Mandatory = $true)][int]$ExpectedStatus,
+        [Parameter(Mandatory = $true)]
+        [string[]]$CommandArgs,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedStatus,
+
         [string]$ExpectedText = ""
     )
 
@@ -305,11 +347,17 @@ function Assert-CupStatus {
     return $result.Output
 }
 
+# Catalog and package fixtures used by command-level suites.
 function Add-ManifestVersion {
     param(
-        [Parameter(Mandatory = $true)][string]$Component,
-        [Parameter(Mandatory = $true)][string]$Tool,
-        [Parameter(Mandatory = $true)][string]$Version
+        [Parameter(Mandatory = $true)]
+        [string]$Component,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
     )
 
     $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
@@ -330,12 +378,16 @@ function Add-ManifestVersion {
     Write-Utf8NoBom -Path $catalog -Lines $updated
 }
 
-
 function Set-ManifestFormat {
     param(
-        [Parameter(Mandatory = $true)][string]$Component,
-        [Parameter(Mandatory = $true)][string]$Tool,
-        [Parameter(Mandatory = $true)][string]$Format
+        [Parameter(Mandatory = $true)]
+        [string]$Component,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Format
     )
 
     $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
@@ -358,10 +410,17 @@ function Set-ManifestFormat {
 
 function New-TestPackage {
     param(
-        [Parameter(Mandatory = $true)][string]$Component,
-        [Parameter(Mandatory = $true)][string]$Tool,
-        [Parameter(Mandatory = $true)][string]$Version,
-        [Parameter(Mandatory = $true)][string[]]$Entries
+        [Parameter(Mandatory = $true)]
+        [string]$Component,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Entries
     )
 
     $platform = "windows-x64"
@@ -396,8 +455,12 @@ function New-TestPackage {
     )
 }
 
+# Execute one wrapper generated by CUP and capture its output.
 function Invoke-ManagedCommand {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
 
     $path = Join-Path $Script:CupTestHome ".cup\bin\$Name.cmd"
     Assert-PathExists $path

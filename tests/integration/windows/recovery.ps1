@@ -1,7 +1,10 @@
 # Purpose: Exercises conservative Windows recovery, journal blockers, and
 # preservation of foreign-host state and package trees.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 try {

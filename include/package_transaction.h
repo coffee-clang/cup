@@ -27,6 +27,7 @@ typedef struct {
     char temporary_name[MAX_PATH_LEN];
 } PackageTransaction;
 
+/* Journal lifecycle and owner-specific deterministic recovery. */
 void package_transaction_init(PackageTransaction *transaction);
 CupError package_transaction_begin(PackageOperation operation,
                                    const PackageIdentity *package,
@@ -38,6 +39,8 @@ CupError package_transaction_get_staging_path(const PackageTransaction *transact
                                               size_t size);
 CupError package_transaction_recover(const PackageTransaction *transaction, CupState *state);
 CupError package_transaction_clear(void);
+
+/* Stable diagnostic name for one package operation. */
 const char *package_operation_name(PackageOperation operation);
 
 #endif /* CUP_PACKAGE_TRANSACTION_H */

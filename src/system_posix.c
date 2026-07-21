@@ -29,7 +29,7 @@
 #define O_NOFOLLOW 0
 #endif
 
-/* Internal helpers. */
+/* Descriptor-level helpers shared by no-follow path operations. */
 static CupError get_parent_path(const char *path, char *parent, size_t size) {
     char *slash;
 
@@ -120,7 +120,7 @@ static CupError open_regular_file_no_follow(const char *path, int flags, mode_t 
     return CUP_OK;
 }
 
-/* Process and detached-helper operations. */
+/* Process identity, HOME validation and detached uninstall execution. */
 void system_set_restrictive_umask(void) {
     umask(0077);
 }
@@ -205,7 +205,7 @@ CupError system_start_uninstall(const char *cup_root,
     return CUP_OK;
 }
 
-/* File and directory mutation. */
+/* No-follow creation, copy, replacement and recursive mutation primitives. */
 CupError system_make_directory(const char *path) {
     SystemPathKind info;
     int mkdir_error;
@@ -601,7 +601,7 @@ CupError system_sync_parent_directory(const char *path) {
     return sync_directory(parent);
 }
 
-/* Exclusive temporary objects. */
+/* Unpredictable create-exclusive temporary files and directories. */
 CupError system_create_file_exclusive(const char *path, FILE **file) {
     int fd;
 
@@ -792,7 +792,7 @@ CupError system_file_size(const char *path, long long *file_size) {
     return CUP_OK;
 }
 
-/* Permissions. */
+/* Owner-only directory policy plus executable and read-only file controls. */
 CupError system_is_executable(const char *path, int *is_executable) {
     SystemPathKind info;
     CupError err;
@@ -879,7 +879,7 @@ CupError system_set_executable(const char *path, int executable) {
     return chmod(path, mode) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
-/* Directory traversal. */
+/* Descriptor-anchored child enumeration that never follows a child symlink. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
     DIR *directory;
     struct dirent *entry;
@@ -971,7 +971,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
     return system_list_directory(path, walk_directory_entry, &context);
 }
 
-/* Process-scoped operating-system locks. */
+/* Nonblocking advisory locks released automatically when the process exits. */
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     struct flock operation;
     struct stat info;

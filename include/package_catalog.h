@@ -2,8 +2,8 @@
 #define CUP_PACKAGE_CATALOG_H
 
 /*
- * Module contract: Strictly validated package catalog, stable-version
- * resolution, archive-format selection, and URL-template expansion.
+ * Strict package-catalog validation, stable-version resolution, archive-format selection, and
+ * URL-template expansion.
  */
 
 #include <stddef.h>

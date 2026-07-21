@@ -10,6 +10,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin package-lifecycle
 prepare_command_environment
 
+# Shared catalog and package fixtures for the public lifecycle.
 prepare_fixture() {
     package_catalog_add_version compiler clang "$TEST_PLATFORM" 21.1.5
     run_cup repair >/dev/null
@@ -23,6 +24,7 @@ prepare_fixture() {
     fi
 }
 
+# Installation, catalog and default behavior.
 test_first_default() {
     output=$(run_cup install compiler clang@21.1.5)
     assert_contains "$output" 'set it as the first default'
@@ -69,6 +71,7 @@ test_missing_default() {
         'is not installed'
 }
 
+# Stable updates retain old versions and move only matching defaults.
 test_update_default() {
     output=$(run_cup update clang)
     assert_contains "$output" '1 stable package(s) installed, 1 default(s) moved'
@@ -96,6 +99,7 @@ test_update_idempotent() {
     assert_contains "$output" '0 stable package(s) installed, 0 default(s) moved'
 }
 
+# Cross-target, development-update and removal boundaries.
 test_target_scopes() {
     [ "$TEST_PLATFORM" = linux-x64 ] || return 0
 

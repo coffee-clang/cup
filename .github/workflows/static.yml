@@ -23,11 +23,11 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install mdBook
         run: |
-          curl -s https://api.github.com/repos/rust-lang/mdBook/releases/latest \
-            | grep "browser_download_url.*linux" \
-            | cut -d : -f 2,3 \
-            | tr -d \" | grep unknown-linux-gnu.tar.gz | wget -qi -
-          tar xf mdbook-v*.tar.gz
+          archive="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLo "$archive" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/$archive"
+          tar -xzf "$archive"
+          ./mdbook --version
       - uses: actions/configure-pages@v5
       - name: Build documentation
         run: |

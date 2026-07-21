@@ -19,6 +19,9 @@ TEST_BUILD_DIR="$ROOT/build/$PLATFORM/$CONFIGURATION/tests/unit"
 found=0
 for test_binary in "$TEST_BUILD_DIR"/test_*; do
     [ -f "$test_binary" ] || continue
+    case "$test_binary" in
+        *.gcda|*.gcno) continue ;;
+    esac
     [ -x "$test_binary" ] || {
         printf 'Unit-test binary is not executable: %s\n' "$test_binary" >&2
         exit 1

@@ -2,9 +2,8 @@
 #define CUP_LAYOUT_H
 
 /*
- * Module contract: Canonical .cup paths and creation of CUP assets, runtime,
- * staging, cache, and recovery directories. No caller may invent a managed
- * path independently of this module.
+ * Canonical .cup paths and creation of CUP asset, runtime, staging, cache, and recovery
+ * directories. Callers must not construct managed paths independently.
  */
 
 #include <stddef.h>

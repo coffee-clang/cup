@@ -25,6 +25,11 @@
 
 #define MAX_STEPS 4
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupState initial_state;
 static CupError parse_result;
 static CupError context_result;
@@ -83,9 +88,16 @@ static int move_calls;
 static int clear_calls;
 static int save_calls;
 
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
+
 static void reset_scenario(void) {
     size_t i;
 
+    /* Request, context, catalog, and package-validation defaults. */
     memset(&initial_state, 0, sizeof(initial_state));
     parse_result = CUP_OK;
     context_result = CUP_OK;
@@ -119,6 +131,7 @@ static void reset_scenario(void) {
     entry_build_result = CUP_OK;
     entry_parse_result = CUP_OK;
 
+    /* Side-effect counters observe the transaction without replacing its control flow. */
     context_end_calls = 0;
     plan_init_calls = 0;
     plan_free_calls = 0;
@@ -135,6 +148,7 @@ static void reset_scenario(void) {
     clear_calls = 0;
     save_calls = 0;
 
+    /* Scripted results model successive fetch, extraction, move, and cleanup attempts. */
     for (i = 0; i < MAX_STEPS; ++i) {
         fetch_results[i] = CUP_OK;
         fetch_sources[i] = PACKAGE_CACHE_SOURCE_NETWORK;
@@ -178,6 +192,11 @@ void setUp(void) {
 
 void tearDown(void) {
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError package_request_parse(const char *component, const char *entry, PackageRequest *request) {
     TEST_ASSERT_NOT_NULL(request);
@@ -309,7 +328,7 @@ CupError package_catalog_get_default_format(const PackageCatalog *catalog,
     if (default_format_result != CUP_OK) {
         return default_format_result;
     }
-    return snprintf(buffer, size, "tar.gz") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "tar.gz"), size);
 }
 
 CupError package_catalog_has_format(const PackageCatalog *catalog,
@@ -339,7 +358,7 @@ CupError layout_create_staging_dir(char *buffer,
     if (tmp_result != CUP_OK) {
         return tmp_result;
     }
-    return snprintf(buffer, size, "/tmp/staging") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/staging"), size);
 }
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
@@ -347,7 +366,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     if (install_path_result != CUP_OK) {
         return install_path_result;
     }
-    return snprintf(buffer, size, "/tmp/install") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/install"), size);
 }
 
 CupError package_transaction_begin(PackageOperation operation,
@@ -379,8 +398,7 @@ CupError package_catalog_build_url(const PackageCatalog *catalog,
     if (url_result != CUP_OK) {
         return url_result;
     }
-    return snprintf(buffer, size, "https://example.invalid/package") > 0 ? CUP_OK
-                                                                         : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "https://example.invalid/package"), size);
 }
 
 CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
@@ -400,9 +418,7 @@ CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
     if (checksum_url_result != CUP_OK) {
         return checksum_url_result;
     }
-    return snprintf(buffer, size, "https://example.invalid/SHA256SUMS") > 0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "https://example.invalid/SHA256SUMS"), size);
 }
 
 CupError package_cache_fetch(char *archive_path,
@@ -615,7 +631,7 @@ CupError package_selector_format_parts(char *buffer,
     if (entry_build_result != CUP_OK) {
         return entry_build_result;
     }
-    return snprintf(buffer, size, "%s@%s", tool, release) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s@%s", tool, release), size);
 }
 
 CupError package_selector_parse_parts(
@@ -645,6 +661,11 @@ static void assert_cleanup(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_init_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_public_inputs(void) {
     int installed;
@@ -910,6 +931,7 @@ static void test_new_install_commit(void) {
 }
 
 static void test_commit_failures(void) {
+    /* Distinguish a move that never applied from one that crossed the commit boundary. */
     move_results[0] = CUP_ERR_FILESYSTEM;
     move_states[0] = SYSTEM_COMMIT_NOT_APPLIED;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -923,6 +945,7 @@ static void test_commit_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, remove_calls);
 
+    /* State and active-package mutations fail before persistence. */
     reset_scenario();
     add_state_result = CUP_ERR_STATE_FULL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL,
@@ -939,6 +962,7 @@ static void test_commit_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
                           package_install("compiler", "clang@stable", NULL, NULL));
 
+    /* Persistence and post-commit cleanup failures preserve commit semantics. */
     reset_scenario();
     save_result = CUP_ERR_STATE_SAVE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_SAVE,
@@ -958,6 +982,7 @@ static void test_commit_failures(void) {
     plan_apply_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
 
+    /* Existing-package activation reports state, save, and launcher failures consistently. */
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     absent_result = CUP_ERR_ALREADY_INSTALLED;
@@ -1016,6 +1041,8 @@ static void test_rollback_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
                           package_install("compiler", "clang@stable", NULL, NULL));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

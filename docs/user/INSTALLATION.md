@@ -261,15 +261,10 @@ confirms that the installed catalog can be loaded for the detected host.
 
 ## Implementation and verification
 
-The production installers are `scripts/install/install-cup.sh` and
-`scripts/install/install-cup-windows.ps1`. The installed uninstall helpers live
-beside them, while runtime selection and integrity checks are implemented by
-`cup_assets.c` and `command_uninstall.c`.
-
-Installer behavior is verified by the native release-candidate tests under
-`tests/release/`. CUP assets selection, checksums and detached uninstall behavior
-also have focused C tests and POSIX/Windows integration coverage. The general
-test ownership model is documented in [TESTING](../development/TESTING.md).
+Installer and CUP-assets ownership is listed in
+[ARCHITECTURE](../design/ARCHITECTURE.md). Native installer and runtime
+verification are described in [TESTING](../development/TESTING.md) and
+[RELEASES](../development/RELEASES.md).
 
 ## Related documents
 

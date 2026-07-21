@@ -9,10 +9,15 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin cli-contract
 prepare_command_environment
 
+# Status helpers run commands in isolated homes and preserve stderr for contract checks.
 expect_status() (
     expected=$1 output_file=$2
     shift 2
-    if run_cup "$@" >"$output_file" 2>&1; then status=0; else status=$?; fi
+    if run_cup "$@" >"$output_file" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
     [ "$status" -eq "$expected" ] ||
         fail "cup $* returned status $status, expected $expected"
 )
@@ -29,6 +34,7 @@ run_fresh_status() (
         fail "fresh-home cup $* returned status $status, expected $expected"
 )
 
+# Public dispatch and detailed help aliases.
 test_dispatch_status() {
     expect_status 2 "$TMP_ROOT/no-command.out"
     assert_contains "$(cat "$TMP_ROOT/no-command.out")" 'Usage:'
@@ -78,6 +84,7 @@ test_help_aliases() {
     assert_contains "$(cat "$TMP_ROOT/help-self-update.out")" "unknown command 'self-update'"
 }
 
+# Read-only initialization and persistent-state status mapping.
 test_read_only_no_init() {
     fresh_home=$TMP_ROOT/read-only-home
     mkdir -p "$fresh_home"

@@ -8,5 +8,3 @@ Makefile    text eol=lf whitespace=-tab-in-indent
 *.cfg       text eol=lf
 *.txt       text eol=lf
 VERSION     text eol=lf
-.clang-format text eol=lf
-.editorconfig text eol=lf

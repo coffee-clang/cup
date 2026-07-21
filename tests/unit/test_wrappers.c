@@ -22,6 +22,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char root[MAX_PATH_LEN];
 static CupError layout_result;
 static CupError validate_result;
@@ -32,8 +37,16 @@ static CupError list_result;
 static CupError executable_result;
 static CupError is_executable_result;
 
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
+
 static void join_test_path(char *buffer, size_t size, const char *left, const char *right) {
-    TEST_ASSERT_TRUE(snprintf(buffer, size, "%s/%s", left, right) > 0);
+    int written = snprintf(buffer, size, "%s/%s", left, right);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void remove_tree_real(const char *path) {
@@ -99,8 +112,13 @@ void tearDown(void) {
     remove_tree_real(root);
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError platform_get_host(char *buffer, size_t size) {
-    return snprintf(buffer, size, "linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "linux-x64"), size);
 }
 
 CupError package_identity_from_selector(PackageIdentity *identity,
@@ -135,10 +153,14 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     if (layout_result != CUP_OK) {
         return layout_result;
     }
-    return snprintf(
-               buffer, size, "%s/packages/%s-%s", root, package->tool, package->target_platform) > 0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(
+        snprintf(buffer,
+                 size,
+                 "%s/packages/%s-%s",
+                 root,
+                 package->tool,
+                 package->target_platform),
+        size);
 }
 
 CupError package_validate(const char *base_path, const PackageIdentity *identity) {
@@ -169,19 +191,26 @@ CupError filesystem_ensure_directory(const char *path) {
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
     int descriptor;
+    int written;
 
     if (temp_result != CUP_OK) {
         return temp_result;
     }
-    if (snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix) < 0) {
-        return CUP_ERR_TEMPORARY;
+    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
+    if (written < 0 || (size_t)written >= path_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
     descriptor = mkstemp(path);
     if (descriptor < 0) {
         return CUP_ERR_TEMPORARY;
     }
     *file = fdopen(descriptor, "w+b");
-    return *file == NULL ? CUP_ERR_TEMPORARY : CUP_OK;
+    if (*file == NULL) {
+        close(descriptor);
+        unlink(path);
+        return CUP_ERR_TEMPORARY;
+    }
+    return CUP_OK;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -197,9 +226,9 @@ CupError system_set_executable(const char *path, int executable) {
     if (stat(path, &status) != 0) {
         return CUP_ERR_FILESYSTEM;
     }
-    return chmod(path, executable ? status.st_mode | S_IXUSR : status.st_mode & ~S_IXUSR) == 0
-               ? CUP_OK
-               : CUP_ERR_FILESYSTEM;
+    mode_t mode = executable ? status.st_mode | S_IXUSR : status.st_mode & (mode_t)~S_IXUSR;
+
+    return chmod(path, mode) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 CupError system_replace_file(const char *source,
@@ -322,6 +351,11 @@ static WrapperPlan simple_plan(void) {
     strcpy(plan.items[0].target, "../components/compiler/clang/bin/cla'ng");
     return plan;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_plan_lifetime(void) {
     WrapperPlan plan;
@@ -507,6 +541,8 @@ static void test_scan_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_check(&plan, &issues));
     wrapper_plan_free(&plan);
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

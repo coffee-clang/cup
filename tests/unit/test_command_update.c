@@ -22,6 +22,11 @@ typedef struct {
     char expected_active[MAX_SELECTOR_LEN];
 } ScopeCall;
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupState scenario_state;
 static CupError begin_result;
 static CupError load_result;
@@ -33,6 +38,8 @@ static size_t scope_call_count;
 static int context_end_calls;
 static CupError cup_update_result;
 static int cup_update_calls;
+
+/* Fixture lifecycle and local construction helpers. */
 
 static void reset_scenario(void) {
     size_t i;
@@ -95,6 +102,11 @@ void setUp(void) {
 
 void tearDown(void) {
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
@@ -213,6 +225,11 @@ static void assert_scope(size_t index,
     TEST_ASSERT_EQUAL_STRING(expected_active, scope_calls[index].expected_active);
 }
 
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static void test_global_selector(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(NULL));
     TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
@@ -324,6 +341,8 @@ static void test_scope_outcomes(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_update("compiler"));
     TEST_ASSERT_EQUAL_INT(3, (int)(scope_call_count));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

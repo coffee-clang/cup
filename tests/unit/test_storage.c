@@ -9,10 +9,15 @@ void register_system_posix_tests(void);
 void register_filesystem_tests(void);
 void register_layout_tests(void);
 
+/* Fixture lifecycle and local construction helpers. */
+
 void setUp(void) {
 }
+
 void tearDown(void) {
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

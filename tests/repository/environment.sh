@@ -586,7 +586,9 @@ bash -eu -o pipefail -c '
     [ "$(umask)" = 0022 ] || [ "$(umask)" = 022 ]
     for variable in CFLAGS CPPFLAGS LDFLAGS LIBS CPATH LIBRARY_PATH \
             PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS; do
-        eval "[ -z \${$variable+x} ]"
+        if [[ -v $variable ]]; then
+            exit 1
+        fi
     done
 
     [ "$(dependency_resolve_jobs)" = 4 ]

@@ -2,9 +2,8 @@
 #define CUP_STATE_H
 
 /*
- * Module contract: Bounded installed/active state model and atomic
- * state.txt persistence. The in-memory model uses concrete package
- * identities; the boundary file retains canonical tool@version values.
+ * Bounded installed/active state model and atomic state.txt persistence. Memory uses concrete
+ * package identities; the file stores canonical tool@version values.
  */
 
 #include <stddef.h>

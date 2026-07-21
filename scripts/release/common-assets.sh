@@ -30,7 +30,7 @@ test "$(sed -n 's/^commit=//p' build/release-common/generated/release.txt)" = "$
 cp build/release-common/generated/release.txt dist/common/release.txt
 cp config/packages.cfg dist/common/packages.cfg
 cp config/install.cfg dist/common/install.cfg
-cp THIRD_PARTY_DEPENDENCIES.txt dist/common/THIRD_PARTY_DEPENDENCIES.txt
+cp scripts/dependencies/THIRD_PARTY_LICENSES.txt dist/common/THIRD_PARTY_LICENSES.txt
 cp scripts/install/uninstall-cup.sh dist/common/uninstall.sh
 cp scripts/install/uninstall-cup-windows.ps1 dist/common/uninstall.ps1
 prepare_installer scripts/install/install-cup.sh dist/common/install.sh
@@ -52,8 +52,11 @@ tests_run_attempt=$TESTS_RUN_ATTEMPT
 EOF_PROVENANCE
 
 # The installer checksum file intentionally covers only assets it consumes.
-checksum=$(checksum_command)
-(cd dist/common && $checksum packages.cfg install.cfg install.sh install.ps1 > SHA256SUMS.common)
+{
+    for asset in packages.cfg install.cfg install.sh install.ps1; do
+        printf '%s  %s\n' "$(hash_file "dist/common/$asset")" "$asset"
+    done
+} > dist/common/SHA256SUMS.common
 
 grep -F "CUP_RELEASE_VERSION=\"$VERSION\"" dist/common/install.sh
 grep -F "CUP_RELEASE_TAG=\"$TAG\"" dist/common/install.sh

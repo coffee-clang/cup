@@ -1,5 +1,5 @@
 /*
- * Provides bounded text-copy, formatting, line- reading and exact key/value parsing helpers
+ * Provides bounded text-copy, formatting, line-reading and exact key/value parsing helpers
  * shared by persistent text formats.
  */
 
@@ -37,7 +37,7 @@ char *text_trim(char *text) {
     return text;
 }
 
-/* String splitting. */
+/* Destructive bounded splitting used only after callers own a mutable buffer. */
 CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size_t output_count) {
     CupError err;
     char *cursor;
@@ -96,7 +96,7 @@ CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size
     return CUP_OK;
 }
 
-/* Safe copying and formatting. */
+/* Copy and format helpers always terminate successful outputs and report truncation. */
 CupError text_copy(char *buffer, size_t size, const char *source) {
     size_t length;
 
@@ -154,7 +154,7 @@ CupError text_format(char *buffer, size_t size, const char *format, ...) {
     return CUP_OK;
 }
 
-/* Line reading. */
+/* Line reader distinguishes EOF, overlong records and underlying I/O failure. */
 static int is_allowed_text_byte(unsigned char byte) {
     return byte == '\t' || byte >= 32;
 }
@@ -233,7 +233,7 @@ CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, si
     }
 }
 
-/* Key/value parsing. */
+/* Strict key/value parsing rejects empty sides, embedded whitespace and trailing data. */
 CupError text_parse_key_value(
     char *line, char *key, size_t key_size, char *value, size_t value_size) {
     CupError err;

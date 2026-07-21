@@ -26,6 +26,7 @@ workflow_pushes_main() {
     ' "$1"
 }
 
+# Tests workflow: source ownership, native matrices and candidate gates.
 grep -Fxq 'name: Tests' "$tests_workflow" || fail 'tests.yml must be named Tests'
 grep -Fq 'workflow_dispatch:' "$tests_workflow" || fail 'tests.yml must support workflow_dispatch'
 workflow_pushes_main "$tests_workflow" || fail 'tests.yml push trigger must target main'
@@ -58,6 +59,7 @@ awk '
     END { exit found ? 0 : 1 }
 ' "$tests_workflow" || fail 'Windows release candidate must be built natively on windows-latest'
 
+# Release workflow: publish only a successful Tests run for the same commit.
 grep -Fxq 'name: Release' "$release_workflow" || fail 'release.yml must be named Release'
 grep -Fq 'workflow_dispatch:' "$release_workflow" || fail 'release.yml must be manual'
 for required in 'tests_run_id' 'scripts/release/resolve-tests-run.sh' \
@@ -70,6 +72,7 @@ for forbidden in 'make ' 'scripts/release/build-platform.sh' 'workflow_run:'; do
     ! grep -Fq "$forbidden" "$release_workflow" || fail "release.yml performs work owned by Tests: $forbidden"
 done
 
+# Debug workflow: diagnostics only, without official identity or publication credentials.
 grep -Fxq 'name: Debug artifacts' "$debug_workflow" || fail 'debug.yml must be named Debug artifacts'
 grep -Fq 'workflow_dispatch:' "$debug_workflow" || fail 'debug.yml must support workflow_dispatch'
 workflow_pushes_main "$debug_workflow" || fail 'debug.yml push trigger must target main'
@@ -88,6 +91,7 @@ for forbidden in 'scripts/release/publish.sh' 'gh release' 'CUP_OFFICIAL_BUILD=1
     ! grep -Fq "$forbidden" "$debug_workflow" || fail "debug.yml publishes or bypasses pinning: $forbidden"
 done
 
+# CI entry points must delegate dependency preparation and binary inspection to Make.
 source_posix="$ROOT/scripts/ci/source-posix.sh"
 [ "$(grep -Fc 'make PLATFORM="$platform" deps' "$source_posix")" -eq 2 ] ||
     fail 'POSIX CI must prepare both Linux and macOS through make deps'

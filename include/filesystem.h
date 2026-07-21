@@ -2,9 +2,8 @@
 #define CUP_FILESYSTEM_H
 
 /*
- * Module contract: Portable composite filesystem operations implemented on
- * top of system.h. These helpers may traverse multiple paths but do not own
- * package, state, or transaction policy.
+ * Portable composite filesystem operations built on system.h. These helpers may traverse
+ * multiple paths but do not own package, state, or transaction policy.
  */
 
 #include <stddef.h>

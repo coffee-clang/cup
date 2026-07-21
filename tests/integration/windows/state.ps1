@@ -1,6 +1,9 @@
 # Purpose: Exercises Windows state persistence and invalid-state handling.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 try {

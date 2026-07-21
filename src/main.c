@@ -517,6 +517,7 @@ static int command_uses_interrupt(int argc, char **argv) {
     if (argc < 2 || argv == NULL) {
         return 0;
     }
+    /* Resolve help before touching runtime state so every help form remains read-only. */
     command = argv[1];
     if (strcmp(command, "install") == 0 || strcmp(command, "remove") == 0 ||
         strcmp(command, "update") == 0 || strcmp(command, "default") == 0 ||
@@ -535,6 +536,7 @@ int main(int argc, char *argv[]) {
     CupError result;
     int interrupt_active = 0;
 
+    /* Internal helper mode bypasses the public CLI and runs only the deferred update protocol. */
     if (argc == 4 && strcmp(argv[1], "--internal-cup-update-helper") == 0) {
         return cup_error_to_exit_status(cup_update_helper_run(argv[2], argv[3]));
     }
@@ -559,6 +561,7 @@ int main(int argc, char *argv[]) {
         return CUP_STATUS_SUCCESS;
     }
 
+    /* Report the previous detached update result before enforcing the current journal policy. */
     (void)cup_update_result_report();
 
     if (help != NULL && strcmp(command, "help") != 0 && strcmp(command, "doctor") != 0 &&
@@ -569,6 +572,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Install native interrupt handling only for commands that can perform long mutations. */
     if (command_uses_interrupt(argc, argv)) {
         result = interrupt_enable();
         if (result != CUP_OK) {
@@ -578,6 +582,7 @@ int main(int argc, char *argv[]) {
         interrupt_active = 1;
     }
 
+    /* Public dispatch remains explicit so each parser keeps its typed command contract. */
     if (strcmp(command, "help") == 0) {
         result = parse_help(argv[0], argc, argv);
     } else if (strcmp(command, "search") == 0) {

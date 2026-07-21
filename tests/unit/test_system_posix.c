@@ -22,12 +22,18 @@ void tearDown(void);
 #include <time.h>
 #include <unistd.h>
 
+/* Shared fixture state used by the cases in this suite. */
+
 static char temp_dir[] = "/tmp/cup-system-test-XXXXXX";
 static char original_home[1024];
 static int had_home;
 
+/* Fixture lifecycle and local construction helpers. */
+
 static void build_path(char *out, size_t size, const char *name) {
-    TEST_ASSERT_TRUE(snprintf(out, size, "%s/%s", temp_dir, name) > 0);
+    int written = snprintf(out, size, "%s/%s", temp_dir, name);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void write_text(const char *path, const char *text) {
@@ -43,6 +49,7 @@ static void read_text(const char *path, char *buffer, size_t size) {
 
     TEST_ASSERT_NOT_NULL(file);
     count = fread(buffer, 1, size - 1, file);
+    TEST_ASSERT_FALSE(ferror(file));
     buffer[count] = '\0';
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
@@ -60,6 +67,8 @@ static int wait_for_path(const char *path, int should_exist) {
     }
     return 0;
 }
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_home_process(void) {
     char buffer[1024];
@@ -112,6 +121,7 @@ static void test_path_and_walk(void) {
     int value;
     size_t count = 0;
 
+    /* Directory and regular-file queries report stable path kinds and sizes. */
     build_path(directory, sizeof(directory), "directory");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(directory));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(directory));
@@ -129,6 +139,7 @@ static void test_path_and_walk(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_file_size(file_path, &size));
     TEST_ASSERT_EQUAL_INT(5, size);
 
+    /* Read-only and executable attributes can be toggled and observed. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_read_only(file_path, &value));
     TEST_ASSERT_FALSE(value);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(file_path, 1));
@@ -143,6 +154,7 @@ static void test_path_and_walk(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_executable(file_path, &value));
     TEST_ASSERT_FALSE(value);
 
+    /* Non-recursive listing and recursive walking classify links without following them. */
     TEST_ASSERT_TRUE(snprintf(nested, sizeof(nested), "%s/nested", directory) > 0);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(nested));
     TEST_ASSERT_TRUE(snprintf(link_path, sizeof(link_path), "%s/link", directory) > 0);
@@ -157,6 +169,7 @@ static void test_path_and_walk(void) {
     TEST_ASSERT_EQUAL_size_t(3, count);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, system_list_directory(directory, fail_callback, NULL));
 
+    /* Public argument and path-type errors remain distinct from successful empty traversal. */
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_get_path_kind(NULL, &kind));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_get_path_kind(file_path, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_list_directory(directory, NULL, NULL));
@@ -185,6 +198,7 @@ static void test_copy_move_temp(void) {
     build_path(exclusive, sizeof(exclusive), "exclusive");
     write_text(source, "source-data");
 
+    /* Copies preserve bytes and executable permissions, including self-copy. */
     TEST_ASSERT_EQUAL_INT(0, chmod(source, 0750));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(source, copy));
     {
@@ -195,6 +209,7 @@ static void test_copy_move_temp(void) {
     file = fopen(copy, "rb");
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_EQUAL_size_t(11, fread(buffer, 1, sizeof(buffer), file));
+    TEST_ASSERT_FALSE(ferror(file));
     buffer[11] = '\0';
     TEST_ASSERT_EQUAL_STRING("source-data", buffer);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
@@ -204,11 +219,13 @@ static void test_copy_move_temp(void) {
     file = fopen(source, "rb");
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_EQUAL_size_t(11, fread(buffer, 1, sizeof(buffer), file));
+    TEST_ASSERT_FALSE(ferror(file));
     buffer[11] = '\0';
     TEST_ASSERT_EQUAL_STRING("source-data", buffer);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     file = NULL;
 
+    /* Move and replace operations report the durable commit boundary. */
     state = SYSTEM_COMMIT_NOT_APPLIED;
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_move_path(copy, moved, &state));
     TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
@@ -222,6 +239,7 @@ static void test_copy_move_temp(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_replace_file(replacement, moved, &state));
     TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
 
+    /* Exclusive and temporary creation return caller-owned handles and unique paths. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_create_file_exclusive(exclusive, &file));
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_TRUE(fputs("exclusive", file) >= 0);
@@ -249,6 +267,7 @@ static void test_copy_move_temp(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(unique, &exists));
     TEST_ASSERT_FALSE(exists);
 
+    /* Removal is idempotent for files but rejects non-empty directories. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_sync_parent_directory(moved));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(moved));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(moved));
@@ -298,35 +317,21 @@ static void test_lock_contention(void) {
                           system_lock_acquire(&lock, lock_path, (SystemLockMode)99));
 }
 
-static void test_api_errors(void) {
-    char file_path[1024];
-    char directory[1024];
-    char missing[1024];
-    char destination[1024];
-    char link_path[1024];
-    char tiny[2];
-    SystemCommitState state;
-    SystemLock lock = {0, 0};
-    SystemPathKind kind;
-    long long size;
-    int value;
-    size_t count = 0;
-    FILE *file = NULL;
-
-    build_path(file_path, sizeof(file_path), "contracts-file");
-    build_path(directory, sizeof(directory), "contracts-directory");
-    build_path(missing, sizeof(missing), "contracts-missing");
-    build_path(destination, sizeof(destination), "contracts-destination");
-    build_path(link_path, sizeof(link_path), "contracts-link");
-    write_text(file_path, "data");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(directory));
-    TEST_ASSERT_EQUAL_INT(0, symlink("contracts-file", link_path));
-
+static void assert_directory_contracts(const char *file_path,
+                                       const char *directory,
+                                       const char *missing) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_make_directory(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_make_directory(file_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_directory(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(missing));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_remove_directory(file_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(directory));
+}
+
+static void assert_move_contracts(const char *file_path,
+                                  const char *missing,
+                                  const char *destination) {
+    SystemCommitState state;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_move_path(NULL, destination, &state));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_move_path(file_path, NULL, &state));
@@ -341,7 +346,13 @@ static void test_api_errors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_replace_file(file_path, NULL, &state));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_replace_file(file_path, destination, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_replace_file(missing, destination, &state));
+}
 
+static void assert_copy_remove_contracts(const char *file_path,
+                                         const char *directory,
+                                         const char *missing,
+                                         const char *destination,
+                                         const char *link_path) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_file(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_remove_file(directory));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(link_path));
@@ -351,6 +362,10 @@ static void test_api_errors(void) {
     TEST_ASSERT_EQUAL_INT(0, symlink("contracts-file", link_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_copy_file(link_path, destination));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(link_path));
+}
+
+static void assert_temp_contracts(const char *file_path, char *destination, char *tiny) {
+    FILE *file = NULL;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_sync_parent_directory(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_create_file_exclusive(NULL, &file));
@@ -360,34 +375,42 @@ static void test_api_errors(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        system_create_temp_file(NULL, "x", destination, sizeof(destination), &file));
+        system_create_temp_file(NULL, "x", destination, 1024, &file));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        system_create_temp_file(temp_dir, NULL, destination, sizeof(destination), &file));
+        system_create_temp_file(temp_dir, NULL, destination, 1024, &file));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_create_temp_file(temp_dir, "x", NULL, sizeof(destination), &file));
+                          system_create_temp_file(temp_dir, "x", NULL, 1024, &file));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_file(temp_dir, "x", destination, 0, &file));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        system_create_temp_file(temp_dir, "long-prefix", tiny, sizeof(tiny), &file));
+        system_create_temp_file(temp_dir, "long-prefix", tiny, 2, &file));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TEMPORARY,
-        system_create_temp_file("/missing-parent", "x", destination, sizeof(destination), &file));
+        system_create_temp_file("/missing-parent", "x", destination, 1024, &file));
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        system_create_temp_directory(temp_dir, NULL, destination, sizeof(destination)));
+        system_create_temp_directory(temp_dir, NULL, destination, 1024));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_create_temp_directory(temp_dir, "x", NULL, sizeof(destination)));
+                          system_create_temp_directory(temp_dir, "x", NULL, 1024));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_directory(temp_dir, "x", destination, 0));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TEMPORARY,
-        system_create_temp_directory("/missing-parent", "x", destination, sizeof(destination)));
+        system_create_temp_directory("/missing-parent", "x", destination, 1024));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        system_make_unique_temp_path(NULL, "x", destination, sizeof(destination)));
+        system_make_unique_temp_path(NULL, "x", destination, 1024));
+}
+
+static void assert_path_query_contracts(const char *file_path,
+                                        const char *directory,
+                                        const char *missing,
+                                        const char *link_path) {
+    long long size;
+    int value;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_path_exists(file_path, NULL));
     value = 1;
@@ -417,6 +440,13 @@ static void test_api_errors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(link_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_read_only(NULL, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_executable(NULL, 1));
+}
+
+static void assert_walk_lock_contracts(const char *file_path,
+                                       const char *directory,
+                                       const char *missing) {
+    SystemLock lock = {0, 0};
+    size_t count = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_list_directory(missing, count_callback, &count));
     TEST_ASSERT_EQUAL_size_t(0, count);
@@ -430,6 +460,31 @@ static void test_api_errors(void) {
                           system_lock_acquire(&lock, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           system_lock_acquire(&lock, directory, SYSTEM_LOCK_SHARED));
+}
+
+static void test_api_errors(void) {
+    char file_path[1024];
+    char directory[1024];
+    char missing[1024];
+    char destination[1024];
+    char link_path[1024];
+    char tiny[2];
+    SystemPathKind kind;
+
+    build_path(file_path, sizeof(file_path), "contracts-file");
+    build_path(directory, sizeof(directory), "contracts-directory");
+    build_path(missing, sizeof(missing), "contracts-missing");
+    build_path(destination, sizeof(destination), "contracts-destination");
+    build_path(link_path, sizeof(link_path), "contracts-link");
+    write_text(file_path, "data");
+    TEST_ASSERT_EQUAL_INT(0, symlink("contracts-file", link_path));
+
+    assert_directory_contracts(file_path, directory, missing);
+    assert_move_contracts(file_path, missing, destination);
+    assert_copy_remove_contracts(file_path, directory, missing, destination, link_path);
+    assert_temp_contracts(file_path, destination, tiny);
+    assert_path_query_contracts(file_path, directory, missing, link_path);
+    assert_walk_lock_contracts(file_path, directory, missing);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(file_path));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(directory));
@@ -504,6 +559,8 @@ static void test_uninstall_helper(void) {
     TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
     TEST_ASSERT_NOT_NULL(strstr(contents, "999999"));
 }
+
+/* Suite registration. */
 
 void register_system_posix_tests(void) {
     const char *home = getenv("HOME");

@@ -2,8 +2,8 @@
 #define CUP_CHECKSUM_H
 
 /*
- * Module contract: SHA-256 file hashing and strict SHA256SUMS selection
- * helpers used at runtime integrity boundaries.
+ * SHA-256 file hashing and strict SHA256SUMS selection helpers used at runtime integrity
+ * boundaries.
  */
 
 #include <stddef.h>

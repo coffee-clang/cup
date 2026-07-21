@@ -16,6 +16,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static int layout_failure;
 static CupError kind_result;
 static SystemPathKind binary_kind;
@@ -46,6 +51,12 @@ static int install_policy_matches;
 static int uninstall_matches;
 static CupError host_result;
 static char host_value[MAX_PLATFORM_LEN];
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     layout_failure = 0;
@@ -91,10 +102,13 @@ static CupError write_layout_path(int id, char *buffer, size_t size, const char 
     if (layout_failure == id) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return snprintf(buffer, size, "%s", value) >= 0 && strlen(value) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", value), size);
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
     return write_layout_path(1, buffer, size, "/binary");
@@ -281,9 +295,7 @@ CupError platform_get_host(char *buffer, size_t size) {
     if (host_result != CUP_OK) {
         return host_result;
     }
-    return snprintf(buffer, size, "%s", host_value) >= 0 && strlen(host_value) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", host_value), size);
 }
 
 static void make_assets_regular(void) {
@@ -295,6 +307,11 @@ static void make_assets_regular(void) {
     common_kind = SYSTEM_PATH_REGULAR_FILE;
     platform_kind = SYSTEM_PATH_REGULAR_FILE;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_empty_and_complete(void) {
     CupAssetsInspection inspection;
@@ -322,6 +339,7 @@ static void test_empty_and_complete(void) {
 static void test_bad_assets(void) {
     CupAssetsInspection inspection;
 
+    /* Invalid common and platform checksum schemas invalidate their dependent assets. */
     make_assets_regular();
     common_schema_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
@@ -337,6 +355,7 @@ static void test_bad_assets(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.uninstall);
 
+    /* Executability requirements differ only where Windows uses script-file semantics. */
     reset_scenario();
     make_assets_regular();
     binary_executable = 0;
@@ -365,6 +384,7 @@ static void test_bad_assets(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
 
+    /* Digest and parser failures are reported on the specific installed asset. */
     reset_scenario();
     make_assets_regular();
     binary_matches = 0;
@@ -393,6 +413,7 @@ static void test_bad_assets(void) {
 static void test_inspection_errors(void) {
     CupAssetsInspection inspection;
 
+    /* Path construction and filesystem errors stop inspection immediately. */
     layout_failure = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, cup_assets_inspect(&inspection));
 
@@ -419,6 +440,7 @@ static void test_inspection_errors(void) {
     verify_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_assets_inspect(&inspection));
 
+    /* Installed and development parser errors propagate unless the fallback is optional. */
     reset_scenario();
     make_assets_regular();
     installed_catalog_result = CUP_ERR_TEMPORARY;
@@ -520,6 +542,8 @@ static void test_marker_helpers(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, cup_assets_binary_asset_name(name, 2));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, cup_assets_platform_checksums_name(name, 2));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

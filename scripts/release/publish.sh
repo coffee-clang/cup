@@ -22,7 +22,7 @@ packages.cfg
 install.cfg
 release.txt
 provenance.txt
-THIRD_PARTY_DEPENDENCIES.txt
+THIRD_PARTY_LICENSES.txt
 install.sh
 install.ps1
 uninstall.sh
@@ -53,41 +53,11 @@ test "$(sed -n 's/^version=//p' "$dist/release.txt")" = "$VERSION"
 test "$(sed -n 's/^commit=//p' "$dist/release.txt")" = "$SHA"
 test "$(wc -l < "$dist/release.txt" | tr -d '[:space:]')" = 3
 
-awk -F= \
-    -v version="$VERSION" \
-    -v sha="$SHA" \
-    -v source_repository="$SOURCE_REPOSITORY" \
-    -v tests_run_id="$TESTS_RUN_ID" \
-    -v tests_run_attempt="$TESTS_RUN_ATTEMPT" '
-    function valid_repository(value) {
-        return value ~ /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
-    }
-    function valid_number(value) {
-        return value ~ /^[1-9][0-9]*$/
-    }
-    $1 == "format" && NF == 2 && $2 == "1" { seen_format++; next }
-    $1 == "version" && NF == 2 && $2 == version { seen_version++; next }
-    $1 == "source_repository" && NF == 2 && valid_repository($2) &&
-            $2 == source_repository {
-        seen_repository++
-        next
-    }
-    $1 == "source_commit" && NF == 2 && $2 == sha { seen_commit++; next }
-    $1 == "tests_run_id" && NF == 2 && valid_number($2) &&
-            $2 == tests_run_id { seen_run_id++; next }
-    $1 == "tests_run_attempt" && NF == 2 && valid_number($2) &&
-            $2 == tests_run_attempt {
-        seen_run_attempt++
-        next
-    }
-    { invalid=1 }
-    END {
-        if (invalid || NR != 6 || seen_format != 1 || seen_version != 1 ||
-                seen_repository != 1 || seen_commit != 1 ||
-                seen_run_id != 1 || seen_run_attempt != 1)
-            exit 1
-    }
-' "$dist/provenance.txt" || fail 'candidate provenance is invalid'
+validate_provenance_file \
+    "$dist/provenance.txt" \
+    "$SOURCE_REPOSITORY" \
+    "$TESTS_RUN_ID" \
+    "$TESTS_RUN_ATTEMPT"
 
 awk -F= -v version="$VERSION" -v tag="$TAG" -v sha="$SHA" '
     $1 == "VERSION" && NF == 2 && $2 == version { seen_version++; next }
@@ -175,11 +145,15 @@ elif ! grep -Eiq 'release not found|HTTP 404|status code 404' \
 fi
 rm -f "$release_query_error"
 
-# Exact public asset set for remote verification.
+# Compare the exact remote asset set and every downloaded byte with the candidate.
 expected_assets=$(printf '%s\n' $public_assets | LC_ALL=C sort)
-# Download and byte-compare the remote release before acceptance.
-# Compare the remote asset set and every downloaded byte with the candidate.
-verify_remote_assets() {
+verify_remote_assets() (
+    download_dir=
+    cleanup_remote_assets() {
+        [ -z "$download_dir" ] || rm -rf "$download_dir"
+    }
+    trap cleanup_remote_assets EXIT HUP INT TERM
+
     actual_assets=$(gh release view "$TAG" --repo "$GH_REPO" \
         --json assets --jq '.assets[].name' | LC_ALL=C sort)
     if [ "$actual_assets" != "$expected_assets" ]; then
@@ -207,8 +181,7 @@ verify_remote_assets() {
             fail "release asset differs from the verified candidate: $asset"
         fi
     done
-    rm -rf "$download_dir"
-}
+)
 
 # Resume or create a draft; publication occurs only after byte verification.
 if [ "$release_exists" -eq 1 ] && [ "$release_is_draft" = false ]; then

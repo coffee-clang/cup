@@ -10,14 +10,18 @@ family=${FAMILY:-linux}
 host_system=$(uname -s)
 host_machine=$(uname -m)
 
+fail() {
+    printf 'source tests: %s\n' "$*" >&2
+    exit 1
+}
+
 case "$family:$platform:$host_system:$host_machine" in
     linux:linux-x64:Linux:x86_64|linux:linux-x64:Linux:amd64) ;;
     linux:linux-arm64:Linux:aarch64|linux:linux-arm64:Linux:arm64) ;;
     macos:macos-x64:Darwin:x86_64|macos:macos-x64:Darwin:amd64) ;;
     macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
     *)
-        echo "PLATFORM '$platform' and FAMILY '$family' do not match host $host_system/$host_machine." >&2
-        exit 1
+        fail "PLATFORM '$platform' and FAMILY '$family' do not match host $host_system/$host_machine"
         ;;
 esac
 
@@ -35,10 +39,7 @@ case "$family" in
         done
         make PLATFORM="$platform" deps
         ;;
-    *)
-        echo "Unsupported source-test family: $family" >&2
-        exit 1
-        ;;
+    *) fail "unsupported source-test family: $family" ;;
 esac
 
 PLATFORM="$platform" CUP_TEST_PLATFORM="$platform" make test

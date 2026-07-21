@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Key parsing. */
+/* Parse indexed state keys without accepting sparse, duplicated or unknown record families. */
 typedef enum {
     STATE_RECORD_UNKNOWN,
     STATE_RECORD_INSTALLED,
@@ -62,7 +62,7 @@ static CupError parse_state_key(const char *key,
     return text_split_exact(body, '.', parts, 3) == CUP_OK ? CUP_OK : CUP_ERR_STATE_LOAD;
 }
 
-/* Identity helpers. */
+/* Compare and copy complete concrete identities; symbolic stable is never valid state. */
 static int identity_matches_scope(const PackageIdentity *identity, const PackageScope *scope) {
     return identity != NULL && scope != NULL &&
            strcmp(identity->component, scope->component) == 0 &&
@@ -86,7 +86,8 @@ static CupError identity_scope(const PackageIdentity *identity, PackageScope *sc
         scope, identity->component, identity->host_platform, identity->target_platform);
 }
 
-/* Complete in-memory model validation. */
+/* Validate installed uniqueness and require every active identity to reference an installed
+ * package. */
 CupError state_validate(const CupState *state) {
     size_t i;
     size_t j;
@@ -198,7 +199,7 @@ CupError state_validate_current_host(const CupState *state, const char *current_
     return CUP_ERR_INCONSISTENT_STATE;
 }
 
-/* Strict state.txt parsing. */
+/* Parse format=1 atomically into a candidate model; malformed files never leak partial state. */
 static CupError parse_state_line(CupState *state, char *line) {
     PackageIdentity identity;
     PackageScope scope;
@@ -214,6 +215,7 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_INVALID_INPUT;
     }
 
+    /* Split the physical record before interpreting its scoped key. */
     err = text_parse_key_value(line, key, sizeof(key), selector, sizeof(selector));
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
@@ -243,12 +245,14 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_STATE_LOAD;
     }
 
+    /* Both installed and default records must resolve to one concrete identity. */
     err = package_identity_from_selector(
         &identity, component, host_platform, target_platform, selector);
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
 
+    /* Installed records extend the package set; defaults are unique per scope. */
     if (type == STATE_RECORD_INSTALLED) {
         err = state_add_installed(state, &identity);
         if (err == CUP_ERR_ALREADY_INSTALLED) {
@@ -281,7 +285,7 @@ static CupError parse_state_line(CupState *state, char *line) {
     return err == CUP_OK ? CUP_OK : CUP_ERR_STATE_LOAD;
 }
 
-/* Persistence. */
+/* Serialize a canonical ordering so state bytes do not depend on command history. */
 CupError state_load(CupState *state, StateFileStatus *status) {
     CupError err;
     FILE *file;
@@ -356,14 +360,18 @@ static int compare_identity_pointers(const void *left, const void *right) {
     int result;
 
     result = strcmp(a->component, b->component);
-    if (result == 0)
+    if (result == 0) {
         result = strcmp(a->host_platform, b->host_platform);
-    if (result == 0)
+    }
+    if (result == 0) {
         result = strcmp(a->target_platform, b->target_platform);
-    if (result == 0)
+    }
+    if (result == 0) {
         result = strcmp(a->tool, b->tool);
-    if (result == 0)
+    }
+    if (result == 0) {
         result = strcmp(a->version, b->version);
+    }
     return result;
 }
 
@@ -384,6 +392,7 @@ CupError state_save(const CupState *state) {
         return CUP_ERR_INVALID_INPUT;
     }
 
+    /* Validate first, then create the temporary file in the managed root for atomic replacement. */
     if (state_validate(state) != CUP_OK || layout_get_root(root, sizeof(root)) != CUP_OK ||
         layout_get_state_path(state_path, sizeof(state_path)) != CUP_OK ||
         system_create_temp_file(root, "state", tmp_path, sizeof(tmp_path), &file) != CUP_OK) {
@@ -396,6 +405,7 @@ CupError state_save(const CupState *state) {
         return CUP_ERR_STATE_SAVE;
     }
 
+    /* Sort pointer views rather than mutating the caller's in-memory ordering. */
     for (i = 0; i < state->installed_count; ++i) {
         installed[i] = &state->installed[i];
     }
@@ -405,6 +415,7 @@ CupError state_save(const CupState *state) {
     qsort(installed, state->installed_count, sizeof(installed[0]), compare_identity_pointers);
     qsort(active, state->active_count, sizeof(active[0]), compare_identity_pointers);
 
+    /* Serialize concrete installed identities before the active/default records. */
     for (i = 0; i < state->installed_count; ++i) {
         const PackageIdentity *installed_identity = installed[i];
         char selector[MAX_SELECTOR_LEN];
@@ -453,6 +464,7 @@ CupError state_save(const CupState *state) {
         }
     }
 
+    /* Sync the complete temporary state before crossing the atomic commit point. */
     err = system_sync_file(file);
     write_status = fclose(file);
     if (err != CUP_OK || write_status != 0) {
@@ -478,7 +490,7 @@ CupError state_save(const CupState *state) {
     return CUP_OK;
 }
 
-/* Installed identities. */
+/* Bounded installed-identity lookup and mutation. */
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
     size_t i;
 
@@ -541,7 +553,7 @@ CupError state_remove_installed(CupState *state, const PackageIdentity *identity
     return CUP_OK;
 }
 
-/* Default identities. */
+/* One active/default identity is allowed for each component, host and target scope. */
 int state_find_active(const CupState *state, const PackageScope *scope) {
     PackageScope validated;
     size_t i;

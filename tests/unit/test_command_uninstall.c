@@ -16,6 +16,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char temp_dir[] = "/tmp/cup-uninstall-test-XXXXXX";
 static int root_is_directory;
 static CupError inspect_root_result;
@@ -30,6 +35,12 @@ static CupError helper_result;
 static int lock_release_calls;
 static int remove_file_calls;
 static int helper_calls;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     root_is_directory = 1;
@@ -54,8 +65,13 @@ void setUp(void) {
 void tearDown(void) {
 }
 
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static CupError test_path(char *buffer, size_t size, const char *name) {
-    return snprintf(buffer, size, "%s/%s", temp_dir, name) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s/%s", temp_dir, name), size);
 }
 
 static void provide_input(const char *text) {
@@ -69,6 +85,11 @@ static void provide_input(const char *text) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     TEST_ASSERT_NOT_NULL(freopen(path, "r", stdin));
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError layout_get_root(char *buffer, size_t size) {
     return test_path(buffer, size, "root");
@@ -235,6 +256,8 @@ static void test_marker_cleanup(void) {
     TEST_ASSERT_EQUAL_INT(1, helper_calls);
     TEST_ASSERT_EQUAL_INT(1, remove_file_calls);
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

@@ -2,9 +2,8 @@
 #define CUP_PACKAGE_ARCHIVE_H
 
 /*
- * Module contract: Closed package-archive formats and bounded structural
- * preflight. CUP accepts only tar.xz, tar.gz and zip, and validates the real
- * libarchive format/filter stack against the catalog selection.
+ * Closed package-archive formats and bounded structural preflight. CUP accepts only tar.xz,
+ * tar.gz, and zip and validates libarchive's detected format/filter stack.
  */
 
 #include "error.h"

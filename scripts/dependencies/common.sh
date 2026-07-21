@@ -81,8 +81,11 @@ stream_sha256() {
 }
 
 verify_source_checksum() {
-    package="$1"
-    file="$2"
+    local package="$1"
+    local file="$2"
+    local expected
+    local actual
+
     expected="$(sha256_for_package "$package")"
     actual="$(file_sha256 "$file")"
     if [ "$actual" != "$expected" ]; then
@@ -196,7 +199,13 @@ dependency_id() {
     shift 4
 
     [ -n "$platform" ] && [ -n "$toolchain" ] || return 1
-    case "$use_openssl" in 0|1) ;; *) return 1 ;; esac
+    case "$use_openssl" in
+        0 | 1)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
     recipe_digest=$(dependency_recipe_digest "$recipe_root" "$@") || return 1
     dependency_canonical_config "$platform" "$toolchain" \
         "$use_openssl" "$recipe_digest" | stream_sha256
@@ -244,6 +253,23 @@ first_command_line() {
     "$@" 2>/dev/null | sed -n '1p' | tr -d '\r'
 }
 
+# Some platform tools, notably Apple ar and ranlib, do not expose a GNU-style
+# --version option. Prefer a real version string, then fall back to the resolved
+# executable path so the dependency identity remains stable and non-empty.
+tool_identity_line() {
+    local tool="$1"
+    local value
+
+    value=$(first_command_line "$tool" --version) || value=
+    if [ -z "$value" ]; then
+        value=$(first_command_line "$tool" -V) || value=
+    fi
+    if [ -z "$value" ]; then
+        value=$(command -v "$tool") || return 1
+    fi
+    printf '%s\n' "$value"
+}
+
 dependency_posix_toolchain_identity() {
     local compiler="$1"
     local archiver="$2"
@@ -257,8 +283,8 @@ dependency_posix_toolchain_identity() {
 
     compiler_target=$(first_command_line "$compiler" -dumpmachine) || return 1
     compiler_version=$(first_command_line "$compiler" --version) || return 1
-    archiver_version=$(first_command_line "$archiver" --version) || return 1
-    ranlib_version=$(first_command_line "$ranlib_tool" --version) || return 1
+    archiver_version=$(tool_identity_line "$archiver") || return 1
+    ranlib_version=$(tool_identity_line "$ranlib_tool") || return 1
     [ -n "$compiler_target" ] && [ -n "$compiler_version" ] &&
         [ -n "$archiver_version" ] && [ -n "$ranlib_version" ] || return 1
     printf 'cc=%s|target=%s|version=%s|ar=%s|version=%s|' \
@@ -285,8 +311,8 @@ dependency_windows_toolchain_identity() {
 
     compiler_target=$(first_command_line "$compiler" -dumpmachine) || return 1
     compiler_version=$(first_command_line "$compiler" --version) || return 1
-    archiver_version=$(first_command_line "$archiver" --version) || return 1
-    ranlib_version=$(first_command_line "$ranlib_tool" --version) || return 1
+    archiver_version=$(tool_identity_line "$archiver") || return 1
+    ranlib_version=$(tool_identity_line "$ranlib_tool") || return 1
     strip_version=$(first_command_line "$strip_tool" --version) || return 1
     resource_version=$(first_command_line "$resource_compiler" --version) || return 1
     [ -n "$compiler_target" ] && [ -n "$compiler_version" ] &&
@@ -302,8 +328,10 @@ dependency_windows_toolchain_identity() {
 }
 
 dependency_library_exists() {
-    prefix="$1"
-    name="$2"
+    local prefix="$1"
+    local name="$2"
+    local directory
+
     for directory in "$prefix/lib" "$prefix/lib64"; do
         [ -f "$directory/lib$name.a" ] && return 0
         [ -f "$directory/lib$name.dll.a" ] && return 0
@@ -312,14 +340,14 @@ dependency_library_exists() {
 }
 
 application_dependency_prefix_complete() {
-    prefix="$1"
+    local prefix="$1"
     [ -f "$prefix/include/argtable3.h" ] &&
         [ -f "$prefix/include/uthash.h" ] &&
         dependency_library_exists "$prefix" argtable3
 }
 
 test_dependency_prefix_complete() {
-    prefix="$1"
+    local prefix="$1"
     application_dependency_prefix_complete "$prefix" &&
         [ -f "$prefix/include/unity.h" ] &&
         [ -f "$prefix/include/unity_internals.h" ] &&
@@ -341,9 +369,25 @@ dependency_link_metadata_valid() {
         PKG_CONFIG_SYSROOT_DIR="" \
         pkg-config --static --libs libarchive 2>/dev/null) || return 1
     [ -n "$curl_flags" ] && [ -n "$archive_flags" ] || return 1
-    case " $archive_flags " in *" -lacl "*) return 1 ;; esac
-    case "$curl_flags" in *"$expected_prefix"*) ;; *) return 1 ;; esac
-    case "$archive_flags" in *"$expected_prefix"*) ;; *) return 1 ;; esac
+    case " $archive_flags " in
+        *" -lacl "*)
+            return 1
+            ;;
+    esac
+    case "$curl_flags" in
+        *"$expected_prefix"*)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    case "$archive_flags" in
+        *"$expected_prefix"*)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
     if [ "$prefix" != "$expected_prefix" ]; then
         case "$curl_flags $archive_flags" in
             *"$prefix"*) return 1 ;;
@@ -352,9 +396,9 @@ dependency_link_metadata_valid() {
 }
 
 dependency_prefix_complete() {
-    prefix="$1"
-    use_openssl="${2:-1}"
-    metadata_prefix="${3:-$prefix}"
+    local prefix="$1"
+    local use_openssl="${2:-1}"
+    local metadata_prefix="${3:-$prefix}"
 
     test_dependency_prefix_complete "$prefix" &&
         [ -x "$prefix/bin/curl-config" ] &&
@@ -379,10 +423,10 @@ dependency_prefix_complete() {
 }
 
 dependency_prefix_matches() {
-    prefix="$1"
-    metadata="$2"
-    use_openssl="${3:-1}"
-    config="$prefix/.cup-deps-config"
+    local prefix="$1"
+    local metadata="$2"
+    local use_openssl="${3:-1}"
+    local config="$prefix/.cup-deps-config"
 
     dependency_metadata_valid "$metadata" &&
         [ -f "$config" ] && [ ! -e "$prefix/.cup-deps-building" ] &&
@@ -391,9 +435,12 @@ dependency_prefix_matches() {
 }
 
 prepare_dependency_prefix() {
-    final_prefix="$1"
-    metadata="$2"
-    use_openssl="${3:-1}"
+    local final_prefix="$1"
+    local metadata="$2"
+    local use_openssl="${3:-1}"
+    local parent
+    local name
+
     parent="$(dirname "$final_prefix")"
     name="$(basename "$final_prefix")"
 
@@ -479,11 +526,14 @@ normalize_dependency_metadata() {
 }
 
 finish_dependency_prefix() {
-    build_prefix="$1"
-    final_prefix="$CUP_DEPS_FINAL_PREFIX"
+    local build_prefix="$1"
+    local final_prefix="$CUP_DEPS_FINAL_PREFIX"
+    local parent
+    local name
+    local previous_prefix=
+
     parent="$(dirname "$final_prefix")"
     name="$(basename "$final_prefix")"
-    previous_prefix=
 
     [ "$build_prefix" = "$CUP_DEPS_BUILD_PREFIX" ] || {
         echo "Error: dependency build prefix does not match the prepared transaction." >&2
@@ -525,11 +575,15 @@ finish_dependency_prefix() {
 
 # Verified source download and extraction.
 download_source() {
-    package="$1"
-    output="$2"
+    local package="$1"
+    local output="$2"
+    local url
+    local min_bytes
+    local size=
+    local tmp_output
+
     url="$(source_url_for_package "$package")"
     min_bytes="$(minimum_bytes_for_package "$package")"
-    size=""
 
     if [ -f "$output" ]; then
         size="$(wc -c < "$output" | tr -d '[:space:]')"
@@ -574,8 +628,8 @@ download_source() {
 }
 
 extract_archive() {
-    archive="$1"
-    destination="$2"
+    local archive="$1"
+    local destination="$2"
 
     rm -rf "$destination"
     mkdir -p "$destination"
@@ -597,15 +651,18 @@ extract_archive() {
 
 # Lightweight direct dependencies shared by platform bootstraps.
 build_argtable3_uthash_unity() {
-    prefix="$1"
-    src_dir="$2"
-    build_dir="$3"
-    compiler="$4"
-    archiver="$5"
-    ranlib_tool="$6"
-    archive=""
-    source=""
-    object_dir="$build_dir/cup-small-deps"
+    local prefix="$1"
+    local src_dir="$2"
+    local build_dir="$3"
+    local compiler="$4"
+    local archiver="$5"
+    local ranlib_tool="$6"
+    local archive=
+    local source=
+    local object_dir="$build_dir/cup-small-deps"
+    local file
+    local object
+    local uthash_header
 
     mkdir -p "$prefix/include" "$prefix/lib" "$object_dir"
 
@@ -623,10 +680,20 @@ build_argtable3_uthash_unity() {
     cp "$source/src/argtable3.h" "$prefix/include/argtable3.h"
 
     archive="$src_dir/uthash-${UTHASH_VERSION}.tar.gz"
-    source="$build_dir/uthash-${UTHASH_VERSION}"
     download_source uthash "$archive"
-    extract_archive "$archive" "$source"
-    cp "$source/src/uthash.h" "$prefix/include/uthash.h"
+    uthash_header="$prefix/include/uthash.h.tmp.$$"
+    if ! tar -xOzf "$archive" \
+        "uthash-${UTHASH_VERSION}/src/uthash.h" > "$uthash_header"; then
+        rm -f "$uthash_header"
+        echo "Error: could not extract uthash.h from $(basename "$archive")." >&2
+        return 1
+    fi
+    [ -s "$uthash_header" ] || {
+        rm -f "$uthash_header"
+        echo "Error: extracted uthash.h is empty." >&2
+        return 1
+    }
+    mv "$uthash_header" "$prefix/include/uthash.h"
 
     archive="$src_dir/unity-${UNITY_VERSION}.tar.gz"
     source="$build_dir/unity-${UNITY_VERSION}"

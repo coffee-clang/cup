@@ -3,6 +3,7 @@
 # Purpose: Resolves the native source-test platform and validates the explicit
 # dependency prefix. Test runners never bootstrap dependencies implicitly.
 
+# Map the native kernel and architecture to CUP's closed platform identifiers.
 cup_test_detect_platform() {
     _cup_test_os=$(uname -s) || return 1
     _cup_test_arch=$(uname -m) || return 1
@@ -33,6 +34,7 @@ cup_test_detect_platform() {
     printf '%s-%s\n' "$_cup_test_os" "$_cup_test_arch"
 }
 
+# Resolve the explicit pinned dependency prefix used by all test runners.
 cup_test_prepare_environment() {
     _cup_test_platform=${CUP_TEST_PLATFORM:-}
 

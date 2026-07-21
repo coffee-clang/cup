@@ -75,6 +75,7 @@ CupError command_uninstall(int assume_yes) {
     int root_is_directory;
     int marker_created = 0;
 
+    /* Refuse to schedule removal unless the managed root still exists as a directory. */
     err = layout_get_root(root_path, sizeof(root_path));
     if (err != CUP_OK) {
         return err;
@@ -89,6 +90,7 @@ CupError command_uninstall(int assume_yes) {
         return CUP_ERR_FILESYSTEM;
     }
 
+    /* Serialize the marker and helper handoff with every other persistent operation. */
     err = layout_get_lock_path(lock_path, sizeof(lock_path));
     if (err != CUP_OK) {
         return err;
@@ -110,6 +112,7 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
 
+    /* Resolve a verified helper before asking for confirmation or creating a marker. */
     err = cup_assets_find_uninstall(script_path, sizeof(script_path), &source);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: no valid installed or development uninstall script was found.\n");
@@ -123,6 +126,7 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
 
+    /* The persistent marker blocks new commands until the deferred helper takes ownership. */
     parent_pid = system_get_process_id();
     err = create_uninstall_marker(marker_path, sizeof(marker_path), parent_pid);
     if (err != CUP_OK) {
@@ -137,6 +141,7 @@ CupError command_uninstall(int assume_yes) {
     }
 
 done:
+    /* A failed handoff leaves CUP installed, so remove only the marker created by this call. */
     if (marker_created) {
         system_remove_file(marker_path);
     }

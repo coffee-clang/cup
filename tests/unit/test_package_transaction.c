@@ -23,6 +23,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char root[MAX_PATH_LEN];
 static CupError path_exists_result;
 static CupError replace_result;
@@ -38,8 +43,16 @@ static int clear_calls;
 static int backup_calls;
 static int remove_tree_calls;
 
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
+
 static void join_test_path(char *buffer, size_t size, const char *left, const char *right) {
-    TEST_ASSERT_TRUE(snprintf(buffer, size, "%s/%s", left, right) > 0);
+    int written = snprintf(buffer, size, "%s/%s", left, right);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void remove_tree_real(const char *path) {
@@ -130,6 +143,11 @@ void tearDown(void) {
     remove_tree_real(root);
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
 }
@@ -143,7 +161,7 @@ CupError layout_build_staging_prefix(char *buffer,
                                      const char *operation,
                                      const PackageIdentity *package) {
     (void)package;
-    return snprintf(buffer, size, "%s-pkg", operation) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s-pkg", operation), size);
 }
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *package) {
@@ -183,16 +201,23 @@ CupError layout_get_common_checksums_path(char *buffer, size_t size) {
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
     int descriptor;
+    int written;
 
-    if (snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix) < 0) {
-        return CUP_ERR_TEMPORARY;
+    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
+    if (written < 0 || (size_t)written >= path_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
     descriptor = mkstemp(path);
     if (descriptor < 0) {
         return CUP_ERR_TEMPORARY;
     }
     *file = fdopen(descriptor, "w+b");
-    return *file == NULL ? CUP_ERR_TEMPORARY : CUP_OK;
+    if (*file == NULL) {
+        close(descriptor);
+        unlink(path);
+        return CUP_ERR_TEMPORARY;
+    }
+    return CUP_OK;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -315,7 +340,7 @@ CupError package_selector_format_parts(char *buffer,
                                        size_t size,
                                        const char *tool,
                                        const char *release) {
-    return snprintf(buffer, size, "%s@%s", tool, release) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s@%s", tool, release), size);
 }
 
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
@@ -361,6 +386,11 @@ static void set_installed(CupState *state) {
     strcpy(entry->target_platform, "linux-x64");
     strcpy(entry->version, "22.1.5");
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_init_and_names(void) {
     PackageTransaction transaction;
@@ -629,6 +659,8 @@ static void test_recover_failures(void) {
     move_state = SYSTEM_COMMIT_APPLIED;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_transaction_recover(&transaction, &state));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

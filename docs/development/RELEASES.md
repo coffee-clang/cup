@@ -182,7 +182,7 @@ uninstall.sh
 uninstall.ps1
 release.txt
 provenance.txt
-THIRD_PARTY_DEPENDENCIES.txt
+THIRD_PARTY_LICENSES.txt
 SHA256SUMS.common
 SHA256SUMS.linux-x64
 SHA256SUMS.linux-arm64
@@ -191,10 +191,10 @@ SHA256SUMS.macos-arm64
 SHA256SUMS.windows-x64
 ```
 
-`THIRD_PARTY_DEPENDENCIES.txt` records the exact pinned dependency versions, source
-archives and license texts used to construct CUP. The package catalog points to
-component archives published by `cup-components`; those tool packages are not
-embedded in the `cup` release.
+`THIRD_PARTY_LICENSES.txt` publishes the notices and license texts maintained
+beside the dependency source lock. The package catalog points to component
+archives published by `cup-components`; those tool packages are not embedded in
+the `cup` release.
 
 ## Candidate validation
 
@@ -226,9 +226,10 @@ inputs but are never uploaded as public assets.
 Tests runs use a ref-specific concurrency group and may cancel an older run for
 the same ref. Release publication uses one non-cancelling `cup-release` group,
 so only one manual publication mutates the public release state at a time.
-External GitHub Actions are pinned to immutable commit SHAs. The repository
-does not use Dependabot; Action revisions and pinned C dependency versions are
-updated deliberately and reviewed as ordinary source changes.
+External GitHub Actions use explicit major-version tags such as `@v6` and
+`@v7`. The repository does not use Dependabot; Action major versions and pinned
+C dependency versions are updated deliberately and reviewed as ordinary source
+changes.
 
 ## CUP-update relationship
 

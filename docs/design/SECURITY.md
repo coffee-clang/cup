@@ -248,10 +248,10 @@ A resumed draft is accepted only when it belongs to the expected tag/commit;
 unexpected or partial assets are replaced and the final remote set is compared
 with the verified candidate before publication.
 
-`THIRD_PARTY_DEPENDENCIES.txt` accompanies the release with the exact dependency
-versions, source locations and license texts used by the pinned build. It is a
-disclosure artifact; integrity still comes from the tested candidate, published
-checksums and exact remote byte comparison.
+`THIRD_PARTY_LICENSES.txt` accompanies the release with the notices and license
+texts for the pinned build. The copy maintained beside the dependency source
+lock also identifies the corresponding archives; integrity still comes from the
+tested candidate, published checksums and exact remote byte comparison.
 
 See [RELEASES](../development/RELEASES.md).
 
@@ -279,16 +279,9 @@ extension.
 
 ## Implementation and verification
 
-The main integrity boundaries are implemented by `sha256.c`, `checksum.c`,
-`download.c` and `package_cache.c`, `cup_assets.c`, `package_archive.c`, `package_extract.c`, `path.c` and
-`package.c`. Release-side validation is intentionally separate and remains in
-`scripts/release/`, because it protects the candidate before publication rather
-than replacing runtime checks.
-
-Focused tests cover digest calculation, strict checksum selection, transfer
-failure paths, CUP assets verification and archive preflight. Integration tests
-exercise malicious archives and release metadata, while repository tests verify
-CA generation and publication contracts. See [TESTING](../development/TESTING.md).
+Security-boundary ownership is listed in [ARCHITECTURE](ARCHITECTURE.md).
+Runtime, integration and release-contract verification are described in
+[TESTING](../development/TESTING.md).
 
 ## Related documents
 

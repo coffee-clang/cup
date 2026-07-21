@@ -1,10 +1,7 @@
 #ifndef CUP_SHA256_H
 #define CUP_SHA256_H
 
-/*
- * Module contract: Incremental in-tree SHA-256 primitive. File handling and
- * SHA256SUMS parsing belong to checksum.h.
- */
+/* Incremental in-tree SHA-256 primitive; file and SHA256SUMS handling belong to checksum.h. */
 
 #include <stddef.h>
 #include <stdint.h>

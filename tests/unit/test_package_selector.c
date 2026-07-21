@@ -13,8 +13,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Fixture lifecycle and local construction helpers. */
+
 void setUp(void) {
 }
+
 void tearDown(void) {
 }
 
@@ -28,6 +31,8 @@ static FILE *open_bytes(const void *data, size_t size) {
     rewind(file);
     return file;
 }
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_text_basics(void) {
     char left[] = "  cup\t ";
@@ -76,9 +81,11 @@ static void test_split_values(void) {
     char component[32];
     char host[32];
     char target[32];
-    TextBuffer parts[3] = {{.data = component, .capacity = sizeof(component)},
-                           {.data = host, .capacity = sizeof(host)},
-                           {.data = target, .capacity = sizeof(target)}};
+    TextBuffer parts[3] = {
+        {.data = component, .capacity = sizeof(component)},
+        {.data = host, .capacity = sizeof(host)},
+        {.data = target, .capacity = sizeof(target)},
+    };
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_split_exact(input, '.', parts, 3));
     TEST_ASSERT_EQUAL_STRING("compiler", component);
@@ -101,8 +108,10 @@ static void test_split_values(void) {
         char small[] = "long.value";
         char first[4];
         char second[8];
-        TextBuffer small_parts[2] = {{.data = first, .capacity = sizeof(first)},
-                                     {.data = second, .capacity = sizeof(second)}};
+        TextBuffer small_parts[2] = {
+            {.data = first, .capacity = sizeof(first)},
+            {.data = second, .capacity = sizeof(second)},
+        };
         TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
                               text_split_exact(small, '.', small_parts, 2));
     }
@@ -112,8 +121,10 @@ static void test_split_guards(void) {
     char input[] = "a.b";
     char first[8];
     char second[8];
-    TextBuffer parts[2] = {{.data = first, .capacity = sizeof(first)},
-                           {.data = second, .capacity = sizeof(second)}};
+    TextBuffer parts[2] = {
+        {.data = first, .capacity = sizeof(first)},
+        {.data = second, .capacity = sizeof(second)},
+    };
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(NULL, '.', parts, 2));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact("", '.', parts, 2));
@@ -208,6 +219,7 @@ static void test_line_errors(void) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
+/* Key/value parsing preserves the selector grammar and destination bounds. */
 static void test_key_value(void) {
     char line[] = "  key.name = value text  ";
     char key[16];
@@ -259,6 +271,7 @@ static void test_key_value(void) {
     }
 }
 
+/* Symbolic and concrete values share one normalized selector representation. */
 static void test_selector_values(void) {
     char tool[32];
     char release[32];
@@ -450,6 +463,8 @@ static void test_path_building(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_join(path, sizeof(path), "/tmp", NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, path_join(path, 8, "/tmp/cup", "cache"));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

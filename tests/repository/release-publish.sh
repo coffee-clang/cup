@@ -19,7 +19,7 @@ MOCK_STATE=$TMP_ROOT/state
 mkdir -p "$DIST" "$MOCK_BIN" "$MOCK_STATE"
 
 public_assets=(
-    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_DEPENDENCIES.txt
+    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_LICENSES.txt
     install.sh install.ps1 uninstall.sh uninstall.ps1
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64
     cup-windows-x64.exe SHA256SUMS.common SHA256SUMS.linux-x64
@@ -39,7 +39,7 @@ source_commit=$SHA
 tests_run_id=41
 tests_run_attempt=2
 EOF_PROVENANCE
-printf 'third-party dependencies\n' > "$DIST/THIRD_PARTY_DEPENDENCIES.txt"
+printf 'third-party licenses\n' > "$DIST/THIRD_PARTY_LICENSES.txt"
 printf 'CUP_RELEASE_VERSION="%s"\nCUP_RELEASE_TAG="%s"\nCUP_RELEASE_COMMIT="%s"\n' \
     "$VERSION" "$TAG" "$SHA" > "$DIST/install.sh"
 printf '\$ReleaseVersion = "%s"\n\$ReleaseTag = "%s"\n\$ReleaseCommit = "%s"\n' \

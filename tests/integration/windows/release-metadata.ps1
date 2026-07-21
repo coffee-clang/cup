@@ -1,8 +1,12 @@
 # Purpose: Exercises Windows installer parsing and validation of generated release metadata.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
+# Extract the generated installer payload without executing it against the real profile.
 if ([string]::IsNullOrWhiteSpace($CupExecutablePath)) {
     Fail-Test "cup executable path is empty"
 }
@@ -14,8 +18,12 @@ $entryPoint = $installer.LastIndexOf("`ntry {")
 if ($entryPoint -lt 0) {
     Fail-Test "failed to isolate Windows installer functions"
 }
+# The source is the checked-out installer itself. Evaluate only its declarations,
+# stopping before the top-level entry point, so these tests exercise the exact
+# release parser without installing into the real profile.
 Invoke-Expression $installer.Substring(0, $entryPoint)
 
+# Exercise release metadata validation with isolated generated fixtures.
 $root = New-IsolatedTestRoot -Name "release metadata"
 try {
     function Write-Metadata([string]$Name, [string[]]$Lines) {
@@ -51,33 +59,51 @@ try {
     Assert-MetadataRejected (Write-Metadata "bad-commit.txt" @(
         "format=1", "version=0.2.0", "commit=not-a-commit"))
 
+    $savedInsecureOptIn = Get-Item Env:CUP_INSTALL_ALLOW_INSECURE `
+        -ErrorAction SilentlyContinue
+    try {
+        $script:BaseUrl = "https://example.invalid/releases"
+        Assert-BaseUrl
 
-    $script:BaseUrl = "https://example.invalid/releases"
-    Assert-BaseUrl
-    $script:BaseUrl = "http://example.invalid/releases"
-    try {
+        $script:BaseUrl = "http://example.invalid/releases"
+        try {
+            Assert-BaseUrl
+            Fail-Test "external HTTP installer URL unexpectedly succeeded"
+        } catch {
+            if ($_.Exception.Message -like 'TEST FAILED:*') {
+                throw
+            }
+        }
+
+        $script:BaseUrl = "http://127.0.0.1:8080"
+        Remove-Item Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
+        try {
+            Assert-BaseUrl
+            Fail-Test "loopback HTTP installer URL without opt-in unexpectedly succeeded"
+        } catch {
+            if ($_.Exception.Message -like 'TEST FAILED:*') {
+                throw
+            }
+        }
+
+        $env:CUP_INSTALL_ALLOW_INSECURE = "1"
         Assert-BaseUrl
-        Fail-Test "external HTTP installer URL unexpectedly succeeded"
-    } catch {
-        if ($_.Exception.Message -like 'TEST FAILED:*') { throw }
-    }
-    $script:BaseUrl = "http://127.0.0.1:8080"
-    Remove-Item Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
-    try {
-        Assert-BaseUrl
-        Fail-Test "loopback HTTP installer URL without opt-in unexpectedly succeeded"
-    } catch {
-        if ($_.Exception.Message -like 'TEST FAILED:*') { throw }
-    }
-    $env:CUP_INSTALL_ALLOW_INSECURE = "1"
-    Assert-BaseUrl
-    Remove-Item Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
-    $script:BaseUrl = "https://user@example.invalid/releases"
-    try {
-        Assert-BaseUrl
-        Fail-Test "installer URL containing credentials unexpectedly succeeded"
-    } catch {
-        if ($_.Exception.Message -like 'TEST FAILED:*') { throw }
+
+        $script:BaseUrl = "https://user@example.invalid/releases"
+        try {
+            Assert-BaseUrl
+            Fail-Test "installer URL containing credentials unexpectedly succeeded"
+        } catch {
+            if ($_.Exception.Message -like 'TEST FAILED:*') {
+                throw
+            }
+        }
+    } finally {
+        if ($null -eq $savedInsecureOptIn) {
+            Remove-Item Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
+        } else {
+            $env:CUP_INSTALL_ALLOW_INSECURE = $savedInsecureOptIn.Value
+        }
     }
 
     $checksumDir = Join-Path $root "checksums"
@@ -103,7 +129,9 @@ try {
             Test-WindowsX64
             Fail-Test "volume-root USERPROFILE unexpectedly succeeded"
         } catch {
-            if ($_.Exception.Message -like 'TEST FAILED:*') { throw }
+            if ($_.Exception.Message -like 'TEST FAILED:*') {
+                throw
+            }
         }
     } finally {
         $env:USERPROFILE = $savedProfile

@@ -138,20 +138,22 @@ static CupError build_plan(InstallPlan *plan,
                            const char *target_platform,
                            const char *selector_input,
                            const char *value_input) {
-    char selector[MAX_IDENTIFIER_LEN];
+    char selection[MAX_IDENTIFIER_LEN];
     char value[MAX_SELECTOR_LEN] = "";
     CupError err;
     size_t i;
 
+    /* Normalize the public selector before deciding which plan grammar applies. */
     memset(plan, 0, sizeof(*plan));
-    if (text_copy_lower_ascii(selector, sizeof(selector), selector_input) != CUP_OK ||
+    if (text_copy_lower_ascii(selection, sizeof(selection), selector_input) != CUP_OK ||
         (!text_is_empty(value_input) && text_copy(value, sizeof(value), value_input) != CUP_OK)) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
-    if (registry_is_component(selector)) {
+    /* A component creates one selection, optionally overridden by an explicit tool selector. */
+    if (registry_is_component(selection)) {
         plan->kind = INSTALL_PLAN_SINGLE;
-        if (text_copy(plan->description, sizeof(plan->description), selector) != CUP_OK) {
+        if (text_copy(plan->description, sizeof(plan->description), selection) != CUP_OK) {
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
         return add_component_selection(plan,
@@ -159,11 +161,12 @@ static CupError build_plan(InstallPlan *plan,
                                        preferences,
                                        host_platform,
                                        target_platform,
-                                       selector,
+                                       selection,
                                        text_is_empty(value) ? NULL : value);
     }
 
-    if (strcmp(selector, "profile") == 0) {
+    /* Profiles expand components and therefore apply scoped user preferences. */
+    if (strcmp(selection, "profile") == 0) {
         const InstallNamedList *profile;
 
         if (text_is_empty(value)) {
@@ -193,7 +196,8 @@ static CupError build_plan(InstallPlan *plan,
         return CUP_OK;
     }
 
-    if (strcmp(selector, "toolchain") == 0) {
+    /* Toolchains name concrete tools and intentionally bypass user preferences. */
+    if (strcmp(selection, "toolchain") == 0) {
         const InstallNamedList *toolchain;
 
         if (text_is_empty(value)) {
@@ -215,15 +219,15 @@ static CupError build_plan(InstallPlan *plan,
         }
         for (i = 0; i < toolchain->item_count; ++i) {
             char component[MAX_IDENTIFIER_LEN];
-            char selector[MAX_SELECTOR_LEN];
+            char tool_selector[MAX_SELECTOR_LEN];
 
             err = registry_find_tool_component(toolchain->items[i], component, sizeof(component));
             if (err == CUP_OK) {
                 err = package_selector_format_parts(
-                    selector, sizeof(selector), toolchain->items[i], "stable");
+                    tool_selector, sizeof(tool_selector), toolchain->items[i], "stable");
             }
             if (err == CUP_OK) {
-                err = plan_add(plan, component, selector);
+                err = plan_add(plan, component, tool_selector);
             }
             if (err != CUP_OK) {
                 return err;
@@ -232,12 +236,172 @@ static CupError build_plan(InstallPlan *plan,
         return CUP_OK;
     }
 
-    fprintf(stderr, "Error: unsupported component or install group '%s'.\n", selector);
+    fprintf(stderr, "Error: unsupported component or install group '%s'.\n", selection);
     return CUP_ERR_UNSUPPORTED_COMPONENT;
 }
 
 /* Full preflight. Every catalog selection and installed-package condition is validated before the
  * first side effect. */
+static CupError select_plan_item_format(InstallPlanItem *item,
+                                        const PackageRequest *request,
+                                        const CommandContext *context,
+                                        const char *format_override,
+                                        int *available) {
+    CupError err;
+
+    *available = 1;
+    if (!text_is_empty(format_override)) {
+        err = package_catalog_has_format(&context->catalog,
+                                         item->component,
+                                         request->selector.tool,
+                                         context->host_platform,
+                                         context->target_platform,
+                                         format_override,
+                                         available);
+        if (err != CUP_OK || !*available) {
+            return err;
+        }
+        return text_copy(item->format, sizeof(item->format), format_override);
+    }
+
+    return package_catalog_get_default_format(&context->catalog,
+                                              item->format,
+                                              sizeof(item->format),
+                                              item->component,
+                                              request->selector.tool,
+                                              context->host_platform,
+                                              context->target_platform);
+}
+
+static CupError check_installed_plan_item(InstallPlanItem *item,
+                                          const CommandContext *context) {
+    PackageIdentity identity;
+    CupError err;
+
+    err = package_identity_from_selector(&identity,
+                                         item->component,
+                                         context->host_platform,
+                                         context->target_platform,
+                                         item->resolved_selector);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    item->already_installed = state_find_installed(&context->state, &identity) >= 0;
+    if (!item->already_installed) {
+        return CUP_OK;
+    }
+
+    err = installed_package_require_valid(&context->state, &identity);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: selected package '%s:%s' is recorded but invalid; "
+                "run 'cup doctor' and 'cup repair'.\n",
+                item->component,
+                item->resolved_selector);
+    }
+    return err;
+}
+
+static CupError validate_plan_item(InstallPlanItem *item,
+                                   const CommandContext *context,
+                                   const char *format_override,
+                                   int *unavailable) {
+    PackageRequest request;
+    CupError err;
+    int package_available;
+    int version_available;
+    int format_available;
+
+    *unavailable = 0;
+    err = package_request_parse(item->component, item->selector, &request);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (text_copy(item->tool, sizeof(item->tool), request.selector.tool) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    err = package_catalog_has_package(&context->catalog,
+                                      item->component,
+                                      request.selector.tool,
+                                      context->host_platform,
+                                      context->target_platform,
+                                      &package_available);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!package_available) {
+        item->available = 0;
+        *unavailable = 1;
+        return CUP_OK;
+    }
+
+    err = package_request_resolve(&context->catalog,
+                                  item->component,
+                                  context->host_platform,
+                                  context->target_platform,
+                                  &request);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = package_catalog_has_version(&context->catalog,
+                                      item->component,
+                                      request.selector.tool,
+                                      context->host_platform,
+                                      context->target_platform,
+                                      request.resolved_release,
+                                      &version_available);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!version_available) {
+        item->available = 0;
+        *unavailable = 1;
+        return CUP_OK;
+    }
+
+    err = select_plan_item_format(
+        item, &request, context, format_override, &format_available);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!format_available) {
+        item->available = 0;
+        *unavailable = 1;
+        return CUP_OK;
+    }
+
+    item->available = 1;
+    if (text_copy(item->resolved_selector,
+                  sizeof(item->resolved_selector),
+                  request.resolved_selector) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    return check_installed_plan_item(item, context);
+}
+
+static void print_unavailable_plan(const InstallPlan *plan, const CommandContext *context) {
+    size_t i;
+
+    fprintf(stderr,
+            "%s '%s' cannot be installed for host '%s', target '%s':\n",
+            plan->kind != INSTALL_PLAN_SINGLE ? "Install group" : "Selection",
+            plan->description,
+            context->host_platform,
+            context->target_platform);
+    for (i = 0; i < plan->count; ++i) {
+        const InstallPlanItem *item = &plan->items[i];
+
+        fprintf(stderr,
+                "  %-16s %-18s %s\n",
+                item->component,
+                item->tool[0] == '\0' ? item->selector : item->tool,
+                item->available ? "available" : "not currently available");
+    }
+    fprintf(stderr, "No packages were installed.\n");
+}
+
 static CupError validate_plan(InstallPlan *plan,
                               CommandContext *context,
                               const char *format_override) {
@@ -246,135 +410,17 @@ static CupError validate_plan(InstallPlan *plan,
     size_t unavailable_count = 0;
 
     for (i = 0; i < plan->count; ++i) {
-        InstallPlanItem *item = &plan->items[i];
-        PackageRequest request;
-        int package_available;
-        int version_available;
+        int unavailable;
 
-        err = package_request_parse(item->component, item->selector, &request);
+        err = validate_plan_item(&plan->items[i], context, format_override, &unavailable);
         if (err != CUP_OK) {
             return err;
         }
-        if (text_copy(item->tool, sizeof(item->tool), request.selector.tool) != CUP_OK) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        err = package_catalog_has_package(&context->catalog,
-                                          item->component,
-                                          request.selector.tool,
-                                          context->host_platform,
-                                          context->target_platform,
-                                          &package_available);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (!package_available) {
-            item->available = 0;
-            unavailable_count++;
-            continue;
-        }
-
-        err = package_request_resolve(&context->catalog,
-                                      item->component,
-                                      context->host_platform,
-                                      context->target_platform,
-                                      &request);
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = package_catalog_has_version(&context->catalog,
-                                          item->component,
-                                          request.selector.tool,
-                                          context->host_platform,
-                                          context->target_platform,
-                                          request.resolved_release,
-                                          &version_available);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (!version_available) {
-            item->available = 0;
-            unavailable_count++;
-            continue;
-        }
-        if (!text_is_empty(format_override)) {
-            int format_available;
-            err = package_catalog_has_format(&context->catalog,
-                                             item->component,
-                                             request.selector.tool,
-                                             context->host_platform,
-                                             context->target_platform,
-                                             format_override,
-                                             &format_available);
-            if (err != CUP_OK) {
-                return err;
-            }
-            if (!format_available) {
-                item->available = 0;
-                unavailable_count++;
-                continue;
-            }
-            err = text_copy(item->format, sizeof(item->format), format_override);
-        } else {
-            err = package_catalog_get_default_format(&context->catalog,
-                                                     item->format,
-                                                     sizeof(item->format),
-                                                     item->component,
-                                                     request.selector.tool,
-                                                     context->host_platform,
-                                                     context->target_platform);
-        }
-        if (err != CUP_OK) {
-            return err;
-        }
-
-        item->available = 1;
-        if (text_copy(item->resolved_selector,
-                      sizeof(item->resolved_selector),
-                      request.resolved_selector) != CUP_OK) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        {
-            PackageIdentity identity;
-
-            err = package_identity_from_selector(&identity,
-                                                 item->component,
-                                                 context->host_platform,
-                                                 context->target_platform,
-                                                 item->resolved_selector);
-            if (err != CUP_OK) {
-                return err;
-            }
-            item->already_installed = state_find_installed(&context->state, &identity) >= 0;
-            if (item->already_installed) {
-                err = installed_package_require_valid(&context->state, &identity);
-                if (err != CUP_OK) {
-                    fprintf(stderr,
-                            "Error: selected package '%s:%s' is recorded but invalid; "
-                            "run 'cup doctor' and 'cup repair'.\n",
-                            item->component,
-                            item->resolved_selector);
-                    return err;
-                }
-            }
-        }
+        unavailable_count += (size_t)unavailable;
     }
 
     if (unavailable_count != 0) {
-        fprintf(stderr,
-                "%s '%s' cannot be installed for host '%s', target '%s':\n",
-                plan->kind != INSTALL_PLAN_SINGLE ? "Install group" : "Selection",
-                plan->description,
-                context->host_platform,
-                context->target_platform);
-        for (i = 0; i < plan->count; ++i) {
-            const InstallPlanItem *item = &plan->items[i];
-            fprintf(stderr,
-                    "  %-16s %-18s %s\n",
-                    item->component,
-                    item->tool[0] == '\0' ? item->selector : item->tool,
-                    item->available ? "available" : "not currently available");
-        }
-        fprintf(stderr, "No packages were installed.\n");
+        print_unavailable_plan(plan, context);
         return CUP_ERR_NOT_AVAILABLE;
     }
     return CUP_OK;
@@ -406,6 +452,7 @@ CupError command_install_request(const char *selector,
     size_t installed_count = 0;
     size_t skipped_count = 0;
 
+    /* Normalize the request and determine which policy inputs the plan requires. */
     if (text_is_empty(selector)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -425,6 +472,7 @@ CupError command_install_request(const char *selector,
     need_preferences = (registry_is_component(normalized_selector) && text_is_empty(value)) ||
                        strcmp(normalized_selector, "profile") == 0;
 
+    /* Build and fully validate the immutable plan from one shared state/catalog snapshot. */
     err = command_context_begin(&context, target_override, SYSTEM_LOCK_SHARED);
     if (err == CUP_OK) {
         err = command_context_load_state(&context);
@@ -451,11 +499,13 @@ CupError command_install_request(const char *selector,
         err = validate_plan(
             &plan, &context, text_is_empty(normalized_format) ? NULL : normalized_format);
     }
+    /* Release the shared preflight context before package transactions acquire exclusive locks. */
     command_context_end(&context);
     if (err != CUP_OK) {
         return err;
     }
 
+    /* A single selection delegates directly; groups retain completed packages on later failure. */
     if (plan.kind == INSTALL_PLAN_SINGLE) {
         return package_install(plan.items[0].component,
                                plan.items[0].resolved_selector,

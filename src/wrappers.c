@@ -27,7 +27,6 @@ typedef struct {
     size_t *issue_count;
 } ScanContext;
 
-/* Plan lifetime and validated wrapper collection. */
 /* Wrapper-plan ownership. Plans are derived data and can be discarded or rebuilt without changing
  * authoritative state. */
 void wrapper_plan_init(WrapperPlan *plan) {
@@ -491,6 +490,8 @@ static CupError compare_wrapper(const char *bin_dir, const WrapperSpec *wrapper,
     }
 
     *matches = 0;
+
+    /* Reject non-regular or non-executable paths before comparing generated content. */
     if (path_join(path, sizeof(path), bin_dir, wrapper->name) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
@@ -517,6 +518,7 @@ static CupError compare_wrapper(const char *bin_dir, const WrapperSpec *wrapper,
     }
 #endif
 
+    /* Generate the canonical wrapper in memory, then compare exact bytes and file length. */
     err = build_wrapper_content(wrapper, &expected, &expected_size);
     if (err != CUP_OK || expected == NULL || expected_size == 0) {
         free(expected);

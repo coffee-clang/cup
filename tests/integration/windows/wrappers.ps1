@@ -1,6 +1,9 @@
 # Purpose: Exercises Windows .cmd managed wrappers and native quoting behavior.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 try {

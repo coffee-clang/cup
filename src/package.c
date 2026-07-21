@@ -549,6 +549,7 @@ static CupError scan_package_path(const char *path, SystemPathKind path_kind, vo
         return CUP_OK;
     }
 
+    /* Version directories are leaves; every earlier level must be a directory. */
     if (context->level == PACKAGE_LEVEL_VERSION) {
         return scan_version_path(context, path, path_kind, name);
     }
@@ -561,6 +562,7 @@ static CupError scan_package_path(const char *path, SystemPathKind path_kind, vo
     child = *context;
     child.level = (PackagePathLevel)(context->level + 1);
 
+    /* Validate and copy exactly the identity field owned by the current level. */
     switch (context->level) {
         case PACKAGE_LEVEL_COMPONENT:
             if (registry_validate_component(name) == CUP_OK) {
@@ -615,6 +617,7 @@ static CupError scan_package_path(const char *path, SystemPathKind path_kind, vo
         return CUP_OK;
     }
 
+    /* Descend only after the current segment has produced a valid child identity. */
     return system_list_directory(path, scan_package_path, &child);
 }
 

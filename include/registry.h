@@ -2,9 +2,8 @@
 #define CUP_REGISTRY_H
 
 /*
- * Module contract: Compiled component/tool domain accepted independently of
- * catalog availability. The catalog may restrict packages but cannot add
- * new component/tool relationships.
+ * Compiled component/tool domain accepted independently of catalog availability. The catalog may
+ * restrict packages but cannot add component/tool relationships.
  */
 
 #include <stddef.h>

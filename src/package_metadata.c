@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Metadata lifecycle. */
+/* Metadata ownership. Fields are immutable after a successful complete load. */
 void package_metadata_init(PackageMetadata *info) {
     if (info != NULL) {
         memset(info, 0, sizeof(*info));
@@ -30,7 +30,7 @@ void package_metadata_free(PackageMetadata *info) {
     package_metadata_init(info);
 }
 
-/* Metadata validation. */
+/* Validate external info.txt names and values before they enter the in-memory table. */
 static int value_is_safe(const char *value) {
     const unsigned char *cursor;
 
@@ -66,7 +66,7 @@ static int key_is_safe(const char *key) {
     return 1;
 }
 
-/* Metadata storage. */
+/* Bounded field insertion with duplicate rejection. */
 static int key_has_prefix(const char *key, const char *prefix) {
     size_t length;
 
@@ -130,7 +130,7 @@ static CupError add_field(PackageMetadata *info, const char *key, const char *va
     return CUP_OK;
 }
 
-/* Metadata loading. */
+/* Strict all-or-nothing info.txt parsing. */
 CupError package_metadata_load(PackageMetadata *info, const char *path) {
     FILE *file;
     CupError err;
@@ -192,7 +192,7 @@ CupError package_metadata_load(PackageMetadata *info, const char *path) {
     return CUP_OK;
 }
 
-/* Metadata queries. */
+/* Read-only lookup and package-command enumeration over validated fields. */
 const char *package_metadata_get(const PackageMetadata *info, const char *key) {
     size_t i;
 

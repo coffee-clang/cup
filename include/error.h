@@ -1,10 +1,7 @@
 #ifndef CUP_ERROR_H
 #define CUP_ERROR_H
 
-/*
- * Module contract: Stable process error and exit-code model shared by all
- * modules.
- */
+/* Stable internal error model shared by all modules. */
 
 typedef enum {
     CUP_OK = 0,

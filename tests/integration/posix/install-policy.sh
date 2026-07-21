@@ -9,6 +9,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin install-policy
 prepare_command_environment
 
+# Shared package fixture for scoped defaults and curated plans.
 component_root() {
     component=$1 tool=$2 version=$3
     printf '%s/.cup/components/%s/%s/%s/%s/%s\n' \
@@ -28,6 +29,7 @@ prepare_fixture() {
     make_package language-server clangd 22.1.5 "$TEST_PLATFORM" clangd
 }
 
+# Profile/default resolution and user preference scenarios.
 test_defaults_profile() {
     output=$(run_cup config)
     assert_contains "$output" "Install selections for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
@@ -73,6 +75,7 @@ test_scoped_preferences() {
     assert_missing "$TEST_HOME/.cup/config/preferences.txt"
 }
 
+# Toolchain plans must prevalidate completely before installing any package.
 test_gnu_prevalidation() {
     run_cup_expect_failure "$TMP_ROOT/gnu-toolchain.out" install TOOLCHAIN GNU
     output=$(cat "$TMP_ROOT/gnu-toolchain.out")

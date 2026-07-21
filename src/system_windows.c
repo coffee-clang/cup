@@ -390,7 +390,7 @@ static int wide_path_is_volume_root(const wchar_t *path) {
     return path_length == volume_length && _wcsnicmp(path, volume, path_length) == 0;
 }
 
-/* Process and detached-helper operations. */
+/* Process identity, profile validation and detached PowerShell uninstall execution. */
 void system_set_restrictive_umask(void) {
     _umask(0077);
 }
@@ -500,7 +500,7 @@ CupError system_start_uninstall(const char *cup_root,
     return CUP_OK;
 }
 
-/* File and directory mutation. */
+/* Wide-API creation, copy, replacement and recursive mutation with reparse-point checks. */
 CupError system_make_directory(const char *path) {
     wchar_t wide_path[MAX_PATH_LEN];
     SystemPathKind info;
@@ -793,7 +793,7 @@ CupError system_sync_parent_directory(const char *path) {
     return CUP_OK;
 }
 
-/* Exclusive temporary objects. */
+/* Create-exclusive long-path-aware temporary files and directories. */
 CupError system_create_file_exclusive(const char *path, FILE **file) {
     wchar_t wide_path[MAX_PATH_LEN];
     HANDLE handle;
@@ -903,7 +903,7 @@ CupError system_make_unique_temp_path(const char *directory,
     }
 }
 
-/* Path inspection and Windows attributes. */
+/* Inspect path type without traversing reparse points and expose native attributes safely. */
 CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
     wchar_t wide_path[MAX_PATH_LEN];
     DWORD attributes;
@@ -1021,7 +1021,7 @@ CupError system_file_size(const char *path, long long *file_size) {
     return CUP_OK;
 }
 
-/* Permissions. */
+/* Private DACL creation plus executable/read-only compatibility controls. */
 CupError system_is_executable(const char *path, int *is_executable) {
     SystemPathKind info;
     CupError err;
@@ -1113,7 +1113,7 @@ CupError system_set_executable(const char *path, int executable) {
     return CUP_OK;
 }
 
-/* Directory traversal. */
+/* Wide-API child enumeration with long-path normalization and reparse-point classification. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
     wchar_t wide_path[MAX_PATH_LEN];
     wchar_t pattern[MAX_PATH_LEN];
@@ -1205,7 +1205,7 @@ CupError system_walk_directory(const char *path, SystemDirectoryCallback callbac
     return system_list_directory(path, walk_directory_entry, &context);
 }
 
-/* Process-scoped native locks. */
+/* Nonblocking file locks backed by a process-owned Windows handle. */
 typedef struct {
     int (*cancelled)(void);
 } RemoveTreeContext;

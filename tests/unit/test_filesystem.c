@@ -17,10 +17,16 @@ void tearDown(void);
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Shared fixture state used by the cases in this suite. */
+
 static char temp_dir[] = "/tmp/cup-filesystem-test-XXXXXX";
 
+/* Fixture lifecycle and local construction helpers. */
+
 static void build_path(char *out, size_t size, const char *name) {
-    TEST_ASSERT_TRUE(snprintf(out, size, "%s/%s", temp_dir, name) > 0);
+    int written = snprintf(out, size, "%s/%s", temp_dir, name);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void write_text(const char *path, const char *text) {
@@ -29,6 +35,8 @@ static void write_text(const char *path, const char *text) {
     TEST_ASSERT_TRUE(fputs(text, file) >= 0);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_tree_lifecycle(void) {
     char root[1024];
@@ -157,6 +165,8 @@ static void test_invalid_backup(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(backup));
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(first_candidate));
 }
+
+/* Suite registration. */
 
 void register_filesystem_tests(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

@@ -12,6 +12,7 @@ mkdir -p "$MOCK_BIN"
 SHA=0123456789abcdef0123456789abcdef01234567
 OTHER_SHA=1111111111111111111111111111111111111111
 
+# Simulated GitHub API responses cover success, stale runs and wrong workflow ownership.
 cat > "$MOCK_BIN/gh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -115,6 +116,7 @@ esac
 MOCK
 chmod +x "$MOCK_BIN/gh"
 
+# Invoke the real resolver against the controlled API boundary.
 run_resolver() {
     output=$1
     shift
@@ -127,6 +129,7 @@ run_resolver "$TMP_ROOT/auto.out" env >/dev/null
 grep -Fx 'run_id=41' "$TMP_ROOT/auto.out" >/dev/null
 grep -Fx 'run_attempt=2' "$TMP_ROOT/auto.out" >/dev/null
 
+# Explicit run ids must still match workflow, branch, commit and conclusion.
 if run_resolver "$TMP_ROOT/failed.out" env TESTS_RUN_ID=42 >/dev/null 2>&1; then
     fail 'failed Tests run unexpectedly passed release provenance validation'
 fi

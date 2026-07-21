@@ -85,6 +85,49 @@ static CupError initialize_runtime(void) {
     return state_save(&state);
 }
 
+
+static CupError require_usable_runtime(LayoutRuntimeStatus status) {
+    if (status != LAYOUT_RUNTIME_INCOMPLETE) {
+        return CUP_OK;
+    }
+
+    fprintf(stderr,
+            "Error: cup runtime structure is incomplete. "
+            "Run 'cup doctor' and 'cup repair'.\n");
+    return CUP_ERR_FILESYSTEM;
+}
+
+static CupError acquire_runtime_lock(CommandContext *context, SystemLockMode mode) {
+    CupError err;
+    char lock_path[MAX_PATH_LEN];
+
+    err = layout_get_lock_path(lock_path, sizeof(lock_path));
+    if (err == CUP_OK) {
+        err = system_lock_acquire(&context->lock, lock_path, mode);
+    }
+    if (err == CUP_ERR_LOCK) {
+        fprintf(stderr, "Error: another cup operation is currently running.\n");
+    }
+    return err;
+}
+
+/* Lock acquisition may race with uninstall or runtime deletion, so both are rechecked. */
+static CupError recheck_locked_runtime(CommandContext *context, LayoutRuntimeStatus *status) {
+    CupError err;
+
+    err = reject_pending_uninstall();
+    if (err == CUP_OK) {
+        err = layout_get_runtime_status(status);
+    }
+    if (err == CUP_OK) {
+        err = require_usable_runtime(*status);
+    }
+    if (err != CUP_OK) {
+        command_context_end(context);
+    }
+    return err;
+}
+
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -92,7 +135,6 @@ CupError command_context_begin(CommandContext *context,
     SystemLockMode lock_mode = mode;
     CupError err;
     char root[MAX_PATH_LEN];
-    char lock_path[MAX_PATH_LEN];
 
     if (context == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -101,26 +143,19 @@ CupError command_context_begin(CommandContext *context,
     memset(context, 0, sizeof(*context));
     package_catalog_init(&context->catalog);
 
+    /* Resolve and validate the pre-lock view without creating runtime state. */
     err = reject_pending_uninstall();
+    if (err == CUP_OK) {
+        err = resolve_platforms(context, target_override);
+    }
+    if (err == CUP_OK) {
+        err = layout_get_runtime_status(&runtime_status);
+    }
+    if (err == CUP_OK) {
+        err = require_usable_runtime(runtime_status);
+    }
     if (err != CUP_OK) {
         return err;
-    }
-
-    err = resolve_platforms(context, target_override);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = layout_get_runtime_status(&runtime_status);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr,
-                "Error: cup runtime structure is incomplete. "
-                "Run 'cup doctor' and 'cup repair'.\n");
-        return CUP_ERR_FILESYSTEM;
     }
 
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
@@ -131,60 +166,29 @@ CupError command_context_begin(CommandContext *context,
                     "Run the installer or execute cup from the repository root.\n");
             return err;
         }
-
         err = layout_ensure_root();
         if (err != CUP_OK) {
             return err;
         }
-
         lock_mode = SYSTEM_LOCK_EXCLUSIVE;
     }
 
-    err = layout_get_lock_path(lock_path, sizeof(lock_path));
+    err = acquire_runtime_lock(context, lock_mode);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = recheck_locked_runtime(context, &runtime_status);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = system_lock_acquire(&context->lock, lock_path, lock_mode);
-    if (err != CUP_OK) {
-        if (err == CUP_ERR_LOCK) {
-            fprintf(stderr, "Error: another cup operation is currently running.\n");
-        }
-        return err;
-    }
-
-    /*
-     * The marker can appear while this command is waiting for the lock.
-     * Recheck it while holding the lock so a command cannot start after
-     * uninstall has committed to deferred runtime removal.
-     */
-    err = reject_pending_uninstall();
-    if (err != CUP_OK) {
-        command_context_end(context);
-        return err;
-    }
-
-    err = layout_get_runtime_status(&runtime_status);
-    if (err != CUP_OK) {
-        command_context_end(context);
-        return err;
-    }
-
-    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr,
-                "Error: cup runtime structure is incomplete. "
-                "Run 'cup doctor' and 'cup repair'.\n");
-        command_context_end(context);
-        return CUP_ERR_FILESYSTEM;
-    }
-
+    /* The exclusive lock now protects first-time runtime initialization. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
         err = initialize_runtime();
         if (err != CUP_OK) {
             command_context_end(context);
             return err;
         }
-
         if (layout_get_root(root, sizeof(root)) == CUP_OK) {
             printf("Initialized cup runtime at '%s'.\n", root);
         }
@@ -199,7 +203,6 @@ CupError command_context_begin(CommandContext *context,
 CupError command_context_begin_read_only(CommandContext *context, const char *target_override) {
     LayoutRuntimeStatus runtime_status;
     CupError err;
-    char lock_path[MAX_PATH_LEN];
 
     if (context == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -208,14 +211,15 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
     package_catalog_init(&context->catalog);
 
     err = resolve_platforms(context, target_override);
-    if (err != CUP_OK) {
-        return err;
+    if (err == CUP_OK) {
+        err = reject_pending_uninstall();
     }
-    err = reject_pending_uninstall();
-    if (err != CUP_OK) {
-        return err;
+    if (err == CUP_OK) {
+        err = layout_get_runtime_status(&runtime_status);
     }
-    err = layout_get_runtime_status(&runtime_status);
+    if (err == CUP_OK) {
+        err = require_usable_runtime(runtime_status);
+    }
     if (err != CUP_OK) {
         return err;
     }
@@ -223,45 +227,23 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
         context->runtime_available = 0;
         return CUP_OK;
     }
-    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr,
-                "Error: cup runtime structure is incomplete. "
-                "Run 'cup doctor' and 'cup repair'.\n");
-        return CUP_ERR_FILESYSTEM;
-    }
 
-    err = layout_get_lock_path(lock_path, sizeof(lock_path));
-    if (err == CUP_OK) {
-        err = system_lock_acquire(&context->lock, lock_path, SYSTEM_LOCK_SHARED);
-    }
+    err = acquire_runtime_lock(context, SYSTEM_LOCK_SHARED);
     if (err != CUP_OK) {
-        if (err == CUP_ERR_LOCK) {
-            fprintf(stderr, "Error: another cup operation is currently running.\n");
-        }
         return err;
     }
-    err = reject_pending_uninstall();
+    err = recheck_locked_runtime(context, &runtime_status);
     if (err != CUP_OK) {
-        command_context_end(context);
         return err;
     }
 
-    err = layout_get_runtime_status(&runtime_status);
-    if (err != CUP_OK) {
-        command_context_end(context);
-        return err;
-    }
-    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
-        fprintf(stderr,
-                "Error: cup runtime structure is incomplete. "
-                "Run 'cup doctor' and 'cup repair'.\n");
-        command_context_end(context);
-        return CUP_ERR_FILESYSTEM;
-    }
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
+        /* command_context_end clears resolved platforms; rebuild the read-only empty view. */
         command_context_end(context);
-        context->runtime_available = 0;
         err = resolve_platforms(context, target_override);
+        if (err == CUP_OK) {
+            context->runtime_available = 0;
+        }
         return err;
     }
 

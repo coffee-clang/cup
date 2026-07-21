@@ -2,9 +2,8 @@
 #define CUP_WRAPPERS_H
 
 /*
- * Module contract: Immutable plans for managed launchers derived from valid
- * active packages. Planning is separated from filesystem application so
- * doctor can diagnose the same desired state that repair applies.
+ * Immutable managed-launcher plans derived from valid active packages. Planning is separate from
+ * filesystem application so doctor diagnoses the same state that repair applies.
  */
 
 #include <stddef.h>

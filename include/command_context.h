@@ -2,8 +2,8 @@
 #define CUP_COMMAND_CONTEXT_H
 
 /*
- * Module contract: Shared command lifetime, platform, lock, state and catalog
- * resources used by public command handlers.
+ * Shared command lifetime, platform, lock, state, and catalog resources used by public command
+ * handlers.
  */
 
 #include "error.h"

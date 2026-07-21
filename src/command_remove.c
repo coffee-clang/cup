@@ -41,6 +41,7 @@ static CupError prepare_remove(RemoveOperation *operation,
                                const char *target_override) {
     CupError err;
 
+    /* Parse and resolve the request under an exclusive, transaction-free context. */
     err = package_request_parse(component, selector, &operation->request);
     if (err != CUP_OK) {
         return err;
@@ -88,11 +89,13 @@ static CupError prepare_remove(RemoveOperation *operation,
         return err;
     }
 
+    /* Removal requires one concrete package present in both state and the components tree. */
     err = installed_package_require_present(&operation->context.state, &operation->package);
     if (err != CUP_OK) {
         return err;
     }
 
+    /* Persist identity-bound staging before moving the canonical package. */
     err = layout_build_install_path(
         operation->install_path, sizeof(operation->install_path), &operation->package);
     if (err != CUP_OK) {

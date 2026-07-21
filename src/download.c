@@ -138,6 +138,47 @@ static int progress_callback(void *userdata,
         } \
     } while (0)
 
+
+static CURLcode configure_transfer(CURL *curl,
+                                   const char *url,
+                                   DownloadValidation validation,
+                                   DownloadWriter *writer,
+                                   char *error_buffer) {
+    CURLcode result = CURLE_OK;
+
+    if (configure_tls_trust(curl) != CUP_OK) {
+        return CURLE_FAILED_INIT;
+    }
+
+    SETOPT(curl, CURLOPT_ERRORBUFFER, error_buffer);
+    SETOPT(curl, CURLOPT_URL, url);
+    SETOPT(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    SETOPT(curl, CURLOPT_MAXREDIRS, 10L);
+    SETOPT(curl, CURLOPT_FAILONERROR, 1L);
+    SETOPT(curl, CURLOPT_USERAGENT, "cup");
+    SETOPT(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    SETOPT(curl, CURLOPT_ACCEPT_ENCODING, "");
+    SETOPT(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    SETOPT(curl, CURLOPT_TIMEOUT, validation_timeout(validation));
+    SETOPT(curl, CURLOPT_MAXFILESIZE_LARGE, writer->limit);
+    SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    SETOPT(curl, CURLOPT_PROTOCOLS_STR, "https");
+    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    SETOPT(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
+    SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
+    SETOPT(curl, CURLOPT_WRITEDATA, writer);
+    SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
+    SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+
+cleanup:
+    return result;
+}
+
 /* Atomic destination preparation. */
 static CupError get_parent_path(const char *path, char *parent, size_t size) {
     char *slash;
@@ -162,6 +203,52 @@ static CupError get_parent_path(const char *path, char *parent, size_t size) {
 
 static CupError remove_temporary_download(const char *path, CupError original_error) {
     return system_remove_file(path) == CUP_OK ? original_error : CUP_ERR_TEMPORARY;
+}
+
+
+static CupError classify_transfer_result(const char *url,
+                                         const char *temporary_path,
+                                         CURLcode result,
+                                         CURLcode metadata_result,
+                                         long response_code,
+                                         const char *error_buffer,
+                                         const DownloadWriter *writer) {
+    CupError err;
+
+    if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
+        return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
+    }
+    if (writer->too_large || result == CURLE_FILESIZE_EXCEEDED) {
+        fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
+        return remove_temporary_download(temporary_path, CUP_ERR_DOWNLOAD_TOO_LARGE);
+    }
+    if (writer->write_failed) {
+        fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n", url);
+        return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
+    }
+    if (result == CURLE_OK && metadata_result == CURLE_OK && response_code == 200) {
+        return CUP_OK;
+    }
+
+    fprintf(stderr, "Error: failed to download '%s'", url);
+    if (metadata_result == CURLE_OK && response_code > 0) {
+        fprintf(stderr, " (HTTP %ld)", response_code);
+    }
+    if (error_buffer[0] != '\0') {
+        fprintf(stderr, ": %s", error_buffer);
+    }
+    fputs(".\n", stderr);
+
+    if (result == CURLE_OPERATION_TIMEDOUT) {
+        err = CUP_ERR_TIMEOUT;
+    } else if (result == CURLE_PEER_FAILED_VERIFICATION ||
+               result == CURLE_SSL_CONNECT_ERROR || result == CURLE_SSL_CERTPROBLEM ||
+               result == CURLE_SSL_CACERT_BADFILE) {
+        err = CUP_ERR_TLS;
+    } else {
+        err = CUP_ERR_FETCH;
+    }
+    return remove_temporary_download(temporary_path, err);
 }
 
 /* Content-class validation. Each asset type has a bounded parser rather than relying on a
@@ -281,6 +368,7 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         return CUP_ERR_INVALID_INPUT;
     }
 
+    /* Create the transfer beside the destination so the final replace stays on one filesystem. */
     err = get_parent_path(destination, parent, sizeof(parent));
     if (err != CUP_OK) {
         return err;
@@ -307,44 +395,17 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         return close_failed || cleanup_error != CUP_OK ? CUP_ERR_TEMPORARY : CUP_ERR_FETCH;
     }
 
+    /* Apply protocol, trust, timeout and size policy before the first network byte is accepted. */
     writer.file = file;
     writer.limit = validation_limit(validation);
     error_buffer[0] = '\0';
-    err = configure_tls_trust(curl);
-    if (err != CUP_OK) {
-        result = CURLE_FAILED_INIT;
-        goto cleanup;
+    result = configure_transfer(curl, url, validation, &writer, error_buffer);
+    if (result == CURLE_OK) {
+        result = curl_easy_perform(curl);
+        package_metadata_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     }
 
-    SETOPT(curl, CURLOPT_ERRORBUFFER, error_buffer);
-    SETOPT(curl, CURLOPT_URL, url);
-    SETOPT(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    SETOPT(curl, CURLOPT_MAXREDIRS, 10L);
-    SETOPT(curl, CURLOPT_FAILONERROR, 1L);
-    SETOPT(curl, CURLOPT_USERAGENT, "cup");
-    SETOPT(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    SETOPT(curl, CURLOPT_ACCEPT_ENCODING, "");
-    SETOPT(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    SETOPT(curl, CURLOPT_TIMEOUT, validation_timeout(validation));
-    SETOPT(curl, CURLOPT_MAXFILESIZE_LARGE, writer.limit);
-    SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-    SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    SETOPT(curl, CURLOPT_PROTOCOLS_STR, "https");
-    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
-#else
-    SETOPT(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
-    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
-#endif
-    SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
-    SETOPT(curl, CURLOPT_WRITEDATA, &writer);
-    SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
-    SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
-
-    result = curl_easy_perform(curl);
-    package_metadata_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-
-cleanup:
+    /* Close and sync the temporary file before classifying transfer or validation failures. */
     if (curl != NULL) {
         curl_easy_cleanup(curl);
     }
@@ -356,42 +417,23 @@ cleanup:
     }
     curl_global_cleanup();
 
-    if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
-        return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
-    }
-    if (writer.too_large || result == CURLE_FILESIZE_EXCEEDED) {
-        fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
-        return remove_temporary_download(temporary_path, CUP_ERR_DOWNLOAD_TOO_LARGE);
-    }
-
-    if (writer.write_failed) {
-        fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n", url);
-        return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
-    }
-    if (result != CURLE_OK || package_metadata_result != CURLE_OK || response_code != 200) {
-        fprintf(stderr, "Error: failed to download '%s'", url);
-        if (package_metadata_result == CURLE_OK && response_code > 0) {
-            fprintf(stderr, " (HTTP %ld)", response_code);
-        }
-        if (error_buffer[0] != '\0') {
-            fprintf(stderr, ": %s", error_buffer);
-        }
-        fputs(".\n", stderr);
-        if (result == CURLE_OPERATION_TIMEDOUT) {
-            err = CUP_ERR_TIMEOUT;
-        } else if (result == CURLE_PEER_FAILED_VERIFICATION || result == CURLE_SSL_CONNECT_ERROR ||
-                   result == CURLE_SSL_CERTPROBLEM || result == CURLE_SSL_CACERT_BADFILE) {
-            err = CUP_ERR_TLS;
-        } else {
-            err = CUP_ERR_FETCH;
-        }
-        return remove_temporary_download(temporary_path, err);
+    /* Translate transport outcomes into stable CUP errors and always remove rejected data. */
+    err = classify_transfer_result(url,
+                                   temporary_path,
+                                   result,
+                                   package_metadata_result,
+                                   response_code,
+                                   error_buffer,
+                                   &writer);
+    if (err != CUP_OK) {
+        return err;
     }
     if (sync_err != CUP_OK || close_status != 0) {
         fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n", url);
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
 
+    /* Content validation happens before the atomic destination replacement. */
     err = validate_download(temporary_path, validation);
     if (err != CUP_OK) {
         return remove_temporary_download(temporary_path, err);

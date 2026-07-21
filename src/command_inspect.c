@@ -89,6 +89,7 @@ CupError command_inspect(const char *component, const char *selector, const char
         return CUP_ERR_INVALID_INPUT;
     }
 
+    /* Parse the public selector before opening any runtime resources. */
     package_metadata_init(&metadata);
 
     err = package_request_parse(component, selector, &request);
@@ -111,6 +112,7 @@ CupError command_inspect(const char *component, const char *selector, const char
         goto done;
     }
 
+    /* Stable selectors require the catalog; concrete versions can be resolved from state alone. */
     if (package_release_is_stable(request.selector.release)) {
         err = command_context_load_catalog(&context);
         if (err != CUP_OK) {
@@ -137,6 +139,7 @@ CupError command_inspect(const char *component, const char *selector, const char
         goto done;
     }
 
+    /* The metadata is trusted only after state and the installed package agree. */
     err = installed_package_require_valid(&context.state, &package);
     if (err != CUP_OK) {
         goto done;
@@ -156,6 +159,7 @@ CupError command_inspect(const char *component, const char *selector, const char
         goto done;
     }
 
+    /* Print only after the complete metadata file has passed parsing and validation. */
     printf("Package information for %s ", component);
     package_request_print(stdout, &request);
     printf(" on host '%s', target '%s':\n\n", context.host_platform, context.target_platform);

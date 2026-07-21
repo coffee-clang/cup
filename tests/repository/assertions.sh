@@ -11,6 +11,10 @@ fail() {
     exit 1
 }
 
+audit_root=$(mktemp -d "${TMPDIR:-/tmp}/cup-assertions.XXXXXX") ||
+    fail 'could not create assertion audit workspace'
+trap 'rm -rf "$audit_root"' EXIT HUP INT TERM
+
 placeholders=$(grep -RInE 'TEST_ASSERT_TRUE\(0\)|TEST_ASSERT_FALSE\(1\)' \
     tests/unit 2>/dev/null || :)
 [ -z "$placeholders" ] || fail "opaque placeholder assertions remain:\n$placeholders"
@@ -79,8 +83,8 @@ fi
 
 audit_unit_file() {
     file=$1
-    declared=${TMPDIR:-/tmp}/cup-assert-declared.$$
-    registered=${TMPDIR:-/tmp}/cup-assert-registered.$$
+    declared=$audit_root/declared
+    registered=$audit_root/registered
     sed -nE \
         's/.*static[[:space:]]+void[[:space:]]+(test_[A-Za-z0-9_]+)[[:space:]]*\(.*/\1/p' \
         "$file" | sort > "$declared"

@@ -66,7 +66,13 @@ case "$PLATFORM" in
         ;;
 esac
 
-case "$CUP_POSIX_BOOTSTRAP_LIB64" in 0|1) ;; *) exit 1 ;; esac
+case "$CUP_POSIX_BOOTSTRAP_LIB64" in
+    0 | 1)
+        ;;
+    *)
+        exit 1
+        ;;
+esac
 
 case "$PLATFORM" in
     macos-*)
@@ -109,6 +115,9 @@ pkg_config_dirs() {
 
 # Static third-party dependency builders.
 build_zlib() {
+    local archive
+    local source
+
     archive="$SRC_DIR/zlib-${ZLIB_VERSION}.tar.gz"
     source="$BUILD_DIR/zlib-${ZLIB_VERSION}"
 
@@ -127,6 +136,9 @@ build_zlib() {
 }
 
 build_xz() {
+    local archive
+    local source
+
     archive="$SRC_DIR/xz-${XZ_VERSION}.tar.xz"
     source="$BUILD_DIR/xz-${XZ_VERSION}"
 
@@ -146,6 +158,9 @@ build_xz() {
 }
 
 build_openssl() {
+    local archive
+    local source
+
     archive="$SRC_DIR/openssl-${OPENSSL_VERSION}.tar.gz"
     source="$BUILD_DIR/openssl-${OPENSSL_VERSION}"
 
@@ -167,6 +182,10 @@ build_openssl() {
 }
 
 build_curl() {
+    local archive
+    local source
+    local pkg_dirs
+
     archive="$SRC_DIR/curl-${CURL_VERSION}.tar.xz"
     source="$BUILD_DIR/curl-${CURL_VERSION}"
     pkg_dirs="$(pkg_config_dirs)"
@@ -215,6 +234,10 @@ build_curl() {
 }
 
 build_libarchive() {
+    local archive
+    local source
+    local pkg_dirs
+
     archive="$SRC_DIR/libarchive-${LIBARCHIVE_VERSION}.tar.xz"
     source="$BUILD_DIR/libarchive-${LIBARCHIVE_VERSION}"
     pkg_dirs="$(pkg_config_dirs)"
@@ -250,6 +273,10 @@ build_libarchive() {
 
 # Final prefix and static metadata verification.
 verify() {
+    local pkg_dirs
+    local curl_flags
+    local archive_flags
+
     pkg_dirs="$(pkg_config_dirs)"
 
     echo "==> Verifying generated link metadata"
@@ -287,6 +314,10 @@ verify() {
 }
 
 main() {
+    local toolchain
+    local id
+    local metadata
+
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"

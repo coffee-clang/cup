@@ -519,6 +519,72 @@ cleanup_uninstall_residues() {
     done
 }
 
+
+# Bootstrap transfer and transaction phases are kept separate so the main
+# installer reads as an ordered recovery-safe pipeline.
+download_bootstrap_assets() (
+    staging=$1
+    cup_asset=$2
+    platform=$3
+    uninstall_asset=$4
+
+    download_file "$BASE_URL/$cup_asset" "$staging/$cup_asset"
+    download_file "$BASE_URL/packages.cfg" "$staging/packages.cfg"
+    download_file "$BASE_URL/install.cfg" "$staging/install.cfg"
+    download_file "$BASE_URL/$uninstall_asset" "$staging/$uninstall_asset"
+    download_file "$BASE_URL/release.txt" "$staging/release.txt"
+    download_file "$BASE_URL/SHA256SUMS.$platform" "$staging/SHA256SUMS.$platform"
+    download_file "$BASE_URL/SHA256SUMS.common" "$staging/SHA256SUMS.common"
+)
+
+verify_bootstrap_assets() (
+    staging=$1
+    cup_asset=$2
+    platform=$3
+    uninstall_asset=$4
+
+    verify_checksum_file "$staging" "SHA256SUMS.$platform" \
+        "$cup_asset" "$uninstall_asset" "release.txt"
+    assert_checksum_entries "$staging/SHA256SUMS.common" \
+        "packages.cfg" "install.cfg" "install.sh" "install.ps1"
+    verify_named_checksum "$staging" "$staging/SHA256SUMS.common" "packages.cfg"
+    verify_named_checksum "$staging" "$staging/SHA256SUMS.common" "install.cfg"
+    validate_release_metadata \
+        "$staging/release.txt" "$CUP_RELEASE_VERSION" "$CUP_RELEASE_COMMIT"
+    cp "$staging/$cup_asset" "$staging/cup-update-helper"
+)
+
+backup_bootstrap_assets() (
+    staging=$1
+    cup_bin=$2
+
+    backup_asset binary "$cup_bin" "$staging"
+    backup_asset manifest "$PACKAGES_CFG" "$staging"
+    backup_asset install-config "$INSTALL_CONFIG" "$staging"
+    backup_asset common-checksums "$COMMON_CHECKSUMS" "$staging"
+    backup_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging"
+    backup_asset uninstall "$UNINSTALL_SCRIPT" "$staging"
+    backup_asset update-helper "$UPDATE_HELPER" "$staging"
+)
+
+commit_bootstrap_assets() (
+    staging=$1
+    cup_asset=$2
+    cup_bin=$3
+    platform=$4
+    uninstall_asset=$5
+
+    commit_asset binary "$staging/$cup_asset" "$cup_bin" "$staging"
+    commit_asset manifest "$staging/packages.cfg" "$PACKAGES_CFG" "$staging"
+    commit_asset install-config "$staging/install.cfg" "$INSTALL_CONFIG" "$staging"
+    commit_asset common-checksums \
+        "$staging/SHA256SUMS.common" "$COMMON_CHECKSUMS" "$staging"
+    commit_asset platform-checksums \
+        "$staging/SHA256SUMS.$platform" "$PLATFORM_CHECKSUMS" "$staging"
+    commit_asset uninstall "$staging/$uninstall_asset" "$UNINSTALL_SCRIPT" "$staging"
+    commit_asset update-helper "$staging/cup-update-helper" "$UPDATE_HELPER" "$staging"
+)
+
 install_assets() {
     cup_asset="$1"
     installed_name="$2"
@@ -571,36 +637,11 @@ install_assets() {
     trap rollback EXIT HUP INT TERM
 
     info "Installing cup into $CUP_ROOT"
-    download_file "$BASE_URL/$cup_asset" "$staging/$cup_asset"
-    download_file "$BASE_URL/packages.cfg" "$staging/packages.cfg"
-    download_file "$BASE_URL/install.cfg" "$staging/install.cfg"
-    download_file "$BASE_URL/$uninstall_asset" "$staging/$uninstall_asset"
-    download_file "$BASE_URL/release.txt" "$staging/release.txt"
-    download_file "$BASE_URL/SHA256SUMS.$platform" "$staging/SHA256SUMS.$platform"
-    download_file "$BASE_URL/SHA256SUMS.common" "$staging/SHA256SUMS.common"
-    verify_checksum_file "$staging" "SHA256SUMS.$platform" "$cup_asset" "$uninstall_asset" "release.txt"
-    assert_checksum_entries "$staging/SHA256SUMS.common" \
-        "packages.cfg" "install.cfg" "install.sh" "install.ps1"
-    verify_named_checksum "$staging" "$staging/SHA256SUMS.common" "packages.cfg"
-    verify_named_checksum "$staging" "$staging/SHA256SUMS.common" "install.cfg"
-    validate_release_metadata "$staging/release.txt" "$CUP_RELEASE_VERSION" "$CUP_RELEASE_COMMIT"
-    cp "$staging/$cup_asset" "$staging/cup-update-helper"
-
-    backup_asset binary "$cup_bin" "$staging"
-    backup_asset manifest "$PACKAGES_CFG" "$staging"
-    backup_asset install-config "$INSTALL_CONFIG" "$staging"
-    backup_asset common-checksums "$COMMON_CHECKSUMS" "$staging"
-    backup_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging"
-    backup_asset uninstall "$UNINSTALL_SCRIPT" "$staging"
-    backup_asset update-helper "$UPDATE_HELPER" "$staging"
-
-    commit_asset binary "$staging/$cup_asset" "$cup_bin" "$staging"
-    commit_asset manifest "$staging/packages.cfg" "$PACKAGES_CFG" "$staging"
-    commit_asset install-config "$staging/install.cfg" "$INSTALL_CONFIG" "$staging"
-    commit_asset common-checksums "$staging/SHA256SUMS.common" "$COMMON_CHECKSUMS" "$staging"
-    commit_asset platform-checksums "$staging/SHA256SUMS.$platform" "$PLATFORM_CHECKSUMS" "$staging"
-    commit_asset uninstall "$staging/$uninstall_asset" "$UNINSTALL_SCRIPT" "$staging"
-    commit_asset update-helper "$staging/cup-update-helper" "$UPDATE_HELPER" "$staging"
+    download_bootstrap_assets "$staging" "$cup_asset" "$platform" "$uninstall_asset"
+    verify_bootstrap_assets "$staging" "$cup_asset" "$platform" "$uninstall_asset"
+    backup_bootstrap_assets "$staging" "$cup_bin"
+    commit_bootstrap_assets \
+        "$staging" "$cup_asset" "$cup_bin" "$platform" "$uninstall_asset"
 
     chmod 0755 "$cup_bin"
     restore_permissions
@@ -615,7 +656,7 @@ install_assets() {
 
     info "cup installed successfully."
     info "Binary:    $cup_bin"
-    info "PackageCatalog:  $PACKAGES_CFG"
+    info "Package catalog: $PACKAGES_CFG"
     info "Install configuration: $INSTALL_CONFIG"
     info "Checksums: $COMMON_CHECKSUMS"
     info "           $PLATFORM_CHECKSUMS"
@@ -669,7 +710,9 @@ run_powershell_installer() {
     need_command mktemp
     delegate_dir="$(mktemp -d "${TMPDIR:-/tmp}/cup-install.XXXXXX")" ||
         fail "could not create a private installer directory"
-    delegate_cleanup() { rm -rf -- "$delegate_dir"; }
+    delegate_cleanup() {
+        rm -rf -- "$delegate_dir"
+    }
     trap delegate_cleanup EXIT HUP INT TERM
 
     download_file "$BASE_URL/SHA256SUMS.common" "$delegate_dir/SHA256SUMS.common"

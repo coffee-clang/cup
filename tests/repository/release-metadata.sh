@@ -23,7 +23,7 @@ expect_invalid() {
     fi
 }
 
-
+# Shell quoting and installer transport policy.
 quoted_path=$(sh -c '. "$1"; shell_quote "$2"' sh \
     "$functions" "/tmp/cup path/with'a quote")
 [ "$quoted_path" = "'/tmp/cup path/with'\\''a quote'" ] ||
@@ -59,6 +59,7 @@ if CUP_INSTALL_BASE_URL=https://user@example.invalid/releases sh -c \
     fail 'installer URL containing credentials unexpectedly succeeded'
 fi
 
+# Common checksum files must contain one exact, safe asset set.
 checksum_dir=$TMP_ROOT/checksums
 mkdir -p "$checksum_dir"
 printf '%s\n' packages > "$checksum_dir/packages.cfg"
@@ -77,6 +78,7 @@ sh -c '
     verify_named_checksum "$2" "$2/SHA256SUMS.common" install.ps1
 ' sh "$functions" "$checksum_dir"
 
+# Generated release metadata must be strict, complete and version-consistent.
 cat > "$TMP_ROOT/valid" <<'EOF'
 format=1
 version=0.2.0
@@ -131,12 +133,15 @@ commit=not-a-commit
 EOF
 expect_invalid "$TMP_ROOT/bad-commit"
 
+# Shell-profile integration must preserve existing content and reject link traversal.
 fish_home=$TMP_ROOT/fish-home
 mkdir -p "$fish_home"
 HOME="$fish_home" SHELL=/usr/bin/fish PATH=/usr/bin:/bin sh -c '
     . "$1"
     CUP_BIN_DIR="$HOME/.cup/bin"
-    prompt_tty() { printf "%s\n" y; }
+    prompt_tty() {
+        printf "%s\n" y
+    }
     offer_path_update >/dev/null
 ' sh "$functions"
 fish_config=$fish_home/.config/fish/conf.d/cup.fish
@@ -146,7 +151,9 @@ fish_config=$fish_home/.config/fish/conf.d/cup.fish
 HOME="$fish_home" SHELL=/usr/bin/fish PATH=/usr/bin:/bin sh -c '
     . "$1"
     CUP_BIN_DIR="$HOME/.cup/bin"
-    prompt_tty() { printf "%s\n" y; }
+    prompt_tty() {
+        printf "%s\n" y
+    }
     offer_path_update >/dev/null
 ' sh "$functions"
 [ "$(grep -Fxc 'fish_add_path "$HOME/.cup/bin"' "$fish_config")" = 1 ] ||
@@ -159,7 +166,9 @@ printf '%s\n' '# existing user content' > "$preserved_config"
 HOME="$preserved_home" SHELL=/usr/bin/fish PATH=/usr/bin:/bin sh -c '
     . "$1"
     CUP_BIN_DIR="$HOME/.cup/bin"
-    prompt_tty() { printf "%s\n" y; }
+    prompt_tty() {
+        printf "%s\n" y
+    }
     offer_path_update >/dev/null
 ' sh "$functions"
 grep -F '# existing user content' "$preserved_config" >/dev/null ||
@@ -176,7 +185,9 @@ ln -s "$external_profile" "$symlink_home/.bashrc"
 if HOME="$symlink_home" SHELL=/bin/bash PATH=/usr/bin:/bin sh -c '
     . "$1"
     CUP_BIN_DIR="$HOME/.cup/bin"
-    prompt_tty() { printf "%s\n" y; }
+    prompt_tty() {
+        printf "%s\n" y
+    }
     offer_path_update
 ' sh "$functions" >"$TMP_ROOT/symlink-profile.out" 2>&1; then
     fail 'symbolic-link shell profile unexpectedly succeeded'
@@ -191,7 +202,9 @@ ln -s "$ancestor_target" "$ancestor_home/.config"
 if HOME="$ancestor_home" SHELL=/usr/bin/fish PATH=/usr/bin:/bin sh -c '
     . "$1"
     CUP_BIN_DIR="$HOME/.cup/bin"
-    prompt_tty() { printf "%s\n" y; }
+    prompt_tty() {
+        printf "%s\n" y
+    }
     offer_path_update
 ' sh "$functions" >"$TMP_ROOT/symlink-ancestor.out" 2>&1; then
     fail 'shell profile below a symbolic-link directory unexpectedly succeeded'
@@ -199,6 +212,7 @@ fi
 [ ! -e "$ancestor_target/fish/conf.d/cup.fish" ] ||
     fail 'shell profile was written through a symbolic-link directory'
 
+# Stale uninstall residues are removed only when their provenance marker is valid.
 residue_home=$TMP_ROOT/uninstall-residue-home
 valid_residue=$residue_home/.cup-uninstall.valid
 mkdir -p "$valid_residue/root/bin"

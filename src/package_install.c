@@ -144,6 +144,7 @@ static CupError prepare_install(InstallOperation *operation,
     CupError err;
     int version_available;
 
+    /* Parse the request and acquire one exclusive, transaction-free command context. */
     operation->kind = kind;
     if (!text_is_empty(expected_active) && text_copy(operation->expected_active,
                                                      sizeof(operation->expected_active),
@@ -171,6 +172,7 @@ static CupError prepare_install(InstallOperation *operation,
         return err;
     }
 
+    /* Updates revalidate that the originally selected scope still exists. */
     if (kind == INSTALL_REQUEST_UPDATE) {
         int scope_installed;
 
@@ -190,6 +192,7 @@ static CupError prepare_install(InstallOperation *operation,
         }
     }
 
+    /* Resolve a concrete identity and confirm that the catalog still offers its version. */
     err = command_context_load_catalog(&operation->context);
     if (err != CUP_OK) {
         return err;
@@ -236,6 +239,7 @@ static CupError prepare_install(InstallOperation *operation,
         return CUP_ERR_NOT_AVAILABLE;
     }
 
+    /* A valid existing package is reusable only for update-scope activation. */
     err = installed_package_require_absent(&operation->context.state, &operation->package);
     if (err == CUP_ERR_ALREADY_INSTALLED) {
         if (kind == INSTALL_REQUEST_UPDATE) {
@@ -261,6 +265,7 @@ static CupError prepare_install(InstallOperation *operation,
         return err;
     }
 
+    /* Allocate identity-bound staging and persist the transaction before downloading. */
     err = resolve_archive_format(&operation->context.catalog,
                                  &operation->package,
                                  format_override,
@@ -351,6 +356,7 @@ static CupError extract_install_package(InstallOperation *operation) {
            operation->package.tool,
            operation->package.version);
 
+    /* Resolve the archive and checksum endpoints from one concrete catalog identity. */
     err = package_catalog_build_url(&operation->context.catalog,
                                     operation->url,
                                     sizeof(operation->url),
@@ -375,6 +381,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         return err;
     }
 
+    /* Prefer a verified cache entry, but record its source for one bounded refresh attempt. */
     err = package_cache_fetch(operation->archive_path,
                               sizeof(operation->archive_path),
                               operation->url,
@@ -397,6 +404,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         printf("==> Downloaded package archive.\n");
     }
 
+    /* Extract into staging and validate the package before any canonical path is touched. */
     err = extract_and_validate_package(operation);
     if (err != CUP_OK && source == PACKAGE_CACHE_SOURCE_CACHE &&
         package_failure_allows_refresh(err)) {
@@ -428,6 +436,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         err = extract_and_validate_package(operation);
     }
 
+    /* Network data that still fails package validation must not remain cached. */
     if (err != CUP_OK) {
         if (source == PACKAGE_CACHE_SOURCE_NETWORK && package_failure_allows_refresh(err)) {
             return discard_invalid_cache(operation, err);
@@ -435,6 +444,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         return err;
     }
 
+    /* Freeze package metadata and prepare the canonical parent only after validation succeeds. */
     err = package_set_metadata_read_only(operation->staging_path);
     if (err != CUP_OK) {
         return err;

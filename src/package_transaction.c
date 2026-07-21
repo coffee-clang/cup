@@ -31,7 +31,8 @@
     (COMMON_FIELDS | FIELD_COMPONENT | FIELD_TOOL | FIELD_HOST | FIELD_TARGET | \
      FIELD_PACKAGE_VERSION)
 
-/* Package transaction model. */
+/* Package journal schema and operation names. state.txt remains the commit point for
+ * install/remove. */
 void package_transaction_init(PackageTransaction *transaction) {
     if (transaction != NULL) {
         memset(transaction, 0, sizeof(*transaction));
@@ -78,7 +79,7 @@ static int temporary_name_matches_package_transaction(const PackageTransaction *
            transaction->temporary_name[prefix_length + 1] != '\0';
 }
 
-/* Journal persistence. */
+/* Write and parse transaction.txt as a strict all-or-nothing format=1 record set. */
 static CupError save_package_journal(const PackageTransaction *transaction) {
     CupError err;
     FILE *file = NULL;
@@ -361,7 +362,8 @@ CupError package_transaction_clear(void) {
     return CUP_OK;
 }
 
-/* Package transaction recovery. */
+/* Reconcile canonical and staged package paths only when valid state determines one
+ * unambiguous result. */
 static CupError inspect_package_path(const char *path, int *exists) {
     return system_path_exists(path, exists) == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
 }

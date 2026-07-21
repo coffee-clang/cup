@@ -166,6 +166,7 @@ static void check_state_packages(const CupState *state,
                                  DoctorReport *report) {
     size_t i;
 
+    /* Reconstruct and validate each installed package before checking secondary properties. */
     for (i = 0; i < state->installed_count; ++i) {
         const PackageIdentity *package = &state->installed[i];
         char selector[MAX_SELECTOR_LEN] = "(invalid identity)";
@@ -207,6 +208,7 @@ static void check_state_packages(const CupState *state,
             continue;
         }
 
+        /* Metadata protection is diagnostic and does not suppress catalog checks. */
         err = package_metadata_is_read_only(install_path, &is_read_only);
         if (err != CUP_OK) {
             printf("Incomplete: package metadata protection for '%s:%s' "
@@ -221,6 +223,7 @@ static void check_state_packages(const CupState *state,
             report->issue_count++;
         }
 
+        /* Catalog availability is a warning because installed concrete versions remain usable. */
         if (has_catalog) {
             err = package_catalog_has_version(catalog,
                                               package->component,
@@ -321,153 +324,154 @@ static CupError print_doctor_summary(const DoctorReport *report) {
     return CUP_ERR_INCONSISTENT_STATE;
 }
 
-/* Ordered read-only diagnostic pipeline. */
-CupError command_doctor(void) {
-    DoctorReport report = {0, 0, 0};
-    LayoutRuntimeStatus runtime_status;
-    CupState state;
-    StateFileStatus state_status = STATE_FILE_MISSING;
-    PackageCatalog catalog;
-    PackageList packages;
-    PackageTransaction package_transaction;
-    PackageTransactionStatus package_status;
-    CupUpdateJournal cup_update_journal;
-    CupUpdateJournalStatus cup_update_status;
-    RuntimeJournalKind journal_kind;
-    SystemLock lock = {0, 0};
+/* Runtime snapshot preparation. Diagnostics continue only after a shared lock protects one
+ * coherent view of state, journals and installed packages. */
+static void check_uninstall_marker(DoctorReport *report) {
     CupError err;
+    SystemPathKind marker_kind;
     char path[MAX_PATH_LEN];
-    char current_host[MAX_PLATFORM_LEN];
-    char transaction_path[MAX_PATH_LEN];
-    int state_loaded = 0;
-    int state_valid = 0;
-    int has_catalog = 0;
-    int lock_exists;
-    int tmp_exists;
-    size_t missing_count = 0;
-    size_t tmp_count = 0;
-
-    package_catalog_init(&catalog);
-    package_transaction_init(&package_transaction);
-    cup_update_journal_init(&cup_update_journal);
-    printf("==> Checking cup installation...\n");
-
-    err = check_cup_assets(&catalog, &report, &has_catalog);
-    if (err != CUP_OK) {
-        goto done;
-    }
 
     err = layout_get_uninstall_marker_path(path, sizeof(path));
-    if (err != CUP_OK) {
-        report_incomplete(&report, "uninstall marker");
-    } else {
-        SystemPathKind marker_kind;
-
+    if (err == CUP_OK) {
         err = system_get_path_kind(path, &marker_kind);
-        if (err != CUP_OK) {
-            report_incomplete(&report, "uninstall marker");
-        } else if (marker_kind != SYSTEM_PATH_MISSING) {
-            printf("Issue: an uninstall marker exists: %s\n", path);
-            report.issue_count++;
-        }
     }
+    if (err != CUP_OK) {
+        report_incomplete(report, "uninstall marker");
+    } else if (marker_kind != SYSTEM_PATH_MISSING) {
+        printf("Issue: an uninstall marker exists: %s\n", path);
+        report->issue_count++;
+    }
+}
+
+static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
+    LayoutRuntimeStatus runtime_status;
+    CupError err;
+    char path[MAX_PATH_LEN];
+    int lock_exists;
 
     err = layout_get_runtime_status(&runtime_status);
     if (err != CUP_OK) {
-        report_incomplete(&report, "runtime structure");
-        err = print_doctor_summary(&report);
-        goto done;
+        report_incomplete(report, "runtime structure");
+        return 0;
     }
-
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
         printf("Info: cup runtime is not initialized; "
                "the first operational command will create it.\n");
-        err = print_doctor_summary(&report);
-        goto done;
+        return 0;
     }
-
     if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
         printf("Issue: cup runtime structure is incomplete.\n");
-        report.issue_count++;
+        report->issue_count++;
     }
 
     err = layout_get_lock_path(path, sizeof(path));
-    if (err != CUP_OK) {
-        report_incomplete(&report, "lock file");
-        err = print_doctor_summary(&report);
-        goto done;
+    if (err == CUP_OK) {
+        err = system_is_regular_file(path, &lock_exists);
     }
-
-    err = system_is_regular_file(path, &lock_exists);
     if (err != CUP_OK) {
-        report_incomplete(&report, "lock file");
-        err = print_doctor_summary(&report);
-        goto done;
+        report_incomplete(report, "lock file");
+        return 0;
     }
-
     if (!lock_exists) {
         printf("Issue: cup lock file is missing: %s\n", path);
-        report.issue_count++;
-        report_incomplete(&report, "coherent runtime snapshot");
-        err = print_doctor_summary(&report);
-        goto done;
-    } else {
-        err = system_lock_acquire(&lock, path, SYSTEM_LOCK_SHARED);
-        if (err != CUP_OK) {
-            printf("Issue: %s.\n",
-                   err == CUP_ERR_LOCK ? "another cup operation is currently running"
-                                       : "cup lock could not be acquired");
-            report.issue_count++;
-            err = print_doctor_summary(&report);
-            goto done;
-        }
+        report->issue_count++;
+        report_incomplete(report, "coherent runtime snapshot");
+        return 0;
     }
 
-    err = platform_get_host(current_host, sizeof(current_host));
+    err = system_lock_acquire(lock, path, SYSTEM_LOCK_SHARED);
     if (err != CUP_OK) {
-        report_incomplete(&report, "current host platform");
+        printf("Issue: %s.\n",
+               err == CUP_ERR_LOCK ? "another cup operation is currently running"
+                                   : "cup lock could not be acquired");
+        report->issue_count++;
+        return 0;
+    }
+    return 1;
+}
+
+static void check_runtime_contents(DoctorReport *report,
+                                   char *current_host,
+                                   size_t current_host_size) {
+    CupError err;
+    size_t missing_count = 0;
+
+    err = platform_get_host(current_host, current_host_size);
+    if (err != CUP_OK) {
+        report_incomplete(report, "current host platform");
         current_host[0] = '\0';
     }
 
     err = layout_check_runtime(&missing_count);
     if (err != CUP_OK) {
-        report_incomplete(&report, "runtime contents");
+        report_incomplete(report, "runtime contents");
     } else {
-        report.issue_count += (int)missing_count;
+        report->issue_count += (int)missing_count;
     }
+}
 
-    err = state_load(&state, &state_status);
+static void load_and_check_state(CupState *state,
+                                 const char *current_host,
+                                 DoctorReport *report,
+                                 int *state_loaded,
+                                 int *state_valid) {
+    StateFileStatus state_status = STATE_FILE_MISSING;
+    CupError err;
+
+    *state_loaded = 0;
+    *state_valid = 0;
+    err = state_load(state, &state_status);
     if (err != CUP_OK) {
         printf("Issue: state.txt is syntactically invalid.\n");
-        report.issue_count++;
-    } else if (state_status == STATE_FILE_MISSING) {
+        report->issue_count++;
+        return;
+    }
+    if (state_status == STATE_FILE_MISSING) {
         printf("Issue: state.txt is missing.\n");
-        report.issue_count++;
-    } else {
-        state_loaded = 1;
-        if (state_validate(&state) != CUP_OK) {
-            printf("Issue: state.txt is semantically inconsistent.\n");
-            report.issue_count++;
-        } else {
-            size_t foreign_records;
+        report->issue_count++;
+        return;
+    }
 
-            state_valid = 1;
-            foreign_records = state_count_foreign_hosts(&state, current_host);
-            printf("OK: state.txt is structurally valid.\n");
-            if (foreign_records > 0) {
-                printf("Warning: state.txt preserves %zu record(s) for foreign hosts; operational "
-                       "commands will not manage them.\n",
-                       foreign_records);
-                report.warning_count++;
-            }
+    *state_loaded = 1;
+    if (state_validate(state) != CUP_OK) {
+        printf("Issue: state.txt is semantically inconsistent.\n");
+        report->issue_count++;
+        return;
+    }
+
+    {
+        size_t foreign_records = state_count_foreign_hosts(state, current_host);
+
+        *state_valid = 1;
+        printf("OK: state.txt is structurally valid.\n");
+        if (foreign_records > 0) {
+            printf("Warning: state.txt preserves %zu record(s) for foreign hosts; operational "
+                   "commands will not manage them.\n",
+                   foreign_records);
+            report->warning_count++;
         }
     }
+}
+
+static void check_transaction_journal(DoctorReport *report) {
+    PackageTransaction package_transaction;
+    PackageTransactionStatus package_status;
+    CupUpdateJournal cup_update_journal;
+    CupUpdateJournalStatus cup_update_status;
+    RuntimeJournalKind journal_kind;
+    CupError err;
+
+    package_transaction_init(&package_transaction);
+    cup_update_journal_init(&cup_update_journal);
 
     err = runtime_journal_detect(&journal_kind);
     if (err != CUP_OK) {
         printf("Issue: transaction journal is invalid.\n");
-        report.issue_count++;
-    } else if (journal_kind == RUNTIME_JOURNAL_PACKAGE) {
+        report->issue_count++;
+        return;
+    }
+
+    if (journal_kind == RUNTIME_JOURNAL_PACKAGE) {
         err = package_transaction_load(&package_transaction, &package_status);
         if (err != CUP_OK || package_status != PACKAGE_TRANSACTION_LOADED) {
             printf("Issue: package transaction journal is invalid.\n");
@@ -477,64 +481,133 @@ CupError command_doctor(void) {
                    package_transaction.package.tool,
                    package_transaction.package.version);
         }
-        report.issue_count++;
+        report->issue_count++;
     } else if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
         err = cup_update_journal_load(&cup_update_journal, &cup_update_status);
         printf(err == CUP_OK && cup_update_status == CUP_UPDATE_JOURNAL_LOADED
                    ? "Issue: interrupted CUP update transaction detected.\n"
                    : "Issue: CUP update journal is invalid.\n");
-        report.issue_count++;
+        report->issue_count++;
+    }
+}
+
+static void check_state_wrappers(const CupState *state,
+                                 int state_loaded,
+                                 int state_valid,
+                                 const PackageCatalog *catalog,
+                                 int has_catalog,
+                                 DoctorReport *report) {
+    WrapperPlan wrappers;
+    CupError err;
+    size_t wrapper_issues = 0;
+
+    if (!state_loaded) {
+        return;
     }
 
-    check_cup_update_result(&report);
-
-    if (state_loaded) {
-        WrapperPlan wrappers;
-        size_t wrapper_issues = 0;
-
-        wrapper_plan_init(&wrappers);
-        check_state_packages(&state, &catalog, has_catalog, &report);
-        if (state_valid) {
-            err = wrapper_plan_build(&wrappers, &state);
-            if (err == CUP_OK) {
-                err = wrapper_plan_check(&wrappers, &wrapper_issues);
-            }
-            if (err != CUP_OK) {
-                report_incomplete(&report, "managed wrappers");
-            } else {
-                report.issue_count += (int)wrapper_issues;
-                if (wrapper_issues == 0) {
-                    printf("OK: managed wrappers are consistent.\n");
-                }
+    wrapper_plan_init(&wrappers);
+    check_state_packages(state, catalog, has_catalog, report);
+    if (state_valid) {
+        err = wrapper_plan_build(&wrappers, state);
+        if (err == CUP_OK) {
+            err = wrapper_plan_check(&wrappers, &wrapper_issues);
+        }
+        if (err != CUP_OK) {
+            report_incomplete(report, "managed wrappers");
+        } else {
+            report->issue_count += (int)wrapper_issues;
+            if (wrapper_issues == 0) {
+                printf("OK: managed wrappers are consistent.\n");
             }
         }
-        wrapper_plan_free(&wrappers);
     }
+    wrapper_plan_free(&wrappers);
+}
 
-    err = package_scan(&packages);
+static void check_package_tree(const CupState *state,
+                               int state_loaded,
+                               DoctorReport *report) {
+    PackageList packages;
+    CupError err = package_scan(&packages);
+
     if (err == CUP_OK) {
-        check_scanned_packages(&packages, &state, state_loaded, &report);
+        check_scanned_packages(&packages, state, state_loaded, report);
     } else {
-        report_incomplete(&report, "installed package tree");
+        report_incomplete(report, "installed package tree");
     }
+}
+
+static void check_staging_leftovers(DoctorReport *report) {
+    CupError err;
+    char path[MAX_PATH_LEN];
+    char transaction_path[MAX_PATH_LEN];
+    int staging_exists;
+    size_t item_count = 0;
 
     err = layout_get_staging_dir(path, sizeof(path));
     if (err != CUP_OK) {
-        report_incomplete(&report, "staging directory");
-    } else if (layout_get_transaction_path(transaction_path, sizeof(transaction_path)) != CUP_OK) {
-        report_incomplete(&report, "transaction journal path");
-    } else if (system_is_directory(path, &tmp_exists) != CUP_OK) {
-        report_incomplete(&report, "staging directory");
-    } else if (tmp_exists) {
-        err = filesystem_count_children(path, transaction_path, &tmp_count);
-        if (err != CUP_OK) {
-            report_incomplete(&report, "staging directory contents");
-        } else if (tmp_count > 0) {
-            printf("Warning: staging directory contains %zu leftover item(s).\n", tmp_count);
-            report.warning_count++;
-        }
+        report_incomplete(report, "staging directory");
+        return;
+    }
+    err = layout_get_transaction_path(transaction_path, sizeof(transaction_path));
+    if (err != CUP_OK) {
+        report_incomplete(report, "transaction journal path");
+        return;
+    }
+    err = system_is_directory(path, &staging_exists);
+    if (err != CUP_OK) {
+        report_incomplete(report, "staging directory");
+        return;
+    }
+    if (!staging_exists) {
+        return;
     }
 
+    err = filesystem_count_children(path, transaction_path, &item_count);
+    if (err != CUP_OK) {
+        report_incomplete(report, "staging directory contents");
+    } else if (item_count > 0) {
+        printf("Warning: staging directory contains %zu leftover item(s).\n", item_count);
+        report->warning_count++;
+    }
+}
+
+/* Ordered read-only diagnostic pipeline. */
+CupError command_doctor(void) {
+    DoctorReport report = {0, 0, 0};
+    PackageCatalog catalog;
+    CupState state;
+    SystemLock lock = {0, 0};
+    CupError err;
+    char current_host[MAX_PLATFORM_LEN];
+    int state_loaded;
+    int state_valid;
+    int has_catalog = 0;
+
+    package_catalog_init(&catalog);
+    printf("==> Checking cup installation...\n");
+
+    /* Assets and uninstall state can be inspected before the managed runtime exists. */
+    err = check_cup_assets(&catalog, &report, &has_catalog);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    check_uninstall_marker(&report);
+
+    if (!acquire_runtime_snapshot(&report, &lock)) {
+        err = print_doctor_summary(&report);
+        goto done;
+    }
+
+    check_runtime_contents(&report, current_host, sizeof(current_host));
+    load_and_check_state(
+        &state, current_host, &report, &state_loaded, &state_valid);
+    check_transaction_journal(&report);
+    check_cup_update_result(&report);
+    check_state_wrappers(
+        &state, state_loaded, state_valid, &catalog, has_catalog, &report);
+    check_package_tree(&state, state_loaded, &report);
+    check_staging_leftovers(&report);
     err = print_doctor_summary(&report);
 
 done:

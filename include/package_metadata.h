@@ -2,8 +2,8 @@
 #define CUP_PACKAGE_METADATA_H
 
 /*
- * Module contract: Generic immutable info.txt key/value storage and ordered
- * field iteration. Package identity policy is enforced by package.c.
+ * Immutable info.txt key/value storage with ordered field iteration. Package identity policy is
+ * enforced by package.c.
  */
 
 #include <stddef.h>

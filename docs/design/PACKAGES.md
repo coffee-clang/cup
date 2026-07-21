@@ -384,17 +384,9 @@ coordinated with an inventory of those release packages.
 
 ## Implementation and verification
 
-`package_catalog.c` owns catalog parsing and template validation. `package.c`,
-`package_metadata.c` and `package_archive.c` validate installed and archived
-package contracts, while `package_extract.c` enforces extraction safety.
-`download.c` and `package_cache.c` own transfer and cache behavior.
-`command_install.c` builds public installation plans, while
-`package_install.c` performs the reusable one-scope operation.
-
-Focused tests cover catalog records, package metadata, archive preflight and
-cache behavior. Integration tests add malformed catalogs, unsafe archives,
-installation and repair/adoption scenarios without reimplementing package
-validation in shell. See [TESTING](../development/TESTING.md).
+Package-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). The
+focused and process-level checks for these contracts are listed in
+[TESTING](../development/TESTING.md).
 
 ## Related documents
 

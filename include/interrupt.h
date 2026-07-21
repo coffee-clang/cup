@@ -2,9 +2,8 @@
 #define CUP_INTERRUPT_H
 
 /*
- * Module contract: Process-wide interrupt observation for one public mutating
- * command. Native handlers only record intent; transactional code decides at
- * which boundary cancellation is safe.
+ * Process-wide interrupt observation for one mutating command. Native handlers only record
+ * intent; transactional code decides where cancellation is safe.
  */
 
 #include "error.h"

@@ -1,6 +1,7 @@
 # Purpose: Installs one immutable official cup bootstrap under the canonical Windows user root.
 # The generated release version, tag and commit select and verify all downloaded assets.
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoOwner = "coffee-clang"
@@ -39,8 +40,7 @@ function Write-Info([string]$Message) {
     Write-Host $Message
 }
 
-# Validate generated release identity before any download.
-# Release identity and transport policy.
+# Release identity, platform and transport validation.
 function Assert-InstallerIdentity {
     $PlaceholderMarker = '@' + 'CUP_RELEASE_'
     if ($ReleaseVersion.Contains($PlaceholderMarker) -or
@@ -59,7 +59,6 @@ function Assert-InstallerIdentity {
     }
 }
 
-
 function Assert-BaseUrl {
     try {
         $uri = [Uri]$BaseUrl
@@ -69,7 +68,9 @@ function Assert-BaseUrl {
     if (-not $uri.IsAbsoluteUri -or -not [string]::IsNullOrEmpty($uri.UserInfo)) {
         Fail "installer base URL is invalid"
     }
-    if ($uri.Scheme -ceq 'https') { return }
+    if ($uri.Scheme -ceq 'https') {
+        return
+    }
     if ($uri.Scheme -ceq 'http' -and $uri.IsLoopback -and
         $env:CUP_INSTALL_ALLOW_INSECURE -ceq '1') {
         return
@@ -78,7 +79,9 @@ function Assert-BaseUrl {
 }
 
 function Assert-DownloadUri([Uri]$Uri) {
-    if ($Uri.Scheme -ceq 'https') { return }
+    if ($Uri.Scheme -ceq 'https') {
+        return
+    }
     if ($Uri.Scheme -ceq 'http' -and $Uri.IsLoopback -and
         $env:CUP_INSTALL_ALLOW_INSECURE -ceq '1') {
         return
@@ -105,7 +108,6 @@ function Test-WindowsX64 {
     }
 }
 
-# Download and checksum validation.
 # Download and strict checksum validation.
 function Download-File([string]$Url, [string]$Output) {
     try {
@@ -118,7 +120,9 @@ function Download-File([string]$Url, [string]$Output) {
                 $finalUri = $response.BaseResponse.RequestMessage.RequestUri
             }
         }
-        if ($null -ne $finalUri) { Assert-DownloadUri $finalUri }
+        if ($null -ne $finalUri) {
+            Assert-DownloadUri $finalUri
+        }
     } catch {
         Fail "failed to download $Url"
     }
@@ -131,7 +135,9 @@ function Download-File([string]$Url, [string]$Output) {
 function Read-ChecksumEntries([string]$ChecksumFile) {
     $entries = [System.Collections.Generic.List[object]]::new()
     foreach ($line in Get-Content -LiteralPath $ChecksumFile) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
         if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(\S+)$') {
             Fail "invalid checksum file: $ChecksumFile"
         }
@@ -223,12 +229,15 @@ function Assert-ReleaseMetadata(
 }
 
 # Optional user PATH integration.
-# User PATH handling and private-directory permissions.
 function Test-CupBinInUserPath {
     $path = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($null -eq $path) { return $false }
+    if ($null -eq $path) {
+        return $false
+    }
     foreach ($entry in ($path -split ';')) {
-        if ($entry.TrimEnd('\') -ieq $CupBinDir.TrimEnd('\')) { return $true }
+        if ($entry.TrimEnd('\') -ieq $CupBinDir.TrimEnd('\')) {
+            return $true
+        }
     }
     return $false
 }
@@ -259,9 +268,11 @@ function Add-CupToUserPath {
     }
 }
 
-# Recoverable bootstrap replacement.
+# File attributes, reparse-point checks and transactional replacement.
 function Clear-ReadOnly([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return
+    }
     $item = Get-Item -LiteralPath $Path -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         return
@@ -270,7 +281,9 @@ function Clear-ReadOnly([string]$Path) {
 }
 
 function Assert-DirectoryIsNotReparsePoint([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
     $item = Get-Item -LiteralPath $Path -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         Fail "bootstrap staging path is a reparse point: $Path"
@@ -282,7 +295,9 @@ function Assert-DirectoryIsNotReparsePoint([string]$Path) {
 
 function Set-BootstrapPermissions {
     foreach ($path in @($PackagesCfg, $InstallPolicy, $CommonChecksums, $PlatformChecksums, $UninstallScript)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            continue
+        }
         $item = Get-Item -LiteralPath $path -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
             Set-ItemProperty -LiteralPath $path -Name IsReadOnly -Value $true
@@ -293,17 +308,41 @@ function Set-BootstrapPermissions {
 # Transactional bootstrap asset backup, commit and recovery.
 function Get-Assets {
     return @(
-        @{ Key = "binary"; Source = Join-Path $Staging $CupAsset; Destination = $CupExe },
-        @{ Key = "update-helper"; Source = Join-Path $Staging "cup-update-helper.exe"; Destination = $UpdateHelper },
-        @{ Key = "manifest"; Source = Join-Path $Staging "packages.cfg"; Destination = $PackagesCfg },
-        @{ Key = "install-config"; Source = Join-Path $Staging "install.cfg"; Destination = $InstallPolicy },
-        @{ Key = "common-checksums"; Source = Join-Path $Staging "SHA256SUMS.common"; Destination = $CommonChecksums },
+        @{
+            Key = "binary"
+            Source = Join-Path $Staging $CupAsset
+            Destination = $CupExe
+        },
+        @{
+            Key = "update-helper"
+            Source = Join-Path $Staging "cup-update-helper.exe"
+            Destination = $UpdateHelper
+        },
+        @{
+            Key = "manifest"
+            Source = Join-Path $Staging "packages.cfg"
+            Destination = $PackagesCfg
+        },
+        @{
+            Key = "install-config"
+            Source = Join-Path $Staging "install.cfg"
+            Destination = $InstallPolicy
+        },
+        @{
+            Key = "common-checksums"
+            Source = Join-Path $Staging "SHA256SUMS.common"
+            Destination = $CommonChecksums
+        },
         @{
             Key = "platform-checksums"
             Source = Join-Path $Staging "SHA256SUMS.$Platform"
             Destination = $PlatformChecksums
         },
-        @{ Key = "uninstall"; Source = Join-Path $Staging "uninstall.ps1"; Destination = $UninstallScript }
+        @{
+            Key = "uninstall"
+            Source = Join-Path $Staging "uninstall.ps1"
+            Destination = $UninstallScript
+        }
     )
 }
 
@@ -328,16 +367,30 @@ function Restore-Asset([hashtable]$Asset) {
 }
 
 function Recover-Staging {
-    if (-not (Test-Path -LiteralPath $Staging -PathType Container)) { return }
+    if (-not (Test-Path -LiteralPath $Staging -PathType Container)) {
+        return
+    }
     Write-Info "Recovering an interrupted cup bootstrap installation."
     $errors = [System.Collections.Generic.List[string]]::new()
     foreach ($asset in (Get-Assets)) {
-        try { Restore-Asset $asset } catch { $errors.Add($_.Exception.Message) }
+        try {
+            Restore-Asset $asset
+        } catch {
+            $errors.Add($_.Exception.Message)
+        }
     }
-    try { Set-BootstrapPermissions } catch { $errors.Add($_.Exception.Message) }
+    try {
+        Set-BootstrapPermissions
+    } catch {
+        $errors.Add($_.Exception.Message)
+    }
 
     if ($errors.Count -gt 0) {
-        Fail "the previous bootstrap installation could not be recovered; staging was preserved at $Staging"
+        $details = $errors -join [Environment]::NewLine
+        Fail (
+            "the previous bootstrap installation could not be recovered; " +
+            "staging was preserved at $Staging$([Environment]::NewLine)$details"
+        )
     }
     Remove-Item -LiteralPath $Staging -Recurse -Force
 }
@@ -386,7 +439,7 @@ function Remove-ValidatedUninstallResidues {
     }
 }
 
-
+# Private root ACL creation and validation.
 function Set-PrivateDirectory([string]$Path) {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $userSid = $identity.User
@@ -442,22 +495,95 @@ function Assert-PrivateDirectory([string]$Path) {
     }
 }
 
-# Native Windows installation pipeline.
+
+# Keep filesystem preparation, transfer, verification and transaction phases
+# separate so Main expresses the recovery-safe installation order directly.
+function Initialize-InstallationDirectories {
+    Assert-DirectoryIsNotReparsePoint $CupRoot
+    New-Item -ItemType Directory -Force -Path $CupRoot | Out-Null
+    Set-PrivateDirectory $CupRoot
+    Assert-PrivateDirectory $CupRoot
+
+    foreach ($directory in @($CupBinDir, $CupConfigDir, $CupHelpersDir)) {
+        Assert-DirectoryIsNotReparsePoint $directory
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        Assert-DirectoryIsNotReparsePoint $directory
+    }
+}
+
+function Receive-BootstrapAssets {
+    Download-File "$BaseUrl/$CupAsset" (Join-Path $Staging $CupAsset)
+    Download-File "$BaseUrl/packages.cfg" (Join-Path $Staging "packages.cfg")
+    Download-File "$BaseUrl/install.cfg" (Join-Path $Staging "install.cfg")
+    Download-File "$BaseUrl/uninstall.ps1" (Join-Path $Staging "uninstall.ps1")
+    Download-File "$BaseUrl/release.txt" (Join-Path $Staging "release.txt")
+    Download-File "$BaseUrl/SHA256SUMS.$Platform" (Join-Path $Staging "SHA256SUMS.$Platform")
+    Download-File "$BaseUrl/SHA256SUMS.common" (Join-Path $Staging "SHA256SUMS.common")
+}
+
+function Assert-BootstrapAssets {
+    Assert-Checksums -Directory $Staging `
+        -ChecksumFile (Join-Path $Staging "SHA256SUMS.$Platform") `
+        -ExpectedNames @($CupAsset, "uninstall.ps1", "release.txt")
+
+    $commonChecksumFile = Join-Path $Staging "SHA256SUMS.common"
+    Assert-ChecksumNames -ChecksumFile $commonChecksumFile `
+        -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
+    Assert-NamedChecksum -Directory $Staging -ChecksumFile $commonChecksumFile `
+        -ExpectedName "packages.cfg"
+    Assert-NamedChecksum -Directory $Staging -ChecksumFile $commonChecksumFile `
+        -ExpectedName "install.cfg"
+    Assert-ReleaseMetadata `
+        (Join-Path $Staging "release.txt") $ReleaseVersion $ReleaseCommit
+
+    Copy-Item -LiteralPath (Join-Path $Staging $CupAsset) `
+        -Destination (Join-Path $Staging "cup-update-helper.exe")
+}
+
+function Backup-BootstrapAssets {
+    foreach ($asset in (Get-Assets)) {
+        Backup-Asset $asset
+    }
+}
+
+function Commit-BootstrapAssets {
+    foreach ($asset in (Get-Assets)) {
+        Commit-Asset $asset
+    }
+}
+
+function Invoke-BootstrapRollback {
+    $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+    foreach ($asset in (Get-Assets)) {
+        try {
+            Restore-Asset $asset
+        } catch {
+            $rollbackErrors.Add($_.Exception.Message)
+        }
+    }
+    try {
+        Set-BootstrapPermissions
+    } catch {
+        $rollbackErrors.Add($_.Exception.Message)
+    }
+
+    if ($rollbackErrors.Count -gt 0) {
+        $details = $rollbackErrors -join [Environment]::NewLine
+        throw (
+            "rollback was incomplete; staging was preserved at $Staging" +
+            "$([Environment]::NewLine)$details"
+        )
+    }
+    Remove-Item -LiteralPath $Staging -Recurse -Force
+}
+
 # Main installation pipeline: discover, download, verify, commit and report.
 function Main {
     Assert-InstallerIdentity
     Assert-BaseUrl
     Test-WindowsX64
     Remove-ValidatedUninstallResidues
-    Assert-DirectoryIsNotReparsePoint $CupRoot
-    New-Item -ItemType Directory -Force -Path $CupRoot | Out-Null
-    Set-PrivateDirectory $CupRoot
-    Assert-PrivateDirectory $CupRoot
-    foreach ($directory in @($CupBinDir, $CupConfigDir, $CupHelpersDir)) {
-        Assert-DirectoryIsNotReparsePoint $directory
-        New-Item -ItemType Directory -Force -Path $directory | Out-Null
-        Assert-DirectoryIsNotReparsePoint $directory
-    }
+    Initialize-InstallationDirectories
 
     Assert-DirectoryIsNotReparsePoint $Staging
     Recover-Staging
@@ -468,55 +594,27 @@ function Main {
 
     try {
         Write-Info "Installing cup into $CupRoot"
-        Download-File "$BaseUrl/$CupAsset" (Join-Path $Staging $CupAsset)
-        Download-File "$BaseUrl/packages.cfg" (Join-Path $Staging "packages.cfg")
-        Download-File "$BaseUrl/install.cfg" (Join-Path $Staging "install.cfg")
-        Download-File "$BaseUrl/uninstall.ps1" (Join-Path $Staging "uninstall.ps1")
-        Download-File "$BaseUrl/release.txt" (Join-Path $Staging "release.txt")
-        Download-File "$BaseUrl/SHA256SUMS.$Platform" (Join-Path $Staging "SHA256SUMS.$Platform")
-        Download-File "$BaseUrl/SHA256SUMS.common" (Join-Path $Staging "SHA256SUMS.common")
-
-        Assert-Checksums -Directory $Staging `
-            -ChecksumFile (Join-Path $Staging "SHA256SUMS.$Platform") `
-            -ExpectedNames @($CupAsset, "uninstall.ps1", "release.txt")
-        $commonChecksumFile = Join-Path $Staging "SHA256SUMS.common"
-        Assert-ChecksumNames -ChecksumFile $commonChecksumFile `
-            -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
-        Assert-NamedChecksum -Directory $Staging -ChecksumFile $commonChecksumFile `
-            -ExpectedName "packages.cfg"
-        Assert-NamedChecksum -Directory $Staging -ChecksumFile $commonChecksumFile `
-            -ExpectedName "install.cfg"
-        Assert-ReleaseMetadata (Join-Path $Staging "release.txt") $ReleaseVersion $ReleaseCommit
-        Copy-Item -LiteralPath (Join-Path $Staging $CupAsset) `
-            -Destination (Join-Path $Staging "cup-update-helper.exe")
-
-        $assets = Get-Assets
-        foreach ($asset in $assets) { Backup-Asset $asset }
-        foreach ($asset in $assets) { Commit-Asset $asset }
+        Receive-BootstrapAssets
+        Assert-BootstrapAssets
+        Backup-BootstrapAssets
+        Commit-BootstrapAssets
         Set-BootstrapPermissions
+
         if (Test-Path -LiteralPath $UninstallMarker) {
             Remove-Item -LiteralPath $UninstallMarker -Force
         }
         $committed = $true
     } finally {
-        if (-not $committed -and (Test-Path -LiteralPath $Staging -PathType Container)) {
-            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
-            foreach ($asset in (Get-Assets)) {
-                try { Restore-Asset $asset } catch { $rollbackErrors.Add($_.Exception.Message) }
-            }
-            try { Set-BootstrapPermissions } catch { $rollbackErrors.Add($_.Exception.Message) }
-            if ($rollbackErrors.Count -eq 0) {
-                Remove-Item -LiteralPath $Staging -Recurse -Force
-            } else {
-                throw "rollback was incomplete; staging was preserved at $Staging"
-            }
+        if (-not $committed -and
+            (Test-Path -LiteralPath $Staging -PathType Container)) {
+            Invoke-BootstrapRollback
         }
     }
 
     Remove-Item -LiteralPath $Staging -Recurse -Force
     Write-Info "cup installed successfully."
-    Write-Info "Binary:    $CupExe"
-    Write-Info "PackageCatalog:  $PackagesCfg"
+    Write-Info "Binary: $CupExe"
+    Write-Info "Package catalog: $PackagesCfg"
     Write-Info "Install configuration: $InstallPolicy"
     Write-Info "Checksums: $CommonChecksums"
     Write-Info "           $PlatformChecksums"

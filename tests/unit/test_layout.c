@@ -18,7 +18,11 @@ void tearDown(void);
 #include <string.h>
 #include <unistd.h>
 
+/* Shared fixture state used by the cases in this suite. */
+
 static char temp_dir[] = "/tmp/cup-layout-test-XXXXXX";
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_package_paths(void) {
     PackageIdentity identity = {.component = "compiler",
@@ -29,6 +33,7 @@ static void test_package_paths(void) {
     char path[1024];
     char expected[1024];
 
+    /* Root and fixed asset paths share the caller's HOME-derived .cup directory. */
     TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup", temp_dir) > 0);
@@ -59,6 +64,7 @@ static void test_package_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_marker_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "/.cup/uninstall.pending") != NULL);
 
+    /* Package and cache paths derive exclusively from the validated concrete identity. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_build_install_path(path, sizeof(path), &identity));
     TEST_ASSERT_TRUE(strstr(path, "/components/compiler/clang/linux-x64/windows-x64/22.1.5") !=
                      NULL);
@@ -87,6 +93,7 @@ static void test_runtime_paths(void) {
     FILE *file;
     int exists;
 
+    /* Runtime status advances from missing to incomplete and then ready. */
     TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_runtime_status(&status));
     TEST_ASSERT_EQUAL_INT(LAYOUT_RUNTIME_MISSING, status);
@@ -105,6 +112,7 @@ static void test_runtime_paths(void) {
     TEST_ASSERT_EQUAL_INT(LAYOUT_RUNTIME_READY, status);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_runtime(&missing));
     TEST_ASSERT_EQUAL_size_t(0, missing);
+    /* Root permissions are part of readiness and are repaired idempotently. */
     {
         char root_path[1024];
         int is_private;
@@ -181,6 +189,8 @@ static void test_recovery_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           layout_create_recovery_dir(path, sizeof(path), NULL));
 }
+
+/* Suite registration. */
 
 void register_layout_tests(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

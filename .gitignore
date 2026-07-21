@@ -73,3 +73,7 @@ Doxyfile
 
 # Generated release artifacts
 /dist/
+
+# Local formatting configuration
+/.clang-format
+/.editorconfig

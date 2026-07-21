@@ -2,8 +2,8 @@
 #define CUP_PACKAGE_H
 
 /*
- * Module contract: Concrete package identities, installed-package
- * validation, component-tree scanning, and quarantine of invalid paths.
+ * Concrete package identities, installed-package validation, component-tree scanning, and
+ * quarantine of invalid paths.
  */
 
 #include <stddef.h>

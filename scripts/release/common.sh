@@ -14,19 +14,14 @@ info() {
     printf '%s\n' "$*"
 }
 
-checksum_command() {
+hash_file() {
     if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s\n' sha256sum
+        sha256sum "$1" | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
-        printf '%s\n' 'shasum -a 256'
+        shasum -a 256 "$1" | awk '{print $1}'
     else
         fail 'neither sha256sum nor shasum is available'
     fi
-}
-
-hash_file() {
-    checksum=$(checksum_command)
-    $checksum "$1" | awk '{print $1}'
 }
 
 # Validate the identity that all candidate artifacts must share.
@@ -40,6 +35,69 @@ validate_release_inputs() {
         fail "invalid VERSION: $VERSION"
     printf '%s\n' "$SHA" | grep -Eq '^[0-9a-f]{40}$' ||
         fail "invalid SHA: $SHA"
+}
+
+# Validate the immutable provenance record shared by candidate inspection and
+# publication. Empty expected values skip the corresponding workflow identity
+# check while preserving the file format and source identity checks.
+validate_provenance_file() {
+    file=$1
+    expected_repository=${2:-}
+    expected_run_id=${3:-}
+    expected_run_attempt=${4:-}
+
+    [ -f "$file" ] || fail "missing provenance file: $file"
+
+    awk -F= \
+        -v version="$VERSION" \
+        -v sha="$SHA" \
+        -v expected_repository="$expected_repository" \
+        -v expected_run_id="$expected_run_id" \
+        -v expected_run_attempt="$expected_run_attempt" '
+        function valid_repository(value) {
+            return value ~ /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+        }
+        function valid_number(value) {
+            return value ~ /^[1-9][0-9]*$/
+        }
+        $1 == "format" && NF == 2 && $2 == "1" { seen_format++; next }
+        $1 == "version" && NF == 2 && $2 == version { seen_version++; next }
+        $1 == "source_repository" && NF == 2 && valid_repository($2) {
+            repository=$2
+            seen_repository++
+            next
+        }
+        $1 == "source_commit" && NF == 2 && $2 == sha { seen_commit++; next }
+        $1 == "tests_run_id" && NF == 2 && valid_number($2) {
+            run_id=$2
+            seen_run_id++
+            next
+        }
+        $1 == "tests_run_attempt" && NF == 2 && valid_number($2) {
+            run_attempt=$2
+            seen_run_attempt++
+            next
+        }
+        { invalid=1 }
+        END {
+            if (invalid || NR != 6 || seen_format != 1 || seen_version != 1 ||
+                    seen_repository != 1 || seen_commit != 1 ||
+                    seen_run_id != 1 || seen_run_attempt != 1)
+                exit 1
+            if (expected_repository != "" && repository != expected_repository)
+                exit 1
+            if (expected_run_id != "" && run_id != expected_run_id)
+                exit 1
+            if (expected_run_attempt != "" && run_attempt != expected_run_attempt)
+                exit 1
+        }
+    ' "$file" || fail "invalid provenance file: $file"
+}
+
+provenance_value() {
+    key=$1
+    file=$2
+    sed -n "s/^${key}=//p" "$file"
 }
 
 # Create the ephemeral local tag without moving an existing tag.
@@ -71,8 +129,14 @@ prepare_installer() {
 verify_checksums() {
     directory=$1
     shift
-    checksum=$(checksum_command)
-    (cd "$directory" && $checksum -c "$@")
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$directory" && sha256sum -c "$@")
+    elif command -v shasum >/dev/null 2>&1; then
+        (cd "$directory" && shasum -a 256 -c "$@")
+    else
+        fail 'neither sha256sum nor shasum is available'
+    fi
 }
 
 # Verify both checksum contents and the exact authorized asset set.

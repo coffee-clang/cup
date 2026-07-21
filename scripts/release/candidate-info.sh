@@ -129,7 +129,7 @@ done < "$dist/candidate.env"
 [ "$candidate_sha" = "$SHA" ] || fail 'candidate SHA does not match release decision'
 
 for asset in \
-    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_DEPENDENCIES.txt \
+    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_LICENSES.txt \
     install.sh install.ps1 uninstall.sh uninstall.ps1 \
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64 \
     cup-windows-x64.exe SHA256SUMS.common \
@@ -145,59 +145,11 @@ test "$(sed -n 's/^commit=//p' "$dist/release.txt")" = "$SHA"
 test "$(wc -l < "$dist/release.txt" | tr -d '[:space:]')" = 3
 
 # Bind the candidate to the exact successful Tests run selected by release.yml.
-validate_provenance() {
-    file=$1
-    expected_repository=${EXPECTED_SOURCE_REPOSITORY:-}
-    expected_run_id=${EXPECTED_TESTS_RUN_ID:-}
-    expected_run_attempt=${EXPECTED_TESTS_RUN_ATTEMPT:-}
-
-    awk -F= \
-        -v version="$VERSION" \
-        -v sha="$SHA" \
-        -v expected_repository="$expected_repository" \
-        -v expected_run_id="$expected_run_id" \
-        -v expected_run_attempt="$expected_run_attempt" '
-        function valid_repository(value) {
-            return value ~ /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
-        }
-        function valid_number(value) {
-            return value ~ /^[1-9][0-9]*$/
-        }
-        $1 == "format" && NF == 2 && $2 == "1" { seen_format++; next }
-        $1 == "version" && NF == 2 && $2 == version { seen_version++; next }
-        $1 == "source_repository" && NF == 2 && valid_repository($2) {
-            repository=$2
-            seen_repository++
-            next
-        }
-        $1 == "source_commit" && NF == 2 && $2 == sha { seen_commit++; next }
-        $1 == "tests_run_id" && NF == 2 && valid_number($2) {
-            run_id=$2
-            seen_run_id++
-            next
-        }
-        $1 == "tests_run_attempt" && NF == 2 && valid_number($2) {
-            run_attempt=$2
-            seen_run_attempt++
-            next
-        }
-        { invalid=1 }
-        END {
-            if (invalid || NR != 6 || seen_format != 1 || seen_version != 1 ||
-                    seen_repository != 1 || seen_commit != 1 ||
-                    seen_run_id != 1 || seen_run_attempt != 1)
-                exit 1
-            if (expected_repository != "" && repository != expected_repository)
-                exit 1
-            if (expected_run_id != "" && run_id != expected_run_id)
-                exit 1
-            if (expected_run_attempt != "" && run_attempt != expected_run_attempt)
-                exit 1
-        }
-    ' "$file" || fail "invalid candidate provenance: $file"
-}
-
-validate_provenance "$dist/provenance.txt"
+validate_provenance_file \
+    "$dist/provenance.txt" \
+    "${EXPECTED_SOURCE_REPOSITORY:-}" \
+    "${EXPECTED_TESTS_RUN_ID:-}" \
+    "${EXPECTED_TESTS_RUN_ATTEMPT:-}"
 
 # Verify every platform checksum after the complete asset set is present.
 verify_checksum_file_exact "$dist" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
@@ -214,11 +166,11 @@ verify_checksum_file_exact "$dist" SHA256SUMS.windows-x64 \
     printf 'tag=%s\n' "$TAG"
     printf 'sha=%s\n' "$SHA"
     printf 'source_repository=%s\n' \
-        "$(sed -n 's/^source_repository=//p' "$dist/provenance.txt")"
+        "$(provenance_value source_repository "$dist/provenance.txt")"
     printf 'tests_run_id=%s\n' \
-        "$(sed -n 's/^tests_run_id=//p' "$dist/provenance.txt")"
+        "$(provenance_value tests_run_id "$dist/provenance.txt")"
     printf 'tests_run_attempt=%s\n' \
-        "$(sed -n 's/^tests_run_attempt=//p' "$dist/provenance.txt")"
+        "$(provenance_value tests_run_attempt "$dist/provenance.txt")"
 } >> "$GITHUB_OUTPUT"
 
 info "Testing release candidate $TAG at $SHA."

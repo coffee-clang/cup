@@ -28,6 +28,11 @@
 
 #define MAX_SEQUENCE 16
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char temp_home[] = "/tmp/cup-package-cache-test-XXXXXX";
 static CURLcode mock_global_result;
 static CURLcode mock_perform_result;
@@ -38,7 +43,7 @@ static int mock_easy_init_null;
 static int mock_interrupt;
 static int mock_too_large;
 static int mock_overflow;
-static const char *mock_payload;
+static char mock_payload[64];
 static const char *mock_fail_url;
 static char *mock_error_buffer;
 static char mock_url[1024];
@@ -60,6 +65,8 @@ static int verify_values[MAX_SEQUENCE];
 static size_t verify_count;
 static size_t verify_index;
 
+/* Fixture lifecycle and local construction helpers. */
+
 static void reset_mocks(void) {
     mock_global_result = CURLE_OK;
     mock_perform_result = CURLE_OK;
@@ -70,7 +77,7 @@ static void reset_mocks(void) {
     mock_interrupt = 0;
     mock_too_large = 0;
     mock_overflow = 0;
-    mock_payload = "downloaded data\n";
+    strcpy(mock_payload, "downloaded data\n");
     mock_fail_url = NULL;
     mock_error_buffer = NULL;
     mock_url[0] = '\0';
@@ -93,6 +100,11 @@ void setUp(void) {
 
 void tearDown(void) {
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CURLcode curl_global_init(long flags) {
     (void)flags;
@@ -143,6 +155,7 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
             mock_progress_userdata = va_arg(args, void *);
             break;
         default:
+            /* The mock ignores options that do not affect the observed transfer contract. */
             break;
     }
     va_end(args);
@@ -150,7 +163,10 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
 }
 
 CURLcode curl_easy_perform(CURL *curl) {
-    const char *payload = mock_payload;
+    static char checksum_payload[] = "mock checksum metadata\n";
+    static char archive_payload[] = "mock package archive\n";
+    char one_byte = 'x';
+    char *payload = mock_payload;
     size_t length;
     size_t written;
     (void)curl;
@@ -172,20 +188,20 @@ CURLcode curl_easy_perform(CURL *curl) {
     }
     if (mock_too_large) {
         (void)mock_write_callback(
-            (char *)"x", 1, (size_t)MAX_METADATA_DOWNLOAD_BYTES + 1, mock_write_userdata);
+            &one_byte, 1, (size_t)MAX_METADATA_DOWNLOAD_BYTES + 1, mock_write_userdata);
         return CURLE_WRITE_ERROR;
     }
     if (mock_overflow) {
-        (void)mock_write_callback((char *)"x", SIZE_MAX, 2, mock_write_userdata);
+        (void)mock_write_callback(&one_byte, SIZE_MAX, 2, mock_write_userdata);
         return CURLE_WRITE_ERROR;
     }
     if (strstr(mock_url, "checksum") != NULL) {
-        payload = "mock checksum metadata\n";
+        payload = checksum_payload;
     } else if (strstr(mock_url, "archive") != NULL) {
-        payload = "mock package archive\n";
+        payload = archive_payload;
     }
     length = strlen(payload);
-    written = mock_write_callback((char *)payload, 1, length, mock_write_userdata);
+    written = mock_write_callback(payload, 1, length, mock_write_userdata);
     return written == length ? CURLE_OK : CURLE_WRITE_ERROR;
 }
 
@@ -311,6 +327,7 @@ static void read_text(const char *path, char *buffer, size_t size) {
 
     TEST_ASSERT_NOT_NULL(file);
     count = fread(buffer, 1, size - 1, file);
+    TEST_ASSERT_FALSE(ferror(file));
     buffer[count] = '\0';
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
@@ -348,6 +365,11 @@ static void make_cache_files(const PackageIdentity *identity,
     write_text(archive_path, "mock package archive\n");
 }
 
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static void test_file_success(void) {
     char destination[1024];
     char content[128];
@@ -381,11 +403,7 @@ static void test_file_success(void) {
     TEST_ASSERT_EQUAL_STRING("downloaded data\n", content);
 }
 
-static void test_file_failures(void) {
-    char destination[1024];
-    char missing_parent[1024];
-
-    build_path(destination, sizeof(destination), "errors.out");
+static void assert_download_argument_failures(const char *destination) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           download_file(NULL, destination, DOWNLOAD_VALIDATE_NONEMPTY));
     TEST_ASSERT_EQUAL_INT(
@@ -394,6 +412,10 @@ static void test_file_failures(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         download_file("https://example.invalid", destination, (DownloadValidation)999));
+}
+
+static void assert_download_setup_failures(const char *destination) {
+    char missing_parent[1024];
 
     reset_mocks();
     mock_global_result = CURLE_FAILED_INIT;
@@ -418,7 +440,9 @@ static void test_file_failures(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+}
 
+static void assert_download_transport_failures(const char *destination) {
     reset_mocks();
     mock_perform_result = CURLE_OPERATION_TIMEDOUT;
     TEST_ASSERT_EQUAL_INT(
@@ -444,6 +468,20 @@ static void test_file_failures(void) {
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
 
     reset_mocks();
+    mock_info_result = CURLE_BAD_FUNCTION_ARGUMENT;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FETCH,
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+
+    reset_mocks();
+    mock_perform_result = CURLE_SSL_CONNECT_ERROR;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TLS,
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+}
+
+static void assert_download_content_failures(const char *destination) {
+    reset_mocks();
     mock_too_large = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_DOWNLOAD_TOO_LARGE,
@@ -456,7 +494,7 @@ static void test_file_failures(void) {
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
 
     reset_mocks();
-    mock_payload = "";
+    mock_payload[0] = '\0';
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
@@ -474,39 +512,40 @@ static void test_file_failures(void) {
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_ARCHIVE));
 
     reset_mocks();
-    mock_info_result = CURLE_BAD_FUNCTION_ARGUMENT;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
-
-    reset_mocks();
     mock_perform_result = CURLE_FILESIZE_EXCEEDED;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_DOWNLOAD_TOO_LARGE,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_BINARY));
+}
+
+static void assert_download_destination_failures(const char *destination) {
+    char long_path[MAX_PATH_LEN + 32];
 
     reset_mocks();
-    mock_perform_result = CURLE_SSL_CONNECT_ERROR;
+    memset(long_path, 'a', sizeof(long_path) - 1);
+    long_path[sizeof(long_path) - 1] = '\0';
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TLS,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        CUP_ERR_BUFFER_TOO_SMALL,
+        download_file("https://example.invalid", long_path, DOWNLOAD_VALIDATE_NONEMPTY));
 
     reset_mocks();
-    {
-        char long_path[MAX_PATH_LEN + 32];
-        memset(long_path, 'a', sizeof(long_path) - 1);
-        long_path[sizeof(long_path) - 1] = '\0';
-        TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_BUFFER_TOO_SMALL,
-            download_file("https://example.invalid", long_path, DOWNLOAD_VALIDATE_NONEMPTY));
-    }
-
-    reset_mocks();
-    build_path(destination, sizeof(destination), "destination-directory");
     TEST_ASSERT_EQUAL_INT(0, mkdir(destination, 0755));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FILESYSTEM,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+}
+
+static void test_file_failures(void) {
+    char destination[1024];
+
+    build_path(destination, sizeof(destination), "errors.out");
+    assert_download_argument_failures(destination);
+    assert_download_setup_failures(destination);
+    assert_download_transport_failures(destination);
+    assert_download_content_failures(destination);
+
+    build_path(destination, sizeof(destination), "destination-directory");
+    assert_download_destination_failures(destination);
 }
 
 static void test_fetch_cache_refresh(void) {
@@ -787,6 +826,8 @@ static void test_cache_discard(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_cache_discard(path));
     TEST_ASSERT_TRUE(access(path, F_OK) != 0);
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_home));

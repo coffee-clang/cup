@@ -48,6 +48,11 @@
 
 #define MAX_DATA_STEPS 6
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static unsigned char reader_token;
 static unsigned char entry_token;
 static int new_is_null;
@@ -75,6 +80,8 @@ static CupError size_result;
 static long long file_size;
 static size_t interrupt_calls;
 static size_t interrupt_at;
+
+/* Fixture lifecycle and local construction helpers. */
 
 static void reset_scenario(void) {
     size_t i;
@@ -114,6 +121,11 @@ void setUp(void) {
 void tearDown(void) {
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 struct archive *fake_read_new(void) {
     return new_is_null ? NULL : (struct archive *)&reader_token;
 }
@@ -122,16 +134,20 @@ int fake_filter_none(struct archive *reader) {
     TEST_ASSERT_TRUE(reader == (struct archive *)&reader_token);
     return filter_status;
 }
+
 int fake_filter_gzip(struct archive *reader) {
     return fake_filter_none(reader);
 }
+
 int fake_filter_xz(struct archive *reader) {
     return fake_filter_none(reader);
 }
+
 int fake_format_tar(struct archive *reader) {
     TEST_ASSERT_TRUE(reader == (struct archive *)&reader_token);
     return format_status;
 }
+
 int fake_format_zip(struct archive *reader) {
     return fake_format_tar(reader);
 }
@@ -203,6 +219,7 @@ int fake_filter_code(struct archive *reader, int index) {
     TEST_ASSERT_EQUAL_INT(0, index);
     return detected_filter;
 }
+
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     TEST_ASSERT_NOT_NULL(path);
     if (kind_result == CUP_OK) {
@@ -234,6 +251,11 @@ static void set_data(int status, size_t size, la_int64_t offset) {
     data_sizes[0] = size;
     data_offsets[0] = offset;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_open_failures(void) {
     struct archive *reader = (struct archive *)1;
@@ -425,6 +447,8 @@ static void test_preflight_limits(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_is_valid("package.tar", "tar.gz", &valid));
     TEST_ASSERT_TRUE(valid);
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

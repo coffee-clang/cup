@@ -20,6 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupError pending_result;
 static int uninstall_pending;
 static int uninstall_pending_after_lock;
@@ -57,6 +62,12 @@ static CupError package_presence_result;
 static int package_on_disk;
 static CupError install_path_result;
 static CupError package_validation_result;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     pending_result = CUP_OK;
@@ -105,6 +116,23 @@ void setUp(void) {
 
 void tearDown(void) {
 }
+static void read_stream_text(FILE *stream, char *output, size_t output_size) {
+    size_t read_count;
+
+    TEST_ASSERT_NOT_NULL(stream);
+    TEST_ASSERT_NOT_NULL(output);
+    TEST_ASSERT_GREATER_THAN(0, output_size);
+    TEST_ASSERT_EQUAL_INT(0, fflush(stream));
+    TEST_ASSERT_EQUAL_INT(0, fseek(stream, 0, SEEK_SET));
+    read_count = fread(output, 1, output_size - 1, stream);
+    TEST_ASSERT_FALSE(ferror(stream));
+    output[read_count] = '\0';
+}
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError cup_assets_uninstall_is_pending(int *pending) {
     if (pending == NULL) {
@@ -119,9 +147,7 @@ CupError platform_get_host(char *buffer, size_t size) {
     if (host_result != CUP_OK) {
         return host_result;
     }
-    return snprintf(buffer, size, "%s", host_value) >= 0 && strlen(host_value) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", host_value), size);
 }
 
 CupError platform_validate(const char *platform) {
@@ -164,7 +190,7 @@ CupError layout_get_lock_path(char *buffer, size_t size) {
     if (lock_path_result != CUP_OK) {
         return lock_path_result;
     }
-    return snprintf(buffer, size, "/tmp/cup.lock") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/cup.lock"), size);
 }
 
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
@@ -199,7 +225,7 @@ CupError layout_get_root(char *buffer, size_t size) {
     if (root_path_result != CUP_OK) {
         return root_path_result;
     }
-    return snprintf(buffer, size, "/tmp/.cup") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/.cup"), size);
 }
 
 void package_catalog_init(PackageCatalog *catalog) {
@@ -254,9 +280,7 @@ CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
     if (stable_result != CUP_OK) {
         return stable_result;
     }
-    return snprintf(buffer, size, "%s", stable_value) >= 0 && strlen(stable_value) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", stable_value), size);
 }
 
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
@@ -284,7 +308,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     if (install_path_result != CUP_OK) {
         return install_path_result;
     }
-    return snprintf(buffer, size, "/tmp/package") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/package"), size);
 }
 
 CupError package_validate(const char *base_path, const PackageIdentity *identity) {
@@ -303,6 +327,11 @@ static PackageIdentity sample_package(void) {
     strcpy(package.version, "22.1.5");
     return package;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_invalid_context(void) {
     CommandContext context;
@@ -506,8 +535,8 @@ static void test_entry_requests(void) {
     PackageCatalog catalog;
     FILE *stream;
     char output[128];
-    size_t read_count;
 
+    /* Parsing rejects incomplete, unsupported, and unsafe selectors. */
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_request_parse(NULL, "clang@stable", &request));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_request_parse("compiler", NULL, &request));
@@ -522,6 +551,7 @@ static void test_entry_requests(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE,
                           package_request_parse("compiler", "clang@../bad", &request));
 
+    /* Stable requests require a catalog entry and a valid concrete result. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_request_parse("compiler", "clang@stable", &request));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
@@ -546,13 +576,11 @@ static void test_entry_requests(void) {
         CUP_OK, package_request_resolve(&catalog, "compiler", "linux-x64", "linux-x64", &request));
     TEST_ASSERT_EQUAL_STRING("clang@22.1.5", request.resolved_selector);
 
+    /* Printed requests expose stable resolution while concrete requests remain unchanged. */
     stream = tmpfile();
     TEST_ASSERT_NOT_NULL(stream);
     package_request_print(stream, &request);
-    TEST_ASSERT_EQUAL_INT(0, fflush(stream));
-    rewind(stream);
-    read_count = fread(output, 1, sizeof(output) - 1, stream);
-    output[read_count] = '\0';
+    read_stream_text(stream, output, sizeof(output));
     TEST_ASSERT_EQUAL_STRING("clang@stable -> clang@22.1.5", output);
     TEST_ASSERT_EQUAL_INT(0, fclose(stream));
 
@@ -562,10 +590,7 @@ static void test_entry_requests(void) {
     stream = tmpfile();
     TEST_ASSERT_NOT_NULL(stream);
     package_request_print(stream, &request);
-    TEST_ASSERT_EQUAL_INT(0, fflush(stream));
-    rewind(stream);
-    read_count = fread(output, 1, sizeof(output) - 1, stream);
-    output[read_count] = '\0';
+    read_stream_text(stream, output, sizeof(output));
     TEST_ASSERT_EQUAL_STRING("clang@22.1.5", output);
     TEST_ASSERT_EQUAL_INT(0, fclose(stream));
     package_request_print(NULL, &request);
@@ -617,6 +642,8 @@ static void test_package_guards(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
                           installed_package_require_absent(&context.state, &package));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

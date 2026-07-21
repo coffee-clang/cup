@@ -38,6 +38,9 @@ WINDRES=windres
 
 # Static native UCRT64 dependency builders.
 build_zlib() {
+    local archive
+    local source
+
     archive="$SRC_DIR/zlib-${ZLIB_VERSION}.tar.gz"
     source="$BUILD_DIR/zlib-${ZLIB_VERSION}"
 
@@ -51,17 +54,17 @@ build_zlib() {
 
     make -f win32/Makefile.gcc \
         PREFIX= \
-        -j"$JOBS"
+        -j"$JOBS" \
+        libz.a
 
-    make -f win32/Makefile.gcc \
-        PREFIX= \
-        BINARY_PATH="$PREFIX/bin" \
-        INCLUDE_PATH="$PREFIX/include" \
-        LIBRARY_PATH="$PREFIX/lib" \
-        install
+    cp zlib.h zconf.h "$PREFIX/include/"
+    cp libz.a "$PREFIX/lib/libz.a"
 }
 
 build_xz() {
+    local archive
+    local source
+
     archive="$SRC_DIR/xz-${XZ_VERSION}.tar.xz"
     source="$BUILD_DIR/xz-${XZ_VERSION}"
 
@@ -83,6 +86,9 @@ build_xz() {
 }
 
 build_curl() {
+    local archive
+    local source
+
     archive="$SRC_DIR/curl-${CURL_VERSION}.tar.xz"
     source="$BUILD_DIR/curl-${CURL_VERSION}"
 
@@ -134,6 +140,9 @@ build_curl() {
 }
 
 build_libarchive() {
+    local archive
+    local source
+
     archive="$SRC_DIR/libarchive-${LIBARCHIVE_VERSION}.tar.xz"
     source="$BUILD_DIR/libarchive-${LIBARCHIVE_VERSION}"
 
@@ -170,6 +179,9 @@ build_libarchive() {
 
 # Final prefix and static metadata verification.
 verify() {
+    local curl_flags
+    local archive_flags
+
     echo "==> Verifying generated link metadata"
 
     if [ ! -x "$PREFIX/bin/curl-config" ]; then
@@ -208,6 +220,11 @@ verify() {
 
 # Ordered Windows x64 bootstrap.
 main() {
+    local compiler_target
+    local toolchain
+    local id
+    local metadata
+
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"

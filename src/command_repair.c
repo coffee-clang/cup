@@ -65,8 +65,8 @@ static CupError download_asset(const char *asset_name, char *path, size_t path_s
     (void)path;
     (void)path_size;
     fprintf(stderr,
-            "Error: a development build cannot restore official CUP assets "
-            "assets. Run repair with the installed official cup binary or "
+            "Error: a development build cannot restore official CUP assets. "
+            "Run repair with the installed official cup binary or "
             "run the official installer.\n");
     return CUP_ERR_NOT_AVAILABLE;
 #else
@@ -805,11 +805,13 @@ static CupError repair_load_state(RepairContext *context) {
     }
 
     err = layout_get_state_path(state_path, sizeof(state_path));
-    if (err != CUP_OK)
+    if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
+    }
     err = filesystem_backup_invalid(state_path, backup_path, sizeof(backup_path));
-    if (err != CUP_OK)
+    if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
+    }
 
     printf("Preserved invalid state as '%s'.\n", backup_path);
     memset(&context->state, 0, sizeof(context->state));

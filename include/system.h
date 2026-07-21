@@ -2,10 +2,8 @@
 #define CUP_SYSTEM_H
 
 /*
- * Module contract: Portable operating-system contract for paths,
- * permissions, locks, durable replacement, and detached helpers. Higher
- * layers own package and transaction policy; this layer reports what the
- * operating system actually applied.
+ * Portable operating-system contract for paths, permissions, locks, durable replacement, and
+ * detached helpers. Higher layers own policy; this layer reports what the OS applied.
  */
 
 #include <stddef.h>
@@ -70,8 +68,8 @@ CupError system_directory_is_private(const char *path, int *is_private);
 CupError system_remove_directory(const char *path);
 
 /*
- * Move or replace one path and report whether the destination was not changed,
- * changed with uncertain durability, or changed durably.
+ * Move or replace one path and report whether the destination remained untouched, became
+ * visible with uncertain durability, or was committed durably.
  */
 CupError system_move_path(const char *source,
                           const char *destination,

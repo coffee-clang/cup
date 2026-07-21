@@ -20,6 +20,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static CupError parse_result;
 static CupError context_result;
 static CupError transaction_check_result;
@@ -50,6 +55,12 @@ static int transaction_clear_calls;
 static int remove_tree_calls;
 static int plan_build_calls;
 static int plan_apply_calls;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     parse_result = CUP_OK;
@@ -90,6 +101,11 @@ void setUp(void) {
 
 void tearDown(void) {
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError package_request_parse(const char *component, const char *entry, PackageRequest *request) {
     TEST_ASSERT_NOT_NULL(component);
@@ -193,7 +209,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
     if (install_path_result != CUP_OK) {
         return install_path_result;
     }
-    return snprintf(buffer, size, "/tmp/install") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/install"), size);
 }
 
 CupError layout_make_staging_path(char *buffer,
@@ -205,7 +221,7 @@ CupError layout_make_staging_path(char *buffer,
     if (temp_path_result != CUP_OK) {
         return temp_path_result;
     }
-    return snprintf(buffer, size, "/tmp/staging") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/tmp/staging"), size);
 }
 
 CupError package_transaction_begin(PackageOperation operation,
@@ -328,6 +344,11 @@ static void assert_common_cleanup(void) {
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_remove_prepare_fail(void) {
     parse_result = CUP_ERR_INVALID_INPUT;
@@ -475,6 +496,8 @@ static void test_remove_success(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_build_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_apply_calls);
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

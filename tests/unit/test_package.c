@@ -18,6 +18,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char temp_dir[] = "/tmp/cup-package-test-XXXXXX";
 static unsigned int recovery_serial;
 static CupError install_path_result;
@@ -25,6 +30,13 @@ static CupError components_path_result;
 static CupError recovery_result;
 static CupError cleanup_result;
 static int cleanup_calls;
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
+/* Fixture lifecycle and local construction helpers. */
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     int written;
@@ -85,6 +97,7 @@ void setUp(void) {
     cleanup_result = CUP_OK;
     cleanup_calls = 0;
 }
+
 void tearDown(void) {
 }
 
@@ -132,10 +145,14 @@ static void make_parent_chain(const char *relative) {
     }
 }
 
-static void make_valid_package(const char *root) {
+static void make_valid_package_for_platform(const char *root,
+                                            const char *host,
+                                            const char *target) {
     char bin_dir[512];
     char tool_path[512];
     char package_metadata_path[512];
+    char metadata[1024];
+    int written;
 
     join_path(bin_dir, sizeof(bin_dir), root, "bin");
     join_path(tool_path, sizeof(tool_path), bin_dir, "clang");
@@ -145,13 +162,22 @@ static void make_valid_package(const char *root) {
     make_dir(bin_dir);
     write_text(tool_path, "#!/bin/sh\nexit 0\n");
     TEST_ASSERT_EQUAL_INT(0, chmod(tool_path, 0755));
-    write_text(package_metadata_path,
-               "package.component=compiler\n"
-               "package.tool=clang\n"
-               "package.version=22.1.5\n"
-               "platform.host=linux-x64\n"
-               "platform.target=linux-x64\n"
-               "entry.clang=bin/clang\n");
+    written = snprintf(metadata,
+                       sizeof(metadata),
+                       "package.component=compiler\n"
+                       "package.tool=clang\n"
+                       "package.version=22.1.5\n"
+                       "platform.host=%s\n"
+                       "platform.target=%s\n"
+                       "entry.clang=bin/clang\n",
+                       host,
+                       target);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(metadata));
+    write_text(package_metadata_path, metadata);
+}
+
+static void make_valid_package(const char *root) {
+    make_valid_package_for_platform(root, "linux-x64", "linux-x64");
 }
 
 static const PackageIssue *find_issue(const PackageList *packages,
@@ -167,6 +193,11 @@ static const PackageIssue *find_issue(const PackageList *packages,
     }
     return NULL;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_scope_validation(void) {
     PackageScope first;
@@ -192,6 +223,7 @@ static void test_scope_validation(void) {
                           package_scope_init(&first, "compiler", "bad-platform", "linux-x64"));
 }
 
+/* Identity construction and comparison use only normalized, validated fields. */
 static void test_identity_validation(void) {
     PackageIdentity identity;
 
@@ -265,6 +297,7 @@ static void test_valid_package(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(root, NULL));
 }
 
+/* On-disk validation rejects malformed metadata, missing entries, and unsafe launchers. */
 static void test_invalid_package(void) {
     PackageIdentity identity;
     char root[512];
@@ -370,6 +403,7 @@ static void test_scan_roots(void) {
     char components[512];
 
     build_path(components, sizeof(components), "components");
+    /* The valid package remains usable while every malformed branch is reported. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages));
     TEST_ASSERT_TRUE(packages.complete);
     TEST_ASSERT_EQUAL_size_t(0, packages.count);
@@ -417,68 +451,7 @@ static void test_path_failures(void) {
                           package_quarantine(&issue, recovery, sizeof(recovery)));
 }
 
-static void test_scan_issues(void) {
-    PackageIdentity identity;
-    PackageList packages;
-    const PackageIssue *invalid_content;
-    char components[512];
-    char valid_root[512];
-    char path[512];
-    char recovery_path[512];
-    int exists;
-
-    build_path(components, sizeof(components), "components");
-    make_parent_chain("components/compiler/clang/linux-x64/linux-x64");
-    join_path(
-        valid_root, sizeof(valid_root), components, "compiler/clang/linux-x64/linux-x64/22.1.5");
-    make_valid_package(valid_root);
-
-    make_parent_chain("components/unknown-component");
-    make_parent_chain("components/compiler/not-a-tool");
-    make_parent_chain("components/compiler/clang/not-a-host");
-    make_parent_chain("components/compiler/clang/linux-x64/not-a-target");
-    make_parent_chain("components/compiler/clang/linux-x64/linux-x64/bad version");
-    make_parent_chain("components/compiler/clang/linux-x64/linux-x64/24.0.0");
-
-    join_path(path, sizeof(path), components, "compiler/clang/linux-x64/linux-x64/23.0.0");
-    write_text(path, "not a package directory\n");
-    join_path(path, sizeof(path), components, "unexpected-file");
-    write_text(path, "unexpected\n");
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages));
-    TEST_ASSERT_TRUE(packages.complete);
-    TEST_ASSERT_EQUAL_size_t(1, packages.count);
-    TEST_ASSERT_EQUAL_size_t(1, packages.total_count);
-    TEST_ASSERT_TRUE(packages.issue_count >= 7);
-    TEST_ASSERT_EQUAL_size_t(packages.issue_count, packages.total_issue_count);
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
-    TEST_ASSERT_TRUE(package_list_contains(&packages, &identity));
-    TEST_ASSERT_FALSE(package_list_contains(NULL, &identity));
-    TEST_ASSERT_FALSE(package_list_contains(&packages, NULL));
-
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_COMPONENT, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_TOOL, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_HOST, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_TARGET, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_VERSION, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(&packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 1));
-
-    invalid_content = find_issue(&packages, PACKAGE_ISSUE_INVALID_CONTENT, 1);
-    TEST_ASSERT_NOT_NULL(invalid_content);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, package_quarantine(invalid_content, recovery_path, sizeof(recovery_path)));
-    TEST_ASSERT_EQUAL_INT(0, access(recovery_path, F_OK));
-    TEST_ASSERT_TRUE(access(invalid_content->path, F_OK) != 0);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(recovery_path, &exists));
-    TEST_ASSERT_TRUE(exists);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_quarantine(NULL, recovery_path, sizeof(recovery_path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_quarantine(invalid_content, NULL, 0));
-
+static void assert_package_issue_names(void) {
     TEST_ASSERT_EQUAL_STRING("unexpected path type",
                              package_issue_reason_name(PACKAGE_ISSUE_INVALID_PATH_TYPE));
     TEST_ASSERT_EQUAL_STRING("unknown component",
@@ -494,7 +467,129 @@ static void test_scan_issues(void) {
                              package_issue_reason_name(PACKAGE_ISSUE_INVALID_CONTENT));
     TEST_ASSERT_EQUAL_STRING("unknown package issue",
                              package_issue_reason_name((PackageIssueReason)999));
+}
 
+static void create_scan_issue_fixture(char *host, size_t host_size) {
+    char components[512];
+    char valid_root[512];
+    char path[512];
+    char relative[512];
+    int written;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, host_size));
+    build_path(components, sizeof(components), "components");
+
+    /* Keep one valid package so malformed paths are observed beside a usable entry. */
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "components/compiler/clang/%s/%s",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    make_parent_chain(relative);
+
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "compiler/clang/%s/%s/22.1.5",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    join_path(valid_root, sizeof(valid_root), components, relative);
+    make_valid_package_for_platform(valid_root, host, host);
+
+    /* Cover malformed hierarchy segments at every identity level. */
+    make_parent_chain("components/unknown-component");
+    make_parent_chain("components/compiler/not-a-tool");
+    make_parent_chain("components/compiler/clang/not-a-host");
+
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "components/compiler/clang/%s/not-a-target",
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    make_parent_chain(relative);
+
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "components/compiler/clang/%s/%s/bad version",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    make_parent_chain(relative);
+
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "components/compiler/clang/%s/%s/24.0.0",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    make_parent_chain(relative);
+
+    /* Add invalid leaf types and unexpected entries below the components root. */
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "compiler/clang/%s/%s/23.0.0",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    join_path(path, sizeof(path), components, relative);
+    write_text(path, "not a package directory\n");
+    join_path(path, sizeof(path), components, "unexpected-file");
+    write_text(path, "unexpected\n");
+}
+
+static void assert_scan_issue_inventory(const PackageList *packages, const char *host) {
+    PackageIdentity identity;
+
+    TEST_ASSERT_TRUE(packages->complete);
+    TEST_ASSERT_EQUAL_size_t(1, packages->count);
+    TEST_ASSERT_EQUAL_size_t(1, packages->total_count);
+    TEST_ASSERT_TRUE(packages->issue_count >= 7);
+    TEST_ASSERT_EQUAL_size_t(packages->issue_count, packages->total_issue_count);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity, "compiler", "clang", host, host, "22.1.5"));
+    TEST_ASSERT_TRUE(package_list_contains(packages, &identity));
+    TEST_ASSERT_FALSE(package_list_contains(NULL, &identity));
+    TEST_ASSERT_FALSE(package_list_contains(packages, NULL));
+
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_COMPONENT, 0));
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_TOOL, 0));
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_HOST, 0));
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_TARGET, 0));
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_VERSION, 0));
+    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 1));
+}
+
+static void assert_scan_issue_quarantine(const PackageList *packages) {
+    const PackageIssue *invalid_content;
+    char recovery_path[512];
+    int exists;
+
+    invalid_content = find_issue(packages, PACKAGE_ISSUE_INVALID_CONTENT, 1);
+    TEST_ASSERT_NOT_NULL(invalid_content);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, package_quarantine(invalid_content, recovery_path, sizeof(recovery_path)));
+    TEST_ASSERT_EQUAL_INT(0, access(recovery_path, F_OK));
+    TEST_ASSERT_TRUE(access(invalid_content->path, F_OK) != 0);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(recovery_path, &exists));
+    TEST_ASSERT_TRUE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_quarantine(NULL, recovery_path, sizeof(recovery_path)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_quarantine(invalid_content, NULL, 0));
+}
+
+static void test_scan_issues(void) {
+    PackageList packages;
+    char host[MAX_PLATFORM_LEN];
+
+    create_scan_issue_fixture(host, sizeof(host));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages));
+    assert_scan_issue_inventory(&packages, host);
+    assert_scan_issue_quarantine(&packages);
+    assert_package_issue_names();
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_scan(NULL));
 }
 
@@ -539,6 +634,8 @@ static void test_registry_platform(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
                           registry_find_tool_component("clang-format", component, 2));
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

@@ -1,6 +1,9 @@
 # Purpose: Orders all native Windows integration suites for make and CI.
 
-param([Parameter(Mandatory = $true)][string]$CupPath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupPath
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 

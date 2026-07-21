@@ -5,7 +5,10 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 runner=$ROOT/tests/runners/coverage.sh
 
-[ -x "$runner" ] || { echo 'coverage runner is not executable' >&2; exit 1; }
+if [ ! -x "$runner" ]; then
+    echo 'coverage runner is not executable' >&2
+    exit 1
+fi
 for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function' \
         'coverage.json' 'coverage.xml' 'coverage-summary.json' 'timeout --foreground'; do
     grep -Fq -- "$required" "$runner" || {

@@ -20,14 +20,23 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-# Download into private staging and reject empty or non-PEM input.
-"$CURL" -fsSL "$CACERT_URL" -o "$PEM_TMP"
+# Download into private staging over authenticated transport, then reject
+# empty or non-PEM input before compiling the generated representation.
+case "$CACERT_URL" in
+    https://*) ;;
+    *)
+        printf 'Error: CA bundle URL must use HTTPS: %s\n' "$CACERT_URL" >&2
+        exit 1
+        ;;
+esac
+"$CURL" -fsSL --proto '=https' --proto-redir '=https' \
+    "$CACERT_URL" -o "$PEM_TMP"
 [ -s "$PEM_TMP" ] || {
-    echo "Error: downloaded CA bundle is empty." >&2
+    printf 'Error: downloaded CA bundle is empty.\n' >&2
     exit 1
 }
 grep -q '^-----BEGIN CERTIFICATE-----$' "$PEM_TMP" || {
-    echo "Error: downloaded CA bundle contains no PEM certificates." >&2
+    printf 'Error: downloaded CA bundle contains no PEM certificates.\n' >&2
     exit 1
 }
 

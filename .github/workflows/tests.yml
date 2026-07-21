@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Resolve the exact source revision and decide whether this run should assemble a candidate.
   prepare:
     name: Resolve tested revision
     runs-on: ubuntu-latest
@@ -26,7 +27,7 @@ jobs:
       sha: ${{ steps.prepare.outputs.sha }}
       should_release: ${{ steps.prepare.outputs.should_release }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - id: prepare
@@ -41,13 +42,14 @@ jobs:
           SHA: ${{ steps.prepare.outputs.sha }}
           SHOULD_RELEASE: ${{ steps.prepare.outputs.should_release }}
         run: scripts/release/decision-assets.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@v7
         with:
           name: cup-release-decision
           path: dist/decision/*
           if-no-files-found: error
           retention-days: 30
 
+  # Run normal source tests on every native POSIX platform.
   posix:
     name: Source tests (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
@@ -68,7 +70,7 @@ jobs:
             runner: macos-15
             family: macos
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -78,15 +80,16 @@ jobs:
           FAMILY: ${{ matrix.family }}
         run: scripts/ci/source-posix.sh
 
+  # Keep the Windows source path native to the canonical UCRT64 toolchain.
   windows:
     name: Source tests (windows-x64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+      - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
@@ -112,11 +115,12 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass
           -File scripts/ci/source-windows.ps1
 
+  # Quality gates use dedicated Linux jobs so their instrumentation cannot affect release bits.
   coverage:
     name: Coverage gate (linux-x64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -135,7 +139,7 @@ jobs:
           CUP_COVERAGE_MIN_BRANCHES: 70
           CUP_COVERAGE_MIN_FUNCTIONS: 97
         run: tests/runners/coverage.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: cup-coverage-linux-x64
@@ -147,7 +151,7 @@ jobs:
     name: Address and undefined behavior sanitizers (linux-x64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -164,13 +168,14 @@ jobs:
           CUP_TEST_PLATFORM: linux-x64
         run: tests/runners/sanitizers.sh
 
+  # Candidate assembly starts only after normal tests and quality gates succeed.
   common-assets:
     name: Prepare common release candidate assets
     needs: prepare
     if: needs.prepare.outputs.should_release == '1'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
@@ -183,7 +188,7 @@ jobs:
           TESTS_RUN_ID: ${{ github.run_id }}
           TESTS_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: scripts/release/common-assets.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@v7
         with:
           name: cup-release-common
           path: dist/common/*
@@ -215,11 +220,11 @@ jobs:
             runner: windows-latest
             family: windows
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+      - uses: msys2/setup-msys2@v2
         if: matrix.family == 'windows'
         with:
           msystem: UCRT64
@@ -257,13 +262,14 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: scripts/release/build-platform.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@v7
         with:
           name: cup-release-${{ matrix.platform }}
           path: dist/${{ matrix.platform }}/*
           if-no-files-found: error
           retention-days: 30
 
+  # Test the exact candidate executable on clean native runners without recompiling it.
   native-release-tests:
     name: Native candidate tests (${{ matrix.platform }})
     needs:
@@ -292,11 +298,11 @@ jobs:
             runner: windows-latest
             family: windows
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@v8
         with:
           pattern: cup-release-*
           path: release
@@ -316,6 +322,7 @@ jobs:
           -ReleaseDir release
           -Version '${{ needs.prepare.outputs.version }}'
 
+  # One final job exposes the complete workflow result to release.yml.
   gate:
     name: Tests gate
     if: always()

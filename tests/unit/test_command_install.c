@@ -18,6 +18,11 @@
 
 #include <string.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static InstallNamedList standard_profile;
 static InstallNamedList llvm_toolchain;
 static InstallNamedList gnu_toolchain;
@@ -46,7 +51,10 @@ static int install_fail_call;
 static CupError install_fail_result;
 static CupError installed_valid_result;
 
+/* Fixture lifecycle and local construction helpers. */
+
 void setUp(void) {
+    /* Curated policy fixtures cover component profiles and explicit toolchains. */
     memset(&standard_profile, 0, sizeof(standard_profile));
     strcpy(standard_profile.name, "standard");
     standard_profile.item_count = 2;
@@ -68,6 +76,7 @@ void setUp(void) {
     strcpy(gnu_toolchain.items[2], "ld");
     strcpy(gnu_toolchain.items[3], "valgrind");
 
+    /* Boundary outcomes and observations reset independently of the policy fixtures. */
     install_calls = 0;
     resolver_calls = 0;
     config_load_calls = 0;
@@ -97,6 +106,11 @@ void setUp(void) {
 void tearDown(void) {
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -110,10 +124,12 @@ CupError command_context_begin(CommandContext *context,
 void command_context_end(CommandContext *context) {
     (void)context;
 }
+
 CupError command_context_load_state(CommandContext *context) {
     (void)context;
     return state_load_result;
 }
+
 CupError command_context_load_catalog(CommandContext *context) {
     context->has_catalog = 1;
     return package_catalog_load_result;
@@ -122,14 +138,17 @@ CupError command_context_load_catalog(CommandContext *context) {
 void install_policy_init(InstallPolicy *config) {
     memset(config, 0, sizeof(*config));
 }
+
 CupError install_policy_load(InstallPolicy *config) {
     (void)config;
     config_load_calls++;
     return config_load_result;
 }
+
 void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
+
 CupError tool_preferences_load(const InstallPolicy *config, ToolPreferences *preferences) {
     (void)config;
     (void)preferences;
@@ -141,6 +160,7 @@ const InstallNamedList *install_policy_find_profile(const InstallPolicy *config,
     (void)config;
     return strcmp(name, "standard") == 0 ? &standard_profile : NULL;
 }
+
 const InstallNamedList *install_policy_find_toolchain(const InstallPolicy *config,
                                                       const char *name) {
     (void)config;
@@ -248,6 +268,7 @@ CupError package_catalog_has_package(const PackageCatalog *catalog,
     *available = strcmp(tool, "ld") != 0;
     return CUP_OK;
 }
+
 CupError package_catalog_has_version(const PackageCatalog *catalog,
                                      const char *component,
                                      const char *tool,
@@ -264,6 +285,7 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
     *available = version_available;
     return version_result;
 }
+
 CupError package_catalog_has_format(const PackageCatalog *catalog,
                                     const char *component,
                                     const char *tool,
@@ -349,6 +371,11 @@ CupError package_install(const char *component,
     }
     return CUP_OK;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
@@ -519,6 +546,8 @@ static void test_group_execution(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
                           command_install_request("profile", "standard", NULL, NULL));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

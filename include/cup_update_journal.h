@@ -1,6 +1,11 @@
 #ifndef CUP_UPDATE_JOURNAL_H
 #define CUP_UPDATE_JOURNAL_H
 
+/*
+ * Persists the detached CUP-update protocol. transaction.txt records the in-progress
+ * generation and its commit phase; cup-update-result.txt records the helper outcome that
+ * a later command can diagnose after the parent process has exited.
+ */
 #include <stddef.h>
 
 #include "constants.h"
@@ -37,6 +42,7 @@ typedef struct {
     char version[MAX_IDENTIFIER_LEN];
 } CupUpdateResult;
 
+/* In-progress journal lifecycle and recovery. */
 void cup_update_journal_init(CupUpdateJournal *journal);
 const char *cup_update_phase_name(CupUpdatePhase phase);
 CupError cup_update_journal_begin(const char *temporary_path,
@@ -52,6 +58,7 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
 CupError cup_update_journal_recover(const CupUpdateJournal *journal);
 CupError cup_update_journal_clear(void);
 
+/* Detached helper result lifecycle and user-facing reporting. */
 void cup_update_result_init(CupUpdateResult *result);
 CupError cup_update_result_write(CupUpdateResultStatus status, int error_code, const char *version);
 CupError cup_update_result_load(CupUpdateResult *result);

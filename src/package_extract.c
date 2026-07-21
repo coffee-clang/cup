@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+
 #include "uthash.h"
 
 #if defined(_WIN32)
@@ -82,11 +83,14 @@ static void path_table_free(ExtractedPathTable *table) {
         return;
     }
 
-    HASH_ITER(hh, table->entries, entry, next) {
-        HASH_DEL(table->entries, entry);
+    entry = table->entries;
+    HASH_CLEAR(hh, table->entries);
+    while (entry != NULL) {
+        next = (ExtractedPath *)entry->hh.next;
         free(entry->key);
         free(entry->path);
         free(entry);
+        entry = next;
     }
 }
 
@@ -311,7 +315,7 @@ static int symlink_target_is_internal(const char *entry_path, const char *target
         }
 
         if (cursor[0] == '\0' || strcmp(cursor, ".") == 0) {
-            /* No segment is added. */
+            /* Empty and "." segments leave the normalized depth unchanged. */
         } else if (strcmp(cursor, "..") == 0) {
             if (count == 0) {
                 return 0;
@@ -709,6 +713,7 @@ CupError package_extract_archive(const char *archive_path,
     int status;
     int skip;
 
+    /* Validate the declared format before opening either archive or staging state. */
     if (text_is_empty(archive_path) || text_is_empty(staging_path) ||
         package_archive_parse_format(format_value, &expected_format) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
@@ -725,6 +730,7 @@ CupError package_extract_archive(const char *archive_path,
         return err;
     }
 
+    /* Anchor extraction in the caller's fresh staging directory and configure safe writes. */
     writer = archive_write_disk_new();
     if (writer == NULL) {
         leave_extraction_root(&extraction_root);
@@ -746,6 +752,7 @@ CupError package_extract_archive(const char *archive_path,
         return CUP_ERR_EXTRACT;
     }
 
+    /* Validate, write, and register one entry before advancing to the next header. */
     while (1) {
         mode_t entry_type;
         la_int64_t declared_size;
@@ -836,6 +843,7 @@ CupError package_extract_archive(const char *archive_path,
         extracted_count++;
     }
 
+    /* Close all resources before deciding whether a complete payload was produced. */
     path_table_free(&paths);
     close_err = close_archives(reader, writer);
     leave_err = leave_extraction_root(&extraction_root);

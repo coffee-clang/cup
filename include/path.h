@@ -2,8 +2,8 @@
 #define CUP_PATH_H
 
 /*
- * Module contract: Bounded path composition and validation of identifiers,
- * individual path segments, and package-relative paths.
+ * Bounded path composition and validation of identifiers, path segments, and package-relative
+ * paths.
  */
 
 #include <stddef.h>

@@ -20,8 +20,6 @@
 
 /* Reader setup and format matching. Only the three public archive formats are enabled, so
  * libarchive cannot silently accept an unrelated container. */
-/* Reader setup and format matching. Only the three public archive formats are enabled, so
- * libarchive cannot silently accept an unrelated container. */
 CupError package_archive_open_reader(struct archive **reader, const char *archive_path) {
     struct archive *archive_reader;
     int status;
@@ -178,6 +176,7 @@ CupError package_archive_is_valid(const char *archive_path,
     int format_checked = 0;
     int status;
 
+    /* Validate caller arguments and the optional declared format before inspecting the path. */
     if (is_valid == NULL || text_is_empty(archive_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -209,11 +208,13 @@ CupError package_archive_is_valid(const char *archive_path,
         return CUP_OK;
     }
 
+    /* Unsupported or unreadable archive bytes are an invalid cache entry, not an I/O failure. */
     err = package_archive_open_reader(&reader, archive_path);
     if (err != CUP_OK) {
         return CUP_OK;
     }
 
+    /* Preflight every header and byte under the same limits enforced by extraction. */
     while (1) {
         la_int64_t declared_size;
 
@@ -269,6 +270,7 @@ CupError package_archive_is_valid(const char *archive_path,
         }
     }
 
+    /* A valid archive must close cleanly, identify its format, and contain payload. */
     if (!close_reader(reader) || !format_checked || entry_count == 0 || !has_payload) {
         return CUP_OK;
     }

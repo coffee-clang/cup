@@ -39,7 +39,8 @@
   <div class="instructions" id="platform-instructions-unix">
     <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
-      <pre class="cup-command">curl -fsSL https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.sh | sh</pre>
+      <pre class="cup-command">curl -fsSL \
+  https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh</pre>
       <button id="copy-button-unix" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
           <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
@@ -54,7 +55,9 @@
   <div class="instructions" id="platform-instructions-win32">
     <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
-      <pre class="cup-command">irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex</pre>
+      <pre class="cup-command">$installer = Join-Path $env:TEMP "install-cup.ps1"
+iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer</pre>
       <button id="copy-button-win32" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
           <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
@@ -69,7 +72,9 @@
   <div class="instructions" id="platform-instructions-win64">
     <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
-      <pre class="cup-command">irm https://github.com/coffee-clang/cup/releases/download/cup-bootstrap/install.ps1 | iex</pre>
+      <pre class="cup-command">$installer = Join-Path $env:TEMP "install-cup.ps1"
+iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer</pre>
       <button id="copy-button-win64" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
           <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
@@ -85,7 +90,7 @@
 
   <p id="help">
     Need help?<br>
-    Please wait: the project is still pre-alpha!
+    See the <a href="https://github.com/coffee-clang/cup#documentation">CUP documentation</a>.
   </p>
 
   <p id="about">

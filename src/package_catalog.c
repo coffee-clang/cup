@@ -32,7 +32,8 @@
      FIELD_URL_TEMPLATE | FIELD_CHECKSUM_URL)
 #define DEVELOPMENT_MANIFEST_PATH "config/packages.cfg"
 
-/* PackageCatalog lifetime and tuple assembly. */
+/* Catalog lifetime and tuple assembly. A package becomes visible only after every required
+ * field is present. */
 void package_catalog_init(PackageCatalog *catalog) {
     if (catalog != NULL) {
         memset(catalog, 0, sizeof(*catalog));
@@ -48,7 +49,7 @@ void package_catalog_free(PackageCatalog *catalog) {
     package_catalog_init(catalog);
 }
 
-/* Package storage. */
+/* Bounded storage ownership and duplicate-key detection. */
 static int find_package_index(const PackageCatalog *catalog,
                               const char *component,
                               const char *tool,
@@ -121,7 +122,7 @@ static CupError append_package(PackageCatalog *catalog,
     return CUP_OK;
 }
 
-/* Parsing. */
+/* Temporary parser state for one component/tool/host/target tuple. */
 static CupError parse_package_key(const char *key,
                                   char *component,
                                   size_t component_size,
@@ -170,7 +171,7 @@ static const CatalogField PACKAGE_FIELDS[] = {
     MANIFEST_FIELD("url_template", FIELD_URL_TEMPLATE, url_template),
     MANIFEST_FIELD("checksum_url_template", FIELD_CHECKSUM_URL, checksum_url_template)};
 
-/* Line parsing and field assignment. */
+/* Assign one validated key/value record without exposing a partially assembled package. */
 static const CatalogField *find_catalog_field(const char *name) {
     size_t i;
 
@@ -256,7 +257,7 @@ static CupError parse_catalog_line(PackageCatalog *catalog, char *line) {
     return set_package_field(package, field, value);
 }
 
-/* Validation. */
+/* Cross-record validation after the full file has been parsed. */
 #define PLACEHOLDER_TOOL (1u << 0)
 #define PLACEHOLDER_HOST (1u << 1)
 #define PLACEHOLDER_TARGET (1u << 2)
@@ -316,16 +317,18 @@ static CupError validate_value_list(const char *value, const char *expected, int
     return CUP_OK;
 }
 
-/* Template and complete-tuple validation. */
+/* URL templates and concrete package tuples are validated as closed schemas. */
 static unsigned placeholder_bit(const char *start, size_t length) {
     static const struct {
         const char *name;
         unsigned bit;
-    } placeholders[] = {{"{tool}", PLACEHOLDER_TOOL},
-                        {"{host_platform}", PLACEHOLDER_HOST},
-                        {"{target_platform}", PLACEHOLDER_TARGET},
-                        {"{version}", PLACEHOLDER_VERSION},
-                        {"{format}", PLACEHOLDER_FORMAT}};
+    } placeholders[] = {
+        {"{tool}", PLACEHOLDER_TOOL},
+        {"{host_platform}", PLACEHOLDER_HOST},
+        {"{target_platform}", PLACEHOLDER_TARGET},
+        {"{version}", PLACEHOLDER_VERSION},
+        {"{format}", PLACEHOLDER_FORMAT},
+    };
     size_t i;
 
     for (i = 0; i < sizeof(placeholders) / sizeof(placeholders[0]); ++i) {
@@ -484,7 +487,7 @@ static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
                                  "checksum_url_template");
 }
 
-/* Public loading and source selection. */
+/* Load from installed official assets or the explicit development fallback, never both. */
 CupError package_catalog_load_path(PackageCatalog *catalog,
                                    const char *path,
                                    PackageCatalogSource source) {
@@ -619,7 +622,8 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     return CUP_ERR_CATALOG;
 }
 
-/* Queries. */
+/* Read-only catalog queries preserve the distinction between package, version and format
+ * availability. */
 static const PackageCatalogEntry *find_package(const PackageCatalog *catalog,
                                                const char *component,
                                                const char *tool,
@@ -792,7 +796,7 @@ CupError package_catalog_has_format(const PackageCatalog *catalog,
     return validate_value_list(package->formats, format, is_supported);
 }
 
-/* Url expansion. */
+/* Expand only known template placeholders after the selected package tuple is concrete. */
 static CupError replace_placeholder(
     char *buffer, size_t size, const char *input, const char *placeholder, const char *value) {
     const char *cursor;

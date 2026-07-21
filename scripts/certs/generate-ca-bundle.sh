@@ -5,7 +5,7 @@
 set -eu
 
 if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <cacert.pem> <output-directory>" >&2
+    printf 'Usage: %s <cacert.pem> <output-directory>\n' "$0" >&2
     exit 1
 fi
 
@@ -13,11 +13,11 @@ PEM_FILE=$1
 OUTPUT_DIR=$2
 
 [ -s "$PEM_FILE" ] || {
-    echo "Error: CA bundle '$PEM_FILE' is missing or empty." >&2
+    printf "Error: CA bundle '%s' is missing or empty.\n" "$PEM_FILE" >&2
     exit 1
 }
 grep -q '^-----BEGIN CERTIFICATE-----$' "$PEM_FILE" || {
-    echo "Error: CA bundle '$PEM_FILE' contains no PEM certificates." >&2
+    printf "Error: CA bundle '%s' contains no PEM certificates.\n" "$PEM_FILE" >&2
     exit 1
 }
 

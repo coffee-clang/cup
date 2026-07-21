@@ -1,8 +1,7 @@
 #!/bin/sh
 
-# Purpose: Sourced POSIX integration library for isolated cup homes, manifests and package fixtures.
-
-# Shared POSIX CLI integration fixtures. This file is sourced, not executed.
+# Purpose: Sourced POSIX integration library for isolated cup homes, catalogs,
+# package fixtures and generated wrappers. This file is sourced, not executed.
 
 : "${TESTS_ROOT:?TESTS_ROOT must be set before sourcing tests/support/posix-cli.sh}"
 . "$TESTS_ROOT/support/common.sh"

@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 try {
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {

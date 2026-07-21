@@ -213,16 +213,19 @@ static CupError set_cup_update_field(CupUpdateJournal *journal,
 
     if (strcmp(key, "format") == 0) {
         bit = FIELD_FORMAT;
-        if (strcmp(value, CUP_UPDATE_JOURNAL_FORMAT) != 0)
+        if (strcmp(value, CUP_UPDATE_JOURNAL_FORMAT) != 0) {
             err = CUP_ERR_TRANSACTION;
+        }
     } else if (strcmp(key, "operation") == 0) {
         bit = FIELD_OPERATION;
-        if (strcmp(value, "cup-update") != 0)
+        if (strcmp(value, "cup-update") != 0) {
             err = CUP_ERR_TRANSACTION;
+        }
     } else if (strcmp(key, "phase") == 0) {
         bit = FIELD_PHASE;
-        if (!parse_phase(value, &journal->phase))
+        if (!parse_phase(value, &journal->phase)) {
             err = CUP_ERR_TRANSACTION;
+        }
     } else if (strcmp(key, "temporary_name") == 0) {
         bit = FIELD_TEMPORARY_NAME;
         if (text_copy(journal->temporary_name, sizeof(journal->temporary_name), value) != CUP_OK) {
@@ -276,6 +279,7 @@ CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStat
         return errno == ENOENT ? CUP_OK : CUP_ERR_TRANSACTION;
     }
 
+    /* Reject unknown or duplicate fields rather than accepting a partial update journal. */
     while (1) {
         char key[64];
         char value[MAX_PATH_LEN];
@@ -286,11 +290,13 @@ CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStat
             fclose(file);
             return CUP_ERR_TRANSACTION;
         }
-        if (!has_line)
+        if (!has_line) {
             break;
+        }
         err = text_parse_key_value(line, key, sizeof(key), value, sizeof(value));
-        if (err == CUP_OK)
+        if (err == CUP_OK) {
             err = set_cup_update_field(&candidate, key, value, &seen);
+        }
         if (err != CUP_OK) {
             fclose(file);
             return CUP_ERR_TRANSACTION;
@@ -331,8 +337,9 @@ CupError cup_update_journal_clear(void) {
         system_path_exists(path, &exists) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
-    if (!exists)
+    if (!exists) {
         return CUP_OK;
+    }
     if (system_remove_file(path) != CUP_OK || system_sync_parent_directory(path) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
@@ -342,8 +349,9 @@ CupError cup_update_journal_clear(void) {
 /* Persistent result file. The detached helper reports success or failure without relying on an
  * inherited terminal. */
 void cup_update_result_init(CupUpdateResult *result) {
-    if (result != NULL)
+    if (result != NULL) {
         memset(result, 0, sizeof(*result));
+    }
 }
 
 CupError cup_update_result_write(CupUpdateResultStatus status,
@@ -374,17 +382,20 @@ CupError cup_update_result_write(CupUpdateResultStatus status,
         fprintf(file, "error=%d\n", error_code) < 0 || fprintf(file, "version=%s\n", version) < 0 ||
         system_sync_file(file) != CUP_OK)
         failed = 1;
-    if (fclose(file) != 0)
+    if (fclose(file) != 0) {
         failed = 1;
+    }
     if (failed) {
         system_remove_file(temporary);
         return CUP_ERR_TRANSACTION;
     }
     err = system_replace_file(temporary, path, &commit_state);
-    if (err == CUP_OK)
+    if (err == CUP_OK) {
         return CUP_OK;
-    if (commit_state == SYSTEM_COMMIT_NOT_APPLIED)
+    }
+    if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
         system_remove_file(temporary);
+    }
     return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
 }
 
@@ -395,15 +406,21 @@ CupError cup_update_result_load(CupUpdateResult *result) {
     size_t line_number = 0;
     unsigned seen = 0;
 
-    if (result == NULL)
+    if (result == NULL) {
         return CUP_ERR_INVALID_INPUT;
+    }
     cup_update_result_init(result);
-    if (layout_get_cup_update_result_path(path, sizeof(path)) != CUP_OK)
-        return CUP_ERR_TRANSACTION;
-    file = fopen(path, "r");
-    if (file == NULL)
-        return errno == ENOENT ? CUP_OK : CUP_ERR_TRANSACTION;
 
+    /* A missing result is normal; a present file must satisfy the complete strict schema. */
+    if (layout_get_cup_update_result_path(path, sizeof(path)) != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
+    file = fopen(path, "r");
+    if (file == NULL) {
+        return errno == ENOENT ? CUP_OK : CUP_ERR_TRANSACTION;
+    }
+
+    /* Reject unknown or duplicate fields rather than accepting a partial helper result. */
     while (1) {
         char key[64];
         char value[128];
@@ -414,8 +431,9 @@ CupError cup_update_result_load(CupUpdateResult *result) {
             fclose(file);
             return CUP_ERR_TRANSACTION;
         }
-        if (!has_line)
+        if (!has_line) {
             break;
+        }
         if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK) {
             fclose(file);
             return CUP_ERR_TRANSACTION;
@@ -428,11 +446,11 @@ CupError cup_update_result_load(CupUpdateResult *result) {
             }
         } else if (strcmp(key, "status") == 0) {
             bit = 1u << 1;
-            if (strcmp(value, "success") == 0)
+            if (strcmp(value, "success") == 0) {
                 result->status = CUP_UPDATE_RESULT_SUCCESS;
-            else if (strcmp(value, "failed") == 0)
+            } else if (strcmp(value, "failed") == 0) {
                 result->status = CUP_UPDATE_RESULT_FAILED;
-            else {
+            } else {
                 fclose(file);
                 return CUP_ERR_TRANSACTION;
             }
@@ -458,6 +476,7 @@ CupError cup_update_result_load(CupUpdateResult *result) {
         }
         seen |= bit;
     }
+    /* Cross-field validation distinguishes a valid failed update from a corrupt result file. */
     if (fclose(file) != 0 || seen != 0xfu || result->status == CUP_UPDATE_RESULT_MISSING ||
         text_is_empty(result->version) ||
         (result->status == CUP_UPDATE_RESULT_SUCCESS && result->error_code != 0)) {
@@ -509,8 +528,8 @@ static CupError set_asset_permissions(const CupUpdateAsset *asset) {
 static CupError restore_cup_update_asset(const char *staging, const CupUpdateAsset *asset) {
     char backup[MAX_PATH_LEN];
     CupError err;
-    SystemPathKind backup_kind;
-    SystemPathKind destination_kind;
+    SystemPathKind backup_kind = SYSTEM_PATH_MISSING;
+    SystemPathKind destination_kind = SYSTEM_PATH_MISSING;
     SystemCommitState state = SYSTEM_COMMIT_NOT_APPLIED;
 
     err = path_join(backup, sizeof(backup), staging, asset->backup_name);
@@ -562,6 +581,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
     CupUpdateAsset assets[6];
     size_t i;
 
+    /* Resolve canonical destinations and inspect the durable commit marker first. */
     err = cup_update_journal_get_staging_path(journal, staging, sizeof(staging));
     if (err == CUP_OK) {
         err = path_join(marker, sizeof(marker), staging, CUP_UPDATE_COMMITTED);
@@ -587,7 +607,11 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
     if (err == CUP_OK) {
         err = system_get_path_kind(marker, &marker_kind);
     }
+    if (err != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
 
+    /* Backups are restored in a fixed order when the generation did not commit cleanly. */
     assets[0] = (CupUpdateAsset){CUP_UPDATE_BINARY_OLD, binary, 1, 0};
     assets[1] = (CupUpdateAsset){CUP_UPDATE_UNINSTALL_OLD, uninstall, 1, 1};
     assets[2] = (CupUpdateAsset){CUP_UPDATE_PLATFORM_CHECKSUMS_OLD, platform_checksums, 0, 1};
@@ -595,6 +619,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
     assets[4] = (CupUpdateAsset){CUP_UPDATE_INSTALL_POLICY_OLD, install_policy, 0, 1};
     assets[5] = (CupUpdateAsset){CUP_UPDATE_COMMON_CHECKSUMS_OLD, common_checksums, 0, 1};
 
+    /* After the marker, a valid installed generation is finalized rather than rolled back. */
     if (marker_kind == SYSTEM_PATH_REGULAR_FILE) {
         err = cup_assets_inspect(&inspection);
         if (err == CUP_OK && cup_assets_installed_is_valid(&inspection)) {
@@ -611,6 +636,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
         return CUP_ERR_TRANSACTION;
     }
 
+    /* Without a valid committed generation, restore every original asset and verify the result. */
     for (i = 0; i < sizeof(assets) / sizeof(assets[0]); ++i) {
         err = restore_cup_update_asset(staging, &assets[i]);
         if (err != CUP_OK) {

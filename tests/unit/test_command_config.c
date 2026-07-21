@@ -11,6 +11,11 @@
 
 #include <string.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static ToolPreferences loaded;
 static ToolPreferences saved;
 static InstallDefault official;
@@ -25,6 +30,8 @@ static CupError load_result;
 static CupError save_result;
 static CupError resolve_result;
 
+/* Fixture lifecycle and local construction helpers. */
+
 void setUp(void) {
     memset(&loaded, 0, sizeof(loaded));
     memset(&saved, 0, sizeof(saved));
@@ -36,6 +43,7 @@ void setUp(void) {
     save_calls = load_calls = operational_calls = read_only_calls = end_calls = 0;
     begin_result = policy_result = load_result = save_result = resolve_result = CUP_OK;
 }
+
 void tearDown(void) {
 }
 
@@ -48,25 +56,36 @@ static CupError begin_common(CommandContext *context, const char *target) {
                                                 target == NULL ? "linux-x64" : target));
     return begin_result;
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError command_context_begin(CommandContext *context, const char *target, SystemLockMode mode) {
     (void)mode;
     operational_calls++;
     return begin_common(context, target);
 }
+
 CupError command_context_begin_read_only(CommandContext *context, const char *target) {
     read_only_calls++;
     return begin_common(context, target);
 }
+
 void command_context_end(CommandContext *context) {
     (void)context;
     end_calls++;
 }
+
 void install_policy_init(InstallPolicy *policy) {
     memset(policy, 0, sizeof(*policy));
 }
+
 CupError install_policy_load(InstallPolicy *policy) {
-    if (policy_result != CUP_OK)
+    if (policy_result != CUP_OK) {
         return policy_result;
+    }
     policy->profile_count = 1;
     strcpy(policy->profiles[0].name, "minimal");
     policy->profiles[0].item_count = 2;
@@ -78,6 +97,7 @@ CupError install_policy_load(InstallPolicy *policy) {
     strcpy(policy->toolchains[0].items[0], "clang");
     return CUP_OK;
 }
+
 const InstallDefault *install_policy_find_default(const InstallPolicy *policy,
                                                   const char *host,
                                                   const char *target,
@@ -88,29 +108,35 @@ const InstallDefault *install_policy_find_default(const InstallPolicy *policy,
                ? &official
                : NULL;
 }
+
 void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
+
 CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *preferences) {
     (void)policy;
     load_calls++;
-    if (load_result == CUP_OK)
+    if (load_result == CUP_OK) {
         *preferences = loaded;
+    }
     return load_result;
 }
+
 CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences) {
     (void)policy;
     save_calls++;
     saved = *preferences;
     return save_result;
 }
+
 CupError tool_preferences_set(ToolPreferences *preferences,
                               const char *host,
                               const char *target,
                               const char *component,
                               const char *tool) {
-    if (registry_validate_tool(component, tool) != CUP_OK)
+    if (registry_validate_tool(component, tool) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
+    }
     preferences->count = 1;
     strcpy(preferences->items[0].scope.component, component);
     strcpy(preferences->items[0].scope.host_platform, host);
@@ -118,6 +144,7 @@ CupError tool_preferences_set(ToolPreferences *preferences,
     strcpy(preferences->items[0].tool, tool);
     return CUP_OK;
 }
+
 CupError tool_preferences_reset(ToolPreferences *preferences,
                                 const char *host,
                                 const char *target,
@@ -127,10 +154,12 @@ CupError tool_preferences_reset(ToolPreferences *preferences,
     (void)target;
     *removed =
         preferences->count != 0 && strcmp(preferences->items[0].scope.component, component) == 0;
-    if (*removed)
+    if (*removed) {
         preferences->count = 0;
+    }
     return CUP_OK;
 }
+
 CupError tool_preferences_reset_scope(ToolPreferences *preferences,
                                       const char *host,
                                       const char *target,
@@ -141,6 +170,7 @@ CupError tool_preferences_reset_scope(ToolPreferences *preferences,
     preferences->count = 0;
     return CUP_OK;
 }
+
 CupError tool_preferences_resolve(const InstallPolicy *policy,
                                   const ToolPreferences *preferences,
                                   const char *host,
@@ -152,8 +182,9 @@ CupError tool_preferences_resolve(const InstallPolicy *policy,
     (void)policy;
     (void)host;
     (void)target;
-    if (resolve_result != CUP_OK)
+    if (resolve_result != CUP_OK) {
         return resolve_result;
+    }
     if (preferences->count != 0 && strcmp(preferences->items[0].scope.component, component) == 0) {
         *source = TOOL_PREFERENCE_USER;
         return text_copy(tool, tool_size, preferences->items[0].tool);
@@ -174,6 +205,12 @@ static void seed_preference(const char *target, const char *component, const cha
     strcpy(loaded.items[0].scope.component, component);
     strcpy(loaded.items[0].tool, tool);
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static void test_view_is_read_only(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config(NULL, NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, read_only_calls);
@@ -182,6 +219,7 @@ static void test_view_is_read_only(void) {
     TEST_ASSERT_EQUAL_INT(0, save_calls);
     TEST_ASSERT_EQUAL_INT(1, end_calls);
 }
+
 static void test_set_scope(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("SET", "COMPILER", "GCC", "WINDOWS-X64"));
     TEST_ASSERT_EQUAL_INT(1, operational_calls);
@@ -192,18 +230,21 @@ static void test_set_scope(void) {
     TEST_ASSERT_EQUAL_STRING("compiler", saved.items[0].scope.component);
     TEST_ASSERT_EQUAL_STRING("gcc", saved.items[0].tool);
 }
+
 static void test_reset_component(void) {
     seed_preference("linux-x64", "compiler", "gcc");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", "compiler", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_size_t(0, saved.count);
 }
+
 static void test_reset_scope(void) {
     seed_preference("linux-x64", "compiler", "gcc");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_size_t(0, saved.count);
 }
+
 static void test_invalid_args(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("preset", "llvm", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("set", "compiler", NULL, NULL));
@@ -212,6 +253,7 @@ static void test_invalid_args(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_UNSUPPORTED_COMPONENT,
                           command_config("reset", "unknown", NULL, NULL));
 }
+
 static void test_error_propagation(void) {
     begin_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_config(NULL, NULL, NULL, NULL));
@@ -226,10 +268,13 @@ static void test_error_propagation(void) {
     save_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, command_config("set", "compiler", "clang", NULL));
 }
+
 static void test_view_error(void) {
     resolve_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_config(NULL, NULL, NULL, NULL));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

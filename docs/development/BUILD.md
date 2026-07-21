@@ -107,10 +107,10 @@ run `cup`.
 Unity is linked only into C test binaries. `gcovr` and sanitizer runtime support
 are host tools and are not part of the application prefix contract.
 
-The exact pinned versions, source URLs and license texts are recorded in
-`THIRD_PARTY_DEPENDENCIES.txt`. The canonical machine-readable source lock remains
-`scripts/dependencies/sources.sh`; the text inventory is a release disclosure, not
-an alternate dependency resolver.
+The canonical source lock is `scripts/dependencies/sources.sh`. The adjacent
+`scripts/dependencies/THIRD_PARTY_LICENSES.txt` preserves the corresponding
+notices and license texts and is published as a release disclosure; it is not an
+alternate dependency resolver.
 
 ## One complete dependency prefix
 

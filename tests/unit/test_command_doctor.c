@@ -72,6 +72,11 @@ typedef struct {
     int read_only;
 } DoctorScenario;
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static DoctorScenario scenario;
 static int lock_release_calls;
 static int plan_free_calls;
@@ -81,6 +86,12 @@ static int package_metadata_protection_calls;
 static int package_catalog_check_calls;
 static int plan_build_calls;
 static int tmp_count_calls;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void fill_identity(PackageIdentity *package, const char *version) {
     memset(package, 0, sizeof(*package));
@@ -127,8 +138,13 @@ static void reset_scenario(void) {
     tmp_count_calls = 0;
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError platform_get_host(char *buffer, size_t size) {
-    return snprintf(buffer, size, "linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "linux-x64"), size);
 }
 
 size_t state_count_foreign_hosts(const CupState *state, const char *current_host) {
@@ -136,6 +152,7 @@ size_t state_count_foreign_hosts(const CupState *state, const char *current_host
     (void)current_host;
     return 0;
 }
+
 void setUp(void) {
     reset_scenario();
 }
@@ -203,43 +220,53 @@ static CupError copy_path(char *buffer, size_t size, const char *name, CupError 
     if (result != CUP_OK) {
         return result;
     }
-    return snprintf(buffer, size, "/doctor/%s", name) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "/doctor/%s", name), size);
 }
 
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "catalog", CUP_OK);
 }
+
 CupError layout_get_install_policy_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "install-config", CUP_OK);
 }
+
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "uninstall", CUP_OK);
 }
+
 CupError layout_get_common_checksums_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "common", CUP_OK);
 }
+
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "platform", CUP_OK);
 }
+
 CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
     marker_path_calls++;
     return copy_path(buffer, size, "uninstall.pending", scenario.marker_path_result);
 }
+
 CupError layout_get_lock_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "cup.lock", scenario.lock_path_result);
 }
+
 CupError layout_get_staging_dir(char *buffer, size_t size) {
     return copy_path(buffer, size, "tmp", scenario.tmp_path_result);
 }
+
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "transaction", scenario.transaction_path_result);
 }
+
 CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
     if (status != NULL) {
         *status = scenario.runtime_status;
     }
     return scenario.runtime_result;
 }
+
 CupError layout_check_runtime(size_t *missing_count) {
     runtime_check_calls++;
     if (missing_count != NULL) {
@@ -247,6 +274,7 @@ CupError layout_check_runtime(size_t *missing_count) {
     }
     return scenario.runtime_check_result;
 }
+
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     (void)identity;
     return copy_path(buffer, size, "package", scenario.install_path_result);
@@ -259,6 +287,7 @@ CupError system_is_read_only(const char *path, int *is_read_only) {
     }
     return scenario.read_only_result;
 }
+
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     (void)path;
     if (kind != NULL) {
@@ -266,6 +295,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     }
     return scenario.marker_kind_result;
 }
+
 CupError system_is_regular_file(const char *path, int *is_regular) {
     (void)path;
     if (is_regular != NULL) {
@@ -273,6 +303,7 @@ CupError system_is_regular_file(const char *path, int *is_regular) {
     }
     return scenario.lock_file_result;
 }
+
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     (void)path;
     (void)mode;
@@ -281,12 +312,14 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     }
     return scenario.lock_result;
 }
+
 void system_lock_release(SystemLock *lock) {
     if (lock != NULL && lock->active) {
         lock->active = 0;
     }
     lock_release_calls++;
 }
+
 CupError system_is_directory(const char *path, int *is_directory) {
     (void)path;
     if (is_directory != NULL) {
@@ -326,10 +359,12 @@ CupError state_load(CupState *state, StateFileStatus *status) {
     }
     return CUP_OK;
 }
+
 CupError state_validate(const CupState *state) {
     (void)state;
     return scenario.state_validate_result;
 }
+
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
     (void)identity;
     return state->installed_count > 0 ? 0 : -1;
@@ -365,6 +400,7 @@ void cup_update_result_init(CupUpdateResult *result) {
 void package_transaction_init(PackageTransaction *transaction) {
     memset(transaction, 0, sizeof(*transaction));
 }
+
 CupError package_transaction_load(PackageTransaction *transaction,
                                   PackageTransactionStatus *status) {
     *status = scenario.transaction_status;
@@ -372,6 +408,7 @@ CupError package_transaction_load(PackageTransaction *transaction,
     fill_identity(&transaction->package, "22.1.5");
     return scenario.transaction_result;
 }
+
 const char *package_operation_name(PackageOperation operation) {
     return operation == PACKAGE_OPERATION_REMOVE ? "remove" : "install";
 }
@@ -390,21 +427,23 @@ CupError package_identity_from_selector(PackageIdentity *identity,
     }
     return scenario.identity_result;
 }
+
 CupError package_identity_format_selector(const PackageIdentity *identity,
                                           char *buffer,
                                           size_t size) {
     if (identity == NULL || buffer == NULL) {
         return CUP_ERR_VALIDATION;
     }
-    return snprintf(buffer, size, "%s@%s", identity->tool, identity->version) > 0
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(
+        snprintf(buffer, size, "%s@%s", identity->tool, identity->version), size);
 }
+
 CupError package_validate(const char *path, const PackageIdentity *identity) {
     (void)path;
     (void)identity;
     return scenario.package_result;
 }
+
 CupError package_metadata_is_read_only(const char *path, int *is_read_only) {
     package_metadata_protection_calls++;
     (void)path;
@@ -413,12 +452,14 @@ CupError package_metadata_is_read_only(const char *path, int *is_read_only) {
     }
     return scenario.package_metadata_protection_result;
 }
+
 CupError package_scan(PackageList *packages) {
     if (scenario.scan_result == CUP_OK) {
         *packages = scenario.packages;
     }
     return scenario.scan_result;
 }
+
 const char *package_issue_reason_name(PackageIssueReason reason) {
     (void)reason;
     return "invalid content";
@@ -428,21 +469,25 @@ CupError package_selector_format_parts(char *buffer,
                                        size_t size,
                                        const char *tool,
                                        const char *version) {
-    return snprintf(buffer, size, "%s@%s", tool, version) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s@%s", tool, version), size);
 }
+
 void wrapper_plan_init(WrapperPlan *plan) {
     memset(plan, 0, sizeof(*plan));
 }
+
 void wrapper_plan_free(WrapperPlan *plan) {
     (void)plan;
     plan_free_calls++;
 }
+
 CupError wrapper_plan_build(WrapperPlan *plan, const CupState *state) {
     plan_build_calls++;
     (void)plan;
     (void)state;
     return scenario.plan_build_result;
 }
+
 CupError wrapper_plan_check(const WrapperPlan *plan, size_t *issue_count) {
     (void)plan;
     if (issue_count != NULL) {
@@ -450,6 +495,11 @@ CupError wrapper_plan_check(const WrapperPlan *plan, size_t *issue_count) {
     }
     return scenario.plan_check_result;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_healthy(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
@@ -579,6 +629,8 @@ static void test_incomplete_checks(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

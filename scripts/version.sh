@@ -7,7 +7,7 @@ set -eu
 VERSION_FILE=${CUP_VERSION_FILE:-VERSION}
 
 fail() {
-    echo "version: $*" >&2
+    printf 'version: %s\n' "$*" >&2
     exit 1
 }
 
@@ -37,8 +37,18 @@ is_semver() {
     IFS=$old_ifs
     [ "$#" -eq 3 ] || return 1
     for part in "$@"; do
-        case "$part" in ''|*[!0-9]*) return 1 ;; esac
-        case "$part" in 0) ;; 0*) return 1 ;; esac
+        case "$part" in
+            '' | *[!0-9]*)
+                return 1
+                ;;
+        esac
+        case "$part" in
+            0)
+                ;;
+            0*)
+                return 1
+                ;;
+        esac
         [ "$part" -le 999999 ] || return 1
     done
 }
@@ -86,8 +96,19 @@ metadata_commit_id() {
 
 working_tree_dirty() {
     have_git_repository || return 1
-    ! git diff --quiet --ignore-submodules -- 2>/dev/null ||
-        ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null
+
+    case "$(uname -s 2>/dev/null || printf unknown)" in
+        MSYS*|MINGW*|CYGWIN*)
+            ! git -c core.fileMode=false diff --quiet \
+                --ignore-cr-at-eol --ignore-submodules -- 2>/dev/null ||
+                ! git -c core.fileMode=false diff --cached --quiet \
+                    --ignore-cr-at-eol --ignore-submodules -- 2>/dev/null
+            ;;
+        *)
+            ! git diff --quiet --ignore-submodules -- 2>/dev/null ||
+                ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null
+            ;;
+    esac
 }
 
 matching_tag_exists() {
@@ -291,7 +312,11 @@ case "$command" in
     official)
         [ "$#" -eq 1 ] || usage
         base=$(base_version)
-        if is_official_build "$base"; then printf '1\n'; else printf '0\n'; fi
+        if is_official_build "$base"; then
+            printf '1\n'
+        else
+            printf '0\n'
+        fi
         ;;
     validate-release)
         [ "$#" -eq 1 ] || usage

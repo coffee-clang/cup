@@ -14,22 +14,37 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char temp_dir[] = "/tmp/cup-state-unit-test-XXXXXX";
 static CupError state_path_error;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 void setUp(void) {
     state_path_error = CUP_OK;
 }
+
 void tearDown(void) {
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 CupError layout_get_root(char *buffer, size_t size) {
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return snprintf(buffer, size, "%s", temp_dir) >= 0 && strlen(temp_dir) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", temp_dir), size);
 }
 
 CupError layout_get_state_path(char *buffer, size_t size) {
@@ -261,9 +276,15 @@ static char *read_state(void) {
     text = calloc((size_t)length + 1, 1);
     TEST_ASSERT_NOT_NULL(text);
     TEST_ASSERT_EQUAL_size_t((size_t)length, fread(text, 1, (size_t)length, file));
+    TEST_ASSERT_FALSE(ferror(file));
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     return text;
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_mutators(void) {
     CupState state = {0};
@@ -406,6 +427,7 @@ static void test_validation(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
 }
 
+/* Saving and loading preserves installed entries, active selections, and canonical ordering. */
 static void test_save_load(void) {
     CupState state = {0};
     CupState loaded;
@@ -542,6 +564,8 @@ static void test_format_host_policy(void) {
                           state_validate_current_host(&state, "linux-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(NULL, "linux-x64"));
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

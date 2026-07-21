@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Basic directory creation and recursive removal. */
 CupError filesystem_ensure_directory(const char *path) {
     SystemPathKind path_kind;
     CupError err;
@@ -46,6 +47,7 @@ CupError filesystem_remove_tree(const char *path) {
     return system_remove_tree(path, interrupt_requested);
 }
 
+/* Nonrecursive directory inspection used by doctor and cleanup. */
 typedef struct {
     const char *excluded_path;
     size_t child_count;
@@ -138,6 +140,7 @@ CupError filesystem_clear_directory(const char *path, const char *preserved_path
     return system_list_directory(path, clear_directory_entry, &context);
 }
 
+/* Preserve invalid evidence under a unique sibling name before repair continues. */
 CupError filesystem_backup_invalid(const char *path, char *backup_path, size_t backup_size) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     SystemPathKind path_kind;

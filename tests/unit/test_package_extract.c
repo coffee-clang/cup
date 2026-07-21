@@ -36,12 +36,21 @@ typedef struct {
     int executable;
 } TestEntry;
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char root[1024];
 static int interrupted;
 static unsigned archive_number;
 
+/* Fixture lifecycle and local construction helpers. */
+
 static void join_path(char *buffer, size_t size, const char *left, const char *right) {
-    TEST_ASSERT_TRUE(snprintf(buffer, size, "%s/%s", left, right) > 0);
+    int written = snprintf(buffer, size, "%s/%s", left, right);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void remove_tree(const char *path) {
@@ -89,6 +98,11 @@ void setUp(void) {
 void tearDown(void) {
     remove_tree(root);
 }
+
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
 
 int interrupt_requested(void) {
     return interrupted;
@@ -188,6 +202,11 @@ static CupError extract_entries(const TestEntry *entries,
     return package_extract_archive(archive_path, destination, "tar.gz");
 }
 
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static void test_invalid_inputs(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_archive(NULL, "/tmp", "tar.gz"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_archive("", "/tmp", "tar.gz"));
@@ -198,14 +217,16 @@ static void test_invalid_inputs(void) {
 }
 
 static void test_valid_archive(void) {
-    const TestEntry entries[] = {{TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
-                                 {TEST_DIRECTORY, "pkg/bin/", NULL, NULL, 0},
-                                 {TEST_FILE, "pkg/bin/tool", "hello", NULL, 1},
-                                 {TEST_FILE, "pkg/readme", "text", NULL, 0},
-                                 {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
-                                 {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
-                                 {TEST_SYMLINK, "pkg/current", NULL, "tool", 0},
-                                 {TEST_SYMLINK, "pkg/bin/readme-link", NULL, "../readme", 0}};
+    const TestEntry entries[] = {
+        {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
+        {TEST_DIRECTORY, "pkg/bin/", NULL, NULL, 0},
+        {TEST_FILE, "pkg/bin/tool", "hello", NULL, 1},
+        {TEST_FILE, "pkg/readme", "text", NULL, 0},
+        {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
+        {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
+        {TEST_SYMLINK, "pkg/current", NULL, "tool", 0},
+        {TEST_SYMLINK, "pkg/bin/readme-link", NULL, "../readme", 0},
+    };
     char output[1024];
     char tool[1024];
     char readme[1024];
@@ -240,14 +261,26 @@ static void test_valid_archive(void) {
 }
 
 static void test_unsafe_paths(void) {
-    const TestEntry absolute[] = {{TEST_FILE, "/pkg/tool", "x", NULL, 0}};
-    const TestEntry traversal[] = {{TEST_FILE, "pkg/../tool", "x", NULL, 0}};
-    const TestEntry roots[] = {{TEST_FILE, "one/tool", "x", NULL, 0},
-                               {TEST_FILE, "two/tool", "x", NULL, 0}};
-    const TestEntry duplicate[] = {{TEST_FILE, "pkg/tool", "x", NULL, 0},
-                                   {TEST_FILE, "pkg/tool", "y", NULL, 0}};
-    const TestEntry drive[] = {{TEST_FILE, "C:/pkg/tool", "x", NULL, 0}};
-    const TestEntry backslash[] = {{TEST_FILE, "pkg\\tool", "x", NULL, 0}};
+    const TestEntry absolute[] = {
+        {TEST_FILE, "/pkg/tool", "x", NULL, 0},
+    };
+    const TestEntry traversal[] = {
+        {TEST_FILE, "pkg/../tool", "x", NULL, 0},
+    };
+    const TestEntry roots[] = {
+        {TEST_FILE, "one/tool", "x", NULL, 0},
+        {TEST_FILE, "two/tool", "x", NULL, 0},
+    };
+    const TestEntry duplicate[] = {
+        {TEST_FILE, "pkg/tool", "x", NULL, 0},
+        {TEST_FILE, "pkg/tool", "y", NULL, 0},
+    };
+    const TestEntry drive[] = {
+        {TEST_FILE, "C:/pkg/tool", "x", NULL, 0},
+    };
+    const TestEntry backslash[] = {
+        {TEST_FILE, "pkg\\tool", "x", NULL, 0},
+    };
     TestEntry deep = {TEST_FILE, NULL, "x", NULL, 0};
     char deep_path[1024] = "pkg";
     char output[1024];
@@ -275,11 +308,17 @@ static void test_unsafe_paths(void) {
 }
 
 static void test_unsafe_links(void) {
-    const TestEntry symlink[] = {{TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-                                 {TEST_SYMLINK, "pkg/bin/out", NULL, "../../escape", 0}};
-    const TestEntry hardlink[] = {{TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
-                                  {TEST_FILE, "pkg/bin/tool", "x", NULL, 1}};
-    const TestEntry fifo[] = {{TEST_FIFO, "pkg/pipe", NULL, NULL, 0}};
+    const TestEntry symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/out", NULL, "../../escape", 0},
+    };
+    const TestEntry hardlink[] = {
+        {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+    };
+    const TestEntry fifo[] = {
+        {TEST_FIFO, "pkg/pipe", NULL, NULL, 0},
+    };
     char output[1024];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
@@ -290,17 +329,29 @@ static void test_unsafe_links(void) {
 }
 
 static void test_path_collisions(void) {
-    const TestEntry case_collision[] = {{TEST_FILE, "pkg/bin/Tool", "x", NULL, 1},
-                                        {TEST_FILE, "pkg/bin/tool", "y", NULL, 1}};
-    const TestEntry file_then_child[] = {{TEST_FILE, "pkg/share", "x", NULL, 0},
-                                         {TEST_FILE, "pkg/share/file", "y", NULL, 0}};
-    const TestEntry child_then_file[] = {{TEST_FILE, "pkg/share/file", "y", NULL, 0},
-                                         {TEST_FILE, "pkg/share", "x", NULL, 0}};
-    const TestEntry symlink_parent[] = {{TEST_DIRECTORY, "pkg/real", NULL, NULL, 0},
-                                        {TEST_SYMLINK, "pkg/link", NULL, "real", 0},
-                                        {TEST_FILE, "pkg/link/tool", "x", NULL, 1}};
-    const TestEntry reserved[] = {{TEST_FILE, "pkg/CON.txt", "x", NULL, 0}};
-    const TestEntry non_ascii[] = {{TEST_FILE, "pkg/caf\303\251", "x", NULL, 0}};
+    const TestEntry case_collision[] = {
+        {TEST_FILE, "pkg/bin/Tool", "x", NULL, 1},
+        {TEST_FILE, "pkg/bin/tool", "y", NULL, 1},
+    };
+    const TestEntry file_then_child[] = {
+        {TEST_FILE, "pkg/share", "x", NULL, 0},
+        {TEST_FILE, "pkg/share/file", "y", NULL, 0},
+    };
+    const TestEntry child_then_file[] = {
+        {TEST_FILE, "pkg/share/file", "y", NULL, 0},
+        {TEST_FILE, "pkg/share", "x", NULL, 0},
+    };
+    const TestEntry symlink_parent[] = {
+        {TEST_DIRECTORY, "pkg/real", NULL, NULL, 0},
+        {TEST_SYMLINK, "pkg/link", NULL, "real", 0},
+        {TEST_FILE, "pkg/link/tool", "x", NULL, 1},
+    };
+    const TestEntry reserved[] = {
+        {TEST_FILE, "pkg/CON.txt", "x", NULL, 0},
+    };
+    const TestEntry non_ascii[] = {
+        {TEST_FILE, "pkg/caf\303\251", "x", NULL, 0},
+    };
     char output[1024];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
@@ -318,8 +369,12 @@ static void test_path_collisions(void) {
 }
 
 static void test_empty_archive(void) {
-    const TestEntry root_only[] = {{TEST_DIRECTORY, "pkg/", NULL, NULL, 0}};
-    const TestEntry root_file[] = {{TEST_FILE, "pkg", "x", NULL, 0}};
+    const TestEntry root_only[] = {
+        {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
+    };
+    const TestEntry root_file[] = {
+        {TEST_FILE, "pkg", "x", NULL, 0},
+    };
     char output[1024];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, extract_entries(NULL, 0, output, sizeof(output)));
@@ -329,7 +384,9 @@ static void test_empty_archive(void) {
 }
 
 static void test_interrupt(void) {
-    const TestEntry entries[] = {{TEST_FILE, "pkg/tool", "hello", NULL, 1}};
+    const TestEntry entries[] = {
+        {TEST_FILE, "pkg/tool", "hello", NULL, 1},
+    };
     char archive_path[1024];
     char output[1024];
 
@@ -340,6 +397,8 @@ static void test_interrupt(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           package_extract_archive(archive_path, output, "tar.gz"));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

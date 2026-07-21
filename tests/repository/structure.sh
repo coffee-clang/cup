@@ -44,21 +44,10 @@ for obsolete in \
     [ ! -e "$obsolete" ] || fail "obsolete repository path still exists: $obsolete"
 done
 
-stale=
-for path in Makefile README.md docs .github scripts tests; do
-    if [ -f "$path" ]; then
-        if grep -l "$legacy_path" "$path" >/dev/null 2>&1; then
-            stale="$stale $path"
-        fi
-        continue
-    fi
-    for file in $(find "$path" -type f ! -name structure.sh -print); do
-        if grep -l "$legacy_path" "$file" >/dev/null 2>&1; then
-            stale="$stale $file"
-        fi
-    done
-done
-[ -z "$stale" ] || fail "obsolete test-tree references remain in:$stale"
+stale=$(grep -RIl --exclude=structure.sh -- "$legacy_path" \
+    Makefile README.md docs .github scripts tests 2>/dev/null || :)
+[ -z "$stale" ] || fail "obsolete test-tree references remain in:
+$stale"
 
 stale_contracts=
 for pattern in \
@@ -80,12 +69,12 @@ retired_runtime=$(grep -RInE \
     fail "retired runtime layout or journal contracts remain:
 $retired_runtime"
 
-unpinned_actions=$(find .github/workflows -type f -name '*.yml' \
-    ! -name 'static.yml' -exec grep -HnE 'uses:[[:space:]]+[^.]' {} + \
-    | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' || :)
-[ -z "$unpinned_actions" ] || \
-    fail "external workflow actions must use immutable commit SHAs:
-$unpinned_actions"
+unversioned_actions=$(find .github/workflows -type f -name '*.yml' \
+    -exec grep -HnE 'uses:[[:space:]]+[^.]' {} + \
+    | grep -Ev '@v[0-9]+([[:space:]]|$)' || :)
+[ -z "$unversioned_actions" ] || \
+    fail "external workflow actions must use explicit numeric major tags:
+$unversioned_actions"
 
 unexpected_c=$(find tests -type f -name '*.c' \
     ! -path 'tests/unit/*' ! -path 'tests/helpers/*' -print)
@@ -126,15 +115,14 @@ case $(uname -s) in
         # check. POSIX runners enforce the index permissions.
         ;;
     *)
-        missing_executable=
-        for file in $(find tests/build tests/runners tests/repository tests/integration/posix \
-                tests/portability tests/release scripts/build scripts/ci scripts/release \
-                -type f -name '*.sh' \
-                ! -path scripts/release/common.sh -print); do
-            [ -x "$file" ] || missing_executable="$missing_executable $file"
-        done
+        missing_executable=$(find \
+            tests/build tests/runners tests/repository tests/integration/posix \
+            tests/portability tests/release scripts/build scripts/ci scripts/release \
+            -type f -name '*.sh' ! -path scripts/release/common.sh \
+            ! -perm -111 -print)
         [ -z "$missing_executable" ] ||
-            fail "shell entry point is not executable:$missing_executable"
+            fail "shell entry point is not executable:
+$missing_executable"
 
         unexpected_executable=
         for file in tests/support/*.sh scripts/release/common.sh; do

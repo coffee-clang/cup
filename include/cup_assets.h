@@ -2,9 +2,8 @@
 #define CUP_CUP_ASSETS_H
 
 /*
- * Module contract: CUP assets inspection and checksum-verification contract
- * for the canonical cup executable, catalog, checksum files, and uninstall
- * helper.
+ * Inspection and checksum verification for the canonical CUP executable, catalog, checksum
+ * files, and uninstall helper.
  */
 
 #include <stddef.h>

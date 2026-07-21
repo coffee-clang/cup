@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Catalog presentation is deterministic even when packages.cfg changes record order. */
 static int compare_catalog_entry(const void *left_value, const void *right_value) {
     const PackageCatalogEntry *left = left_value;
     const PackageCatalogEntry *right = right_value;
@@ -34,6 +35,7 @@ static int compare_catalog_entry(const void *left_value, const void *right_value
     return result;
 }
 
+/* Scope matching and duplicate suppression are kept separate from rendering. */
 static int catalog_matches(const PackageCatalogEntry *package,
                            const char *component,
                            const char *host,
@@ -119,6 +121,7 @@ static int print_catalog_tools(const PackageCatalog *catalog,
     return printed;
 }
 
+/* Render one component or the complete component/tool hierarchy. */
 static void print_package_catalog(const PackageCatalog *catalog,
                                   const char *component,
                                   const char *host,
@@ -171,6 +174,7 @@ static void print_package_catalog(const PackageCatalog *catalog,
     }
 }
 
+/* Search is read-only: it loads only the catalog and never initializes runtime state. */
 CupError command_search(const char *component, const char *target_override) {
     CommandContext context = {0};
     CupError err;
@@ -207,5 +211,3 @@ done:
     command_context_end(&context);
     return err;
 }
-
-/* Installed package metadata. */

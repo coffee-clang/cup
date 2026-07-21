@@ -13,17 +13,19 @@
 
 #define MAX_ARCH_ENTRIES_PER_OS 4
 
-/* Supported platforms. */
+/* Closed platform table shared by host detection and user-input validation. */
 typedef struct {
     const char *os;
     const char *arch[MAX_ARCH_ENTRIES_PER_OS];
 } SupportedPlatform;
 
-static const SupportedPlatform SUPPORTED_PLATFORMS[] = {{"linux", {"x64", "arm64", NULL}},
-                                                        {"windows", {"x64", NULL}},
-                                                        {"macos", {"x64", "arm64", NULL}}};
+static const SupportedPlatform SUPPORTED_PLATFORMS[] = {
+    {"linux", {"x64", "arm64", NULL}},
+    {"windows", {"x64", NULL}},
+    {"macos", {"x64", "arm64", NULL}},
+};
 
-/* Platform lookup. */
+/* Case-insensitive lookup returns canonical lowercase identifiers from the closed table. */
 static const SupportedPlatform *find_supported_os(const char *os) {
     size_t count;
     size_t i;
@@ -43,7 +45,7 @@ static const SupportedPlatform *find_supported_os(const char *os) {
     return NULL;
 }
 
-/* Public API. */
+/* Public validation and native-host detection. */
 CupError platform_get_host(char *buffer, size_t size) {
     CupError err;
     const char *os;

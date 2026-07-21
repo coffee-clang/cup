@@ -70,6 +70,142 @@ static CupError verify_cached_archive(const char *checksum_path,
     return CUP_OK;
 }
 
+static CupError refresh_checksum_metadata(const char *checksum_url,
+                                          const char *checksum_path,
+                                          int *checksum_refreshed) {
+    CupError err = download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
+
+    if (err == CUP_OK) {
+        *checksum_refreshed = 1;
+    }
+    return err;
+}
+
+static CupError prepare_checksum_metadata(const char *checksum_url,
+                                          const char *checksum_path,
+                                          const char *archive_path,
+                                          PackageCachePolicy cache_policy,
+                                          int *checksum_refreshed) {
+    SystemPathKind checksum_kind;
+    CupError err;
+
+    err = system_get_path_kind(checksum_path, &checksum_kind);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (cache_policy == PACKAGE_CACHE_REFRESH || checksum_kind == SYSTEM_PATH_MISSING) {
+        err = refresh_checksum_metadata(checksum_url, checksum_path, checksum_refreshed);
+        if (err != CUP_OK) {
+            return err;
+        }
+    } else if (checksum_kind != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = checksum_has_archive_entry(checksum_path, archive_path);
+    if (err != CUP_OK && cache_policy == PACKAGE_CACHE_ALLOW) {
+        CupError refresh_err =
+            refresh_checksum_metadata(checksum_url, checksum_path, checksum_refreshed);
+
+        if (refresh_err != CUP_OK) {
+            return refresh_err;
+        }
+        err = checksum_has_archive_entry(checksum_path, archive_path);
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: package checksum metadata has no unique entry "
+                "for '%s'.\n",
+                archive_filename(archive_path));
+        return CUP_ERR_VALIDATION;
+    }
+    return CUP_OK;
+}
+
+static int cache_validation_error_is_expected(CupError err) {
+    return err == CUP_OK || err == CUP_ERR_FILESYSTEM || err == CUP_ERR_ARCHIVE ||
+           err == CUP_ERR_VALIDATION;
+}
+
+static CupError try_cached_archive(const char *checksum_url,
+                                   const char *checksum_path,
+                                   const char *archive_path,
+                                   const char *format,
+                                   int *checksum_refreshed,
+                                   int *reused) {
+    CupError err;
+    int valid_archive;
+
+    *reused = 0;
+    err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+    if (err == CUP_OK && valid_archive) {
+        *reused = 1;
+        return CUP_OK;
+    }
+
+    /* A digest mismatch may mean the shared checksum metadata is stale. Refresh it once. */
+    if (err == CUP_OK && !valid_archive && !*checksum_refreshed) {
+        err = refresh_checksum_metadata(checksum_url, checksum_path, checksum_refreshed);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (checksum_has_archive_entry(checksum_path, archive_path) != CUP_OK) {
+            return CUP_ERR_VALIDATION;
+        }
+        err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+        if (err == CUP_OK && valid_archive) {
+            *reused = 1;
+            return CUP_OK;
+        }
+    }
+
+    if (!cache_validation_error_is_expected(err)) {
+        return err;
+    }
+    return package_cache_discard(archive_path);
+}
+
+static CupError fetch_and_verify_archive(const char *package_url,
+                                         const char *checksum_url,
+                                         const char *checksum_path,
+                                         const char *archive_path,
+                                         const char *format,
+                                         int *checksum_refreshed) {
+    CupError err;
+    int valid_archive;
+
+    err = download_file(package_url, archive_path, DOWNLOAD_VALIDATE_ARCHIVE);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+    if ((err != CUP_OK || !valid_archive) && !*checksum_refreshed) {
+        CupError refresh_err =
+            refresh_checksum_metadata(checksum_url, checksum_path, checksum_refreshed);
+
+        if (refresh_err == CUP_OK &&
+            checksum_has_archive_entry(checksum_path, archive_path) == CUP_OK) {
+            err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
+        } else {
+            err = refresh_err == CUP_OK ? CUP_ERR_VALIDATION : refresh_err;
+        }
+    }
+    if (err == CUP_OK && valid_archive) {
+        return CUP_OK;
+    }
+
+    {
+        CupError discard_err = package_cache_discard(archive_path);
+
+        fprintf(stderr, "Error: downloaded package failed SHA-256 verification.\n");
+        if (discard_err != CUP_OK) {
+            return discard_err;
+        }
+    }
+    return err != CUP_OK ? err : CUP_ERR_VALIDATION;
+}
+
 CupError package_cache_fetch(char *archive_path,
                              size_t archive_path_size,
                              const char *package_url,
@@ -81,7 +217,7 @@ CupError package_cache_fetch(char *archive_path,
     CupError err;
     char checksum_path[MAX_PATH_LEN];
     int checksum_refreshed = 0;
-    int valid_archive;
+    int reused;
 
     if (source == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -93,118 +229,52 @@ CupError package_cache_fetch(char *archive_path,
         return CUP_ERR_INVALID_INPUT;
     }
 
+    /* Resolve one identity-bound archive path and its shared checksum metadata. */
     err = layout_ensure_cache_parent(identity);
-    if (err != CUP_OK) {
-        return err;
+    if (err == CUP_OK) {
+        err = layout_build_cache_archive_path(archive_path, archive_path_size, identity, format);
     }
-    err = layout_build_cache_archive_path(archive_path, archive_path_size, identity, format);
-    if (err != CUP_OK) {
-        return err;
+    if (err == CUP_OK) {
+        err = build_checksum_cache_path(archive_path, checksum_path, sizeof(checksum_path));
     }
-    err = build_checksum_cache_path(archive_path, checksum_path, sizeof(checksum_path));
     if (err != CUP_OK) {
         return err;
     }
 
-    {
-        SystemPathKind checksum_kind;
-
-        err = system_get_path_kind(checksum_path, &checksum_kind);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (cache_policy == PACKAGE_CACHE_REFRESH || checksum_kind == SYSTEM_PATH_MISSING) {
-            err = download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
-            if (err != CUP_OK) {
-                return err;
-            }
-            checksum_refreshed = 1;
-        } else if (checksum_kind != SYSTEM_PATH_REGULAR_FILE) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    }
-    err = checksum_has_archive_entry(checksum_path, archive_path);
-    if (err != CUP_OK && cache_policy == PACKAGE_CACHE_ALLOW) {
-        CupError refresh_err =
-            download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
-
-        if (refresh_err != CUP_OK) {
-            return refresh_err;
-        }
-        checksum_refreshed = 1;
-        err = checksum_has_archive_entry(checksum_path, archive_path);
-    }
+    err = prepare_checksum_metadata(checksum_url,
+                                    checksum_path,
+                                    archive_path,
+                                    cache_policy,
+                                    &checksum_refreshed);
     if (err != CUP_OK) {
-        fprintf(stderr,
-                "Error: package checksum metadata has no unique entry "
-                "for '%s'.\n",
-                archive_filename(archive_path));
-        return CUP_ERR_VALIDATION;
+        return err;
     }
 
     if (cache_policy == PACKAGE_CACHE_ALLOW) {
-        err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
-        if (err == CUP_OK && valid_archive) {
-            *source = PACKAGE_CACHE_SOURCE_CACHE;
-            return CUP_OK;
-        }
-        if (err == CUP_OK && !valid_archive && !checksum_refreshed) {
-            err = download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
-            if (err != CUP_OK) {
-                return err;
-            }
-            checksum_refreshed = 1;
-            err = checksum_has_archive_entry(checksum_path, archive_path);
-            if (err != CUP_OK) {
-                return CUP_ERR_VALIDATION;
-            }
-            err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
-            if (err == CUP_OK && valid_archive) {
+        err = try_cached_archive(checksum_url,
+                                 checksum_path,
+                                 archive_path,
+                                 format,
+                                 &checksum_refreshed,
+                                 &reused);
+        if (err != CUP_OK || reused) {
+            if (reused) {
                 *source = PACKAGE_CACHE_SOURCE_CACHE;
-                return CUP_OK;
             }
-        }
-        if (err != CUP_OK && err != CUP_ERR_FILESYSTEM && err != CUP_ERR_ARCHIVE &&
-            err != CUP_ERR_VALIDATION) {
-            return err;
-        }
-        err = package_cache_discard(archive_path);
-        if (err != CUP_OK) {
             return err;
         }
     }
 
-    err = download_file(package_url, archive_path, DOWNLOAD_VALIDATE_ARCHIVE);
-    if (err != CUP_OK) {
-        return err;
+    err = fetch_and_verify_archive(package_url,
+                                   checksum_url,
+                                   checksum_path,
+                                   archive_path,
+                                   format,
+                                   &checksum_refreshed);
+    if (err == CUP_OK) {
+        *source = PACKAGE_CACHE_SOURCE_NETWORK;
     }
-    err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
-    if ((err != CUP_OK || !valid_archive) && !checksum_refreshed) {
-        CupError refresh_err =
-            download_file(checksum_url, checksum_path, DOWNLOAD_VALIDATE_METADATA);
-
-        if (refresh_err == CUP_OK &&
-            checksum_has_archive_entry(checksum_path, archive_path) == CUP_OK) {
-            err = verify_cached_archive(checksum_path, archive_path, format, &valid_archive);
-        } else {
-            err = refresh_err == CUP_OK ? CUP_ERR_VALIDATION : refresh_err;
-        }
-    }
-    if (err != CUP_OK || !valid_archive) {
-        CupError discard_err = package_cache_discard(archive_path);
-
-        fprintf(stderr, "Error: downloaded package failed SHA-256 verification.\n");
-        if (discard_err != CUP_OK) {
-            return discard_err;
-        }
-        if (err != CUP_OK) {
-            return err;
-        }
-        return CUP_ERR_VALIDATION;
-    }
-
-    *source = PACKAGE_CACHE_SOURCE_NETWORK;
-    return CUP_OK;
+    return err;
 }
 
 CupError package_cache_discard(const char *archive_path) {

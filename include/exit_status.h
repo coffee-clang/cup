@@ -16,6 +16,7 @@ enum {
     CUP_STATUS_INTERRUPT = 130
 };
 
+/* Collapse detailed internal failures into the stable CLI status set above. */
 int cup_error_to_exit_status(CupError error);
 
 #endif /* CUP_EXIT_STATUS_H */

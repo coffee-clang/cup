@@ -2,17 +2,19 @@
 #define CUP_PACKAGE_INSTALL_H
 
 /*
- * Module contract: Reusable single-package installation operation used by
- * public install handlers and stable-update plans.
+ * Reusable single-package installation operation used by public install handlers and
+ * stable-update plans.
  */
 
 #include "error.h"
 
+/* Install one explicit or stable-resolved selector. */
 CupError package_install(const char *component,
                          const char *selector,
                          const char *target_override,
                          const char *format_override);
 
+/* Update one installed scope and report whether package state or its active identity changed. */
 CupError package_install_update_scope(const char *component,
                                       const char *tool,
                                       const char *target_override,

@@ -24,24 +24,42 @@ CUP_TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}" \
 
 port=$((18080 + ($$ % 1000)))
 helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/http-server"
-ready="${RUNNER_TEMP:-/tmp}/cup-http-ready.$$"
+temporary_root=${RUNNER_TEMP:-/tmp}
+ready="$temporary_root/cup-http-ready.$$"
+server_log="$temporary_root/cup-http.$$.log"
+test_home="$temporary_root/cup-installer-home.$$"
+server_pid=
+
+cleanup() {
+    if [ -n "$server_pid" ]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -f "$ready" "$server_log"
+    rm -rf "$test_home"
+}
+trap cleanup EXIT HUP INT TERM
+
 [ -x "$helper" ] || fail "HTTP test helper is not built: $helper"
 rm -f "$ready"
-"$helper" --root "$release_dir" --port "$port" --ready-file "$ready"     >"${RUNNER_TEMP:-/tmp}/cup-http.log" 2>&1 &
+"$helper" --root "$release_dir" --port "$port" --ready-file "$ready" \
+    >"$server_log" 2>&1 &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null || true; rm -f "$ready"' EXIT
+
 attempt=0
 while [ "$attempt" -lt 50 ]; do
-    if [ -f "$ready" ] && curl -fsS "http://127.0.0.1:$port/release.txt" >/dev/null; then
+    if [ -f "$ready" ] &&
+        curl -fsS "http://127.0.0.1:$port/release.txt" >/dev/null; then
         break
     fi
     attempt=$((attempt + 1))
     sleep 0.2
 done
-[ "$attempt" -lt 50 ] || fail 'local release test server did not become ready'
+if [ "$attempt" -ge 50 ]; then
+    cat "$server_log" >&2 || true
+    fail 'local release test server did not become ready'
+fi
 
-test_home="${RUNNER_TEMP:-/tmp}/cup-installer-home"
-rm -rf "$test_home"
 mkdir -p "$test_home"
 HOME="$test_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \

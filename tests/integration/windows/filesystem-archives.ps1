@@ -1,12 +1,19 @@
 # Purpose: Exercises ZIP path safety, private ACLs, reparse points, and long paths on native Windows.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
+# Build controlled ZIP fixtures without relying on external archive tools.
 function New-CustomZipPackage {
     param(
-        [Parameter(Mandatory = $true)][string]$Version,
-        [Parameter(Mandatory = $true)][hashtable]$ExtraEntries
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ExtraEntries
     )
 
     Add-Type -AssemblyName System.IO.Compression
@@ -62,15 +69,20 @@ function New-CustomZipPackage {
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Utf8NoBom -Path (Join-Path $cacheDir "SHA256SUMS") -Lines @(
         "$hash  $(Split-Path -Leaf $archive)")
-    return [pscustomobject]@{ PackageName = $packageName; Archive = $archive }
+    return [pscustomobject]@{
+        PackageName = $packageName
+        Archive = $archive
+    }
 }
 
+# Rejecting one fixture must not register a partial package.
 function Assert-InstallRejected([string]$Version) {
     $output = Invoke-Cup -CommandArgs @("install", "compiler", "clang@$Version") -ExpectFailure
     Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@$Version"
     return $output
 }
 
+# End-to-end filesystem, ACL, long-path and archive-safety scenarios.
 try {
     Initialize-TestEnvironment -Name "filesystem archives" -ExecutablePath $CupExecutablePath
     Invoke-Cup -CommandArgs @("repair") | Out-Null

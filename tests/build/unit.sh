@@ -8,6 +8,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cup_test_prepare_environment
 cup_test_require_dependencies
 
+# Build configuration and dependency selection.
 PLATFORM="$CUP_TEST_PLATFORM"
 case "$PLATFORM" in
     macos-*) CC="${CC:-clang}" ;;
@@ -56,6 +57,7 @@ fi
 
 mkdir -p "$TEST_BUILD_DIR"
 
+# Compile one registered Unity suite with the same project flags and pinned libraries as CUP.
 compile_test() {
     name=$1
     shift
@@ -69,6 +71,7 @@ compile_test() {
         "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
 }
 
+# Suite ownership remains explicit so the Makefile can request individual binaries.
 compile_test test_exit_status \
     "$ROOT/tests/unit/test_exit_status.c" \
     "$ROOT/src/exit_status.c"

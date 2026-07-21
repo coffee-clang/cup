@@ -2,8 +2,8 @@
 #define CUP_TOOL_PREFERENCES_H
 
 /*
- * Module contract: Atomically persisted scoped user tool preferences layered
- * over immutable official installation defaults.
+ * Atomically persisted scoped user tool preferences layered over immutable official
+ * installation defaults.
  */
 
 #include <stddef.h>
@@ -29,10 +29,13 @@ typedef enum {
     TOOL_PREFERENCE_OFFICIAL_DEFAULT
 } ToolPreferenceSource;
 
+/* Load or atomically save the complete preferences document. */
 void tool_preferences_init(ToolPreferences *preferences);
 CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *preferences);
 CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences);
 CupError tool_preferences_reset_all(void);
+
+/* Mutate one scope in memory; callers persist only after all validation succeeds. */
 CupError tool_preferences_set(ToolPreferences *preferences,
                               const char *host_platform,
                               const char *target_platform,
@@ -47,6 +50,8 @@ CupError tool_preferences_reset_scope(ToolPreferences *preferences,
                                       const char *host_platform,
                                       const char *target_platform,
                                       size_t *removed_count);
+
+/* Apply user preference > official default precedence for one exact scope. */
 CupError tool_preferences_resolve(const InstallPolicy *policy,
                                   const ToolPreferences *preferences,
                                   const char *host_platform,

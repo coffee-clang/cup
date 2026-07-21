@@ -2,8 +2,8 @@
 #define CUP_INSTALLED_PACKAGE_H
 
 /*
- * Module contract: Reconciles one concrete package identity between state and
- * the canonical components tree, without owning command lifetime or output.
+ * Reconciles one concrete package identity between persistent state and the canonical components
+ * tree, without owning command lifetime or output.
  */
 
 #include "error.h"

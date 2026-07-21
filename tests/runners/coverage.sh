@@ -17,6 +17,7 @@ REPORT_JOBS="${CUP_COVERAGE_REPORT_JOBS:-1}"
 REPORT_TIMEOUT="${CUP_COVERAGE_REPORT_TIMEOUT:-120}"
 HTML_TIMEOUT="${CUP_COVERAGE_HTML_TIMEOUT:-30}"
 
+# Validate platform, tools, numeric gates and timeout controls before compiling anything.
 case "$PLATFORM" in
     linux-x64|linux-arm64) ;;
     *) printf 'Coverage is supported only for Linux POSIX builds.\n' >&2; exit 2 ;;
@@ -28,13 +29,24 @@ for command in gcov gcovr timeout; do
     }
 done
 for value in "$LINE_THRESHOLD" "$BRANCH_THRESHOLD" "$FUNCTION_THRESHOLD"; do
-    case "$value" in ''|*[!0-9]*) printf 'Coverage thresholds must be non-negative integers.\n' >&2; exit 2 ;; esac
+    case "$value" in
+        '' | *[!0-9]*)
+            printf 'Coverage thresholds must be non-negative integers.\n' >&2
+            exit 2
+            ;;
+    esac
 done
 for value in "$UNIT_TIMEOUT" "$SUITE_TIMEOUT" "$REPORT_JOBS" "$REPORT_TIMEOUT" "$HTML_TIMEOUT"; do
-    case "$value" in ''|*[!0-9]*|0) printf 'Coverage timeouts/jobs must be positive integers.\n' >&2; exit 2 ;; esac
+    case "$value" in
+        '' | *[!0-9]* | 0)
+            printf 'Coverage timeouts/jobs must be positive integers.\n' >&2
+            exit 2
+            ;;
+    esac
 done
 cup_test_require_dependencies
 
+# Run each existing owner with bounded logs and preserve its full diagnostic output.
 run_logged() {
     label=$1
     log_file=$2
@@ -81,7 +93,8 @@ run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integr
 printf '==> Waiting for coverage counters to become stable...\n'
 previous=
 stable=0
-for _attempt in $(seq 1 15); do
+attempt=1
+while [ "$attempt" -le 15 ]; do
     current=$(find "$ROOT/build" -type f -name '*.gcda' -printf '%p:%s:%T@\n' | sort | cksum)
     if [ -n "$previous" ] && [ "$current" = "$previous" ]; then
         stable=$((stable + 1))
@@ -90,10 +103,15 @@ for _attempt in $(seq 1 15); do
         stable=0
     fi
     previous=$current
+    attempt=$((attempt + 1))
     sleep 1
 done
-[ "$stable" -ge 2 ] || { printf 'Coverage counters did not become stable.\n' >&2; exit 1; }
+if [ "$stable" -lt 2 ]; then
+    printf 'Coverage counters did not become stable.\n' >&2
+    exit 1
+fi
 
+# Generate machine-readable reports first, then HTML when the core report succeeded.
 common_args=(
     --root "$ROOT"
     --filter 'src/'

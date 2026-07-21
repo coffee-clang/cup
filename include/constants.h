@@ -1,10 +1,7 @@
 #ifndef CUP_CONSTANTS_H
 #define CUP_CONSTANTS_H
 
-/*
- * Module contract: Central bounded capacities, transfer/archive limits and
- * canonical release and CUP asset filenames.
- */
+/* Central capacities, transfer/archive limits, and canonical CUP asset filenames. */
 
 /*
  * In-memory state capacity. One active package can exist for each component, host,

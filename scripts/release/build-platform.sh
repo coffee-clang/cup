@@ -80,7 +80,6 @@ else
     uninstall_asset="uninstall.sh"
 fi
 
-checksum=$(checksum_command)
 binary_hash=$(hash_file "dist/$PLATFORM/$binary")
 uninstall_hash=$(hash_file "$uninstall_source")
 metadata_hash=$(hash_file "build/release-$PLATFORM/generated/release.txt")

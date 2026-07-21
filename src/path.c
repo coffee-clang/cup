@@ -10,7 +10,7 @@
 #include <ctype.h>
 #include <string.h>
 
-/* Path building. */
+/* Bounded path composition that preserves one canonical forward-slash representation. */
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child) {
     if (buffer == NULL || size == 0 || text_is_empty(parent) || text_is_empty(child)) {
         return CUP_ERR_INVALID_INPUT;
@@ -49,7 +49,7 @@ const char *path_last_segment(const char *path) {
     return slash == NULL ? path : slash + 1;
 }
 
-/* Path validation. */
+/* Reject separators, traversal and platform aliases before values become path segments. */
 static int equals_ignore_case_n(const char *left, const char *right, size_t length) {
     size_t i;
 

@@ -271,6 +271,7 @@ static CupError prepare_update_files(CupUpdateFiles *files) {
     }
     memset(files, 0, sizeof(*files));
 
+    /* Resolve canonical installed paths and the names used by the published release. */
     err = cup_assets_binary_asset_name(files->binary_name, sizeof(files->binary_name));
     if (err == CUP_OK) {
         err = cup_assets_platform_checksums_name(files->platform_checksums_name,
@@ -308,6 +309,7 @@ static CupError prepare_update_files(CupUpdateFiles *files) {
     if (err == CUP_OK) {
         err = layout_get_transaction_path(files->journal_path, sizeof(files->journal_path));
     }
+    /* Allocate one private staging generation, then derive every staged asset path from it. */
     if (err == CUP_OK) {
         err = system_create_temp_directory(
             tmp_dir, "cup-update", files->staging, sizeof(files->staging));
@@ -600,6 +602,8 @@ CupError command_update_cup(void) {
     char helper_token[MAX_PATH_LEN];
 
     memset(&files, 0, sizeof(files));
+
+    /* Serialize discovery and handoff so no package operation observes half an update. */
     err = command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
         goto done;
@@ -618,6 +622,7 @@ CupError command_update_cup(void) {
         goto done;
     }
 
+    /* Once latest resolves to a concrete release, fetch only immutable versioned assets. */
     err = build_versioned_urls(&urls, &files, latest_metadata.version);
     if (err == CUP_OK) {
         err = fetch_verified_release_metadata(&files, &urls, &latest_metadata, &versioned_metadata);
@@ -635,6 +640,7 @@ CupError command_update_cup(void) {
         goto done;
     }
 
+    /* Persist the handoff before starting the detached helper that commits after parent exit. */
     err = text_format(helper_token,
                       sizeof(helper_token),
                       "u%lu-%s",
@@ -668,6 +674,7 @@ CupError command_update_cup(void) {
     err = CUP_OK;
 
 done:
+    /* Before helper ownership, this process remains responsible for journal and staging cleanup. */
     if (!helper_started && files.staging[0] != '\0') {
         CupError cleanup_err = CUP_OK;
 

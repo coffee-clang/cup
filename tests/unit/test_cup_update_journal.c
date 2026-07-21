@@ -17,6 +17,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char root[MAX_PATH_LEN];
 static CupError replace_result;
 static SystemCommitState replace_state;
@@ -24,8 +29,16 @@ static CupError permission_result;
 static int cup_assets_valid;
 static int remove_tree_calls;
 
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
+
 static void join_test_path(char *buffer, size_t size, const char *left, const char *right) {
-    TEST_ASSERT_TRUE(snprintf(buffer, size, "%s/%s", left, right) > 0);
+    int written = snprintf(buffer, size, "%s/%s", left, right);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void remove_tree_real(const char *path) {
@@ -99,37 +112,52 @@ static void reset_scenario(void) {
 void setUp(void) {
     reset_scenario();
 }
+
 void tearDown(void) {
     remove_tree_real(root);
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError layout_get_root(char *buffer, size_t size) {
-    return snprintf(buffer, size, "%s", root) > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", root), size);
 }
+
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
 }
+
 CupError layout_get_staging_dir(char *buffer, size_t size) {
     return path_join(buffer, size, root, "staging");
 }
+
 CupError layout_get_cup_update_result_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "cup-update-result.txt");
 }
+
 CupError layout_get_binary_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "bin/cup");
 }
+
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "bin/uninstall.sh");
 }
+
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "config/SHA256SUMS");
 }
+
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "config/packages.cfg");
 }
+
 CupError layout_get_install_policy_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "config/install.cfg");
 }
+
 CupError layout_get_common_checksums_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "config/SHA256SUMS.common");
 }
@@ -137,38 +165,53 @@ CupError layout_get_common_checksums_path(char *buffer, size_t size) {
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
     int descriptor;
+    int written;
 
-    if (snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix) < 0) {
-        return CUP_ERR_TEMPORARY;
+    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
+    if (written < 0 || (size_t)written >= path_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
     descriptor = mkstemp(path);
-    if (descriptor < 0)
+    if (descriptor < 0) {
         return CUP_ERR_TEMPORARY;
+    }
     *file = fdopen(descriptor, "w+b");
-    return *file == NULL ? CUP_ERR_TEMPORARY : CUP_OK;
+    if (*file == NULL) {
+        close(descriptor);
+        unlink(path);
+        return CUP_ERR_TEMPORARY;
+    }
+    return CUP_OK;
 }
+
 CupError system_sync_file(FILE *file) {
     return fflush(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
+
 CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *state) {
     *state = replace_state;
-    if (replace_result != CUP_OK)
+    if (replace_result != CUP_OK) {
         return replace_result;
+    }
     return rename(source, destination) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
+
 CupError system_path_exists(const char *path, int *exists) {
     *exists = access(path, F_OK) == 0;
     return CUP_OK;
 }
+
 CupError system_remove_file(const char *path) {
     return unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
+
 CupError system_sync_parent_directory(const char *path) {
     (void)path;
     return CUP_OK;
 }
+
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     struct stat status;
 
@@ -176,35 +219,41 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
         *kind = errno == ENOENT ? SYSTEM_PATH_MISSING : SYSTEM_PATH_OTHER;
         return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
     }
-    if (S_ISREG(status.st_mode))
+    if (S_ISREG(status.st_mode)) {
         *kind = SYSTEM_PATH_REGULAR_FILE;
-    else if (S_ISDIR(status.st_mode))
+    } else if (S_ISDIR(status.st_mode)) {
         *kind = SYSTEM_PATH_DIRECTORY;
-    else if (S_ISLNK(status.st_mode))
+    } else if (S_ISLNK(status.st_mode)) {
         *kind = SYSTEM_PATH_LINK;
-    else
+    } else {
         *kind = SYSTEM_PATH_OTHER;
+    }
     return CUP_OK;
 }
+
 CupError system_set_executable(const char *path, int executable) {
     (void)path;
     (void)executable;
     return permission_result;
 }
+
 CupError system_set_read_only(const char *path, int read_only) {
     (void)path;
     (void)read_only;
     return permission_result;
 }
+
 CupError filesystem_remove_tree(const char *path) {
     remove_tree_calls++;
     remove_tree_real(path);
     return CUP_OK;
 }
+
 CupError cup_assets_inspect(CupAssetsInspection *inspection) {
     memset(inspection, 0, sizeof(*inspection));
     return CUP_OK;
 }
+
 int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
     (void)inspection;
     return cup_assets_valid;
@@ -257,6 +306,11 @@ static void create_backups(const char *staging) {
         write_file(path, "old");
     }
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_model_and_begin(void) {
     CupUpdateJournal journal;
@@ -383,6 +437,8 @@ static void test_recover_rollback(void) {
     assert_file_text(path, "old");
     TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

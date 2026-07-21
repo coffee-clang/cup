@@ -56,15 +56,17 @@ static CupError initialize_assets(HelperAsset *assets, size_t count) {
     assets[0].new_name = CUP_UPDATE_BINARY_NEW;
     assets[0].old_name = CUP_UPDATE_BINARY_OLD;
     assets[0].executable = 1;
-    if (layout_get_binary_path(assets[0].destination, sizeof(assets[0].destination)) != CUP_OK)
+    if (layout_get_binary_path(assets[0].destination, sizeof(assets[0].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
+    }
 
     assets[1].new_name = CUP_UPDATE_UNINSTALL_NEW;
     assets[1].old_name = CUP_UPDATE_UNINSTALL_OLD;
     assets[1].executable = 1;
     assets[1].read_only = 1;
-    if (layout_get_uninstall_path(assets[1].destination, sizeof(assets[1].destination)) != CUP_OK)
+    if (layout_get_uninstall_path(assets[1].destination, sizeof(assets[1].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
+    }
 
     assets[2].new_name = CUP_UPDATE_PLATFORM_CHECKSUMS_NEW;
     assets[2].old_name = CUP_UPDATE_PLATFORM_CHECKSUMS_OLD;
@@ -102,13 +104,15 @@ static CupError set_asset_permissions(const HelperAsset *asset) {
 
     if (asset->executable) {
         err = system_set_executable(asset->destination, 1);
-        if (err != CUP_OK)
+        if (err != CUP_OK) {
             return err;
+        }
     }
     if (asset->read_only) {
         err = system_set_read_only(asset->destination, 1);
-        if (err != CUP_OK)
+        if (err != CUP_OK) {
             return err;
+        }
     }
     return CUP_OK;
 }
@@ -119,8 +123,9 @@ static CupError create_empty_marker(const char *path) {
     int sync_failed;
     int close_failed;
 
-    if (err != CUP_OK)
+    if (err != CUP_OK) {
         return err;
+    }
     sync_failed = system_sync_file(file) != CUP_OK;
     close_failed = fclose(file) != 0;
     if (sync_failed || close_failed || system_sync_parent_directory(path) != CUP_OK) {
@@ -239,8 +244,9 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
 /* Persistent completion channel. Detached failures are recorded for the next command and for doctor
  * diagnostics. */
 static void record_helper_failure(CupUpdateJournal *journal, CupError error, int recover) {
-    if (journal == NULL)
+    if (journal == NULL) {
         return;
+    }
 
     if (recover &&
         cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error) == CUP_OK) {
@@ -262,10 +268,12 @@ static CupError acquire_helper_lock(SystemLock *lock) {
     }
     for (attempt = 0; attempt < HELPER_LOCK_ATTEMPTS; ++attempt) {
         CupError err = system_lock_acquire(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
-        if (err == CUP_OK)
+        if (err == CUP_OK) {
             return CUP_OK;
-        if (err != CUP_ERR_LOCK)
+        }
+        if (err != CUP_ERR_LOCK) {
             return err;
+        }
 #if defined(_WIN32)
         Sleep(HELPER_LOCK_DELAY_MS);
 #else
@@ -290,8 +298,9 @@ static CupError wait_for_parent(const char *value) {
 
     errno = 0;
     number = strtoull(value, &end, 10);
-    if (errno != 0 || *end != '\0' || number == 0)
+    if (errno != 0 || *end != '\0' || number == 0) {
         return CUP_ERR_INVALID_INPUT;
+    }
     handle = (HANDLE)(uintptr_t)number;
     while (1) {
         if (!ReadFile(handle, &byte, 1, &read_count, NULL)) {
@@ -321,8 +330,9 @@ static CupError wait_for_parent(const char *value) {
         count = read(descriptor, &byte, 1);
     } while (count > 0 || (count < 0 && errno == EINTR));
     close(descriptor);
-    if (count < 0)
+    if (count < 0) {
         return CUP_ERR_FILESYSTEM;
+    }
 #endif
     return CUP_OK;
 }
@@ -335,22 +345,28 @@ CupError cup_update_helper_prepare(void) {
     CupError err;
 
     err = layout_ensure_cup_assets();
-    if (err == CUP_OK)
+    if (err == CUP_OK) {
         err = layout_get_binary_path(binary, sizeof(binary));
-    if (err == CUP_OK)
+    }
+    if (err == CUP_OK) {
         err = layout_get_cup_update_helper_path(helper, sizeof(helper));
-    if (err == CUP_OK)
+    }
+    if (err == CUP_OK) {
         err = system_copy_file(binary, helper);
-    if (err == CUP_OK)
+    }
+    if (err == CUP_OK) {
         err = system_set_executable(helper, 1);
+    }
     return err;
 }
 
 #if defined(_WIN32)
 static CupError utf8_to_wide(const char *input, wchar_t *output, size_t output_count) {
     int written;
-    if (text_is_empty(input) || output == NULL || output_count == 0 || output_count > INT_MAX)
+
+    if (text_is_empty(input) || output == NULL || output_count == 0 || output_count > INT_MAX) {
         return CUP_ERR_INVALID_INPUT;
+    }
     written =
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1, output, (int)output_count);
     return written == 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
@@ -366,6 +382,7 @@ CupError cup_update_helper_start(const char *token) {
     }
 
 #if defined(_WIN32)
+    /* The child inherits only the read end; the parent keeps the write end until exit. */
     SECURITY_ATTRIBUTES security;
     HANDLE read_handle = NULL;
     HANDLE write_handle = NULL;
@@ -383,10 +400,12 @@ CupError cup_update_helper_start(const char *token) {
         !SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, 0) ||
         utf8_to_wide(helper, wide_helper, MAX_PATH_LEN) != CUP_OK ||
         utf8_to_wide(token, wide_token, MAX_PATH_LEN) != CUP_OK) {
-        if (read_handle != NULL)
+        if (read_handle != NULL) {
             CloseHandle(read_handle);
-        if (write_handle != NULL)
+        }
+        if (write_handle != NULL) {
             CloseHandle(write_handle);
+        }
         return CUP_ERR_FILESYSTEM;
     }
     written = _snwprintf(command,
@@ -403,6 +422,7 @@ CupError cup_update_helper_start(const char *token) {
     ZeroMemory(&startup, sizeof(startup));
     startup.cb = sizeof(startup);
     ZeroMemory(&process, sizeof(process));
+    /* Start a detached copy of the installed helper with the inherited handshake handle. */
     if (!CreateProcessW(wide_helper,
                         command,
                         NULL,
@@ -422,11 +442,13 @@ CupError cup_update_helper_start(const char *token) {
     CloseHandle(process.hProcess);
     g_parent_signal = write_handle;
 #else
+    /* POSIX uses pipe EOF as the non-reusable parent-exit signal. */
     int pipe_fds[2];
     pid_t pid;
 
-    if (pipe(pipe_fds) != 0)
+    if (pipe(pipe_fds) != 0) {
         return CUP_ERR_FILESYSTEM;
+    }
     pid = fork();
     if (pid < 0) {
         close(pipe_fds[0]);
@@ -434,6 +456,7 @@ CupError cup_update_helper_start(const char *token) {
         return CUP_ERR_FILESYSTEM;
     }
     if (pid == 0) {
+        /* The child retains only the read end and immediately replaces itself with the helper. */
         char descriptor[32];
         close(pipe_fds[1]);
         if (text_format(descriptor, sizeof(descriptor), "%d", pipe_fds[0]) != CUP_OK) {
@@ -458,16 +481,18 @@ CupError cup_update_helper_run(const char *token, const char *wait_value) {
     CupError err;
 
     err = wait_for_parent(wait_value);
-    if (err != CUP_OK)
+    if (err != CUP_OK) {
         return err;
+    }
     err = cup_update_journal_load(&journal, &status);
     if (err != CUP_OK || status != CUP_UPDATE_JOURNAL_LOADED || strcmp(journal.token, token) != 0 ||
         journal.phase != CUP_UPDATE_PHASE_SCHEDULED) {
         return CUP_ERR_TRANSACTION;
     }
     err = cup_update_journal_get_staging_path(&journal, staging, sizeof(staging));
-    if (err != CUP_OK)
+    if (err != CUP_OK) {
         return err;
+    }
 
     err = acquire_helper_lock(&lock);
     if (err != CUP_OK) {

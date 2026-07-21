@@ -133,7 +133,7 @@ inspect_elf() {
 
     for library in $needed; do
         case "$library" in
-            libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libacl.so.*) ;;
+            libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libacl.so.*|ld-linux*.so.*) ;;
             libgcc_s.so.*|libasan.so.*|libubsan.so.*|libstdc++.so.*|libclang_rt.*.so*) ;;
             *) fail "library is outside the Linux system/runtime allowlist: $library" ;;
         esac

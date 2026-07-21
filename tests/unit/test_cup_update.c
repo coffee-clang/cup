@@ -23,6 +23,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char temp_dir[] = "/tmp/cup-cup-update-test-XXXXXX";
 static char remote_version[64];
 static char remote_commit[64];
@@ -59,6 +64,12 @@ static unsigned staging_serial;
 static CupError cup_assets_inspect_result;
 static int installed_generation_valid;
 static int cup_assets_inspect_calls;
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 static void reset_scenario(void) {
     strcpy(remote_version, "1.2.4");
@@ -153,6 +164,11 @@ static CupError setup_result(void) {
     return setup_calls == fail_setup_call ? CUP_ERR_BUFFER_TOO_SMALL : CUP_OK;
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -203,14 +219,14 @@ CupError cup_assets_binary_asset_name(char *name, size_t size) {
     if (setup_result() != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return snprintf(name, size, "cup-linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(name, size, "cup-linux-x64"), size);
 }
 
 CupError cup_assets_platform_checksums_name(char *name, size_t size) {
     if (setup_result() != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return snprintf(name, size, "SHA256SUMS.linux-x64") > 0 ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
 }
 
 CupError cup_assets_verify_asset(const char *checksum_path,
@@ -232,8 +248,7 @@ CupError cup_assets_verify_asset(const char *checksum_path,
 }
 
 static CupError copy_test_path(char *buffer, size_t size, const char *suffix) {
-    return snprintf(buffer, size, "%s/%s", temp_dir, suffix) > 0 ? CUP_OK
-                                                                 : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s/%s", temp_dir, suffix), size);
 }
 
 CupError layout_get_staging_dir(char *buffer, size_t size) {
@@ -444,6 +459,11 @@ CupError filesystem_remove_tree(const char *path) {
     return cleanup_result;
 }
 
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
+
 static void test_installed_preflight(void) {
     installed_generation_valid = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
@@ -653,6 +673,8 @@ static void test_stage_failures(void) {
     executable_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
 }
+
+/* Suite registration. */
 
 int main(void) {
     char tmp_path[1024];

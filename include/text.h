@@ -2,9 +2,8 @@
 #define CUP_TEXT_H
 
 /*
- * Module contract: Bounded text and key/value parsing utilities for project
- * text formats. Functions never allocate and always preserve destination
- * bounds supplied by the caller.
+ * Bounded text and key/value parsing for project formats. Functions do not allocate and preserve
+ * caller-supplied destination bounds.
  */
 
 #include <stddef.h>

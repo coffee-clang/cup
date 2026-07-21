@@ -65,7 +65,8 @@ REMOVED_BUILD_SELECTORS := \
     COVERAGE SANITIZERS DEBUG_SYMBOLS
 ifneq ($(strip $(foreach variable,$(REMOVED_BUILD_SELECTORS),\
         $(if $(filter command\ line environment,$(origin $(variable))),$(variable)))),)
-    $(error LINK_MODE, BUILD_MODE, RELEASE_BUILD, CUP_RELEASE_BUILD, COVERAGE, SANITIZERS and DEBUG_SYMBOLS were removed; use target-based builds and EXTRA_* flags)
+    $(error LINK_MODE, BUILD_MODE, RELEASE_BUILD, CUP_RELEASE_BUILD, COVERAGE, \
+        SANITIZERS and DEBUG_SYMBOLS were removed; use target-based builds and EXTRA_* flags)
 endif
 
 # Mandatory project flags are owned by the Makefile. Command-line additions use
@@ -74,7 +75,8 @@ endif
 DIRECT_FLAG_VARIABLES := CPPFLAGS CFLAGS LDFLAGS LDLIBS
 ifneq ($(strip $(foreach variable,$(DIRECT_FLAG_VARIABLES),\
         $(if $(filter command\ line,$(origin $(variable))),$(variable)))),)
-    $(error Direct CPPFLAGS/CFLAGS/LDFLAGS/LDLIBS overrides are not supported; use EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS or EXTRA_LDLIBS)
+    $(error Direct CPPFLAGS/CFLAGS/LDFLAGS/LDLIBS overrides are not supported; use \
+        EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS or EXTRA_LDLIBS)
 endif
 
 # CUP_BUILD_CONFIGURATION and CUP_OFFICIAL_BUILD are internal recursive-make
@@ -112,7 +114,8 @@ ifeq ($(NEED_BUILD_CONFIG),1)
         $(error Unsupported PLATFORM '$(PLATFORM)'. Supported values: $(SUPPORTED_PLATFORM))
     endif
     ifeq ($(filter $(CONFIGURATION),$(SUPPORTED_CONFIGURATION)),)
-        $(error Unsupported build configuration '$(CONFIGURATION)'. Supported values: $(SUPPORTED_CONFIGURATION))
+        $(error Unsupported build configuration '$(CONFIGURATION)'. Supported values: \
+            $(SUPPORTED_CONFIGURATION))
     endif
     ifneq ($(filter $(CUP_OFFICIAL_BUILD),0 1),$(CUP_OFFICIAL_BUILD))
         $(error CUP_OFFICIAL_BUILD must be 0 or 1)
@@ -371,7 +374,8 @@ MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 # Build, maintenance, test and documentation entry points.
 .PHONY: \
     all debug coverage sanitizers release help _build clean reset-dev-home \
-    deps check-dependencies check-toolchain check-binary docs-assets docs serve version release-metadata \
+    deps check-dependencies check-toolchain check-binary docs-assets docs serve version \
+    release-metadata \
     validate-release test test-posix test-integration test-unit \
     test-unit-build test-helpers test-build test-repository test-release \
     test-windows test-portability-linux test-coverage test-sanitizers \

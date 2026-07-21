@@ -95,6 +95,8 @@ CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *pre
         return CUP_ERR_INVALID_INPUT;
     }
     tool_preferences_init(preferences);
+
+    /* A missing file means no overrides; a present file must be parsed completely and strictly. */
     err = layout_get_preferences_path(path, sizeof(path));
     if (err != CUP_OK) {
         return err;
@@ -108,6 +110,7 @@ CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *pre
         return CUP_ERR_FILESYSTEM;
     }
 
+    /* Parse format and scoped preferences without exposing a partially loaded result. */
     while (1) {
         char key[MAX_CATALOG_KEY_LEN];
         char value[MAX_CATALOG_VALUE_LEN];
@@ -150,6 +153,7 @@ CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *pre
         }
     }
 
+    /* Validate the complete set only after the physical file has been consumed. */
     if (fclose(file) != 0) {
         tool_preferences_init(preferences);
         return CUP_ERR_FILESYSTEM;

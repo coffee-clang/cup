@@ -2,9 +2,8 @@
 #define CUP_COMMANDS_H
 
 /*
- * Module contract: Public CLI command handlers. Handlers receive already
- * parsed arguments and
- * own command-level validation, locking, output, and state transitions.
+ * Public CLI command handlers receive already parsed arguments and own command-level
+ * validation, locking, output, and state transitions.
  */
 
 #include "error.h"

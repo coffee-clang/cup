@@ -13,7 +13,8 @@
 
 #include <stdio.h>
 
-/* Managed layout. */
+/* Fixed root-relative names. These constants define the on-disk contract used by every
+ * path builder. */
 static const char ROOT_DIRECTORY[] = ".cup";
 static const char BIN_DIRECTORY[] = "bin";
 static const char COMPONENTS_DIRECTORY[] = "components";
@@ -33,13 +34,14 @@ static const char BINARY_FILENAME[] = "cup.exe";
 static const char BINARY_FILENAME[] = "cup";
 #endif
 
-/* Managed directories. */
+/* Runtime directories that must exist after initialization. */
 static const char *const RUNTIME_DIRS[] = {
     COMPONENTS_DIRECTORY, STAGING_DIRECTORY, CACHE_DIRECTORY};
 
 static const char *const BOOTSTRAP_DIRS[] = {BIN_DIRECTORY, CONFIG_DIRECTORY, HELPERS_DIRECTORY};
 
-/* Path helpers. */
+/* Root-relative path composition. These helpers build strings only and never create
+ * filesystem objects. */
 typedef enum {
     PATH_CHAIN_ONLY,
     PATH_CHAIN_CREATE_DIRECTORIES
@@ -141,7 +143,7 @@ CupError layout_get_config_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, CONFIG_DIRECTORY);
 }
 
-/* Canonical paths. */
+/* Canonical singleton paths for state, journals, configuration and official CUP assets. */
 CupError layout_get_root(char *buffer, size_t size) {
     CupError err;
     char home[MAX_PATH_LEN];
@@ -306,7 +308,7 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
     return path_join(buffer, size, directory, BINARY_FILENAME);
 }
 
-/* Package, cache, staging and recovery paths. */
+/* Identity-bound paths for packages, cache entries, staging work and recovery evidence. */
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     CupError err;
     char root[MAX_PATH_LEN];
@@ -383,7 +385,7 @@ CupError layout_build_cache_archive_path(char *buffer,
     return path_join(buffer, size, directory, filename);
 }
 
-/* Structure checks and creation. */
+/* Runtime structure validation and private-directory creation. */
 static CupError inspect_runtime_path(const char *path,
                                      SystemPathKind expected_kind,
                                      size_t *present_count,
@@ -404,7 +406,8 @@ static CupError inspect_runtime_path(const char *path,
     return CUP_OK;
 }
 
-/* CUP assets/runtime inspection and creation. */
+/* Distinguish an absent runtime from a partially initialized one before commands decide
+ * whether creation is allowed. */
 CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
     CupError err;
     char path[MAX_PATH_LEN];

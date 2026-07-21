@@ -1,6 +1,9 @@
 # Purpose: Runs one Windows integration suite with consistent failure reporting and cleanup.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 if ([string]::IsNullOrWhiteSpace($CupExecutablePath)) {

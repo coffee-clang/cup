@@ -218,15 +218,9 @@ Adding a catalog entry alone is not sufficient.
 
 ## Implementation and verification
 
-Public platform identifiers are defined by `platform.c`. Portable modules call
-the interface in `system.h`; `system_posix.c` and `system_windows.c` provide the
-native implementations. Entry-point representation and interrupt handling are
-owned by `wrappers.c` and `interrupt.c`.
-
-POSIX primitives have focused C tests and process-level integration coverage.
-Windows behavior is verified by the native PowerShell integration suite and by
-building and running release candidates on Windows runners under MSYS2 UCRT64.
-Cross-compilation is not part of the official Windows build path. See [TESTING](../development/TESTING.md) and
+Platform-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). Native
+verification and candidate execution are described in
+[TESTING](../development/TESTING.md) and
 [RELEASES](../development/RELEASES.md).
 
 ## Related documents

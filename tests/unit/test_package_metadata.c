@@ -13,15 +13,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Shared fixture state used by the cases in this suite. */
+
 static char temp_dir[] = "/tmp/cup-info-test-XXXXXX";
+
+/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
 }
+
 void tearDown(void) {
 }
 
 static void build_path(char *out, size_t size, const char *name) {
-    TEST_ASSERT_TRUE(snprintf(out, size, "%s/%s", temp_dir, name) > 0);
+    int written = snprintf(out, size, "%s/%s", temp_dir, name);
+
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void write_bytes(const char *path, const void *data, size_t size) {
@@ -35,6 +42,8 @@ static void write_bytes(const char *path, const void *data, size_t size) {
 static void write_text(const char *path, const char *text) {
     write_bytes(path, text, strlen(text));
 }
+
+/* Test cases grouped by the public contract they exercise. */
 
 static void test_load_fields(void) {
     PackageMetadata info;
@@ -187,6 +196,8 @@ static void test_query_guards(void) {
     TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", &cursor));
     package_metadata_free(&info);
 }
+
+/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));

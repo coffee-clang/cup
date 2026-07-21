@@ -1,6 +1,9 @@
 # Purpose: Exercises public package and state commands with the native Windows executable.
 
-param([Parameter(Mandatory = $true)][string]$CupExecutablePath)
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CupExecutablePath
+)
 . (Join-Path $PSScriptRoot "common.ps1")
 
 try {

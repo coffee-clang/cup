@@ -9,7 +9,18 @@
 #include <string.h>
 #include <unistd.h>
 
+/*
+ * Scenario controls and observations. Configured results drive the boundary doubles below;
+ * counters record the calls made by production code.
+ */
+
 static char journal_path[] = "/tmp/cup-runtime-journal-test-XXXXXX";
+
+/* Fixture lifecycle and local construction helpers. */
+
+static CupError buffer_write_result(int written, size_t size) {
+    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+}
 
 void setUp(void) {
     int fd = mkstemp(journal_path);
@@ -23,10 +34,13 @@ void tearDown(void) {
     strcpy(journal_path, "/tmp/cup-runtime-journal-test-XXXXXX");
 }
 
+/*
+ * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
+ * state above.
+ */
+
 CupError layout_get_transaction_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "%s", journal_path) >= 0 && strlen(journal_path) < size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
+    return buffer_write_result(snprintf(buffer, size, "%s", journal_path), size);
 }
 
 static void write_journal(const char *contents) {
@@ -35,6 +49,11 @@ static void write_journal(const char *contents) {
     TEST_ASSERT_TRUE(fputs(contents, file) >= 0);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
+
+/*
+ * Test cases exercise the real production entry point while changing only controlled boundary
+ * outcomes.
+ */
 
 static void test_detects_owners(void) {
     RuntimeJournalKind kind;
@@ -70,6 +89,8 @@ static void test_rejects_invalid(void) {
     write_journal("format=1\ntemporary_name=x\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_detect(&kind));
 }
+
+/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

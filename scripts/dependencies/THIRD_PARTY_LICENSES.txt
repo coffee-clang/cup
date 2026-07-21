@@ -1,10 +1,11 @@
-CUP THIRD-PARTY DEPENDENCIES
-============================
+CUP THIRD-PARTY LICENSES
+========================
 
-This file records the exact versions, source locations and license texts for
-the third-party archives pinned in scripts/dependencies/sources.sh. Unity is
-used only by the test suite; the remaining components may contribute code to
-CUP binaries or generated build artifacts.
+This file preserves the license texts and required notices for the archives
+pinned by sources.sh in this directory. The source lock remains authoritative
+for versions, download locations and SHA-256 digests. Unity is used only by
+the test suite; the remaining components may contribute code to CUP binaries
+or generated build artifacts.
 
 zlib 1.3.2
 ----------
