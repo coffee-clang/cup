@@ -81,6 +81,29 @@ package_catalog_add_version() {
 }
 
 
+package_catalog_ensure_package() {
+    component=$1
+    tool=$2
+    target=$3
+    version=$4
+    format=${5:-tar.gz}
+    catalog=$DEV_ROOT/config/packages.cfg
+    key="$component.$tool.$TEST_PLATFORM.$target"
+
+    grep -F "$key.stable_version=" "$catalog" >/dev/null 2>&1 && return 0
+
+    cat >> "$catalog" <<EOF_PACKAGE_CATALOG
+
+$key.stable_version=$version
+$key.available_versions=$version
+$key.default_format=$format
+$key.formats=$format
+$key.url_template=https://example.invalid/$tool-{version}-{host_platform}-{target_platform}.{format}
+$key.checksum_url_template=https://example.invalid/$tool-{version}-{host_platform}-{target_platform}/SHA256SUMS
+EOF_PACKAGE_CATALOG
+}
+
+
 package_catalog_set_format() {
     component=$1
     tool=$2

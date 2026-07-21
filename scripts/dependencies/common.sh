@@ -524,6 +524,20 @@ abort_dependency_prefix() {
     fi
 }
 
+dependency_metadata_contains_staging() {
+    local value="$1"
+    local stage_root="${CUP_DEPS_STAGE_ROOT:-}"
+    local stage_name
+
+    [ -n "$stage_root" ] || return 1
+    stage_name=${stage_root##*/}
+    case "$value" in
+        *"$stage_root"*|*"$stage_name"*) return 0 ;;
+    esac
+    return 1
+}
+
+
 normalize_dependency_metadata() {
     local prefix="$1"
     local staged_prefix="$2"
@@ -532,6 +546,7 @@ normalize_dependency_metadata() {
     local final_native=
     local staged_windows=
     local final_windows=
+    local staging_directory=${CUP_DEPS_STAGE_ROOT##*/}
     local metadata
 
     [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] || return 0
@@ -554,20 +569,29 @@ normalize_dependency_metadata() {
         CUP_STAGED_NATIVE="$staged_native" CUP_FINAL_NATIVE="$final_native" \
         CUP_STAGED_WINDOWS="$staged_windows" CUP_FINAL_WINDOWS="$final_windows" \
             perl -0pi -e '
-                s/\Q$ENV{CUP_STAGED_PREFIX}\E/$ENV{CUP_FINAL_PREFIX}/g;
-                if (length $ENV{CUP_STAGED_NATIVE}) {
-                    s/\Q$ENV{CUP_STAGED_NATIVE}\E/$ENV{CUP_FINAL_NATIVE}/g;
+                sub path_pattern {
+                    my ($path) = @_;
+                    my @parts = split(/[\\\/]+/, $path, -1);
+                    return join("[\\\\/]+", map { quotemeta($_) } @parts);
                 }
-                if (length $ENV{CUP_STAGED_WINDOWS}) {
-                    s/\Q$ENV{CUP_STAGED_WINDOWS}\E/$ENV{CUP_FINAL_WINDOWS}/g;
+                sub replace_path {
+                    my ($from, $to) = @_;
+                    return unless length $from;
+                    my $pattern = path_pattern($from);
+                    s/$pattern/$to/gi;
                 }
+                replace_path($ENV{CUP_STAGED_WINDOWS}, $ENV{CUP_FINAL_NATIVE});
+                replace_path($ENV{CUP_STAGED_NATIVE}, $ENV{CUP_FINAL_NATIVE});
+                replace_path($ENV{CUP_STAGED_PREFIX}, $ENV{CUP_FINAL_PREFIX});
             ' "$metadata"
 
         if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata" || \
             { [ -n "$staged_native" ] && \
               LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; } || \
             { [ -n "$staged_windows" ] && \
-              LC_ALL=C grep -F -I -q -- "$staged_windows" "$metadata"; }; then
+              LC_ALL=C grep -F -I -q -- "$staged_windows" "$metadata"; } || \
+            { [ -n "$staging_directory" ] && \
+              LC_ALL=C grep -F -I -q -- "$staging_directory" "$metadata"; }; then
             echo "Error: generated metadata still contains the staging prefix: $metadata" >&2
             return 1
         fi

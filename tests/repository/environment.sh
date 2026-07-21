@@ -11,6 +11,9 @@ export TESTS_ROOT
 
 test_begin environment
 
+NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
+    fail 'could not resolve native build platform for repository tests'
+
 create_private_prefix() {
     prefix=$1
     mkdir -p "$prefix/include/event2" "$prefix/lib"
@@ -321,11 +324,15 @@ dependency_id=$id"; then
     final_native=$(cygpath -m "$final")
     staged_windows=$(cygpath -w "$CUP_DEPS_BUILD_PREFIX")
     final_windows=$(cygpath -w "$final")
+    mixed_native=$(printf "%s" "$staged_native" | sed "s#/#\\\\#3g")
     cat >"$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake" <<EOF_WINDOWS_PATHS
 posix=$CUP_DEPS_BUILD_PREFIX
 native=$staged_native
 windows=$staged_windows
+mixed=$mixed_native
 EOF_WINDOWS_PATHS
+    dependency_metadata_contains_staging "$mixed_native" ||
+        fail "mixed-separator staging path was not detected"
 
     normalize_dependency_metadata "$CUP_DEPS_BUILD_PREFIX" \
         "$CUP_DEPS_BUILD_PREFIX" "$final"
@@ -337,7 +344,8 @@ EOF_WINDOWS_PATHS
     windows_metadata="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake"
     grep -F "posix=$final" "$windows_metadata" >/dev/null
     grep -F "native=$final_native" "$windows_metadata" >/dev/null
-    grep -F "windows=$final_windows" "$windows_metadata" >/dev/null
+    grep -F "windows=$final_native" "$windows_metadata" >/dev/null
+    grep -F "mixed=$final_native" "$windows_metadata" >/dev/null
     ! grep -F "$CUP_DEPS_BUILD_PREFIX" "$windows_metadata" >/dev/null
     ! grep -F "$staged_native" "$windows_metadata" >/dev/null
     ! grep -F "$staged_windows" "$windows_metadata" >/dev/null
@@ -493,7 +501,7 @@ development_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" all
 )
-assert_contains "$development_command" 'build/linux-x64/development/bin/cup'
+assert_contains "$development_command" "build/$NATIVE_BUILD_PLATFORM/development/bin/cup"
 assert_contains "$development_command" "-I$PINNED_PREFIX/include"
 assert_contains "$development_command" "-L$PINNED_PREFIX/lib"
 assert_contains "$development_command" "$PINNED_PREFIX/lib/libargtable3.a"
@@ -507,7 +515,7 @@ debug_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" debug
 )
-assert_contains "$debug_command" 'build/linux-x64/debug/bin/cup'
+assert_contains "$debug_command" "build/$NATIVE_BUILD_PLATFORM/debug/bin/cup"
 assert_contains "$debug_command" '-fno-omit-frame-pointer'
 assert_contains "$debug_command" "$PINNED_PREFIX/lib/libcurl.a"
 assert_contains "$debug_command" "$PINNED_PREFIX/lib/libarchive.a"
@@ -517,7 +525,7 @@ coverage_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" coverage
 )
-assert_contains "$coverage_command" 'build/linux-x64/coverage/bin/cup'
+assert_contains "$coverage_command" "build/$NATIVE_BUILD_PLATFORM/coverage/bin/cup"
 assert_contains "$coverage_command" '--coverage'
 assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
 assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
@@ -527,7 +535,7 @@ sanitizer_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" sanitizers
 )
-assert_contains "$sanitizer_command" 'build/linux-x64/sanitizers/bin/cup'
+assert_contains "$sanitizer_command" "build/$NATIVE_BUILD_PLATFORM/sanitizers/bin/cup"
 assert_contains "$sanitizer_command" '-fsanitize=address,undefined'
 assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libcurl.a"
 assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libarchive.a"
@@ -548,7 +556,7 @@ release_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" release
 )
-assert_contains "$release_command" 'build/linux-x64/release/bin/cup'
+assert_contains "$release_command" "build/$NATIVE_BUILD_PLATFORM/release/bin/cup"
 assert_contains "$release_command" "-I$PINNED_PREFIX/include"
 assert_contains "$release_command" "-L$PINNED_PREFIX/lib"
 assert_contains "$release_command" "$PINNED_PREFIX/lib/libargtable3.a"

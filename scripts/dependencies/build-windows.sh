@@ -177,6 +177,22 @@ build_libarchive() {
     make install DESTDIR="$DESTDIR"
 }
 
+verify_link_metadata_value() {
+    local label="$1"
+    local value="$2"
+
+    if [ -z "$value" ]; then
+        echo "Error: generated static link metadata is empty for $label." >&2
+        return 1
+    fi
+    if dependency_metadata_contains_staging "$value"; then
+        echo "Error: generated $label link metadata contains the staging path:" >&2
+        printf '  %s\n' "$value" >&2
+        return 1
+    fi
+}
+
+
 # Final prefix and static metadata verification.
 verify() {
     local curl_flags
@@ -199,18 +215,9 @@ verify() {
         PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="" \
         pkg-config --static --libs libevent_extra libevent_core)"
-    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
-        echo "Error: generated static link metadata is empty." >&2
-        exit 1
-    fi
-    if [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
-        case "$curl_flags $archive_flags $event_flags" in
-            *"$CUP_DEPS_STAGE_ROOT"*)
-                echo "Error: generated link metadata contains the staging path." >&2
-                exit 1
-                ;;
-        esac
-    fi
+    verify_link_metadata_value curl "$curl_flags" || exit 1
+    verify_link_metadata_value libarchive "$archive_flags" || exit 1
+    verify_link_metadata_value libevent "$event_flags" || exit 1
 
     if ! dependency_prefix_complete "$PREFIX" 0 "$CUP_DEPS_FINAL_PREFIX"; then
         echo "Error: generated dependency prefix is incomplete." >&2

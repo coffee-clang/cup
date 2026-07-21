@@ -19,6 +19,8 @@ component_root() {
 
 prepare_fixture() {
     run_cup repair >/dev/null
+    package_catalog_ensure_package compiler gcc "$TEST_PLATFORM" \
+        16.1.0-rev1 tar.gz
     make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang clang++
     make_package compiler gcc 16.1.0-rev1 "$TEST_PLATFORM" gcc g++
     make_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
