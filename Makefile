@@ -100,7 +100,7 @@ NON_BUILD_GOALS := \
     docs serve version release-metadata validate-release test test-posix \
     test-integration test-unit test-unit-build test-helpers test-build \
     test-repository test-release test-windows test-portability-linux \
-    test-coverage test-sanitizers update-ca-bundle
+    test-coverage test-sanitizers update-ca-bundle check-ca-bundle finalize-release
 ifeq ($(strip $(MAKECMDGOALS)),)
     NEED_BUILD_CONFIG := 0
 else ifneq ($(strip $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS))),)
@@ -203,7 +203,10 @@ COMMON_SRC := \
 PROJECT_CPPFLAGS := -I$(call escape_spaces,$(GENERATED_DIR)) \
     -I$(call escape_spaces,$(PROJECT_ROOT)/include) \
     -DCUP_USE_EMBEDDED_CA_BUNDLE
-PROJECT_CFLAGS := -Wall -Wextra -Werror -std=c11
+PROJECT_CFLAGS := -Wall -Wextra -Werror -std=c11 \
+    -ffile-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup \
+    -fdebug-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup \
+    -fmacro-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup
 PROJECT_LDFLAGS :=
 PROJECT_LDLIBS :=
 PLATFORM_CPPFLAGS :=
@@ -218,7 +221,8 @@ DEPENDENCY_LDLIBS :=
 CONFIG_CFLAGS_development := -O0 -g3
 CONFIG_CFLAGS_debug := -O0 -g3 -fno-omit-frame-pointer \
     -fno-optimize-sibling-calls
-CONFIG_CFLAGS_coverage := -O0 -g3 --coverage -fprofile-arcs -ftest-coverage
+CONFIG_CFLAGS_coverage := -O0 -g3 --coverage -fprofile-arcs -ftest-coverage \
+    -fprofile-abs-path
 CONFIG_LDFLAGS_coverage := --coverage
 CONFIG_CFLAGS_sanitizers := -O0 -g3 -fsanitize=address,undefined \
     -fno-omit-frame-pointer
@@ -250,11 +254,17 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
     PLATFORM_CPPFLAGS += -D_DARWIN_C_SOURCE
     PLATFORM_CFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET)
     PLATFORM_LDFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET)
+    CONFIG_CFLAGS_coverage := -O0 -g3 -fprofile-instr-generate -fcoverage-mapping
+    CONFIG_LDFLAGS_coverage := -fprofile-instr-generate -fcoverage-mapping
 endif
 
 ifeq ($(PLATFORM),windows-x64)
     CC := gcc
-    WINDRES := windres
+    ifneq ($(findstring clang,$(notdir $(CC))),)
+        WINDRES := llvm-windres
+    else
+        WINDRES := windres
+    endif
     SYSTEM_SRC := src/system_windows.c
     TARGET := $(BIN_DIR)/cup.exe
     RESOURCE_OBJ := $(OBJ_DIR)/version-resource.o
@@ -263,18 +273,6 @@ ifeq ($(PLATFORM),windows-x64)
 endif
 
 # Configuration-specific instrumentation and diagnostics.
-ifeq ($(CONFIGURATION),coverage)
-    ifeq ($(filter $(PLATFORM),linux-x64 linux-arm64),)
-        $(error The coverage configuration is currently supported only on Linux)
-    endif
-endif
-
-ifeq ($(CONFIGURATION),sanitizers)
-    ifneq ($(PLATFORM),linux-x64)
-        $(error The sanitizers configuration is currently supported only on linux-x64)
-    endif
-endif
-
 ifeq ($(CONFIGURATION),debug)
     ifneq ($(filter macos-x64 macos-arm64,$(PLATFORM)),)
         CONFIG_CFLAGS_debug += -gdwarf-4 -fstandalone-debug -fno-limit-debug-info
@@ -379,7 +377,7 @@ MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
     validate-release test test-posix test-integration test-unit \
     test-unit-build test-helpers test-build test-repository test-release \
     test-windows test-portability-linux test-coverage test-sanitizers \
-    update-ca-bundle FORCE
+    update-ca-bundle check-ca-bundle finalize-release FORCE
 
 BUILD_RECURSE = $(MAKE) --no-print-directory _build \
     PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
@@ -407,11 +405,13 @@ help:
 		'  make              development build' \
 		'  make debug        diagnostic build with rich symbols' \
 		'  make coverage     coverage-instrumented build' \
-		'  make sanitizers   ASan/UBSan build (linux-x64)' \
-		'  make release      standalone release-mode build' \
+		'  make sanitizers   ASan/UBSan build for the selected native platform' \
+		'  make release      platform release build (fully static on Linux; Apple-system-only on macOS)' \
 		'  make check-binary verify the current native executable policy' \
 		'  JOBS=4 make deps  prepare pinned dependencies with controlled parallelism' \
 		'  make test         native regression suite' \
+		'  make test-coverage     native coverage gate and reports' \
+		'  make test-sanitizers   native ASan/UBSan gate' \
 		'  make test-portability-linux  Linux HTTPS/proxy/package smoke test' \
 		'  make clean        remove build outputs' \
 		'' \
@@ -598,10 +598,12 @@ test-release:
 	@CUP_TEST_CONFIGURATION=development ./tests/release/posix.sh "$(RELEASE_DIR)"
 
 test-coverage:
-	@./tests/runners/coverage.sh
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		./tests/runners/coverage.sh
 
 test-sanitizers:
-	@./tests/runners/sanitizers.sh
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		./tests/runners/sanitizers.sh
 
 test-portability-linux:
 	@PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
@@ -617,8 +619,16 @@ test-windows:
 		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')"
 	@./tests/runners/repository.sh
 
+check-ca-bundle:
+	@./scripts/certs/check-ca-bundle.sh
+
 update-ca-bundle:
 	@./scripts/certs/update-ca-bundle.sh
+
+finalize-release:
+	@test '$(CONFIGURATION)' = release || { echo 'finalize-release requires release configuration' >&2; exit 2; }
+	@./scripts/build/finalize-release.sh '$(PLATFORM)' '$(TARGET)' '$(CONFIG_DIR)/symbols'
+	@./scripts/build/check-path-leaks.sh '$(TARGET)' '$(PROJECT_ROOT)' '$(DEPS_PREFIX)' '$(HOME)'
 
 docs-assets:
 	@echo "Fetching remote docs theme assets..."

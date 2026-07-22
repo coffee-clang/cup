@@ -109,32 +109,63 @@ unexpected_build=$(find tests/build -type f ! -name '*.sh' -print)
 [ -z "$unexpected_build" ] ||
     fail "test build scripts contain unsupported files: $unexpected_build"
 
+nonportable_shell=$(
+    {
+        grep -RInE --exclude=structure.sh --include='*.sh' \
+            '(readlink[[:space:]]+-f|stat[[:space:]]+(-c|--format)|date[[:space:]]+-d|xargs[[:space:]]+-r|sort[[:space:]]+-V)' \
+            scripts tests 2>/dev/null || :
+        grep -RInE --exclude=structure.sh --include='*.sh' \
+            'find.*[[:space:]]-printf' scripts tests 2>/dev/null || :
+        grep -RInE --exclude=structure.sh --include='*.sh' \
+            'sed.*[[:digit:]]+g' scripts tests 2>/dev/null || :
+    } | sort -u
+)
+[ -z "$nonportable_shell" ] ||
+    fail "non-portable shell utility options remain:
+$nonportable_shell"
+
 case $(uname -s) in
     MSYS*|MINGW*|CYGWIN*)
         # NTFS/MSYS executable-bit emulation is not a reliable repository-mode
         # check. POSIX runners enforce the index permissions.
         ;;
     *)
-        missing_executable=$(find \
-            tests/build tests/runners tests/repository tests/integration/posix \
-            tests/portability tests/release scripts/build scripts/ci scripts/release \
-            -type f -name '*.sh' ! -path scripts/release/common.sh \
-            ! -perm -111 -print)
-        [ -z "$missing_executable" ] ||
-            fail "shell entry point is not executable:
-$missing_executable"
-
+        sourced_shell_files='scripts/dependencies/common.sh
+scripts/dependencies/sources.sh
+scripts/release/common.sh
+tests/support/common.sh
+tests/support/environment.sh
+tests/support/posix-cli.sh
+tests/support/quality-status.sh'
+        missing_executable=
         unexpected_executable=
-        for file in tests/support/*.sh scripts/release/common.sh; do
-            [ ! -x "$file" ] ||
-                unexpected_executable="$unexpected_executable $file"
-        done
+        while IFS= read -r file; do
+            case "
+$sourced_shell_files
+" in
+                *"
+$file
+"*)
+                    [ ! -x "$file" ] ||
+                        unexpected_executable="$unexpected_executable $file"
+                    ;;
+                *)
+                    [ -x "$file" ] ||
+                        missing_executable="$missing_executable $file"
+                    ;;
+            esac
+        done <<EOF
+$(find scripts tests -type f -name '*.sh' | sort)
+EOF
+        [ -z "$missing_executable" ] ||
+            fail "shell entry point is not executable:$missing_executable"
         [ -z "$unexpected_executable" ] ||
             fail "sourced shell library must not be executable:$unexpected_executable"
         ;;
 esac
 
 for required in \
+    .editorconfig \
     tests/runners/unit.sh \
     tests/runners/repository.sh \
     tests/runners/integration-posix.sh \
@@ -144,6 +175,7 @@ for required in \
     tests/build/helpers.sh \
     tests/repository/assertions.sh \
     tests/repository/coverage-policy.sh \
+    tests/repository/dependencies.sh \
     tests/repository/filesystem-security.sh \
     tests/unit/test_exit_status.c \
     tests/unit/test_interrupt.c \
@@ -180,6 +212,7 @@ for required in \
     scripts/build/inspect-binary.sh \
     scripts/build/validate-toolchain.sh \
     scripts/build/write-config.sh \
+    scripts/ci/prepare-posix.sh \
     scripts/ci/source-posix.sh \
     scripts/ci/source-windows.ps1 \
     scripts/release/prepare.sh \
@@ -189,11 +222,14 @@ for required in \
     scripts/release/resolve-tests-run.sh \
     scripts/release/candidate-info.sh \
     scripts/release/publish.sh \
+    .github/workflows/static.yml \
     .github/workflows/tests.yml \
     .github/workflows/release.yml; do
     [ -f "$required" ] || fail "required test or pipeline entry point is missing: $required"
 done
 
+grep -Fq 'root = true' .editorconfig ||
+    fail '.editorconfig does not declare the repository root'
 grep -Fq 'CUP_COVERAGE_MIN_FUNCTIONS' tests/runners/coverage.sh ||
     fail 'coverage runner does not gate function coverage'
 grep -Fq 'CUP_TEST_SUITE_TIMEOUT' tests/runners/integration-posix.sh ||
@@ -244,3 +280,8 @@ invocations=$(grep -RInE "(^|[^A-Za-z0-9_])${script_lang}(3)?([^A-Za-z0-9_]|$)" 
 $invocations"
 
 printf 'Repository test and pipeline structure is coherent.\n'
+
+for required in scripts/build/check-path-leaks.sh scripts/build/finalize-release.sh \
+        scripts/certs/check-ca-bundle.sh certs/cacert.meta; do
+    [ -f "$ROOT/$required" ] || { echo "missing required file: $required" >&2; exit 1; }
+done

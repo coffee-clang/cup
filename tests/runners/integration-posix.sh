@@ -20,11 +20,8 @@ run_suite() {
                 exit 2
                 ;;
         esac
-        command -v timeout >/dev/null 2>&1 || {
-            printf 'timeout is required when CUP_TEST_SUITE_TIMEOUT is set.\n' >&2
-            exit 2
-        }
-        timeout --foreground --signal=TERM --kill-after=30s \
+        timeout_command=$(cup_test_find_timeout) || exit 2
+        "$timeout_command" --foreground --signal=TERM --kill-after=30s \
             "$CUP_TEST_SUITE_TIMEOUT" \
             "$ROOT/tests/integration/posix/$script"
     else

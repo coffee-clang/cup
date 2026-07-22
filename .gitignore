@@ -76,3 +76,6 @@ Doxyfile
 
 # Fix exec bit script
 fix-exec-bit.sh
+
+# Local clang-format experiments
+/.clang-format

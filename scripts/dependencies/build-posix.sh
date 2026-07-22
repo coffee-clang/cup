@@ -97,6 +97,11 @@ BUILD_DIR="$DEPS_ROOT/build"
 DEPS_PREFIX="${DEPS_PREFIX:-$DEPS_ROOT/install}"
 PREFIX="$DEPS_PREFIX"
 
+dependency_require_whitespace_free_path "dependency root" "$DEPS_ROOT"
+dependency_require_whitespace_free_path "dependency source directory" "$SRC_DIR"
+dependency_require_whitespace_free_path "dependency build directory" "$BUILD_DIR"
+dependency_require_whitespace_free_path "dependency prefix" "$DEPS_PREFIX"
+
 library_flags() {
     if [ "$CUP_POSIX_BOOTSTRAP_LIB64" = 1 ]; then
         printf '%s' "-L$PREFIX/lib -L$PREFIX/lib64"
@@ -127,7 +132,7 @@ build_zlib() {
     echo "==> Building zlib ${ZLIB_VERSION}"
     cd "$source"
 
-    CHOST="" ./configure \
+    CFLAGS="$CUP_DEPENDENCY_CFLAGS" CHOST="" ./configure \
         --prefix="$INSTALL_PREFIX" \
         --static
 
@@ -148,10 +153,11 @@ build_xz() {
     echo "==> Building xz ${XZ_VERSION}"
     cd "$source"
 
-    ./configure \
+    CFLAGS="$CUP_DEPENDENCY_CFLAGS" ./configure \
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
-        --enable-static
+        --enable-static \
+        --disable-nls
 
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"
@@ -160,25 +166,39 @@ build_xz() {
 build_openssl() {
     local archive
     local source
+    local neutral_prefix=/__cup_runtime__/openssl
+    local install_root
+    local payload
 
     archive="$SRC_DIR/openssl-${OPENSSL_VERSION}.tar.gz"
     source="$BUILD_DIR/openssl-${OPENSSL_VERSION}"
+    install_root="$BUILD_DIR/openssl-${OPENSSL_VERSION}-install"
+    payload="$install_root$neutral_prefix"
 
     download_source openssl "$archive"
     extract_archive "$archive" "$source"
+    rm -rf "$install_root"
 
-    echo "==> Building OpenSSL ${OPENSSL_VERSION}"
+    echo "==> Building OpenSSL ${OPENSSL_VERSION} for ${OPENSSL_TARGET}"
     cd "$source"
-
-    ./Configure "$OPENSSL_TARGET" \
-        no-shared \
-        no-tests \
-        no-autoload-config \
-        --prefix="$INSTALL_PREFIX" \
-        --openssldir="$INSTALL_PREFIX/ssl"
-
+    # OpenSSL records --prefix/--openssldir in libcrypto. Use a deterministic,
+    # deliberately nonexistent runtime namespace, then relocate only generated
+    # build metadata to the actual transactional CUP prefix.
+    # shellcheck disable=SC2086
+    CC="$CC" AR="$AR" RANLIB="$RANLIB" \
+        CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
+        ./Configure "$OPENSSL_TARGET" \
+            --prefix="$neutral_prefix" \
+            --openssldir="$neutral_prefix" \
+            no-shared no-tests no-autoload-config no-dso
     make -j"$JOBS"
-    make install_sw DESTDIR="$DESTDIR"
+    make install_sw DESTDIR="$install_root"
+    [ -d "$payload" ] || {
+        echo "Error: OpenSSL neutral installation payload was not produced." >&2
+        return 1
+    }
+    cp -R "$payload"/. "$PREFIX"/
+    normalize_dependency_metadata "$PREFIX" "$neutral_prefix" "$INSTALL_PREFIX"
 }
 
 build_curl() {
@@ -196,6 +216,7 @@ build_curl() {
     echo "==> Building curl ${CURL_VERSION}"
     cd "$source"
 
+    CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="$(library_flags)" \
     PKG_CONFIG_PATH="$pkg_dirs" \
@@ -227,6 +248,7 @@ build_curl() {
         --disable-smtp \
         --disable-gopher \
         --disable-mqtt \
+        --disable-netrc \
         --disable-manual
 
     make -j"$JOBS"
@@ -248,6 +270,7 @@ build_libarchive() {
     echo "==> Building libarchive ${LIBARCHIVE_VERSION}"
     cd "$source"
 
+    CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="$(library_flags)" \
     PKG_CONFIG_PATH="$pkg_dirs" \
@@ -257,6 +280,7 @@ build_libarchive() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
+        --disable-nls \
         --disable-acl \
         --without-bz2lib \
         --without-lzo2 \
@@ -290,11 +314,11 @@ verify() {
     archive_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
         PKG_CONFIG_LIBDIR="$pkg_dirs" \
         PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --static --libs libarchive)"
+        dependency_pkg_config --static --libs libarchive)"
     event_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
         PKG_CONFIG_LIBDIR="$pkg_dirs" \
         PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --static --libs libevent_extra libevent_core)"
+        dependency_pkg_config --static --libs libevent_extra libevent_core)"
     if [ -z "$curl_flags" ] || [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
         echo "Error: generated static link metadata is empty." >&2
         exit 1
@@ -350,6 +374,10 @@ main() {
     DESTDIR="$CUP_DEPS_STAGE_ROOT"
     INSTALL_PREFIX="$CUP_DEPS_FINAL_PREFIX"
     PREFIX="$CUP_DEPS_BUILD_PREFIX"
+    CUP_DEPENDENCY_CFLAGS=$(dependency_reproducible_cflags "$CC" \
+        "$DEPS_ROOT" "$BUILD_DIR" "$CUP_DEPS_STAGE_ROOT")
+    export CUP_DEPENDENCY_CFLAGS
+
     mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
 
     build_zlib

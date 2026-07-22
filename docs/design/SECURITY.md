@@ -61,14 +61,24 @@ libcurl receives the in-memory CA data instead of a distribution-specific
 certificate path.
 
 This avoids embedding a build-machine path such as an OpenSSL configuration or
-CA location into a static release. Linux and macOS static builds initialize
-OpenSSL without loading external configuration. Windows static builds use the
-selected Schannel-based libcurl stack.
+CA location into a standalone release. Linux fully static releases and macOS
+releases with statically linked third-party dependencies initialize OpenSSL
+without loading external configuration. Windows releases use the selected
+Schannel-based libcurl stack and retain only allowlisted system DLL imports.
 
-The source PEM changes only through `make update-ca-bundle`. The update script
-downloads, validates, generates and compiles a temporary representation before
-replacing the versioned file. Release workflows never mutate the selected
-commit.
+The source PEM changes only through `make update-ca-bundle`. The adjacent
+`certs/cacert.meta` binds it to its HTTPS source, Mozilla source date, SHA-256,
+certificate count and freshness limit. `make check-ca-bundle` is offline and
+rejects tampering, future dates, suspiciously small stores and stale release
+inputs. The update script downloads, validates, generates and compiles a
+temporary representation, rejects date rollback and commits PEM plus metadata
+with rollback protection. Release workflows never mutate the selected commit.
+
+POSIX OpenSSL archives are configured with `no-autoload-config` and `no-dso`;
+compiled default directories use the deterministic, deliberately absent
+`/__cup_runtime__/openssl` namespace. Compiler prefix maps and release path
+scans prevent checkout, dependency-root and transactional staging paths from
+entering published executables.
 
 ## SHA-256 implementation
 

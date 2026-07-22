@@ -207,7 +207,16 @@ static const CommandHelp *find_help(const char *name) {
 }
 
 static void print_command_usage(FILE *stream, const char *program, const CommandHelp *help) {
-    fprintf(stream, "  %s %s\n", program_name(program), help->usage);
+    const char *usage = help->usage;
+    const char *separator;
+
+    while ((separator = strstr(usage, " | ")) != NULL) {
+        fprintf(stream, "  %s ", program_name(program));
+        fwrite(usage, 1, (size_t)(separator - usage), stream);
+        fputc('\n', stream);
+        usage = separator + 3;
+    }
+    fprintf(stream, "  %s %s\n", program_name(program), usage);
 }
 
 static void print_usage(FILE *stream, const char *program) {

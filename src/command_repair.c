@@ -705,6 +705,7 @@ static CupError adopt_scanned_packages(CupState *state,
 
 static CupError remove_stale_active(CupState *state, const char *current_host, int *state_changed) {
     size_t index = 0;
+    CupError err;
 
     while (index < state->active_count) {
         PackageIdentity identity = state->active[index];
@@ -719,7 +720,10 @@ static CupError remove_stale_active(CupState *state, const char *current_host, i
         if (package_identity_get_scope(&identity, &scope) != CUP_OK) {
             return CUP_ERR_STATE_LOAD;
         }
-        state_clear_active(state, &scope);
+        err = state_clear_active(state, &scope);
+        if (err != CUP_OK) {
+            return err;
+        }
         printf("Removed stale default for component '%s'.\n", identity.component);
         *state_changed = 1;
     }

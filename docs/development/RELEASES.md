@@ -96,8 +96,8 @@ non-publishable diagnostics, and `release.yml` publishes already tested bytes.
 ### Tests
 
 `tests.yml` runs on pushes to `main` and through manual dispatch. It performs all
-source validation, coverage and sanitizer gates. For a new or draft public
-version it also builds static artifacts for:
+source validation plus native coverage and sanitizer matrices. For a new or
+draft public version it also builds release candidates for:
 
 ```text
 linux-x64
@@ -108,7 +108,7 @@ windows-x64
 ```
 
 Common assets and each platform artifact are uploaded to the same Tests run.
-Every static executable is then downloaded and executed on its native runner.
+Every candidate executable is then downloaded and executed on its native runner.
 The final gate succeeds only when all jobs required by the release decision
 succeed.
 
@@ -255,14 +255,7 @@ publish the already tested candidate
 Reusing a version that is already public intentionally produces source
 validation without rebuilding or replacing that release.
 
-## Related documents
-
-- [BUILD](BUILD.md) — static dependencies and generated files;
-- [TESTING](TESTING.md) — verification ownership;
-- [SECURITY](../design/SECURITY.md) — asset integrity;
-- [INSTALLATION](../user/INSTALLATION.md) — installer consumption.
-
-### Linked-binary policy
+## Linked-binary policy
 
 Every candidate build runs the repository binary inspector after the official
 release link. Linux candidates must be static ELF executables without an
@@ -274,5 +267,17 @@ executables importing only Windows system DLLs, with a non-empty resource
 directory plus ASLR and NX compatibility flags.
 
 The generated `binary-inspection.txt` remains in the configuration build
-directory and is also included with diagnostic artifacts. Candidate publication
-continues to use the already tested executable bytes rather than rebuilding.
+directory and is also included with diagnostic artifacts. Before candidate
+assembly, native symbols are split into `cup.debug`/`cup.dSYM`, the public
+executable is stripped, and a path-leak guard rejects checkout, dependency-root
+and transactional staging paths. Symbol artifacts are retained by the Tests run
+for diagnostics but are not part of the public release asset set. Candidate
+publication continues to use the already tested executable bytes rather than
+rebuilding.
+
+## Related documents
+
+- [BUILD](BUILD.md) — static dependencies and generated files;
+- [TESTING](TESTING.md) — verification ownership;
+- [SECURITY](../design/SECURITY.md) — asset integrity;
+- [INSTALLATION](../user/INSTALLATION.md) — installer consumption.

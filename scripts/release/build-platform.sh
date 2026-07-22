@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-# Purpose: Builds one static platform executable and its platform checksum asset.
+# Purpose: Builds one native release executable and its platform checksum asset.
 # Inputs: PLATFORM, FAMILY and official release metadata.
 set -eu
 
@@ -27,17 +27,10 @@ create_local_release_tag
 
 # Prepare and verify the pinned third-party prefix on the native runner.
 case "$FAMILY" in
-    linux)
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl file make perl pkg-config \
-            tar xz-utils zlib1g-dev
-        ;;
-    macos)
-        brew update
-        for package in autoconf automake libtool pkg-config make curl perl xz; do
-            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
-        done
+    linux | macos)
+        if [ "${CUP_CI_ENVIRONMENT_PREPARED:-0}" != 1 ]; then
+            FAMILY="$FAMILY" scripts/ci/prepare-posix.sh release
+        fi
         ;;
     windows)
         [ "${MSYSTEM:-}" = UCRT64 ] ||
@@ -55,12 +48,16 @@ case "$FAMILY" in
     windows) dependency_builder=scripts/dependencies/build-windows.sh ;;
 esac
 JOBS="${JOBS:-4}" PLATFORM="$PLATFORM" bash "$dependency_builder"
+make check-ca-bundle
 CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" release
+CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \
+    CUP_BUILD_CONFIGURATION=release finalize-release
 CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \
     CUP_BUILD_CONFIGURATION=release check-binary
 
 test "$(./scripts/version.sh base)" = "$VERSION"
-mkdir -p "dist/$PLATFORM" "build/release-$PLATFORM/generated"
+mkdir -p "dist/$PLATFORM" "dist/symbols/$PLATFORM" "build/release-$PLATFORM/generated"
+cp -R "build/$PLATFORM/release/symbols"/. "dist/symbols/$PLATFORM"/
 CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release ./scripts/version.sh generate "build/release-$PLATFORM/generated"
 
 test "$(sed -n 's/^version=//p' build/release-$PLATFORM/generated/release.txt)" = "$VERSION"

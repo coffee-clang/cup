@@ -206,36 +206,43 @@ minimum distribution version or require adoption of musl.
 
 ## Coverage
 
-`make test-coverage` measures the Linux POSIX implementation with GCC `gcov`.
-The Makefile builds the instrumented product, unit binaries and helper programs;
-the runner then reuses the existing unit and POSIX integration owners.
+`make test-coverage` runs natively on all five supported platforms. Linux and
+Windows use GCC-compatible gcov data; macOS uses Clang source-based coverage
+with `llvm-profdata` and `llvm-cov`. `gcovr` normalizes both backends into the
+same text, XML, JSON, JSON-summary and HTML artifacts under
+`build/coverage/<platform>/`.
 
-The default gates are:
-
-```text
-line coverage      85%
-branch coverage    70%
-function coverage  97%
-```
-
-`gcovr` produces text, XML, JSON, JSON-summary and HTML reports under
-`build/coverage/`. The runner records compiler/tool versions and preserves build,
-unit, integration and report logs. Unit execution and each integration owner are
-bounded with the system `timeout` command. Coverage counters must remain stable
-before reporting so detached helper shutdown cannot race collection.
-
-The repository contains no Python-owned coverage classifier or manual gap
-inventory. Coverage is a numeric release gate and a diagnostic report; it does
-not justify adding artificial tests solely to execute unreachable or defensive
-branches. Windows-only code, shell, PowerShell and workflow YAML are outside the
-Linux C coverage metric and remain owned by their native or repository suites.
+The gate executes instrumented unit tests plus the native integration owner:
+POSIX suites on Linux/macOS and the PowerShell suite on Windows. The same line,
+function and branch thresholds are applied independently to every platform so
+platform-specific C branches cannot be hidden by an aggregate-only report.
+The runner records compiler/tool versions, preserves logs, bounds unit and
+integration execution with `timeout`/`gtimeout`, and prints concrete installation
+guidance when an optional quality tool is missing. macOS requires `gcovr` 8.5 or
+newer because that is the first supported source-based LLVM backend.
 
 ## Sanitizers
 
-`make test-sanitizers` builds Linux x64 development code with
-AddressSanitizer, UndefinedBehaviorSanitizer, LeakSanitizer and frame pointers,
-then reuses unit and POSIX integration owners. Repository script tests are not repeated because they do
-not execute the instrumented C binary.
+`make test-sanitizers` runs Clang/Compiler-RT AddressSanitizer and
+UndefinedBehaviorSanitizer on Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
+Linux and macOS also enable LeakSanitizer; Windows uses an isolated MSYS2
+CLANG64 dependency graph with leak detection disabled. Linux release and native
+integration ownership remains GCC, while UCRT64/GCC remains the Windows
+production and coverage toolchain. The official Windows release remains
+GCC-built.
+
+The Linux x64 source job additionally performs a complete Clang application
+build, binary-policy inspection and C unit-test pass after the primary GCC
+native suite. This secondary pass is deliberately narrower than the primary
+owner: integration and network-portability behavior are not duplicated merely
+to increase the matrix.
+Sanitizer logs are stored under `build/sanitizers/<platform>/`. Unit and native
+integration execution are bounded so a sanitizer-discovered deadlock cannot
+stall a runner indefinitely.
+
+The sanitizer configuration is deliberately separate from release linking:
+ASan runtimes are diagnostic dependencies and are never accepted in official
+release artifacts.
 
 ## GitHub Actions integration
 
@@ -247,9 +254,9 @@ It owns:
 Linux x64 and ARM64 source tests
 macOS x64 and ARM64 source tests
 Windows x64 source tests
-Linux coverage gate
-Linux sanitizer gate
-static candidate builds for all supported platforms
+native coverage gates for all five platforms
+native ASan/UBSan gates for all five platforms
+release candidate builds for all supported platforms
 native execution of every candidate
 one final Tests gate
 ```
@@ -266,12 +273,7 @@ run's artifacts, validates their metadata and delegates publication. See
 
 `.github/workflows/debug.yml` produces downloadable, non-stripped development
 executables and platform-native symbol data for every supported platform. It is
-diagnostic-only: it does not publish releases and does not replace coverage or
-sanitizer ownership in `tests.yml`. Each artifact is a directly uploaded tarball,
-so POSIX executable permissions and macOS dSYM structure survive the artifact
-service. The tarball filename is the artifact name. It includes the executable,
-separate debug data where supported, release identity and reproducible compiler
-commands.
+diagnostic-only and does not replace native coverage or sanitizer ownership.
 
 ## Ownership rules
 

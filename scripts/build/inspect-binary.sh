@@ -240,7 +240,9 @@ inspect_macho() {
         printf 'object_format=Mach-O\n'
         printf 'architecture=%s\n' "$architecture"
         printf 'minimum_os=%s\n' "$minimum_os"
-        printf 'linkage=dynamic-system\n'
+        printf 'linkage=third-party-static-system-dynamic\n'
+        printf 'third_party_linkage=static\n'
+        printf 'system_linkage=dynamic\n'
         printf 'needed_count=%s\n' "$needed_count"
         printf '%s\n' "$libraries" | while IFS= read -r library; do
             [ -n "$library" ] && printf 'needed=%s\n' "$library"

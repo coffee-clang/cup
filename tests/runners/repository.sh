@@ -9,6 +9,10 @@ printf '==> Testing repository structure...\n'
 "$ROOT/tests/repository/structure.sh"
 printf '==> Testing source-test environment...\n'
 "$ROOT/tests/repository/environment.sh"
+printf '==> Testing dependency path neutralization...\n'
+"$ROOT/tests/repository/dependencies.sh"
+printf '==> Testing embedded CA metadata...\n'
+"$ROOT/scripts/certs/check-ca-bundle.sh"
 printf '==> Testing build configuration identity...\n'
 "$ROOT/tests/repository/build-system.sh"
 printf '==> Testing binary inspection policy...\n'

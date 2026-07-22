@@ -25,29 +25,29 @@ case "$family:$platform:$host_system:$host_machine" in
         ;;
 esac
 
-case "$family" in
-    linux)
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang curl git make openssl perl \
-            pkg-config tar xz-utils
-        make PLATFORM="$platform" deps
-        ;;
-    macos)
-        for package in perl pkg-config xz; do
-            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
-        done
-        make PLATFORM="$platform" deps
-        ;;
-    *) fail "unsupported source-test family: $family" ;;
-esac
+if [ "${CUP_CI_ENVIRONMENT_PREPARED:-0}" != 1 ]; then
+    FAMILY="$family" PLATFORM="$platform" "$(dirname "$0")/prepare-posix.sh" source
+fi
+
+make PLATFORM="$platform" deps
 
 PLATFORM="$platform" CUP_TEST_PLATFORM="$platform" make test
 make PLATFORM="$platform" check-binary
+
+# Linux releases and native integration tests are GCC-owned. A second x64 pass
+# compiles the complete application and all C unit tests with Clang, so compiler
+# diversity is an exercised contract rather than an unused package installation.
+if [ "$platform" = linux-x64 ]; then
+    make clean
+    make PLATFORM="$platform" CC=clang
+    PLATFORM="$platform" CUP_TEST_PLATFORM="$platform" make CC=clang test-unit
+    make PLATFORM="$platform" CC=clang check-binary
+fi
 
 # The network portability smoke test is intentionally a Linux x64 pilot. It
 # stays outside the ordinary local test target because it generates certificates,
 # starts local servers and builds one isolated static release.
 if [ "$platform" = linux-x64 ]; then
+    make clean
     PLATFORM="$platform" make test-portability-linux
 fi

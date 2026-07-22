@@ -19,13 +19,25 @@ TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L"
 TEST_CFLAGS="${TEST_CFLAGS:-}"
 TEST_LDFLAGS="${TEST_LDFLAGS:-}"
 case "$PLATFORM" in
-    macos-*) TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE" ;;
+    macos-*)
+        TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE"
+        TEST_CFLAGS="$TEST_CFLAGS -mmacosx-version-min=13.0"
+        TEST_LDFLAGS="$TEST_LDFLAGS -mmacosx-version-min=13.0"
+        ;;
 esac
 case "$TEST_CONFIGURATION" in
     development) ;;
     coverage)
-        TEST_CFLAGS="$TEST_CFLAGS --coverage -fprofile-arcs -ftest-coverage"
-        TEST_LDFLAGS="$TEST_LDFLAGS --coverage"
+        case "$PLATFORM" in
+            macos-*)
+                TEST_CFLAGS="$TEST_CFLAGS -fprofile-instr-generate -fcoverage-mapping"
+                TEST_LDFLAGS="$TEST_LDFLAGS -fprofile-instr-generate -fcoverage-mapping"
+                ;;
+            *)
+                TEST_CFLAGS="$TEST_CFLAGS --coverage -fprofile-arcs -ftest-coverage -fprofile-abs-path"
+                TEST_LDFLAGS="$TEST_LDFLAGS --coverage"
+                ;;
+        esac
         ;;
     sanitizers)
         TEST_CFLAGS="$TEST_CFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer"

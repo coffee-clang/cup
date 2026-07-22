@@ -6,6 +6,20 @@ CUP_DEPENDENCIES_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
 # shellcheck source=sources.sh
 source "$CUP_DEPENDENCIES_DIR/sources.sh"
 
+# Build tools pass compiler flags as shell words, so transactional dependency
+# paths are intentionally restricted to whitespace-free absolute locations.
+dependency_require_whitespace_free_path() {
+    local label="$1"
+    local path="$2"
+
+    case "$path" in
+        *[[:space:]]*)
+            echo "Error: $label must not contain whitespace: $path" >&2
+            return 1
+            ;;
+    esac
+}
+
 # Establishes the controlled environment used by every dependency builder.
 # Ambient compiler and package-discovery flags must not silently alter the
 # pinned graph or make a prefix depend on the caller's shell configuration.
@@ -23,6 +37,88 @@ dependency_normalize_build_environment() {
         MAKEFLAGS MFLAGS MAKEOVERRIDES GNUMAKEFLAGS; do
         unset "$variable" 2>/dev/null || true
     done
+}
+
+# Prints every relevant spelling of a path. MSYS2 tools may preserve the POSIX
+# path or convert it to drive-letter form before recording it in an object.
+dependency_path_variants() {
+    local path="$1"
+    local mixed=
+    local windows=
+
+    [ -n "$path" ] || return 0
+    printf '%s\n' "$path"
+    if command -v cygpath >/dev/null 2>&1; then
+        mixed=$(cygpath -m "$path" 2>/dev/null || true)
+        windows=$(cygpath -w "$path" 2>/dev/null || true)
+        [ -z "$mixed" ] || [ "$mixed" = "$path" ] || printf '%s\n' "$mixed"
+        [ -z "$windows" ] || [ "$windows" = "$path" ] || \
+            [ "$windows" = "$mixed" ] || printf '%s\n' "$windows"
+    fi
+}
+
+# Returns reproducible-path flags supported by the selected C compiler. The
+# probe is compiled instead of inferring capabilities from the compiler name,
+# which also covers Apple Clang and MSYS2 Clang consistently.
+dependency_reproducible_cflags() {
+    local compiler="$1"
+    shift
+    local work
+    local source
+    local object
+    local path
+    local flag
+    local flags=
+
+    work=$(mktemp -d "${TMPDIR:-/tmp}/cup-prefix-map.XXXXXX") || return 1
+    source="$work/probe.c"
+    object="$work/probe.o"
+    printf '%s\n' 'int cup_prefix_map_probe(void) { return 0; }' > "$source"
+    for path in "$@"; do
+        [ -n "$path" ] || continue
+        while IFS= read -r variant; do
+            case "$variant" in *\\*) continue ;; esac
+            for option in file debug macro; do
+                flag="-f${option}-prefix-map=$variant=/usr/src/cup-dependencies"
+                if "$compiler" "$flag" -c "$source" -o "$object" >/dev/null 2>&1; then
+                    case " $flags " in *" $flag "*) ;; *) flags="$flags $flag" ;; esac
+                fi
+            done
+        done < <(dependency_path_variants "$path")
+    done
+    rm -rf "$work"
+    if [ -n "$flags" ]; then
+        printf '%s\n' "-O2${flags}"
+    else
+        printf '%s\n' '-O2'
+    fi
+}
+
+# Refuses dependency archives containing transient or machine-specific roots.
+# Runtime-neutral OpenSSL defaults under /__cup_runtime__ are intentionally
+# allowed; actual runner, checkout and staging paths are not.
+dependency_compiled_paths_valid() {
+    local prefix="$1"
+    shift
+    local archive
+    local forbidden
+
+    while IFS= read -r -d '' archive; do
+        for forbidden in "$@"; do
+            [ -n "$forbidden" ] || continue
+            while IFS= read -r variant; do
+                [ -n "$variant" ] || continue
+                if LC_ALL=C grep -aF -q -- "$variant" "$archive"; then
+                    echo "Error: compiled dependency contains forbidden path '$variant': $archive" >&2
+                    return 1
+                fi
+            done < <(dependency_path_variants "$forbidden")
+        done
+        if LC_ALL=C grep -aE -q -- '/\.[^/]*install\.staging\.|[\\/]\.[^\\/]*install\.staging\.' "$archive"; then
+            echo "Error: compiled dependency contains a transactional staging path: $archive" >&2
+            return 1
+        fi
+    done < <(find "$prefix" -type f \( -name '*.a' -o -name '*.dll.a' \) -print0)
 }
 
 # Four jobs is the conservative default used by the verified Linux x64 build.
@@ -368,6 +464,130 @@ test_dependency_prefix_complete() {
           [ -f "$prefix/lib64/pkgconfig/libevent_extra.pc" ]; }
 }
 
+dependency_pkg_config() {
+    # pkg-config on Windows may relocate an installed prefix to the physical
+    # directory containing the .pc file. During transactional builds that
+    # directory is the private staging tree, even though the metadata already
+    # names the final prefix. Disable that behavior whenever the implementation
+    # supports it so generated link flags remain stable on every platform.
+    if pkg-config --help 2>&1 | grep -F -- '--dont-define-prefix' >/dev/null; then
+        pkg-config --dont-define-prefix "$@"
+    else
+        pkg-config "$@"
+    fi
+}
+
+# Accepts only paths contained in the final private dependency prefix. Path
+# variants cover MSYS2 metadata that may use POSIX, mixed or Windows spelling.
+dependency_link_path_is_private() {
+    local path="$1"
+    local expected_prefix="$2"
+    local variant
+
+    while IFS= read -r variant; do
+        case "$path" in
+            "$variant"|"$variant"/*|"$variant"\\*)
+                return 0
+                ;;
+        esac
+    done < <(dependency_path_variants "$expected_prefix")
+    return 1
+}
+
+dependency_link_flags_reference_path() {
+    local flags="$1"
+    local path="$2"
+    local variant
+
+    while IFS= read -r variant; do
+        case "$flags" in
+            *"$variant"*) return 0 ;;
+        esac
+    done < <(dependency_path_variants "$path")
+    return 1
+}
+
+# Validates path-bearing linker flags independently from ordinary system
+# libraries such as -ldl, -lpthread or Windows import-library names. A flags
+# string cannot become valid merely by mentioning the private prefix once and
+# then adding an ambient host search directory or absolute library.
+dependency_link_flags_valid() {
+    local flags="$1"
+    local prefix="$2"
+    local expected_prefix="$3"
+    local path=
+    local token
+    local part
+    local index
+    local part_index
+    local -a words
+    local -a linker_parts
+
+    read -r -a words <<< "$flags"
+    for ((index = 0; index < ${#words[@]}; index++)); do
+        token=${words[index]}
+        path=
+        case "$token" in
+            -L|-F)
+                ((index + 1 < ${#words[@]})) || return 1
+                index=$((index + 1))
+                path=${words[index]}
+                ;;
+            -L?*|-F?*)
+                path=${token:2}
+                ;;
+            -Wl,*)
+                IFS=, read -r -a linker_parts <<< "${token#-Wl,}"
+                for ((part_index = 0; part_index < ${#linker_parts[@]}; part_index++)); do
+                    part=${linker_parts[part_index]}
+                    path=
+                    case "$part" in
+                        -L|-F|-rpath|-rpath-link|--library-path)
+                            ((part_index + 1 < ${#linker_parts[@]})) || return 1
+                            part_index=$((part_index + 1))
+                            path=${linker_parts[part_index]}
+                            ;;
+                        -L?*|-F?*)
+                            path=${part:2}
+                            ;;
+                        -rpath=*|-rpath-link=*|--library-path=*)
+                            path=${part#*=}
+                            ;;
+                        /*|[A-Za-z]:[\\/]*)
+                            path=$part
+                            ;;
+                    esac
+                    if [ -n "$path" ] &&
+                        ! dependency_link_path_is_private "$path" "$expected_prefix"; then
+                        echo "Error: dependency link metadata references a path outside" \
+                            "the private prefix: $path" >&2
+                        return 1
+                    fi
+                done
+                continue
+                ;;
+            /*|[A-Za-z]:[\\/]*)
+                path=$token
+                ;;
+        esac
+        if [ -n "$path" ] &&
+            ! dependency_link_path_is_private "$path" "$expected_prefix"; then
+            echo "Error: dependency link metadata references a path outside" \
+                "the private prefix: $path" >&2
+            return 1
+        fi
+    done
+
+    case " $flags " in
+        *" -lacl "*) return 1 ;;
+    esac
+    dependency_link_flags_reference_path "$flags" "$expected_prefix" || return 1
+    if [ "$prefix" != "$expected_prefix" ] &&
+        dependency_link_flags_reference_path "$flags" "$prefix"; then
+        return 1
+    fi
+}
+
 dependency_link_metadata_valid() {
     local prefix="$1"
     local expected_prefix="${2:-$prefix}"
@@ -382,43 +602,15 @@ dependency_link_metadata_valid() {
     archive_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --static --libs libarchive 2>/dev/null) || return 1
+        dependency_pkg_config --static --libs libarchive 2>/dev/null) || return 1
     event_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --static --libs libevent_extra libevent_core 2>/dev/null) || return 1
+        dependency_pkg_config --static --libs libevent_extra libevent_core 2>/dev/null) || return 1
     [ -n "$curl_flags" ] && [ -n "$archive_flags" ] && [ -n "$event_flags" ] || return 1
-    case " $archive_flags " in
-        *" -lacl "*)
-            return 1
-            ;;
-    esac
-    case "$curl_flags" in
-        *"$expected_prefix"*)
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    case "$archive_flags" in
-        *"$expected_prefix"*)
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    case "$event_flags" in
-        *"$expected_prefix"*)
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    if [ "$prefix" != "$expected_prefix" ]; then
-        case "$curl_flags $archive_flags $event_flags" in
-            *"$prefix"*) return 1 ;;
-        esac
-    fi
+    dependency_link_flags_valid "$curl_flags" "$prefix" "$expected_prefix" &&
+        dependency_link_flags_valid "$archive_flags" "$prefix" "$expected_prefix" &&
+        dependency_link_flags_valid "$event_flags" "$prefix" "$expected_prefix"
 }
 
 dependency_prefix_complete() {
@@ -623,6 +815,8 @@ finish_dependency_prefix() {
         echo "Error: refusing to commit an incomplete dependency prefix." >&2
         return 1
     }
+    dependency_compiled_paths_valid "$build_prefix" \
+        "${CUP_DEPS_STAGE_ROOT:-}" "${DEPS_ROOT:-}" "${BUILD_DIR:-}" || return 1
     mv "$build_prefix/.cup-deps-building" "$build_prefix/.cup-deps-config"
 
     if [ -e "$final_prefix" ] || [ -L "$final_prefix" ]; then
@@ -674,7 +868,8 @@ download_source() {
 
     tmp_output="$(mktemp "${output}.tmp.XXXXXX")"
     echo "==> Downloading $url"
-    if ! curl -fL --retry 3 --retry-delay 5 --retry-all-errors \
+    if ! curl -fL --proto '=https' --proto-redir '=https' \
+        --retry 3 --retry-delay 5 --retry-all-errors \
         "$url" -o "$tmp_output"; then
         rm -f "$tmp_output"
         return 1
@@ -753,7 +948,9 @@ build_libevent_static() {
 
     echo "==> Building libevent ${LIBEVENT_VERSION}"
     cd "$source"
-    CC="$compiler" AR="$archiver" RANLIB="$ranlib_tool" ./configure "$@"
+    # shellcheck disable=SC2086
+    CC="$compiler" AR="$archiver" RANLIB="$ranlib_tool" \
+        CFLAGS="${CUP_DEPENDENCY_CFLAGS:-}" ./configure "$@"
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"
 }
@@ -782,7 +979,8 @@ build_argtable3_uthash_unity() {
     rm -f "$object_dir"/argtable3-*.o "$prefix/lib/libargtable3.a"
     for file in "$source"/src/*.c; do
         object="$object_dir/argtable3-$(basename "${file%.c}").o"
-        "$compiler" -O2 -I"$source/src" -c "$file" -o "$object"
+        # shellcheck disable=SC2086
+        "$compiler" -O2 ${CUP_DEPENDENCY_CFLAGS:-} -I"$source/src" -c "$file" -o "$object"
     done
     "$archiver" rcs "$prefix/lib/libargtable3.a" "$object_dir"/argtable3-*.o
     "$ranlib_tool" "$prefix/lib/libargtable3.a"
@@ -808,7 +1006,8 @@ build_argtable3_uthash_unity() {
     source="$build_dir/unity-${UNITY_VERSION}"
     download_source unity "$archive"
     extract_archive "$archive" "$source"
-    "$compiler" -O2 -I"$source/src" -c "$source/src/unity.c" \
+    # shellcheck disable=SC2086
+    "$compiler" -O2 ${CUP_DEPENDENCY_CFLAGS:-} -I"$source/src" -c "$source/src/unity.c" \
         -o "$object_dir/unity.o"
     "$archiver" rcs "$prefix/lib/libunity.a" "$object_dir/unity.o"
     "$ranlib_tool" "$prefix/lib/libunity.a"

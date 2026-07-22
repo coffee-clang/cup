@@ -324,7 +324,17 @@ dependency_id=$id"; then
     final_native=$(cygpath -m "$final")
     staged_windows=$(cygpath -w "$CUP_DEPS_BUILD_PREFIX")
     final_windows=$(cygpath -w "$final")
-    mixed_native=$(printf "%s" "$staged_native" | sed "s#/#\\\\#3g")
+    mixed_first=${staged_native%%/*}
+    mixed_rest=${staged_native#*/}
+    mixed_second=${mixed_rest%%/*}
+    mixed_rest=${mixed_rest#*/}
+    mixed_third=${mixed_rest%%/*}
+    mixed_rest=${mixed_rest#*/}
+    if [ "$mixed_rest" = "$mixed_third" ]; then
+        echo "Error: could not construct a mixed-separator test path." >&2
+        exit 1
+    fi
+    mixed_native="$mixed_first/$mixed_second/$mixed_third\\$mixed_rest"
     cat >"$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake" <<EOF_WINDOWS_PATHS
 posix=$CUP_DEPS_BUILD_PREFIX
 native=$staged_native
@@ -349,12 +359,47 @@ EOF_WINDOWS_PATHS
     ! grep -F "$CUP_DEPS_BUILD_PREFIX" "$windows_metadata" >/dev/null
     ! grep -F "$staged_native" "$windows_metadata" >/dev/null
     ! grep -F "$staged_windows" "$windows_metadata" >/dev/null
+    relocated_archive_flags=$( \
+        PKG_CONFIG_PATH="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        pkg-config --define-prefix --libs libarchive)
+    case "$relocated_archive_flags" in
+        *"$CUP_DEPS_BUILD_PREFIX"*) ;;
+        *)
+            echo "Error: pkg-config relocation test did not expose the staging prefix." >&2
+            exit 1
+            ;;
+    esac
     archive_flags=$(PKG_CONFIG_PATH="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --libs libarchive)
+        dependency_pkg_config --libs libarchive)
     [ "$archive_flags" = "-L$final/lib -larchive " ] || \
         [ "$archive_flags" = "-L$final/lib -larchive" ]
+    dependency_link_flags_valid "-L$final_native/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"
+    dependency_link_flags_valid "-Wl,-L,$final_native/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"
+    if dependency_link_flags_valid \
+        "-L$final/lib -L$staged_native/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "native staging path was accepted in dependency link metadata"
+    fi
+    if dependency_link_flags_valid \
+        "-L$final/lib -Wl,-L,/usr/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "host linker search path was accepted in dependency metadata"
+    fi
+    if dependency_link_flags_valid \
+        "-L$final/lib -Wl,-rpath,/usr/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "host runtime search path was accepted in dependency metadata"
+    fi
+    if dependency_link_flags_valid "-L" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "incomplete linker search flag was accepted in dependency metadata"
+    fi
     finish_dependency_prefix "$CUP_DEPS_BUILD_PREFIX"
     [ -f "$final/new.txt" ]
     [ ! -e "$final/old.txt" ]
@@ -383,6 +428,39 @@ EOF_WINDOWS_PATHS
     [ "$CUP_DEPS_PREFIX_READY" = 0 ]
     [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
     abort_dependency_prefix
+    mv "$final/lib/pkgconfig/libarchive.pc.valid" \
+        "$final/lib/pkgconfig/libarchive.pc"
+
+    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
+    cat >"$final/bin/curl-config" <<EOF_HOST_SEARCH
+#!/bin/sh
+printf "%s\\n" "-L$final/lib -lcurl -L/usr/lib -lhost"
+EOF_HOST_SEARCH
+    chmod +x "$final/bin/curl-config"
+    prepare_dependency_prefix "$final" "$metadata" 1
+    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
+    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
+    abort_dependency_prefix
+    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
+
+    cp "$final/lib/pkgconfig/libarchive.pc" \
+        "$final/lib/pkgconfig/libarchive.pc.valid"
+    printf "Libs.private: /usr/lib/libhost.a\\n" >> \
+        "$final/lib/pkgconfig/libarchive.pc"
+    prepare_dependency_prefix "$final" "$metadata" 1
+    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
+    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
+    abort_dependency_prefix
+    mv "$final/lib/pkgconfig/libarchive.pc.valid" \
+        "$final/lib/pkgconfig/libarchive.pc"
+
+    cp "$final/lib/pkgconfig/libarchive.pc" \
+        "$final/lib/pkgconfig/libarchive.pc.valid"
+    printf "Libs.private: -ldl -lpthread\\n" >> \
+        "$final/lib/pkgconfig/libarchive.pc"
+    prepare_dependency_prefix "$final" "$metadata" 1
+    [ "$CUP_DEPS_PREFIX_READY" = 1 ]
+    [ "$CUP_DEPS_BUILD_PREFIX" = "$final" ]
     mv "$final/lib/pkgconfig/libarchive.pc.valid" \
         "$final/lib/pkgconfig/libarchive.pc"
 
@@ -521,25 +599,60 @@ assert_contains "$debug_command" "$PINNED_PREFIX/lib/libcurl.a"
 assert_contains "$debug_command" "$PINNED_PREFIX/lib/libarchive.a"
 assert_not_contains "$debug_command" ' -static '
 
-coverage_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" coverage
-)
-assert_contains "$coverage_command" "build/$NATIVE_BUILD_PLATFORM/coverage/bin/cup"
-assert_contains "$coverage_command" '--coverage'
-assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_not_contains "$coverage_command" ' -static '
+for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
+    coverage_command=$(
+        cd "$PROJECT_ROOT"
+        make --no-print-directory -B -n PLATFORM="$coverage_platform" \
+            DEPS_PREFIX="$PINNED_PREFIX" coverage
+    )
+    case "$coverage_platform" in
+        windows-x64) coverage_binary=cup.exe ;;
+        *) coverage_binary=cup ;;
+    esac
+    assert_contains "$coverage_command" \
+        "build/$coverage_platform/coverage/bin/$coverage_binary"
+    case "$coverage_platform" in
+        macos-*) assert_contains "$coverage_command" '-fprofile-instr-generate' ;;
+        *) assert_contains "$coverage_command" '--coverage' ;;
+    esac
+    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
+    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
+    assert_not_contains "$coverage_command" ' -static '
+done
 
-sanitizer_command=$(
+coverage_runner_command=$(
     cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" sanitizers
+    make --no-print-directory -n PLATFORM=macos-arm64 \
+        DEPS_PREFIX="$PINNED_PREFIX" test-coverage
 )
-assert_contains "$sanitizer_command" "build/$NATIVE_BUILD_PLATFORM/sanitizers/bin/cup"
-assert_contains "$sanitizer_command" '-fsanitize=address,undefined'
-assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_not_contains "$sanitizer_command" ' -static '
+assert_contains "$coverage_runner_command" "CUP_TEST_PLATFORM='macos-arm64'"
+assert_contains "$coverage_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
+
+sanitizer_runner_command=$(
+    cd "$PROJECT_ROOT"
+    make --no-print-directory -n PLATFORM=windows-x64 \
+        DEPS_PREFIX="$PINNED_PREFIX" test-sanitizers
+)
+assert_contains "$sanitizer_runner_command" "CUP_TEST_PLATFORM='windows-x64'"
+assert_contains "$sanitizer_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
+
+for sanitizer_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
+    sanitizer_command=$(
+        cd "$PROJECT_ROOT"
+        make --no-print-directory -B -n PLATFORM="$sanitizer_platform" \
+            DEPS_PREFIX="$PINNED_PREFIX" sanitizers
+    )
+    case "$sanitizer_platform" in
+        windows-x64) sanitizer_binary=cup.exe ;;
+        *) sanitizer_binary=cup ;;
+    esac
+    assert_contains "$sanitizer_command" \
+        "build/$sanitizer_platform/sanitizers/bin/$sanitizer_binary"
+    assert_contains "$sanitizer_command" '-fsanitize=address,undefined'
+    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libcurl.a"
+    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libarchive.a"
+    assert_not_contains "$sanitizer_command" ' -static '
+done
 
 windows_command=$(
     cd "$PROJECT_ROOT"
@@ -607,8 +720,15 @@ deps_command=$(
 )
 assert_contains "$deps_command" 'build-posix.sh'
 assert_contains "$deps_command" "JOBS=''"
-assert_contains "$deps_command" "$HOME/deps/linux-x64/install"
+assert_contains "$deps_command" "${DEPS_PREFIX:-$HOME/deps/linux-x64/install}"
 assert_not_contains "$deps_command" 'CUP_DEPS_SCOPE'
+custom_deps_prefix="$TMP_ROOT/custom-deps-prefix"
+custom_deps_command=$(
+    cd "$PROJECT_ROOT"
+    make --no-print-directory -B -n PLATFORM=linux-x64 \
+        DEPS_PREFIX="$custom_deps_prefix" deps
+)
+assert_contains "$custom_deps_command" "DEPS_PREFIX='$custom_deps_prefix'"
 printf 'Dependency diagnostic tests passed.\n'
 
 printf '==> Testing dependency entry points and platform rejection...\n'
@@ -643,7 +763,7 @@ if MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 \
     fail 'Windows dependency builder accepted a non-UCRT64 shell'
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-deps-runtime.out")" \
-    'require an MSYS2 UCRT64 shell'
+    'require an MSYS2 UCRT64 or CLANG64 shell'
 printf 'Dependency entry-point and platform rejection tests passed.\n'
 
 printf '==> Testing dependency inventory, scopes and notices...\n'
@@ -739,4 +859,13 @@ assert_contains "$(cat "$DEPENDENCY_DIR/build-windows.sh")" \
 assert_not_contains "$(cat "$DEPENDENCY_DIR/build-posix.sh")" '$(nproc)'
 assert_not_contains "$(cat "$DEPENDENCY_DIR/build-posix.sh")" 'hw.ncpu'
 assert_not_contains "$(cat "$DEPENDENCY_DIR/build-windows.sh")" '$(nproc)'
+# Quality-tool guidance must follow the active Windows toolchain instead of
+# recommending UCRT64 packages from the isolated CLANG64 sanitizer shell.
+clang_hint=$(CUP_TEST_PLATFORM=windows-x64 MSYSTEM=CLANG64 \
+    sh -c '. "$1"; cup_test_tool_hint clang' sh \
+    "$TESTS_ROOT/support/environment.sh" 2>&1)
+assert_contains "$clang_hint" 'Install LLVM tools in CLANG64'
+assert_contains "$clang_hint" 'mingw-w64-clang-x86_64-compiler-rt'
+assert_not_contains "$clang_hint" 'mingw-w64-ucrt-x86_64-compiler-rt'
+
 printf 'Normalized dependency build environment tests passed.\n'

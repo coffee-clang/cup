@@ -37,8 +37,14 @@ typedef struct ExtractedPath {
     UT_hash_handle hh;
 } ExtractedPath;
 
+typedef struct ExtractedAncestor {
+    char *key;
+    UT_hash_handle hh;
+} ExtractedAncestor;
+
 typedef struct {
     ExtractedPath *entries;
+    ExtractedAncestor *ancestors;
 } ExtractedPathTable;
 
 typedef struct {
@@ -76,11 +82,22 @@ static CupError lowercase_path(const char *path, char **key) {
 }
 
 static void path_table_free(ExtractedPathTable *table) {
+    ExtractedAncestor *ancestor;
+    ExtractedAncestor *next_ancestor;
     ExtractedPath *entry;
     ExtractedPath *next;
 
     if (table == NULL) {
         return;
+    }
+
+    ancestor = table->ancestors;
+    HASH_CLEAR(hh, table->ancestors);
+    while (ancestor != NULL) {
+        next_ancestor = (ExtractedAncestor *)ancestor->hh.next;
+        free(ancestor->key);
+        free(ancestor);
+        ancestor = next_ancestor;
     }
 
     entry = table->entries;
@@ -125,10 +142,60 @@ static CupError path_table_find(const ExtractedPathTable *table,
     return CUP_OK;
 }
 
-static int key_has_descendant(const char *parent, const char *candidate) {
-    size_t length = strlen(parent);
+static int path_table_has_descendant(const ExtractedPathTable *table, const char *key) {
+    ExtractedAncestor *ancestor = NULL;
 
-    return strncmp(parent, candidate, length) == 0 && candidate[length] == '/';
+    if (table == NULL || key == NULL) {
+        return 0;
+    }
+    HASH_FIND_STR(table->ancestors, key, ancestor);
+    return ancestor != NULL;
+}
+
+static CupError path_table_record_ancestors(ExtractedPathTable *table, const char *key) {
+    char *copy;
+    char *slash;
+    size_t length = strlen(key) + 1;
+
+    copy = malloc(length);
+    if (copy == NULL) {
+        return CUP_ERR_EXTRACT;
+    }
+    memcpy(copy, key, length);
+
+    slash = copy;
+    while ((slash = strchr(slash, '/')) != NULL) {
+        ExtractedAncestor *ancestor = NULL;
+        char saved = *slash;
+
+        *slash = '\0';
+        HASH_FIND_STR(table->ancestors, copy, ancestor);
+        if (ancestor == NULL) {
+            ancestor = calloc(1, sizeof(*ancestor));
+            if (ancestor == NULL) {
+                free(copy);
+                return CUP_ERR_EXTRACT;
+            }
+            length = strlen(copy) + 1;
+            ancestor->key = malloc(length);
+            if (ancestor->key == NULL) {
+                free(ancestor);
+                free(copy);
+                return CUP_ERR_EXTRACT;
+            }
+            memcpy(ancestor->key, copy, length);
+            HASH_ADD_KEYPTR(hh,
+                            table->ancestors,
+                            ancestor->key,
+                            strlen(ancestor->key),
+                            ancestor);
+        }
+        *slash = saved;
+        slash++;
+    }
+
+    free(copy);
+    return CUP_OK;
 }
 
 static CupError path_table_validate_new(const ExtractedPathTable *table,
@@ -164,14 +231,10 @@ static CupError path_table_validate_new(const ExtractedPathTable *table,
         slash++;
     }
 
-    if (type != AE_IFDIR) {
-        for (entry = table->entries; entry != NULL; entry = (const ExtractedPath *)entry->hh.next) {
-            if (key_has_descendant(*key, entry->key)) {
-                free(*key);
-                *key = NULL;
-                return CUP_ERR_ARCHIVE_UNSAFE;
-            }
-        }
+    if (type != AE_IFDIR && path_table_has_descendant(table, *key)) {
+        free(*key);
+        *key = NULL;
+        return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
     return CUP_OK;
@@ -210,7 +273,7 @@ static CupError path_table_add(ExtractedPathTable *table, const char *path, mode
     entry->key = key;
     entry->type = type;
     HASH_ADD_KEYPTR(hh, table->entries, entry->key, strlen(entry->key), entry);
-    return CUP_OK;
+    return path_table_record_ancestors(table, entry->key);
 }
 
 /* Entry-path and link validation. Archive names are normalized before any destination path is
@@ -688,8 +751,8 @@ static CupError leave_extraction_root(ExtractionRoot *root) {
 }
 #endif
 
-/* Extraction transaction. A complete preflight precedes writes, and partial output is removed on
- * every reversible failure. */
+/* Extraction transaction. Every entry is validated before it is written. The caller owns the
+ * staging transaction and removes partial output when this function reports a failure. */
 CupError package_extract_archive(const char *archive_path,
                                  const char *staging_path,
                                  const char *format_value) {

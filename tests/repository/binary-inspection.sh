@@ -187,6 +187,9 @@ mac_text=$(cat "$mac_report")
 assert_contains "$mac_text" 'object_format=Mach-O'
 assert_contains "$mac_text" 'architecture=x86_64'
 assert_contains "$mac_text" 'minimum_os=13.0'
+assert_contains "$mac_text" 'linkage=third-party-static-system-dynamic'
+assert_contains "$mac_text" 'third_party_linkage=static'
+assert_contains "$mac_text" 'system_linkage=dynamic'
 assert_contains "$mac_text" 'needed=/usr/lib/libSystem.B.dylib'
 
 arm_report=$TMP_ROOT/macos-arm64.txt
@@ -282,3 +285,27 @@ if [ "${CUP_TEST_WITH_BUILD_OUTPUT:-0}" = 1 ] && [ "$(uname -s)" = Linux ]; then
 fi
 
 printf '%s\n' 'Binary-inspection contract tests passed.'
+
+# Release path-leak guard must reject runner/staging paths and accept the
+# intentional neutral OpenSSL namespace.
+path_guard="$PROJECT_ROOT/scripts/build/check-path-leaks.sh"
+printf '%s\n' 'OPENSSLDIR: "/__cup_runtime__/openssl"' > "$TMP_ROOT/neutral-binary"
+"$path_guard" "$TMP_ROOT/neutral-binary" "$TMP_ROOT/forbidden"
+printf '%s\n' "$TMP_ROOT/forbidden/file.c" > "$TMP_ROOT/leaking-binary"
+if "$path_guard" "$TMP_ROOT/leaking-binary" "$TMP_ROOT/forbidden" \
+        >"$TMP_ROOT/path-leak.out" 2>&1; then
+    fail 'release path guard accepted a machine-specific path'
+fi
+assert_contains "$(cat "$TMP_ROOT/path-leak.out")" 'contains forbidden path'
+printf '%s\n' '/tmp/.install.staging.ABCD/include' > "$TMP_ROOT/staging-binary"
+if "$path_guard" "$TMP_ROOT/staging-binary" \
+        >"$TMP_ROOT/staging-leak.out" 2>&1; then
+    fail 'release path guard accepted a staging path'
+fi
+assert_contains "$(cat "$TMP_ROOT/staging-leak.out")" 'transactional dependency path'
+printf '%s\n' 'OPENSSLDIR: "/__cup_runtime__/other"' > "$TMP_ROOT/wrong-neutral-binary"
+if "$path_guard" "$TMP_ROOT/wrong-neutral-binary" \
+        >"$TMP_ROOT/wrong-neutral.out" 2>&1; then
+    fail 'release path guard accepted an unexpected neutral namespace'
+fi
+assert_contains "$(cat "$TMP_ROOT/wrong-neutral.out")" 'unexpected neutral runtime namespace'

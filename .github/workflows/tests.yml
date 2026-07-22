@@ -21,6 +21,7 @@ jobs:
   prepare:
     name: Resolve tested revision
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.prepare.outputs.version }}
       tag: ${{ steps.prepare.outputs.tag }}
@@ -53,6 +54,7 @@ jobs:
   posix:
     name: Source tests (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -74,16 +76,30 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+      - name: Prepare source-test toolchain
+        env:
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh source
+      - id: dependency-id
+        name: Resolve dependency identity
+        run: echo "value=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-id)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: cup-source-${{ matrix.platform }}-${{ steps.dependency-id.outputs.value }}
       - name: Run source tests
         env:
           PLATFORM: ${{ matrix.platform }}
           FAMILY: ${{ matrix.family }}
+          CUP_CI_ENVIRONMENT_PREPARED: 1
         run: scripts/ci/source-posix.sh
 
   # Keep the Windows source path native to the canonical UCRT64 toolchain.
   windows:
     name: Source tests (windows-x64)
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
         with:
@@ -96,6 +112,7 @@ jobs:
           install: >-
             ca-certificates
             curl
+            diffutils
             file
             git
             make
@@ -106,35 +123,128 @@ jobs:
             gcc:p
             binutils:p
             pkgconf:p
+      - id: dependency-id
+        name: Resolve dependency identity
+        shell: msys2 {0}
+        run: echo "value=$(scripts/dependencies/verify.sh windows-x64 --print-id)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: C:/msys64/home/runneradmin/deps/windows-x64/install
+          key: cup-source-windows-x64-ucrt64-${{ steps.dependency-id.outputs.value }}
       - name: Build pinned Windows dependencies
         shell: msys2 {0}
-        run: JOBS=4 make PLATFORM=windows-x64 deps
+        run: |
+          JOBS=4 make PLATFORM=windows-x64 deps
+          make PLATFORM=windows-x64 check-dependencies
       - name: Run source tests
         shell: msys2 {0}
         run: >-
           powershell.exe -NoProfile -ExecutionPolicy Bypass
           -File scripts/ci/source-windows.ps1
 
-  # Quality gates use dedicated Linux jobs so their instrumentation cannot affect release bits.
+  # Coverage runs natively so platform-specific C branches contribute to the gate.
   coverage:
-    name: Coverage gate (linux-x64)
-    runs-on: ubuntu-latest
+    name: Coverage gate (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+          - platform: windows-x64
+            runner: windows-latest
+            family: windows
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Prepare coverage environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl file gcovr git make perl \
-            pkg-config tar xz-utils
-          make PLATFORM=linux-x64 deps
-      - name: Collect coverage
+      - uses: msys2/setup-msys2@v2
+        if: matrix.family == 'windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            ca-certificates
+            coreutils
+            curl
+            diffutils
+            file
+            git
+            make
+            perl
+            tar
+            xz
+          pacboy: >-
+            gcc:p
+            binutils:p
+            gcovr:p
+            pkgconf:p
+      - name: Prepare POSIX coverage toolchain
+        if: matrix.family != 'windows'
         env:
-          PLATFORM: linux-x64
-          CUP_TEST_PLATFORM: linux-x64
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh coverage
+      - id: dependency-id-posix
+        name: Resolve POSIX dependency identity
+        if: matrix.family != 'windows'
+        run: echo "value=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-id)" >> "$GITHUB_OUTPUT"
+      - id: dependency-id-windows
+        name: Resolve Windows dependency identity
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: echo "value=$(scripts/dependencies/verify.sh windows-x64 --print-id)" >> "$GITHUB_OUTPUT"
+      - name: Restore POSIX dependency cache
+        if: matrix.family != 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: cup-coverage-${{ matrix.platform }}-${{ steps.dependency-id-posix.outputs.value }}
+      - name: Restore Windows dependency cache
+        if: matrix.family == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/msys64/home/runneradmin/deps/windows-x64/install
+          key: cup-coverage-windows-x64-ucrt64-${{ steps.dependency-id-windows.outputs.value }}
+      - name: Prepare POSIX coverage dependencies
+        if: matrix.family != 'windows'
+        run: |
+          JOBS=4 make PLATFORM='${{ matrix.platform }}' deps
+          make PLATFORM='${{ matrix.platform }}' check-dependencies
+      - name: Prepare Windows coverage dependencies
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: |
+          JOBS=4 make PLATFORM=windows-x64 deps
+          make PLATFORM=windows-x64 check-dependencies
+      - name: Collect POSIX coverage
+        if: matrix.family != 'windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          CUP_TEST_PLATFORM: ${{ matrix.platform }}
+          CUP_COVERAGE_MIN_LINES: 85
+          CUP_COVERAGE_MIN_BRANCHES: 70
+          CUP_COVERAGE_MIN_FUNCTIONS: 97
+        run: tests/runners/coverage.sh
+      - name: Collect Windows coverage
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        env:
+          PLATFORM: windows-x64
+          CUP_TEST_PLATFORM: windows-x64
           CUP_COVERAGE_MIN_LINES: 85
           CUP_COVERAGE_MIN_BRANCHES: 70
           CUP_COVERAGE_MIN_FUNCTIONS: 97
@@ -142,31 +252,125 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: cup-coverage-linux-x64
-          path: build/coverage/*
+          name: cup-coverage-${{ matrix.platform }}
+          path: build/coverage/${{ matrix.platform }}/*
           if-no-files-found: warn
           retention-days: 30
 
+  # ASan/UBSan run natively; leak detection is enabled on Linux and macOS.
   sanitizers:
-    name: Address and undefined behavior sanitizers (linux-x64)
-    runs-on: ubuntu-latest
+    name: Address and undefined behavior sanitizers (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+          - platform: windows-x64
+            runner: windows-latest
+            family: windows
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Prepare sanitizer environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl file git make perl \
-            pkg-config tar xz-utils
-          make PLATFORM=linux-x64 deps
-      - name: Run sanitizer tests
+      - uses: msys2/setup-msys2@v2
+        if: matrix.family == 'windows'
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            ca-certificates
+            coreutils
+            curl
+            diffutils
+            file
+            git
+            make
+            perl
+            tar
+            xz
+          pacboy: >-
+            clang:p
+            compiler-rt:p
+            llvm:p
+            pkgconf:p
+      - name: Prepare POSIX sanitizer toolchain
+        if: matrix.family != 'windows'
         env:
-          PLATFORM: linux-x64
-          CUP_TEST_PLATFORM: linux-x64
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh sanitizers
+      - id: dependency-id-posix
+        name: Resolve POSIX dependency identity
+        if: matrix.family != 'windows'
+        run: echo "value=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-id)" >> "$GITHUB_OUTPUT"
+      - id: dependency-id-windows
+        name: Resolve Windows dependency identity
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: echo "value=$(scripts/dependencies/verify.sh windows-x64 --print-id)" >> "$GITHUB_OUTPUT"
+      - name: Restore POSIX dependency cache
+        if: matrix.family != 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: cup-sanitizer-${{ matrix.platform }}-${{ steps.dependency-id-posix.outputs.value }}
+      - name: Restore Windows CLANG64 dependency cache
+        if: matrix.family == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/msys64/home/runneradmin/deps/windows-x64-clang64/install
+          key: cup-sanitizer-windows-x64-clang64-${{ steps.dependency-id-windows.outputs.value }}
+      - name: Prepare POSIX sanitizer dependencies
+        if: matrix.family != 'windows'
+        run: |
+          JOBS=4 make PLATFORM='${{ matrix.platform }}' deps
+          make PLATFORM='${{ matrix.platform }}' check-dependencies
+      - name: Prepare Windows sanitizer dependencies
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: |
+          DEPS_PREFIX="$HOME/deps/windows-x64-clang64/install"
+          export DEPS_PREFIX
+          JOBS=4 make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" deps
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" check-dependencies
+      - name: Run POSIX sanitizer tests
+        if: matrix.family != 'windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          CUP_TEST_PLATFORM: ${{ matrix.platform }}
+          CC: clang
         run: tests/runners/sanitizers.sh
+      - name: Run Windows sanitizer tests
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        env:
+          PLATFORM: windows-x64
+          CUP_TEST_PLATFORM: windows-x64
+          CC: clang
+        run: |
+          export DEPS_PREFIX="$HOME/deps/windows-x64-clang64/install"
+          tests/runners/sanitizers.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cup-sanitizers-${{ matrix.platform }}
+          path: build/sanitizers/${{ matrix.platform }}/*
+          if-no-files-found: warn
+          retention-days: 30
 
   # Candidate assembly starts only after normal tests and quality gates succeed.
   common-assets:
@@ -174,6 +378,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == '1'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
@@ -196,10 +401,11 @@ jobs:
           retention-days: 30
 
   build-release:
-    name: Build static candidate (${{ matrix.platform }})
+    name: Build release candidate (${{ matrix.platform }})
     needs: prepare
     if: needs.prepare.outputs.should_release == '1'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 110
     strategy:
       fail-fast: false
       matrix:
@@ -232,6 +438,7 @@ jobs:
           install: >-
             ca-certificates
             curl
+            diffutils
             file
             git
             make
@@ -243,6 +450,33 @@ jobs:
             gcc:p
             binutils:p
             pkgconf:p
+      - name: Prepare POSIX release toolchain
+        if: matrix.family != 'windows'
+        env:
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh release
+      - id: dependency-id-posix
+        name: Resolve POSIX dependency identity
+        if: matrix.family != 'windows'
+        run: echo "value=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-id)" >> "$GITHUB_OUTPUT"
+      - id: dependency-id-windows
+        name: Resolve Windows dependency identity
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: echo "value=$(scripts/dependencies/verify.sh windows-x64 --print-id)" >> "$GITHUB_OUTPUT"
+      - name: Restore POSIX dependency cache
+        if: matrix.family != 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: cup-release-${{ matrix.platform }}-${{ steps.dependency-id-posix.outputs.value }}
+      - name: Restore Windows dependency cache
+        if: matrix.family == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/msys64/home/runneradmin/deps/windows-x64/install
+          key: cup-release-windows-x64-ucrt64-${{ steps.dependency-id-windows.outputs.value }}
       - name: Build POSIX release candidate
         if: matrix.family != 'windows'
         env:
@@ -251,6 +485,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
           SHA: ${{ needs.prepare.outputs.sha }}
+          CUP_CI_ENVIRONMENT_PREPARED: 1
         run: scripts/release/build-platform.sh
       - name: Build Windows release candidate
         if: matrix.family == 'windows'
@@ -268,6 +503,12 @@ jobs:
           path: dist/${{ matrix.platform }}/*
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-symbols-${{ matrix.platform }}
+          path: dist/symbols/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 30
 
   # Test the exact candidate executable on clean native runners without recompiling it.
   native-release-tests:
@@ -278,6 +519,7 @@ jobs:
       - build-release
     if: needs.prepare.outputs.should_release == '1'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -336,6 +578,7 @@ jobs:
       - build-release
       - native-release-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Verify required jobs
         env:

@@ -73,7 +73,11 @@ test_help_aliases() {
 
     output=$(run_cup help update)
     assert_contains "$output" 'Without a selector, updates installed tools only; CUP itself is not updated.'
+    output=$(run_cup help install)
+    assert_contains "$output" "$CUP install <profile|toolchain> <name>"
+    assert_not_contains "$output" '| install <profile|toolchain>'
     output=$(run_cup help config)
+    assert_contains "$output" "$CUP config set <component> <tool>"
     assert_contains "$output" 'reset without component clears that scope only.'
     output=$(run_cup help uninstall)
     assert_contains "$output" '--yes  Skip the confirmation prompt.'

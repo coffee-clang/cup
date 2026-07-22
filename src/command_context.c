@@ -131,7 +131,7 @@ static CupError recheck_locked_runtime(CommandContext *context, LayoutRuntimeSta
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
-    LayoutRuntimeStatus runtime_status;
+    LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     SystemLockMode lock_mode = mode;
     CupError err;
     char root[MAX_PATH_LEN];
@@ -201,7 +201,7 @@ CupError command_context_begin(CommandContext *context,
 /* Read-only context. Missing roots are treated as an uninitialized installation and are never
  * created as a side effect. */
 CupError command_context_begin_read_only(CommandContext *context, const char *target_override) {
-    LayoutRuntimeStatus runtime_status;
+    LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     CupError err;
 
     if (context == NULL) {

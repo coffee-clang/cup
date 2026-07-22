@@ -21,6 +21,7 @@ jobs:
   posix:
     name: Debug build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -41,21 +42,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Prepare Linux dependencies
-        if: matrix.family == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            binutils build-essential ca-certificates curl git make perl \
-            pkg-config tar xz-utils
-          make PLATFORM=${{ matrix.platform }} deps
-      - name: Prepare macOS dependencies
-        if: matrix.family == 'macos'
-        run: |
-          for package in perl pkg-config xz; do
-            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
-          done
-          make PLATFORM=${{ matrix.platform }} deps
+      - name: Prepare POSIX debug toolchain
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: scripts/ci/prepare-posix.sh source
+      - name: Build pinned dependency prefix
+        run: make PLATFORM=${{ matrix.platform }} deps
       - name: Build diagnostic executable
         run: |
           make PLATFORM=${{ matrix.platform }} debug
@@ -105,6 +97,7 @@ jobs:
   windows:
     name: Debug build (windows-x64)
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
         with:
@@ -116,6 +109,7 @@ jobs:
           install: >-
             ca-certificates
             curl
+            diffutils
             file
             git
             make

@@ -5,6 +5,13 @@ Makefile    text eol=lf whitespace=-tab-in-indent
 *.sh        text eol=lf
 *.ps1       text eol=lf
 *.yml       text eol=lf
+*.yaml      text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.toml      text eol=lf
+*.meta      text eol=lf
+*.pem       text eol=lf
 *.cfg       text eol=lf
 *.txt       text eol=lf
 VERSION     text eol=lf
+.editorconfig text eol=lf

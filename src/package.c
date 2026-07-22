@@ -241,7 +241,7 @@ static CupError validate_package_commands(const PackageMetadata *metadata, const
     while (package_metadata_next_command(metadata, &command, &cursor)) {
         char path[MAX_PATH_LEN];
         CupError err;
-        int is_executable;
+        int is_executable = 0;
 
         if (!path_is_safe_relative(command.path)) {
             err = CUP_ERR_VALIDATION;

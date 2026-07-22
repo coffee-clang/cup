@@ -328,7 +328,7 @@ static CupError print_doctor_summary(const DoctorReport *report) {
  * coherent view of state, journals and installed packages. */
 static void check_uninstall_marker(DoctorReport *report) {
     CupError err;
-    SystemPathKind marker_kind;
+    SystemPathKind marker_kind = SYSTEM_PATH_MISSING;
     char path[MAX_PATH_LEN];
 
     err = layout_get_uninstall_marker_path(path, sizeof(path));
@@ -344,10 +344,10 @@ static void check_uninstall_marker(DoctorReport *report) {
 }
 
 static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
-    LayoutRuntimeStatus runtime_status;
+    LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     CupError err;
     char path[MAX_PATH_LEN];
-    int lock_exists;
+    int lock_exists = 0;
 
     err = layout_get_runtime_status(&runtime_status);
     if (err != CUP_OK) {

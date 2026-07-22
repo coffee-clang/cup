@@ -22,12 +22,26 @@ pkg_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
 mkdir -p "$OUT"
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O0 -g3"
 LDFLAGS=""
+case "$PLATFORM" in
+    macos-*)
+        CFLAGS="$CFLAGS -mmacosx-version-min=13.0"
+        LDFLAGS="$LDFLAGS -mmacosx-version-min=13.0"
+        ;;
+esac
 case "$CONFIGURATION" in
     development|debug) ;;
     release) CFLAGS="-std=c11 -Wall -Wextra -Werror -O2" ;;
     coverage)
-        CFLAGS="$CFLAGS --coverage -fprofile-arcs -ftest-coverage"
-        LDFLAGS="$LDFLAGS --coverage"
+        case "$PLATFORM" in
+            macos-*)
+                CFLAGS="$CFLAGS -fprofile-instr-generate -fcoverage-mapping"
+                LDFLAGS="$LDFLAGS -fprofile-instr-generate -fcoverage-mapping"
+                ;;
+            *)
+                CFLAGS="$CFLAGS --coverage -fprofile-arcs -ftest-coverage -fprofile-abs-path"
+                LDFLAGS="$LDFLAGS --coverage"
+                ;;
+        esac
         ;;
     sanitizers)
         CFLAGS="$CFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer"

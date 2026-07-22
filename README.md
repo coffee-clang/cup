@@ -82,3 +82,17 @@ make PLATFORM=linux-x64 test
 
 Additional build and maintenance targets are documented in
 [BUILD](docs/development/BUILD.md).
+
+### Release portability notes
+
+Linux release binaries remain glibc-based and static at the ELF level; musl is
+not a current project requirement. OpenSSL automatic configuration loading is
+disabled, its compiled default directories use the neutral
+`/__cup_runtime__/openssl` namespace, and release packaging rejects checkout,
+dependency-prefix and transactional staging paths.
+
+macOS embeds third-party libraries statically while continuing to use Apple
+system libraries dynamically. Linux release and native integration builds use
+GCC, with a secondary Clang x64 build/unit gate; all sanitizer jobs use
+Clang/Compiler-RT. Windows release and coverage use UCRT64 GCC, while sanitizer
+diagnostics use an isolated CLANG64 dependency prefix.

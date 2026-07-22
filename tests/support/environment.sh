@@ -116,3 +116,132 @@ cup_test_require_dependencies() {
         'or set DEPS_PREFIX to an explicitly prepared native prefix.' >&2
     return 1
 }
+
+# Print actionable installation guidance for optional quality tools.
+cup_test_tool_hint() {
+    _cup_test_tool=$1
+    case "$CUP_TEST_PLATFORM" in
+        linux-*)
+            case "$_cup_test_tool" in
+                gcovr) printf '%s\n' "Install it with: sudo apt-get install gcovr" >&2 ;;
+                gcc|gcov) printf '%s\n' "Install GCC coverage tools with: sudo apt-get install build-essential" >&2 ;;
+                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
+                    printf '%s\n' "Install LLVM tools with: sudo apt-get install clang llvm" >&2 ;;
+                timeout) printf '%s\n' "Install it with: sudo apt-get install coreutils" >&2 ;;
+                *) printf '%s\n' "Install '$_cup_test_tool' with your system package manager." >&2 ;;
+            esac
+            ;;
+        macos-*)
+            case "$_cup_test_tool" in
+                gcovr) printf '%s\n' "Install it with: brew install gcovr" >&2 ;;
+                timeout|gtimeout) printf '%s\n' "Install GNU timeout with: brew install coreutils" >&2 ;;
+                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
+                    printf '%s\n' "Install Xcode Command Line Tools with: xcode-select --install" >&2 ;;
+                *) printf '%s\n' "Install '$_cup_test_tool' with Homebrew or Xcode Command Line Tools." >&2 ;;
+            esac
+            ;;
+        windows-x64)
+            case "$_cup_test_tool" in
+                gcovr) printf '%s\n' "Install it in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2 ;;
+                gcc|gcov) printf '%s\n' "Install GCC tools in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcc" >&2 ;;
+                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
+                    if [ "${MSYSTEM:-}" = CLANG64 ]; then
+                        _cup_test_package_prefix=mingw-w64-clang-x86_64
+                        _cup_test_environment=CLANG64
+                    else
+                        _cup_test_package_prefix=mingw-w64-ucrt-x86_64
+                        _cup_test_environment=UCRT64
+                    fi
+                    printf '%s\n' \
+                        "Install LLVM tools in $_cup_test_environment with:" \
+                        "  pacman -S ${_cup_test_package_prefix}-clang" \
+                        "    ${_cup_test_package_prefix}-compiler-rt" \
+                        "    ${_cup_test_package_prefix}-llvm-tools" >&2
+                    ;;
+                timeout) printf '%s\n' "Install it in MSYS2 with: pacman -S coreutils" >&2 ;;
+                powershell.exe) printf '%s\n' "PowerShell is required from the Windows host." >&2 ;;
+                *)
+                    printf '%s\n' \
+                        "Install '$_cup_test_tool' in the active MSYS2" \
+                        "${MSYSTEM:-UCRT64} environment." >&2
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+cup_test_require_tool() {
+    _cup_test_tool=$1
+    _cup_test_purpose=${2:-the requested test target}
+    command -v "$_cup_test_tool" >/dev/null 2>&1 && return 0
+    printf "Required tool '%s' was not found; it is needed for %s.\n" \
+        "$_cup_test_tool" "$_cup_test_purpose" >&2
+    cup_test_tool_hint "$_cup_test_tool"
+    return 1
+}
+
+cup_test_find_timeout() {
+    if [ -n "${CUP_TEST_TIMEOUT_COMMAND:-}" ]; then
+        command -v "$CUP_TEST_TIMEOUT_COMMAND" >/dev/null 2>&1 || {
+            printf "Configured timeout command '%s' was not found.\n" \
+                "$CUP_TEST_TIMEOUT_COMMAND" >&2
+            return 1
+        }
+        printf '%s\n' "$CUP_TEST_TIMEOUT_COMMAND"
+        return 0
+    fi
+    for _cup_test_timeout in timeout gtimeout; do
+        if command -v "$_cup_test_timeout" >/dev/null 2>&1; then
+            printf '%s\n' "$_cup_test_timeout"
+            return 0
+        fi
+    done
+    printf '%s\n' "A timeout command is required for bounded quality tests." >&2
+    cup_test_tool_hint timeout
+    return 1
+}
+
+cup_test_find_llvm_tool() {
+    _cup_test_tool=$1
+    if command -v "$_cup_test_tool" >/dev/null 2>&1; then
+        command -v "$_cup_test_tool"
+        return 0
+    fi
+    if command -v xcrun >/dev/null 2>&1; then
+        xcrun --find "$_cup_test_tool" 2>/dev/null && return 0
+    fi
+    printf "Required LLVM tool '%s' was not found.\n" "$_cup_test_tool" >&2
+    cup_test_tool_hint "$_cup_test_tool"
+    return 1
+}
+
+# Source-based LLVM coverage support was added by gcovr 8.5.
+cup_test_require_gcovr_llvm() {
+    _cup_test_version=$(gcovr --version 2>/dev/null | awk '
+        NR == 1 {
+            for (i = 1; i <= NF; ++i) {
+                if ($i ~ /^[0-9]+\.[0-9]+([.][0-9]+)?/) {
+                    print $i
+                    exit
+                }
+            }
+        }
+    ')
+    _cup_test_major=${_cup_test_version%%.*}
+    _cup_test_remainder=${_cup_test_version#*.}
+    _cup_test_minor=${_cup_test_remainder%%.*}
+    case "$_cup_test_major:$_cup_test_minor" in
+        *[!0-9:]*|:*)
+            printf 'Unable to determine the installed gcovr version.\n' >&2
+            return 1
+            ;;
+    esac
+    if [ "$_cup_test_major" -lt 8 ] || {
+        [ "$_cup_test_major" -eq 8 ] && [ "$_cup_test_minor" -lt 5 ]
+    }; then
+        printf 'gcovr 8.5 or newer is required for LLVM source-based coverage; found %s.\n' \
+            "$_cup_test_version" >&2
+        cup_test_tool_hint gcovr
+        return 1
+    fi
+}

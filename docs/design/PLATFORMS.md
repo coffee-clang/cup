@@ -191,11 +191,18 @@ for each supported platform.
 Source validation runs natively on all five supported platform identifiers.
 Release candidate binaries are also downloaded and tested on native runners.
 
-Linux x64 additionally owns GCC coverage, ASan/UBSan and a local network
-portability smoke test. The latter runs the static executable through DNS,
-embedded-CA HTTPS validation, direct and proxied package downloads, checksum
-verification and extraction. These reports do not include Windows-only code,
-so the native Windows suite remains a separate requirement.
+Coverage and ASan/UBSan run natively on all five platform identifiers. Linux
+and Windows coverage use GCC/gcov, while macOS uses Clang source-based coverage.
+All sanitizer jobs use Clang/Compiler-RT; leak detection is enabled on Linux and
+macOS, while Windows uses an isolated CLANG64 graph without leak detection.
+Linux source, integration and release ownership remains GCC, with a secondary
+Linux x64 Clang application/unit pass. Windows release and coverage builds
+remain UCRT64/GCC. Linux x64 additionally owns a local network-portability smoke
+test that runs the static executable through
+DNS, embedded-CA HTTPS validation, direct and proxied package downloads,
+checksum verification and extraction. Native platform suites remain separate
+requirements because their system-specific branches cannot be represented by a
+single aggregate report.
 
 See [TESTING](../development/TESTING.md) and [RELEASES](../development/RELEASES.md).
 

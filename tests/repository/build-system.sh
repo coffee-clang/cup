@@ -138,7 +138,9 @@ assert_contains "$config_text" 'configuration=development'
 assert_contains "$config_text" 'compiler_command=fakecc'
 assert_contains "$config_text" 'compiler_target=x86_64-unknown-linux-gnu'
 assert_contains "$config_text" 'compiler_version=fakecc 1.0'
-assert_contains "$config_text" 'cflags=-Wall -Wextra -Werror -std=c11 -O0 -g3 -DCUP_EXTRA_C'
+assert_contains "$config_text" 'cflags=-Wall -Wextra -Werror -std=c11'
+assert_contains "$config_text" '-fdebug-prefix-map='
+assert_contains "$config_text" '-O0 -g3 -DCUP_EXTRA_C'
 assert_contains "$config_text" '-DCUP_EXTRA_CPP'
 assert_contains "$config_text" '-Wl,--build-id=none'
 assert_contains "$config_text" "$prefix/lib/libcurl.a"
@@ -224,6 +226,11 @@ printf '%s\n' x86_64-w64-mingw32 >"$TMP_ROOT/compiler-target"
 MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 MSYSTEM_CARCH=x86_64 \
     PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" \
     windows-x64 fakecc fakewindres
+printf '%s\n' x86_64-w64-windows-gnu >"$TMP_ROOT/compiler-target"
+MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 MSYSTEM_CARCH=x86_64 \
+    PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" \
+    windows-x64 fakecc fakewindres
+printf '%s\n' x86_64-w64-mingw32 >"$TMP_ROOT/compiler-target"
 if MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 MSYSTEM_CARCH=x86_64 \
         PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" \
         windows-x64 fakecc fakewindres >"$TMP_ROOT/windows-runtime.out" 2>&1; then
@@ -245,12 +252,12 @@ if make -C "$PROJECT_ROOT" --no-print-directory -n \
 fi
 assert_contains "$(cat "$TMP_ROOT/macos-target.out")" \
     'macOS builds require MACOSX_DEPLOYMENT_TARGET=13.0'
-make -C "$PROJECT_ROOT" --no-print-directory -pn PLATFORM=macos-x64 help \
-    >"$TMP_ROOT/macos-make-db.out"
+MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
+    PLATFORM=macos-x64 help >"$TMP_ROOT/macos-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-mmacosx-version-min=13.0'
-make -C "$PROJECT_ROOT" --no-print-directory -pn PLATFORM=windows-x64 help \
-    >"$TMP_ROOT/windows-make-db.out"
+MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
+    PLATFORM=windows-x64 help >"$TMP_ROOT/windows-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'CC := gcc'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'WINDRES := windres'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" '-D_WIN32_WINNT=0x0A00'

@@ -84,7 +84,7 @@ case "$platform" in
             *) fail "PLATFORM '$platform' requires MSYSTEM_CARCH=x86_64" ;;
         esac
         case "$target" in
-            x86_64-w64-mingw32) ;;
+            x86_64-w64-mingw32|x86_64*-windows-gnu) ;;
             *) fail "compiler target '$target' does not match the UCRT64 policy for $platform" ;;
         esac
         [ -n "$windres" ] || fail 'WINDRES is required for windows-x64'

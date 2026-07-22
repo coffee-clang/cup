@@ -320,9 +320,9 @@ License file: LICENSE.txt
    END OF TERMS AND CONDITIONS
 
 
-curl 8.20.0
+curl 8.21.0
 -----------
-Source: https://curl.se/download/curl-8.20.0.tar.xz
+Source: https://curl.se/download/curl-8.21.0.tar.xz
 Scope: runtime
 Usage: static library linked into the CUP executable
 
@@ -352,9 +352,9 @@ be used in advertising or otherwise to promote the sale, use or other dealings
 in this Software without prior written authorization of the copyright holder.
 
 
-libarchive 3.8.7
+libarchive 3.8.8
 ----------------
-Source: https://github.com/libarchive/libarchive/releases/download/v3.8.7/libarchive-3.8.7.tar.xz
+Source: https://github.com/libarchive/libarchive/releases/download/v3.8.8/libarchive-3.8.8.tar.xz
 Scope: runtime
 Usage: static library linked into the CUP executable
 

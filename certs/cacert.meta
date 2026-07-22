@@ -1,0 +1,6 @@
+format=1
+source=https://curl.se/ca/cacert.pem
+source_date=2026-05-14
+sha256=86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c
+certificate_count=121
+max_age_days=120

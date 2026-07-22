@@ -27,6 +27,25 @@ compatibility aliases. A normal local `make release` produces release-mode code
 with a development version identity. Official identity remains restricted to
 the controlled candidate workflow.
 
+
+## Quality-tool prerequisites
+
+The native quality runners validate optional host tools before starting and
+print platform-specific installation guidance instead of failing with an opaque
+`command not found`. The canonical entry points are:
+
+```sh
+make PLATFORM=<platform> test-coverage
+make PLATFORM=<platform> test-sanitizers
+```
+
+Linux and Windows coverage use GCC/gcov. macOS coverage uses Clang source-based
+instrumentation and therefore requires `gcovr` 8.5 or newer together with
+matching `llvm-profdata` and `llvm-cov` tools. ASan/UBSan are exercised natively
+on every supported platform; leak detection is enabled on Linux and macOS and
+disabled on Windows. These tools are host-side diagnostics and are not added to
+the pinned application/test-library prefix or release notices.
+
 ## Output layout
 
 ```text
@@ -50,6 +69,25 @@ when this content changes. Objects depend on it, so changing the compiler,
 objects without rebuilding when the identity is unchanged.
 
 ## Compiler configuration
+
+Compiler choice is role-based rather than globally uniform. Each published
+platform has one canonical compiler, while a different compiler is used only
+when it provides independent diagnostic value:
+
+| Role | Linux | macOS | Windows |
+|---|---|---|---|
+| Development, native integration and release owner | GCC | Apple Clang | MSYS2 UCRT64 GCC |
+| Secondary compiler portability | Clang build and C unit tests on x64 | Covered by the native compiler | Covered by the CLANG64 sanitizer path |
+| Coverage | GCC/gcov | Clang source-based coverage | UCRT64 GCC/gcov |
+| ASan/UBSan | Clang/Compiler-RT | Apple Clang | MSYS2 CLANG64 Clang/Compiler-RT |
+| Canonical dependency compiler | GCC | Apple Clang | UCRT64 GCC; separate CLANG64 prefix for sanitizers |
+
+This is intentional diversity, not interchangeable compiler selection. Release
+artifacts and native integration behavior always have one compiler owner. The
+secondary Linux Clang pass compiles the complete application and runs all C unit
+tests against the same canonical dependency prefix; it does not create a second
+release graph. Sanitizers use Clang consistently so diagnostics and runtime
+behavior do not vary between GCC's libsanitizer and LLVM Compiler-RT.
 
 All C builds use C11 with warnings treated as errors. Development and debug use
 `-O0 -g3`; release uses `-O2 -DNDEBUG`; coverage and sanitizer instrumentation
@@ -117,15 +155,24 @@ alternate dependency resolver.
 
 ## One complete dependency prefix
 
-The canonical prefix is:
+The canonical production/native prefix is:
 
 ```text
 ~/deps/<platform>/install
 ```
 
-It can be overridden with `DEPS_PREFIX`, but there is no separate development
-scope. Relative overrides are normalized to an absolute path before they enter
-compiler flags or `build-config.txt`.
+The Windows sanitizer job intentionally uses a second, toolchain-distinct
+prefix because CLANG64 archives must not be mixed with the UCRT64/GCC release
+graph:
+
+```text
+~/deps/windows-x64-clang64/install
+```
+
+Either prefix can be overridden with `DEPS_PREFIX`. The separation is by
+toolchain identity, not by development/release scope. Relative overrides are
+normalized to an absolute path before they enter compiler flags or
+`build-config.txt`.
 
 A source checkout may be placed in a path containing ordinary spaces. CUP
 escapes the absolute source include path before invoking the compiler and tests
@@ -251,7 +298,12 @@ contain libevent link inputs.
 
 Only release-configuration executables are eligible for publication. Debug and
 instrumented artifacts remain diagnostic even though their third-party graph is
-identical.
+identical. Candidate packaging separates native symbols (`cup.debug` or
+`cup.dSYM`), strips the public executable and rejects checkout, dependency-root
+and transactional staging paths in both dependency archives and the final
+binary. OpenSSL is built with the deterministic, non-existent
+`/__cup_runtime__/openssl` default namespace while automatic configuration and
+DSO loading remain disabled.
 
 ## Generated version files
 
@@ -272,8 +324,12 @@ include the generated header rather than rewriting tracked files.
 
 `certs/cacert.pem` is converted deterministically by
 `scripts/certs/generate-ca-bundle.sh` into generated `ca_bundle.h` and
-`ca_bundle.c`. `make update-ca-bundle` validates a new PEM and generated object
-before replacing the tracked source bundle. See
+`ca_bundle.c`. `certs/cacert.meta` records the authenticated source, Mozilla
+source date, SHA-256, certificate count and maximum accepted age.
+`make check-ca-bundle` verifies that contract without network access.
+`make update-ca-bundle` validates and compiles a newly downloaded candidate,
+rejects rollback/future/suspiciously small bundles and replaces PEM plus
+metadata with rollback protection. See
 [SECURITY](../design/SECURITY.md#embedded-ca-bundle).
 
 ## Make targets
@@ -307,6 +363,7 @@ Documentation and CA maintenance:
 make docs-assets
 make docs
 make serve
+make check-ca-bundle
 make update-ca-bundle
 ```
 
@@ -340,14 +397,7 @@ builds an additional release executable. CI runs it on Linux x64 as the initial
 glibc portability gate. A multi-distribution matrix and a musl switch remain
 separate decisions and are not implied by this test.
 
-## Related documents
-
-- [ARCHITECTURE](../design/ARCHITECTURE.md) — runtime and script boundaries;
-- [TESTING](TESTING.md) — test environments and gates;
-- [RELEASES](RELEASES.md) — official identity and candidate publication;
-- [PLATFORMS](../design/PLATFORMS.md) — platform-specific behavior.
-
-### Native binary inspection
+## Native binary inspection
 
 `make PLATFORM=<platform> check-binary` verifies the executable produced by the
 current configuration and writes
@@ -356,9 +406,11 @@ object format, exact architecture, SHA-256 and the native dynamic-link policy.
 
 On Linux, development and diagnostic configurations may depend only on the
 explicit system/compiler-runtime allowlist. A Linux release must have no ELF
-interpreter, `DT_NEEDED`, `RPATH` or `RUNPATH` entries. On macOS, only `/usr/lib`
-and public `/System/Library/Frameworks` dependencies are accepted; Homebrew,
-`@rpath`, `@loader_path`, `@executable_path` and `LC_RPATH` are rejected. The
+interpreter, `DT_NEEDED`, `RPATH` or `RUNPATH` entries. macOS does not provide
+the same fully static system-linking model: CUP links all pinned third-party
+dependencies statically, while the Mach-O executable may dynamically reference
+only `/usr/lib` and public `/System/Library/Frameworks`. Homebrew, `@rpath`,
+`@loader_path`, `@executable_path` and `LC_RPATH` are rejected. The
 report requires and records the repository deployment target `13.0` encoded in
 the Mach-O load commands. On Windows, the executable must be PE32+ x86-64,
 use the console subsystem, import only allowlisted Windows system DLLs, contain
@@ -369,3 +421,10 @@ Source CI, debug-artifact construction and release-candidate construction run
 the inspector on all five supported platform identifiers. Platform-native tools
 are used where available: `readelf` for ELF, `lipo`/`otool` for Mach-O and a
 PE-capable `objdump` for Windows.
+
+## Related documents
+
+- [ARCHITECTURE](../design/ARCHITECTURE.md) — runtime and script boundaries;
+- [TESTING](TESTING.md) — test environments and gates;
+- [RELEASES](RELEASES.md) — official identity and candidate publication;
+- [PLATFORMS](../design/PLATFORMS.md) — platform-specific behavior.

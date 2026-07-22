@@ -27,10 +27,14 @@
 #endif
 
 /* TLS initialization and transfer limits. */
-static void initialize_tls_runtime(void) {
+static CupError initialize_tls_runtime(void) {
 #if defined(CUP_USE_OPENSSL_INIT)
-    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
+    if (OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL) != 1) {
+        fprintf(stderr, "Error: could not initialize the TLS runtime.\n");
+        return CUP_ERR_FETCH;
+    }
 #endif
+    return CUP_OK;
 }
 
 static CupError configure_tls_trust(CURL *curl) {
@@ -68,7 +72,7 @@ typedef struct {
 
 /* Transfer callbacks. Limits and interrupt checks are enforced while bytes are arriving, before
  * they reach the destination. */
-static size_t write_file_callback(void *data, size_t size, size_t count, void *userdata) {
+static size_t write_file_callback(char *data, size_t size, size_t count, void *userdata) {
     DownloadWriter *writer = userdata;
     size_t bytes;
 
@@ -374,7 +378,10 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         return err;
     }
 
-    initialize_tls_runtime();
+    err = initialize_tls_runtime();
+    if (err != CUP_OK) {
+        return err;
+    }
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         return CUP_ERR_FETCH;
     }
