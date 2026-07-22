@@ -21,7 +21,8 @@ case "$family:$platform:$host_system:$host_machine" in
     macos:macos-x64:Darwin:x86_64|macos:macos-x64:Darwin:amd64) ;;
     macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
     *)
-        fail "PLATFORM '$platform' and FAMILY '$family' do not match host $host_system/$host_machine"
+        fail "PLATFORM '$platform' and FAMILY '$family' do not match \
+host $host_system/$host_machine"
         ;;
 esac
 

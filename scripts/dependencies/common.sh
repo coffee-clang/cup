@@ -77,11 +77,21 @@ dependency_reproducible_cflags() {
     for path in "$@"; do
         [ -n "$path" ] || continue
         while IFS= read -r variant; do
-            case "$variant" in *\\*) continue ;; esac
+            case "$variant" in
+                *\\*)
+                    continue
+                    ;;
+            esac
             for option in file debug macro; do
                 flag="-f${option}-prefix-map=$variant=/usr/src/cup-dependencies"
                 if "$compiler" "$flag" -c "$source" -o "$object" >/dev/null 2>&1; then
-                    case " $flags " in *" $flag "*) ;; *) flags="$flags $flag" ;; esac
+                    case " $flags " in
+                        *" $flag "*)
+                            ;;
+                        *)
+                            flags="$flags $flag"
+                            ;;
+                    esac
                 fi
             done
         done < <(dependency_path_variants "$path")
@@ -529,7 +539,9 @@ dependency_text_references_path() {
 
     while IFS= read -r variant; do
         case "$flags" in
-            *"$variant"*) return 0 ;;
+            *"$variant"*)
+                return 0
+                ;;
         esac
     done < <(dependency_path_variants "$path")
     return 1
@@ -610,7 +622,9 @@ dependency_link_flags_valid() {
     done
 
     case " $flags " in
-        *" -lacl "*) return 1 ;;
+        *" -lacl "*)
+            return 1
+            ;;
     esac
     if ! dependency_text_references_path "$flags" "$expected_prefix"; then
         echo "Error: dependency link metadata does not reference the private prefix:" \
@@ -656,8 +670,11 @@ dependency_prefix_complete() {
     local metadata_prefix="${3:-$prefix}"
 
     case "$use_openssl" in
-        0 | 1) ;;
-        *) return 1 ;;
+        0 | 1)
+            ;;
+        *)
+            return 1
+            ;;
     esac
 
     test_dependency_prefix_complete "$prefix" &&
@@ -709,7 +726,8 @@ prepare_dependency_prefix() {
         return 1
     }
     case "$use_openssl" in
-        0 | 1) ;;
+        0 | 1)
+            ;;
         *)
             echo "Error: dependency OpenSSL policy must be 0 or 1." >&2
             return 1
@@ -726,7 +744,8 @@ prepare_dependency_prefix() {
             echo "Error: dependency prefix must not have a trailing slash: $final_prefix" >&2
             return 1
             ;;
-        /*) ;;
+        /*)
+            ;;
         *)
             echo "Error: dependency prefix must be absolute: $final_prefix" >&2
             return 1
@@ -778,7 +797,9 @@ dependency_metadata_contains_staging() {
     [ -n "$stage_root" ] || return 1
     stage_name=${stage_root##*/}
     case "$value" in
-        *"$stage_root"*|*"$stage_name"*) return 0 ;;
+        *"$stage_root"*|*"$stage_name"*)
+            return 0
+            ;;
     esac
     return 1
 }

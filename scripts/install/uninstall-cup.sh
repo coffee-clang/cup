@@ -18,7 +18,9 @@ fail() {
 [ -n "${HOME:-}" ] || fail "HOME is not set"
 [ "$CUP_ROOT" = "$EXPECTED_ROOT" ] || fail "refusing to remove a non-canonical cup root"
 case "$PARENT_PID" in
-    ''|*[!0-9]*) fail "invalid parent process id" ;;
+    ''|*[!0-9]*)
+        fail "invalid parent process id"
+        ;;
 esac
 [ "$PARENT_PID" -gt 0 ] || fail "invalid parent process id"
 [ -n "$SELF_PATH" ] && [ "$SELF_PATH" = "$0" ] ||

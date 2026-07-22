@@ -43,7 +43,9 @@ read_release_decision() {
                 SHA=$value
                 seen_sha=1
                 ;;
-            *) fail "unexpected candidate metadata key in $file: $key" ;;
+            *)
+                fail "unexpected candidate metadata key in $file: $key"
+                ;;
         esac
     done < "$file"
 
@@ -67,7 +69,9 @@ read_release_decision "$dist/release-decision.env"
 
 case "$SHOULD_RELEASE" in
     0|1) ;;
-    *) fail "invalid SHOULD_RELEASE value: $SHOULD_RELEASE" ;;
+    *)
+        fail "invalid SHOULD_RELEASE value: $SHOULD_RELEASE"
+        ;;
 esac
 
 validate_release_inputs
@@ -118,7 +122,9 @@ while IFS='=' read -r key value; do
             candidate_sha=$value
             seen_candidate_sha=1
             ;;
-        *) fail "unexpected candidate metadata key in $dist/candidate.env: $key" ;;
+        *)
+            fail "unexpected candidate metadata key in $dist/candidate.env: $key"
+            ;;
     esac
 done < "$dist/candidate.env"
 [ "$seen_candidate_version" -eq 1 ] && [ "$seen_candidate_tag" -eq 1 ] &&

@@ -16,10 +16,18 @@ printf 'fixture\n' >"$binary"
 cat >"$fake_bin/file" <<'EOF_FILE'
 #!/bin/sh
 case "${FAKE_FORMAT:-elf}" in
-    elf) printf '%s\n' 'ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV)' ;;
-    macho) printf '%s\n' 'Mach-O 64-bit executable x86_64' ;;
-    pe) printf '%s\n' 'PE32+ executable (console) x86-64, for MS Windows' ;;
-    *) printf '%s\n' 'ASCII text' ;;
+    elf)
+        printf '%s\n' 'ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV)'
+        ;;
+    macho)
+        printf '%s\n' 'Mach-O 64-bit executable x86_64'
+        ;;
+    pe)
+        printf '%s\n' 'PE32+ executable (console) x86-64, for MS Windows'
+        ;;
+    *)
+        printf '%s\n' 'ASCII text'
+        ;;
 esac
 EOF_FILE
 
@@ -42,7 +50,9 @@ EOF_HEADER
         ;;
     -d)
         case "${FAKE_NEEDED:-libc.so.6}" in
-            none) printf '%s\n' 'There is no dynamic section in this file.' ;;
+            none)
+                printf '%s\n' 'There is no dynamic section in this file.'
+                ;;
             *)
                 old_ifs=$IFS
                 IFS=,
@@ -55,7 +65,9 @@ EOF_HEADER
                 ;;
         esac
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 EOF_READELF
 
@@ -99,7 +111,9 @@ Load command 2
 EOF_RPATH
         fi
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 EOF_OTOOL
 
@@ -127,7 +141,9 @@ EOF_HEADER
         [ "${FAKE_PE_NX:-1}" = 1 ] && printf '\tNX_COMPAT\n'
         exit 0
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 EOF_OBJDUMP
 chmod +x "$fake_bin/file" "$fake_bin/readelf" "$fake_bin/lipo" \

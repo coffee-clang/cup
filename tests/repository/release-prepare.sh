@@ -36,13 +36,19 @@ case "$(cat "$MOCK_STATE/mode")" in
         printf 'release not found\n' >&2
         exit 1
         ;;
-    draft) printf 'true\n' ;;
-    published) printf 'false\n' ;;
+    draft)
+        printf 'true\n'
+        ;;
+    published)
+        printf 'false\n'
+        ;;
     error)
         printf 'network unavailable\n' >&2
         exit 1
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 MOCK
 chmod +x "$MOCK_BIN/gh"

@@ -174,15 +174,21 @@ SCRIPT
     done
 
     case "$format" in
-        tar.gz) tar -czf "$archive" -C "$TMP_ROOT/packages" "$package_name" ;;
-        tar.xz) tar -cJf "$archive" -C "$TMP_ROOT/packages" "$package_name" ;;
+        tar.gz)
+            tar -czf "$archive" -C "$TMP_ROOT/packages" "$package_name"
+            ;;
+        tar.xz)
+            tar -cJf "$archive" -C "$TMP_ROOT/packages" "$package_name"
+            ;;
         zip)
             need_zip=${CUP_TEST_ZIP_COMMAND:-zip}
             command -v "$need_zip" >/dev/null 2>&1 ||
                 fail "zip utility is required for ZIP package fixtures"
             (cd "$TMP_ROOT/packages" && "$need_zip" -qr "$archive" "$package_name")
             ;;
-        *) fail "unsupported package fixture format: $format" ;;
+        *)
+            fail "unsupported package fixture format: $format"
+            ;;
     esac
     {
         printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")"

@@ -29,8 +29,16 @@ had_meta=0
 
 cleanup() {
     if [ "$replacement_started" = 1 ] && [ "$replacement_complete" != 1 ]; then
-        if [ "$had_cert" = 1 ]; then cp "$OLD_CERT" "$CERT_FILE"; else rm -f "$CERT_FILE"; fi
-        if [ "$had_meta" = 1 ]; then cp "$OLD_META" "$META_FILE"; else rm -f "$META_FILE"; fi
+        if [ "$had_cert" = 1 ]; then
+            cp "$OLD_CERT" "$CERT_FILE"
+        else
+            rm -f "$CERT_FILE"
+        fi
+        if [ "$had_meta" = 1 ]; then
+            cp "$OLD_META" "$META_FILE"
+        else
+            rm -f "$META_FILE"
+        fi
     fi
     rm -f "$NEW_CERT" "$NEW_META"
     rm -rf "$WORK_DIR"
@@ -38,12 +46,19 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 case "$CACERT_URL" in
-    https://*) ;;
-    *) printf 'Error: CA bundle URL must use HTTPS: %s\n' "$CACERT_URL" >&2; exit 1 ;;
+    https://*)
+        ;;
+    *)
+        printf 'Error: CA bundle URL must use HTTPS: %s\n' "$CACERT_URL" >&2
+        exit 1
+        ;;
 esac
 "$CURL" -fsSL --proto '=https' --proto-redir '=https' \
     "$CACERT_URL" -o "$PEM_TMP"
-[ -s "$PEM_TMP" ] || { printf 'Error: downloaded CA bundle is empty.\n' >&2; exit 1; }
+if [ ! -s "$PEM_TMP" ]; then
+    printf 'Error: downloaded CA bundle is empty.\n' >&2
+    exit 1
+fi
 grep -q '^-----BEGIN CERTIFICATE-----$' "$PEM_TMP" || {
     printf 'Error: downloaded CA bundle contains no PEM certificates.\n' >&2
     exit 1
@@ -59,13 +74,18 @@ source_date=$(perl -MTime::Piece -ne '
         exit;
     }
 ' "$PEM_TMP")
-[ -n "$source_date" ] || { echo 'Error: CA bundle source date is missing.' >&2; exit 1; }
+if [ -z "$source_date" ]; then
+    echo 'Error: CA bundle source date is missing.' >&2
+    exit 1
+fi
 source_epoch=$(perl -MTime::Piece -e '
     my ($date)=@ARGV; print Time::Piece->strptime($date, "%Y-%m-%d")->epoch, "\n";
 ' "$source_date")
 now_epoch=$(date +%s)
-[ "$source_epoch" -le "$now_epoch" ] || {
-    echo "Error: CA bundle source date is in the future: $source_date" >&2; exit 1; }
+if [ "$source_epoch" -gt "$now_epoch" ]; then
+    echo "Error: CA bundle source date is in the future: $source_date" >&2
+    exit 1
+fi
 if [ -f "$META_FILE" ]; then
     previous_date=$(sed -n 's/^source_date=//p' "$META_FILE")
     [ -z "$previous_date" ] || [ "$source_date" \> "$previous_date" ] || \
@@ -91,7 +111,13 @@ count=$(grep -c '^-----BEGIN CERTIFICATE-----$' "$PEM_TMP")
 max_age=120
 if [ -f "$META_FILE" ]; then
     configured_age=$(sed -n 's/^max_age_days=//p' "$META_FILE")
-    case "$configured_age" in ''|*[!0-9]*|0) ;; *) max_age=$configured_age ;; esac
+    case "$configured_age" in
+        ''|*[!0-9]*|0)
+            ;;
+        *)
+            max_age=$configured_age
+            ;;
+    esac
 fi
 meta_tmp="$WORK_DIR/cacert.meta"
 {
@@ -110,8 +136,14 @@ if [ -f "$CERT_FILE" ] && cmp -s "$PEM_TMP" "$CERT_FILE" && \
 fi
 
 mkdir -p "$(dirname -- "$CERT_FILE")"
-[ ! -f "$CERT_FILE" ] || { cp "$CERT_FILE" "$OLD_CERT"; had_cert=1; }
-[ ! -f "$META_FILE" ] || { cp "$META_FILE" "$OLD_META"; had_meta=1; }
+if [ -f "$CERT_FILE" ]; then
+    cp "$CERT_FILE" "$OLD_CERT"
+    had_cert=1
+fi
+if [ -f "$META_FILE" ]; then
+    cp "$META_FILE" "$OLD_META"
+    had_meta=1
+fi
 cp "$PEM_TMP" "$NEW_CERT"
 cp "$meta_tmp" "$NEW_META"
 chmod 0644 "$NEW_CERT" "$NEW_META"

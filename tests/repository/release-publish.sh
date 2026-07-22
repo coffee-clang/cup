@@ -102,9 +102,15 @@ case "$command" in
             exit 1
         fi
         case " $* " in
-            *" --json isDraft "*) cat "$MOCK_STATE/draft" ;;
-            *" --json assets "*) cat "$MOCK_STATE/assets" ;;
-            *) exit 0 ;;
+            *" --json isDraft "*)
+                cat "$MOCK_STATE/draft"
+                ;;
+            *" --json assets "*)
+                cat "$MOCK_STATE/assets"
+                ;;
+            *)
+                exit 0
+                ;;
         esac
         ;;
     download)
@@ -147,7 +153,9 @@ case "$command" in
         printf 'false\n' > "$MOCK_STATE/draft"
         printf 'edit\n' >> "$MOCK_STATE/calls"
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 MOCK
 chmod +x "$MOCK_BIN/git" "$MOCK_BIN/gh"

@@ -5,6 +5,17 @@ specific output layout used by `cup`.
 
 ## Public build interface
 
+When the repository is distributed as a ZIP snapshot, the archive extractor may
+lose Unix executable bits. Restore the intended shell entry-point/library modes
+before invoking repository scripts:
+
+```sh
+sh scripts/fix-shell-permissions.sh --fix
+```
+
+The same script supports `--check`; repository structure tests use that mode so
+the permission policy has one authoritative implementation.
+
 The platform remains the only public selector:
 
 ```text
@@ -334,15 +345,23 @@ metadata with rollback protection. See
 
 ## Make targets
 
-Build and dependency targets:
+`make help` is the authoritative compact index of all public targets. It includes
+builds, dependency checks, complete and focused test suites, release/version
+operations, CA maintenance and documentation commands.
+
+Common build and dependency targets:
 
 ```sh
 make
+make debug
+make coverage
+make sanitizers
+make release
 JOBS=4 make PLATFORM=<platform> deps
+make check-dependencies
+make check-toolchain
+make check-binary
 make clean
-make version
-make validate-release
-make release-metadata
 ```
 
 Test targets:
@@ -350,16 +369,32 @@ Test targets:
 ```sh
 make test
 make test-unit
-make test-repository
 make test-integration
-make test-windows
+make test-posix
+make test-repository
 make test-coverage
 make test-sanitizers
+make test-portability-linux
+make test-windows
+make test-release RELEASE_DIR=<candidate-directory>
 ```
 
-Documentation and CA maintenance:
+Test-only build helpers are also public because CI and focused local workflows
+use them directly:
 
 ```sh
+make test-unit-build
+make test-helpers
+make test-build
+```
+
+Version, release, documentation and CA maintenance:
+
+```sh
+make version
+make validate-release
+make release-metadata
+make finalize-release
 make docs-assets
 make docs
 make serve

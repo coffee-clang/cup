@@ -269,12 +269,18 @@ static void serve_http_request(struct evhttp_request *request, void *context) {
     if (body == NULL || !read_file_body(file, body)) {
         evbuffer_free(body);
         (void)fclose(file);
-        send_text_reply(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error", "read error\n");
+        send_text_reply(request,
+                        CUP_TEST_HTTP_INTERNAL_ERROR,
+                        "Internal Server Error",
+                        "read error\n");
         return;
     }
     if (fclose(file) != 0) {
         evbuffer_free(body);
-        send_text_reply(request, CUP_TEST_HTTP_INTERNAL_ERROR, "Internal Server Error", "read error\n");
+        send_text_reply(request,
+                        CUP_TEST_HTTP_INTERNAL_ERROR,
+                        "Internal Server Error",
+                        "read error\n");
         return;
     }
     (void)evhttp_add_header(evhttp_request_get_output_headers(request),

@@ -9,9 +9,15 @@ cup_test_detect_platform() {
     _cup_test_arch=$(uname -m) || return 1
 
     case "$_cup_test_os" in
-        Linux) _cup_test_os=linux ;;
-        Darwin) _cup_test_os=macos ;;
-        MSYS*|MINGW*|CYGWIN*) _cup_test_os=windows ;;
+        Linux)
+            _cup_test_os=linux
+            ;;
+        Darwin)
+            _cup_test_os=macos
+            ;;
+        MSYS*|MINGW*|CYGWIN*)
+            _cup_test_os=windows
+            ;;
         *)
             printf 'Unsupported source-test operating system: %s\n' "$_cup_test_os" >&2
             return 1
@@ -19,8 +25,12 @@ cup_test_detect_platform() {
     esac
 
     case "$_cup_test_arch" in
-        x86_64|amd64) _cup_test_arch=x64 ;;
-        arm64|aarch64) _cup_test_arch=arm64 ;;
+        x86_64|amd64)
+            _cup_test_arch=x64
+            ;;
+        arm64|aarch64)
+            _cup_test_arch=arm64
+            ;;
         *)
             printf 'Unsupported source-test architecture: %s\n' "$_cup_test_arch" >&2
             return 1
@@ -100,7 +110,9 @@ cup_test_dependencies_ready() {
         cup_test_find_static_library lzma >/dev/null || return 1
 
     case "$CUP_TEST_PLATFORM" in
-        windows-x64) return 0 ;;
+        windows-x64)
+            return 0
+            ;;
     esac
     [ -f "$DEPS_PREFIX/include/openssl/ssl.h" ] &&
         cup_test_find_static_library ssl >/dev/null &&
@@ -123,27 +135,49 @@ cup_test_tool_hint() {
     case "$CUP_TEST_PLATFORM" in
         linux-*)
             case "$_cup_test_tool" in
-                gcovr) printf '%s\n' "Install it with: sudo apt-get install gcovr" >&2 ;;
-                gcc|gcov) printf '%s\n' "Install GCC coverage tools with: sudo apt-get install build-essential" >&2 ;;
+                gcovr)
+                    printf '%s\n' "Install it with: sudo apt-get install gcovr" >&2
+                    ;;
+                gcc|gcov)
+                    printf '%s\n' "Install GCC coverage tools with: sudo apt-get install build-essential" >&2
+                    ;;
                 clang|llvm-cov|llvm-profdata|llvm-symbolizer)
-                    printf '%s\n' "Install LLVM tools with: sudo apt-get install clang llvm" >&2 ;;
-                timeout) printf '%s\n' "Install it with: sudo apt-get install coreutils" >&2 ;;
-                *) printf '%s\n' "Install '$_cup_test_tool' with your system package manager." >&2 ;;
+                    printf '%s\n' \
+                        "Install LLVM tools with: sudo apt-get install clang llvm" >&2
+                    ;;
+                timeout)
+                    printf '%s\n' "Install it with: sudo apt-get install coreutils" >&2
+                    ;;
+                *)
+                    printf '%s\n' "Install '$_cup_test_tool' with your system package manager." >&2
+                    ;;
             esac
             ;;
         macos-*)
             case "$_cup_test_tool" in
-                gcovr) printf '%s\n' "Install it with: brew install gcovr" >&2 ;;
-                timeout|gtimeout) printf '%s\n' "Install GNU timeout with: brew install coreutils" >&2 ;;
+                gcovr)
+                    printf '%s\n' "Install it with: brew install gcovr" >&2
+                    ;;
+                timeout|gtimeout)
+                    printf '%s\n' "Install GNU timeout with: brew install coreutils" >&2
+                    ;;
                 clang|llvm-cov|llvm-profdata|llvm-symbolizer)
-                    printf '%s\n' "Install Xcode Command Line Tools with: xcode-select --install" >&2 ;;
-                *) printf '%s\n' "Install '$_cup_test_tool' with Homebrew or Xcode Command Line Tools." >&2 ;;
+                    printf '%s\n' \
+                        "Install Xcode Command Line Tools with: xcode-select --install" >&2
+                    ;;
+                *)
+                    printf '%s\n' "Install '$_cup_test_tool' with Homebrew or Xcode Command Line Tools." >&2
+                    ;;
             esac
             ;;
         windows-x64)
             case "$_cup_test_tool" in
-                gcovr) printf '%s\n' "Install it in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2 ;;
-                gcc|gcov) printf '%s\n' "Install GCC tools in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcc" >&2 ;;
+                gcovr)
+                    printf '%s\n' "Install it in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2
+                    ;;
+                gcc|gcov)
+                    printf '%s\n' "Install GCC tools in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcc" >&2
+                    ;;
                 clang|llvm-cov|llvm-profdata|llvm-symbolizer)
                     if [ "${MSYSTEM:-}" = CLANG64 ]; then
                         _cup_test_package_prefix=mingw-w64-clang-x86_64
@@ -158,8 +192,12 @@ cup_test_tool_hint() {
                         "    ${_cup_test_package_prefix}-compiler-rt" \
                         "    ${_cup_test_package_prefix}-llvm-tools" >&2
                     ;;
-                timeout) printf '%s\n' "Install it in MSYS2 with: pacman -S coreutils" >&2 ;;
-                powershell.exe) printf '%s\n' "PowerShell is required from the Windows host." >&2 ;;
+                timeout)
+                    printf '%s\n' "Install it in MSYS2 with: pacman -S coreutils" >&2
+                    ;;
+                powershell.exe)
+                    printf '%s\n' "PowerShell is required from the Windows host." >&2
+                    ;;
                 *)
                     printf '%s\n' \
                         "Install '$_cup_test_tool' in the active MSYS2" \

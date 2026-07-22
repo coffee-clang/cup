@@ -98,9 +98,15 @@ EOF_EVENT_EXTRA_PC
 
     uname() {
         case "$1" in
-            -s) printf '%s\n' Linux ;;
-            -m) printf '%s\n' x86_64 ;;
-            *) return 1 ;;
+            -s)
+                printf '%s\n' Linux
+                ;;
+            -m)
+                printf '%s\n' x86_64
+                ;;
+            *)
+                return 1
+                ;;
         esac
     }
 
@@ -180,9 +186,15 @@ mkdir -p "$FAKE_UNAME_DIR"
 cat >"$FAKE_UNAME_DIR/uname" <<'EOF_UNAME'
 #!/bin/sh
 case "$1" in
-    -s) printf '%s\n' UnknownOS ;;
-    -m) printf '%s\n' unknown-architecture ;;
-    *) exit 1 ;;
+    -s)
+        printf '%s\n' UnknownOS
+        ;;
+    -m)
+        printf '%s\n' unknown-architecture
+        ;;
+    *)
+        exit 1
+        ;;
 esac
 EOF_UNAME
 chmod +x "$FAKE_UNAME_DIR/uname"
@@ -318,12 +330,16 @@ dependency_id=$id"; then
 
     cygpath() {
         case "$1" in
-            -m) printf "D:/msys64%s\n" "$2" ;;
+            -m)
+                printf "D:/msys64%s\n" "$2"
+                ;;
             -w)
                 converted=$(printf "%s" "$2" | sed "s#/#\\\\#g")
                 printf "D:\\msys64%s\n" "$converted"
                 ;;
-            *) return 1 ;;
+            *)
+                return 1
+                ;;
         esac
     }
     staged_native=$(cygpath -m "$CUP_DEPS_BUILD_PREFIX")
@@ -493,7 +509,9 @@ ZLIB_VERSION=0 ZLIB_URL=https://invalid.example/zlib.tar.gz bash -eu -c '
     [ "$ZLIB_VERSION" = 1.3.2 ]
     case "$ZLIB_URL" in
         https://github.com/madler/zlib/*) ;;
-        *) exit 1 ;;
+        *)
+            exit 1
+            ;;
     esac
 ' sh "$DEPENDENCY_COMMON"
 
@@ -625,14 +643,22 @@ for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
             DEPS_PREFIX="$PINNED_PREFIX" coverage
     )
     case "$coverage_platform" in
-        windows-x64) coverage_binary=cup.exe ;;
-        *) coverage_binary=cup ;;
+        windows-x64)
+            coverage_binary=cup.exe
+            ;;
+        *)
+            coverage_binary=cup
+            ;;
     esac
     assert_contains "$coverage_command" \
         "build/$coverage_platform/coverage/bin/$coverage_binary"
     case "$coverage_platform" in
-        macos-*) assert_contains "$coverage_command" '-fprofile-instr-generate' ;;
-        *) assert_contains "$coverage_command" '--coverage' ;;
+        macos-*)
+            assert_contains "$coverage_command" '-fprofile-instr-generate'
+            ;;
+        *)
+            assert_contains "$coverage_command" '--coverage'
+            ;;
     esac
     assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
     assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
@@ -662,8 +688,12 @@ for sanitizer_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x6
             DEPS_PREFIX="$PINNED_PREFIX" sanitizers
     )
     case "$sanitizer_platform" in
-        windows-x64) sanitizer_binary=cup.exe ;;
-        *) sanitizer_binary=cup ;;
+        windows-x64)
+            sanitizer_binary=cup.exe
+            ;;
+        *)
+            sanitizer_binary=cup
+            ;;
     esac
     assert_contains "$sanitizer_command" \
         "build/$sanitizer_platform/sanitizers/bin/$sanitizer_binary"

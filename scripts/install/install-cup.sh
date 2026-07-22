@@ -11,7 +11,8 @@ REPO_NAME="cup"
 CUP_RELEASE_VERSION="@CUP_RELEASE_VERSION@"
 CUP_RELEASE_TAG="@CUP_RELEASE_TAG@"
 CUP_RELEASE_COMMIT="@CUP_RELEASE_COMMIT@"
-DEFAULT_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUP_RELEASE_TAG}"
+DEFAULT_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/\
+${CUP_RELEASE_TAG}"
 BASE_URL="${CUP_INSTALL_BASE_URL:-$DEFAULT_BASE_URL}"
 BASE_URL="${BASE_URL%/}"
 
@@ -41,7 +42,9 @@ info() {
 validate_installer_identity() {
     placeholder_marker='@''CUP_RELEASE_'
     case "$CUP_RELEASE_VERSION:$CUP_RELEASE_TAG:$CUP_RELEASE_COMMIT" in
-        *"$placeholder_marker"*) fail "installer was not prepared for a concrete release" ;;
+        *"$placeholder_marker"*)
+            fail "installer was not prepared for a concrete release"
+            ;;
     esac
     printf '%s\n' "$CUP_RELEASE_VERSION" |
         awk 'BEGIN { ok=0 }
@@ -56,7 +59,9 @@ validate_installer_identity() {
 }
 validate_base_url() {
     case "$BASE_URL" in
-        *://*@*) fail "installer base URL must not contain credentials" ;;
+        *://*@*)
+            fail "installer base URL must not contain credentials"
+            ;;
     esac
     case "$BASE_URL" in
         https://*) ;;
@@ -64,7 +69,9 @@ validate_base_url() {
             [ "${CUP_INSTALL_ALLOW_INSECURE:-0}" = 1 ] ||
                 fail "HTTP is allowed only for an explicit loopback test"
             ;;
-        *) fail "installer base URL must use HTTPS" ;;
+        *)
+            fail "installer base URL must use HTTPS"
+            ;;
     esac
 }
 
@@ -103,8 +110,12 @@ configure_paths() {
     PLATFORM_CHECKSUMS="$CUP_CONFIG_DIR/SHA256SUMS.$platform"
     UNINSTALL_SCRIPT="$CUP_HELPERS_DIR/$uninstall_name"
     case "$platform" in
-        windows-*) UPDATE_HELPER="$CUP_HELPERS_DIR/cup-update-helper.exe" ;;
-        *) UPDATE_HELPER="$CUP_HELPERS_DIR/cup-update-helper" ;;
+        windows-*)
+            UPDATE_HELPER="$CUP_HELPERS_DIR/cup-update-helper.exe"
+            ;;
+        *)
+            UPDATE_HELPER="$CUP_HELPERS_DIR/cup-update-helper"
+            ;;
     esac
     UNINSTALL_MARKER="$CUP_ROOT/uninstall.pending"
 }
@@ -119,14 +130,18 @@ download_file() {
                 curl -fsSL --proto '=https' --proto-redir '=https' \
                     "$url" -o "$output" || fail "failed to download $url"
                 ;;
-            *) curl -fsSL "$url" -o "$output" || fail "failed to download $url" ;;
+            *)
+                curl -fsSL "$url" -o "$output" || fail "failed to download $url"
+                ;;
         esac
     elif command -v wget >/dev/null 2>&1; then
         case "$BASE_URL" in
             https://*)
                 wget -q --https-only "$url" -O "$output" || fail "failed to download $url"
                 ;;
-            *) wget -q "$url" -O "$output" || fail "failed to download $url" ;;
+            *)
+                wget -q "$url" -O "$output" || fail "failed to download $url"
+                ;;
         esac
     else
         fail "neither curl nor wget is available"
@@ -259,7 +274,9 @@ validate_profile_path() {
     fi
     case "$profile_path" in
         "$HOME"/*) ;;
-        *) fail "shell profile is outside HOME and was not modified: $profile_path" ;;
+        *)
+            fail "shell profile is outside HOME and was not modified: $profile_path"
+            ;;
     esac
     current_parent="$profile_parent"
     while [ "$current_parent" != "$HOME" ]; do
@@ -314,9 +331,15 @@ append_profile_line() {
 # Optional user PATH integration.
 detect_shell_profile() {
     case "$(basename "${SHELL:-}")" in
-        fish) printf '%s\n' "$HOME/.config/fish/conf.d/cup.fish" ;;
-        zsh) printf '%s\n' "$HOME/.zshrc" ;;
-        bash) printf '%s\n' "$HOME/.bashrc" ;;
+        fish)
+            printf '%s\n' "$HOME/.config/fish/conf.d/cup.fish"
+            ;;
+        zsh)
+            printf '%s\n' "$HOME/.zshrc"
+            ;;
+        bash)
+            printf '%s\n' "$HOME/.bashrc"
+            ;;
         *)
             if [ -f "$HOME/.bashrc" ]; then
                 printf '%s\n' "$HOME/.bashrc"
@@ -468,7 +491,8 @@ recover_staging() {
     restore_permissions || recovery_failed=1
 
     if [ "$recovery_failed" -ne 0 ]; then
-        fail "the previous bootstrap installation could not be recovered; staging was preserved at $staging"
+        fail "the previous bootstrap installation could not be recovered; \
+staging was preserved at $staging"
     fi
     rm -rf -- "$staging" || fail "could not remove recovered staging directory"
 }
@@ -630,7 +654,8 @@ install_assets() {
             if [ "$recovery_failed" -eq 0 ]; then
                 rm -rf -- "$staging"
             else
-                printf 'Error: rollback was incomplete; staging was preserved at %s\n' "$staging" >&2
+                printf '%s\n' \
+                    "Error: rollback was incomplete; staging was preserved at $staging" >&2
             fi
         fi
     }
@@ -674,9 +699,13 @@ install_assets() {
 install_unix() {
     [ -n "${HOME:-}" ] || fail "HOME is not set"
     case "$HOME" in
-        /) fail "HOME must not be the filesystem root" ;;
+        /)
+            fail "HOME must not be the filesystem root"
+            ;;
         /*) ;;
-        *) fail "HOME must contain an absolute path" ;;
+        *)
+            fail "HOME must contain an absolute path"
+            ;;
     esac
 
     os="$(uname -s 2>/dev/null || true)"
@@ -698,7 +727,9 @@ install_unix() {
             asset=cup-macos-arm64
             platform=macos-arm64
             ;;
-        *) fail "unsupported platform: $os $arch" ;;
+        *)
+            fail "unsupported platform: $os $arch"
+            ;;
     esac
     WINDOWS_SHELL_INSTALL=0
     configure_paths "$HOME/.cup" "uninstall.sh" "$platform"
@@ -774,9 +805,15 @@ install_windows_from_shell() {
     info "  2) Installation from the current shell"
     choice="$(prompt_tty "Choice [1/2, default: 1]: " "1")"
     case "$choice" in
-        ""|1) run_powershell_installer ;;
-        2) install_windows_from_shell_directly ;;
-        *) fail "invalid choice" ;;
+        ""|1)
+            run_powershell_installer
+            ;;
+        2)
+            install_windows_from_shell_directly
+            ;;
+        *)
+            fail "invalid choice"
+            ;;
     esac
 }
 
@@ -786,9 +823,15 @@ main() {
     validate_base_url
     os="$(uname -s 2>/dev/null || true)"
     case "$os" in
-        Linux|Darwin) install_unix ;;
-        MINGW*|MSYS*|CYGWIN*) install_windows_from_shell ;;
-        *) fail "unsupported operating system: $os" ;;
+        Linux|Darwin)
+            install_unix
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            install_windows_from_shell
+            ;;
+        *)
+            fail "unsupported operating system: $os"
+            ;;
     esac
 }
 

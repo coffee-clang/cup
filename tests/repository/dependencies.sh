@@ -20,21 +20,39 @@ command -v "$archiver" >/dev/null 2>&1 || {
 }
 
 maps=$(dependency_reproducible_cflags "$compiler" "$TMP_ROOT/source-root")
-case " $maps " in *' -O2 '*) ;; *) echo 'dependency flags lost release optimization' >&2; exit 1;; esac
+case " $maps " in
+    *' -O2 '*)
+        ;;
+    *)
+        echo 'dependency flags lost release optimization' >&2
+        exit 1
+        ;;
+esac
 for option in file debug macro; do
-    case "$maps" in *"-f${option}-prefix-map=$TMP_ROOT/source-root="*) ;;
-        *) echo "dependency flags are missing ${option}-prefix-map" >&2; exit 1;;
+    case "$maps" in
+        *"-f${option}-prefix-map=$TMP_ROOT/source-root="*)
+            ;;
+        *)
+            echo "dependency flags are missing ${option}-prefix-map" >&2
+            exit 1
+            ;;
     esac
 done
 
 buildinfo_flags=$(dependency_buildinfo_safe_cflags "$maps -fPIC")
 case " $buildinfo_flags " in
     *' -O2 '*) ;;
-    *) echo 'build-info flags lost release optimization' >&2; exit 1 ;;
+    *)
+        echo 'build-info flags lost release optimization' >&2
+        exit 1
+        ;;
 esac
 case " $buildinfo_flags " in
     *' -fPIC '*) ;;
-    *) echo 'build-info flags lost path-independent options' >&2; exit 1 ;;
+    *)
+        echo 'build-info flags lost path-independent options' >&2
+        exit 1
+        ;;
 esac
 case "$buildinfo_flags" in
     *prefix-map=*|*"$TMP_ROOT/source-root"*)
@@ -93,9 +111,15 @@ mkdir -p "$TMP_ROOT/bin"
 cat > "$TMP_ROOT/bin/cygpath" <<'EOF_CYGPATH'
 #!/bin/sh
 case "$1" in
-  -m) printf '%s\n' 'C:/runner/deps' ;;
-  -w) printf '%s\n' 'C:\\runner\\deps' ;;
-  *) exit 2 ;;
+  -m)
+      printf '%s\n' 'C:/runner/deps'
+      ;;
+  -w)
+      printf '%s\n' 'C:\\runner\\deps'
+      ;;
+  *)
+      exit 2
+      ;;
 esac
 EOF_CYGPATH
 chmod +x "$TMP_ROOT/bin/cygpath"
@@ -172,7 +196,10 @@ second_id=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-id)
     exit 1
 }
 case "$first_id" in
-    *[!0-9a-f]*) echo 'dependency identity is not hexadecimal' >&2; exit 1 ;;
+    *[!0-9a-f]*)
+        echo 'dependency identity is not hexadecimal' >&2
+        exit 1
+        ;;
 esac
 [ "${#first_id}" -eq 64 ] || {
     echo 'dependency identity must contain 64 hexadecimal characters' >&2
@@ -186,8 +213,12 @@ grep -Fq -- "--proto '=https' --proto-redir '=https'" \
 }
 for package in zlib xz openssl curl libarchive argtable3 uthash unity libevent; do
     case "$(source_url_for_package "$package")" in
-        https://*) ;;
-        *) echo "dependency source is not HTTPS: $package" >&2; exit 1 ;;
+        https://*)
+            ;;
+        *)
+            echo "dependency source is not HTTPS: $package" >&2
+            exit 1
+            ;;
     esac
 done
 

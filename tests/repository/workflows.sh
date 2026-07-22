@@ -107,7 +107,9 @@ assert_before "$sanitizer_block" 'scripts/ci/prepare-posix.sh sanitizers' 'Resol
 assert_contains "$(workflow_job_block posix)" 'PLATFORM: ${{ matrix.platform }}'
 assert_contains "$sanitizer_block" 'PLATFORM: ${{ matrix.platform }}'
 assert_before "$(workflow_job_block posix)" 'scripts/ci/prepare-posix.sh source' 'Resolve dependency identity'
-assert_before "$(workflow_job_block build-release)" 'scripts/ci/prepare-posix.sh release' 'Resolve POSIX dependency identity'
+assert_before "$(workflow_job_block build-release)" \
+    'scripts/ci/prepare-posix.sh release' \
+    'Resolve POSIX dependency identity'
 
 for required in 'actions/cache@v4' 'timeout-minutes:' \
         'windows-x64-clang64/install' 'cup-symbols-${{ matrix.platform }}' \

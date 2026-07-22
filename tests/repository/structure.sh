@@ -112,7 +112,10 @@ unexpected_build=$(find tests/build -type f ! -name '*.sh' -print)
 nonportable_shell=$(
     {
         grep -RInE --exclude=structure.sh --include='*.sh' \
-            '(readlink[[:space:]]+-f|stat[[:space:]]+(-c|--format)|date[[:space:]]+-d|xargs[[:space:]]+-r|sort[[:space:]]+-V)' \
+            '(readlink[[:space:]]+-f|stat[[:space:]]+(-c|--format)|date[[:space:]]+-d)' \
+            scripts tests 2>/dev/null || :
+        grep -RInE --exclude=structure.sh --include='*.sh' \
+            '(xargs[[:space:]]+-r|sort[[:space:]]+-V)' \
             scripts tests 2>/dev/null || :
         grep -RInE --exclude=structure.sh --include='*.sh' \
             'find.*[[:space:]]-printf' scripts tests 2>/dev/null || :
@@ -124,46 +127,10 @@ nonportable_shell=$(
     fail "non-portable shell utility options remain:
 $nonportable_shell"
 
-case $(uname -s) in
-    MSYS*|MINGW*|CYGWIN*)
-        # NTFS/MSYS executable-bit emulation is not a reliable repository-mode
-        # check. POSIX runners enforce the index permissions.
-        ;;
-    *)
-        sourced_shell_files='scripts/dependencies/common.sh
-scripts/dependencies/sources.sh
-scripts/release/common.sh
-tests/support/common.sh
-tests/support/environment.sh
-tests/support/posix-cli.sh
-tests/support/quality-status.sh'
-        missing_executable=
-        unexpected_executable=
-        while IFS= read -r file; do
-            case "
-$sourced_shell_files
-" in
-                *"
-$file
-"*)
-                    [ ! -x "$file" ] ||
-                        unexpected_executable="$unexpected_executable $file"
-                    ;;
-                *)
-                    [ -x "$file" ] ||
-                        missing_executable="$missing_executable $file"
-                    ;;
-            esac
-        done <<EOF
-$(find scripts tests -type f -name '*.sh' | sort)
-EOF
-        [ -z "$missing_executable" ] ||
-            fail "shell entry point is not executable:$missing_executable"
-        [ -z "$unexpected_executable" ] ||
-            fail "sourced shell library must not be executable:$unexpected_executable"
-        ;;
-esac
-
+# Keep one authoritative executable-bit policy. The fixer is intentionally run
+# through sh so it also works immediately after a ZIP extraction strips its own
+# executable bit.
+sh ./scripts/fix-shell-permissions.sh --check
 for required in \
     .editorconfig \
     tests/runners/unit.sh \
@@ -209,6 +176,7 @@ for required in \
     tests/portability/linux-network.sh \
     tests/helpers/archive-fixture.c \
     tests/helpers/network-helper.c \
+    scripts/fix-shell-permissions.sh \
     scripts/build/inspect-binary.sh \
     scripts/build/validate-toolchain.sh \
     scripts/build/write-config.sh \
@@ -283,5 +251,8 @@ printf 'Repository test and pipeline structure is coherent.\n'
 
 for required in scripts/build/check-path-leaks.sh scripts/build/finalize-release.sh \
         scripts/certs/check-ca-bundle.sh certs/cacert.meta; do
-    [ -f "$ROOT/$required" ] || { echo "missing required file: $required" >&2; exit 1; }
+    if [ ! -f "$ROOT/$required" ]; then
+        echo "missing required file: $required" >&2
+        exit 1
+    fi
 done

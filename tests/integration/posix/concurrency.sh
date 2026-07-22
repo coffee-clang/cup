@@ -42,7 +42,9 @@ case "$failed_text" in
     *'already installed'* | \
         *'another cup operation is currently running'* | \
         *'interrupted package transaction must be repaired first'*) ;;
-    *) fail 'concurrent loser did not report a lock or installation conflict' ;;
+    *)
+        fail 'concurrent loser did not report a lock or installation conflict'
+        ;;
 esac
 
 assert_cup_healthy

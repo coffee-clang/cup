@@ -20,21 +20,42 @@ REPORT_TIMEOUT="${CUP_COVERAGE_REPORT_TIMEOUT:-180}"
 HTML_TIMEOUT="${CUP_COVERAGE_HTML_TIMEOUT:-60}"
 
 case "$PLATFORM" in
-    linux-x64|linux-arm64) COVERAGE_BACKEND=gcov; CC="${CC:-gcc}" ;;
-    windows-x64) COVERAGE_BACKEND=gcov; CC="${CC:-gcc}" ;;
-    macos-x64|macos-arm64) COVERAGE_BACKEND=llvm; CC="${CC:-clang}" ;;
-    *) printf 'Coverage is not supported for %s.\n' "$PLATFORM" >&2; exit 2 ;;
+    linux-x64|linux-arm64)
+        COVERAGE_BACKEND=gcov
+        CC="${CC:-gcc}"
+        ;;
+    windows-x64)
+        COVERAGE_BACKEND=gcov
+        CC="${CC:-gcc}"
+        ;;
+    macos-x64|macos-arm64)
+        COVERAGE_BACKEND=llvm
+        CC="${CC:-clang}"
+        ;;
+    *)
+        printf 'Coverage is not supported for %s.\n' "$PLATFORM" >&2
+        exit 2
+        ;;
 esac
 
 for value in "$LINE_THRESHOLD" "$BRANCH_THRESHOLD" "$FUNCTION_THRESHOLD"; do
     case "$value" in
-        ''|*[!0-9]*) printf 'Coverage thresholds must be integers from 0 to 100.\n' >&2; exit 2 ;;
+        ''|*[!0-9]*)
+            printf 'Coverage thresholds must be integers from 0 to 100.\n' >&2
+            exit 2
+            ;;
     esac
-    [ "$value" -le 100 ] || { printf 'Coverage thresholds must be integers from 0 to 100.\n' >&2; exit 2; }
+    if [ "$value" -gt 100 ]; then
+        printf 'Coverage thresholds must be integers from 0 to 100.\n' >&2
+        exit 2
+    fi
 done
 for value in "$UNIT_TIMEOUT" "$SUITE_TIMEOUT" "$REPORT_JOBS" "$REPORT_TIMEOUT" "$HTML_TIMEOUT"; do
     case "$value" in
-        ''|*[!0-9]*|0) printf 'Coverage timeouts/jobs must be positive integers.\n' >&2; exit 2 ;;
+        ''|*[!0-9]*|0)
+            printf 'Coverage timeouts/jobs must be positive integers.\n' >&2
+            exit 2
+            ;;
     esac
 done
 
@@ -42,8 +63,14 @@ cup_test_require_tool make coverage || exit 2
 cup_test_require_tool "$CC" coverage || exit 2
 if [ "$COVERAGE_BACKEND" = gcov ]; then
     compiler_id=$($CC --version 2>/dev/null | sed -n '1p')
-    case "$compiler_id" in *GCC*|*gcc*) ;; *)
-        printf 'The gcov backend requires GCC; got: %s\n' "$compiler_id" >&2; exit 2;; esac
+    case "$compiler_id" in
+        *GCC*|*gcc*)
+            ;;
+        *)
+            printf 'The gcov backend requires GCC; got: %s\n' "$compiler_id" >&2
+            exit 2
+            ;;
+    esac
 fi
 cup_test_require_tool gcovr coverage || exit 2
 TIMEOUT_COMMAND=$(cup_test_find_timeout) || exit 2
@@ -131,8 +158,12 @@ fi
 
 printf '==> Waiting for coverage counters to become stable...\n'
 case "$COVERAGE_BACKEND" in
-    gcov) counter_pattern='*.gcda' ;;
-    llvm) counter_pattern='*.profraw' ;;
+    gcov)
+        counter_pattern='*.gcda'
+        ;;
+    llvm)
+        counter_pattern='*.profraw'
+        ;;
 esac
 previous=
 stable=0

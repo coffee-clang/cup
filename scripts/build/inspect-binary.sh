@@ -48,7 +48,9 @@ write_report() {
 
 case "$configuration" in
     development|debug|coverage|sanitizers|release) ;;
-    *) fail "unsupported configuration '$configuration'" ;;
+    *)
+        fail "unsupported configuration '$configuration'"
+        ;;
 esac
 
 [ -f "$binary" ] || fail "binary does not exist: $binary"
@@ -69,12 +71,16 @@ inspect_elf() {
             expected_machine=AArch64
             architecture=aarch64
             ;;
-        *) fail "platform '$platform' is not supported by the ELF inspector" ;;
+        *)
+            fail "platform '$platform' is not supported by the ELF inspector"
+            ;;
     esac
 
     case "$file_description" in
         *ELF*) ;;
-        *) fail "expected an ELF executable, got: $file_description" ;;
+        *)
+            fail "expected an ELF executable, got: $file_description"
+            ;;
     esac
     require_tool readelf
 
@@ -135,7 +141,9 @@ inspect_elf() {
         case "$library" in
             libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libacl.so.*|ld-linux*.so.*) ;;
             libgcc_s.so.*|libasan.so.*|libubsan.so.*|libstdc++.so.*|libclang_rt.*.so*) ;;
-            *) fail "library is outside the Linux system/runtime allowlist: $library" ;;
+            *)
+                fail "library is outside the Linux system/runtime allowlist: $library"
+                ;;
         esac
     done
 
@@ -187,12 +195,16 @@ inspect_macho() {
             expected_arch=arm64
             architecture=arm64
             ;;
-        *) fail "platform '$platform' is not supported by the Mach-O inspector" ;;
+        *)
+            fail "platform '$platform' is not supported by the Mach-O inspector"
+            ;;
     esac
 
     case "$file_description" in
         *Mach-O*) ;;
-        *) fail "expected a Mach-O executable, got: $file_description" ;;
+        *)
+            fail "expected a Mach-O executable, got: $file_description"
+            ;;
     esac
     require_tool lipo
     require_tool otool
@@ -206,7 +218,9 @@ inspect_macho() {
     for library in $libraries; do
         case "$library" in
             /usr/lib/*|/System/Library/Frameworks/*) ;;
-            *) fail "library is outside the macOS system/framework allowlist: $library" ;;
+            *)
+                fail "library is outside the macOS system/framework allowlist: $library"
+                ;;
         esac
     done
 
@@ -226,8 +240,12 @@ inspect_macho() {
     ')
     [ -n "$minimum_os" ] || fail 'Mach-O executable does not declare a minimum macOS version'
     case "$minimum_os" in
-        13.0|13.0.0) minimum_os=13.0 ;;
-        *) fail "Mach-O minimum macOS version '$minimum_os' does not match policy 13.0" ;;
+        13.0|13.0.0)
+            minimum_os=13.0
+            ;;
+        *)
+            fail "Mach-O minimum macOS version '$minimum_os' does not match policy 13.0"
+            ;;
     esac
 
     needed_count=$(printf '%s\n' "$libraries" | awk 'NF { count++ } END { print count + 0 }')
@@ -274,7 +292,9 @@ inspect_pe() {
         fail "platform '$platform' is not supported by the PE inspector"
     case "$file_description" in
         *PE32+*x86-64*|*PE32+*x86_64*) ;;
-        *) fail "expected a PE32+ x86-64 executable, got: $file_description" ;;
+        *)
+            fail "expected a PE32+ x86-64 executable, got: $file_description"
+            ;;
     esac
 
     objdump=$(find_pe_objdump)
@@ -305,7 +325,9 @@ inspect_pe() {
             iphlpapi.dll|kernel32.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll) ;;
             secur32.dll|shell32.dll|shlwapi.dll|user32.dll|version.dll|winhttp.dll) ;;
             winmm.dll|ws2_32.dll|ucrtbase.dll|api-ms-win-*.dll|ext-ms-win-*.dll) ;;
-            *) fail "library is outside the Windows system DLL allowlist: $library" ;;
+            *)
+                fail "library is outside the Windows system DLL allowlist: $library"
+                ;;
         esac
     done
 
@@ -313,7 +335,9 @@ inspect_pe() {
     [ -n "$resource_line" ] || fail 'PE executable has no resource directory'
     resource_size=$(printf '%s\n' "$resource_line" | awk '{ print $4 }')
     case "$resource_size" in
-        ''|0|00000000|0000000000000000) fail 'PE resource directory is empty' ;;
+        ''|0|00000000|0000000000000000)
+            fail 'PE resource directory is empty'
+            ;;
     esac
 
     for hardening in DYNAMIC_BASE NX_COMPAT; do
@@ -345,8 +369,16 @@ inspect_pe() {
 }
 
 case "$platform" in
-    linux-x64|linux-arm64) inspect_elf ;;
-    macos-x64|macos-arm64) inspect_macho ;;
-    windows-x64) inspect_pe ;;
-    *) fail "unsupported platform '$platform'" ;;
+    linux-x64|linux-arm64)
+        inspect_elf
+        ;;
+    macos-x64|macos-arm64)
+        inspect_macho
+        ;;
+    windows-x64)
+        inspect_pe
+        ;;
+    *)
+        fail "unsupported platform '$platform'"
+        ;;
 esac

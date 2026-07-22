@@ -13,12 +13,18 @@ fail() {
 
 validate_build_context() {
     case "${CUP_OFFICIAL_BUILD:-0}" in
-        0|1) ;;
-        *) fail "CUP_OFFICIAL_BUILD must be 0 or 1" ;;
+        0|1)
+            ;;
+        *)
+            fail "CUP_OFFICIAL_BUILD must be 0 or 1"
+            ;;
     esac
     case "${CUP_BUILD_CONFIGURATION:-development}" in
-        development|debug|coverage|sanitizers|release) ;;
-        *) fail "invalid CUP_BUILD_CONFIGURATION '${CUP_BUILD_CONFIGURATION}'" ;;
+        development|debug|coverage|sanitizers|release)
+            ;;
+        *)
+            fail "invalid CUP_BUILD_CONFIGURATION '${CUP_BUILD_CONFIGURATION}'"
+            ;;
     esac
     if [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] &&
         [ "${CUP_BUILD_CONFIGURATION:-development}" != release ]; then
@@ -29,7 +35,9 @@ validate_build_context() {
 # VERSION and Git identity helpers.
 is_semver() {
     case "$1" in
-        ''|*[!0-9.]*|.*|*..*|*.) return 1 ;;
+        ''|*[!0-9.]*|.*|*..*|*.)
+            return 1
+            ;;
     esac
     old_ifs=$IFS
     IFS=.
@@ -127,8 +135,12 @@ latest_reachable_version_tag() {
     have_git_repository || return 1
     for tag in $(git tag --merged HEAD --sort=-version:refname); do
         case "$tag" in
-            v*) version=${tag#v} ;;
-            *) continue ;;
+            v*)
+                version=${tag#v}
+                ;;
+            *)
+                continue
+                ;;
         esac
         if is_semver "$version"; then
             printf '%s\n' "$tag"
@@ -326,5 +338,7 @@ case "$command" in
         [ "$#" -eq 2 ] || usage
         generate_files "$2"
         ;;
-    *) usage ;;
+    *)
+        usage
+        ;;
 esac

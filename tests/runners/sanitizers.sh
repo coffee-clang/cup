@@ -13,23 +13,41 @@ UNIT_TIMEOUT="${CUP_SANITIZER_UNIT_TIMEOUT:-1200}"
 SUITE_TIMEOUT="${CUP_SANITIZER_SUITE_TIMEOUT:-300}"
 
 case "$PLATFORM" in
-    linux-x64|linux-arm64) CC="${CC:-clang}"; LEAKS=1 ;;
-    macos-x64|macos-arm64) CC="${CC:-clang}"; LEAKS=1 ;;
-    windows-x64) CC="${CC:-clang}"; LEAKS=0 ;;
-    *) printf 'Sanitizers are not supported for %s.\n' "$PLATFORM" >&2; exit 2 ;;
+    linux-x64|linux-arm64)
+        CC="${CC:-clang}"
+        LEAKS=1
+        ;;
+    macos-x64|macos-arm64)
+        CC="${CC:-clang}"
+        LEAKS=1
+        ;;
+    windows-x64)
+        CC="${CC:-clang}"
+        LEAKS=0
+        ;;
+    *)
+        printf 'Sanitizers are not supported for %s.\n' "$PLATFORM" >&2
+        exit 2
+        ;;
 esac
 
 cup_test_require_tool make sanitizers || exit 2
 cup_test_require_tool "$CC" sanitizers || exit 2
 for value in "$UNIT_TIMEOUT" "$SUITE_TIMEOUT"; do
     case "$value" in
-        ''|*[!0-9]*|0) printf 'Sanitizer timeouts must be positive integers.\n' >&2; exit 2 ;;
+        ''|*[!0-9]*|0)
+            printf 'Sanitizer timeouts must be positive integers.\n' >&2
+            exit 2
+            ;;
     esac
 done
 TIMEOUT_COMMAND=$(cup_test_find_timeout) || exit 2
 if [ "$PLATFORM" = windows-x64 ]; then
-    [ "${MSYSTEM:-}" = CLANG64 ] && [ "${MINGW_PREFIX:-}" = /clang64 ] || {
-        printf 'Windows sanitizer tests require the isolated MSYS2 CLANG64 environment.\n' >&2; exit 2; }
+    if [ "${MSYSTEM:-}" != CLANG64 ] || [ "${MINGW_PREFIX:-}" != /clang64 ]; then
+        printf '%s\n' \
+            'Windows sanitizer tests require the isolated MSYS2 CLANG64 environment.' >&2
+        exit 2
+    fi
     cup_test_require_tool llvm-windres sanitizers || exit 2
     cup_test_require_tool powershell.exe 'Windows sanitizer integration tests' || exit 2
     cup_test_require_tool cygpath 'Windows sanitizer integration tests' || exit 2

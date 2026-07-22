@@ -14,8 +14,11 @@ fail() {
 }
 
 case "$profile" in
-    source | coverage | sanitizers | release) ;;
-    *) fail "unsupported profile: $profile" ;;
+    source | coverage | sanitizers | release)
+        ;;
+    *)
+        fail "unsupported profile: $profile"
+        ;;
 esac
 
 case "$family" in
@@ -27,17 +30,26 @@ case "$family" in
                 # the x64 secondary compiler pass; OpenSSL is needed only by
                 # the x64 network-portability fixture.
                 case "$platform" in
-                    linux-x64|'') packages="$packages clang openssl" ;;
-                    linux-arm64) ;;
-                    *) fail "unsupported Linux source platform: $platform" ;;
+                    linux-x64|'')
+                        packages="$packages clang openssl"
+                        ;;
+                    linux-arm64)
+                        ;;
+                    *)
+                        fail "unsupported Linux source platform: $platform"
+                        ;;
                 esac
                 ;;
-            coverage) packages="$packages gcovr" ;;
+            coverage)
+                packages="$packages gcovr"
+                ;;
             sanitizers)
                 # Keep one sanitizer implementation across POSIX and Windows.
                 packages="$packages clang llvm"
                 ;;
-            release) packages="$packages zlib1g-dev" ;;
+            release)
+                packages="$packages zlib1g-dev"
+                ;;
         esac
         sudo apt-get update
         # Word splitting is intentional: packages is a controlled internal list.

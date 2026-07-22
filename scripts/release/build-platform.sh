@@ -19,7 +19,8 @@ case "$FAMILY:$PLATFORM:$host_system:$host_machine" in
     macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
     windows:windows-x64:MINGW*:x86_64|windows:windows-x64:MSYS*:x86_64) ;;
     *)
-        fail "PLATFORM '$PLATFORM' and FAMILY '$FAMILY' do not match host $host_system/$host_machine"
+        fail "PLATFORM '$PLATFORM' and FAMILY '$FAMILY' do not match \
+host $host_system/$host_machine"
         ;;
 esac
 
@@ -44,8 +45,12 @@ case "$FAMILY" in
 esac
 
 case "$FAMILY" in
-    linux|macos) dependency_builder=scripts/dependencies/build-posix.sh ;;
-    windows) dependency_builder=scripts/dependencies/build-windows.sh ;;
+    linux|macos)
+        dependency_builder=scripts/dependencies/build-posix.sh
+        ;;
+    windows)
+        dependency_builder=scripts/dependencies/build-windows.sh
+        ;;
 esac
 JOBS="${JOBS:-4}" PLATFORM="$PLATFORM" bash "$dependency_builder"
 make check-ca-bundle
@@ -58,7 +63,8 @@ CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \
 test "$(./scripts/version.sh base)" = "$VERSION"
 mkdir -p "dist/$PLATFORM" "dist/symbols/$PLATFORM" "build/release-$PLATFORM/generated"
 cp -R "build/$PLATFORM/release/symbols"/. "dist/symbols/$PLATFORM"/
-CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release ./scripts/version.sh generate "build/release-$PLATFORM/generated"
+CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release \
+    ./scripts/version.sh generate "build/release-$PLATFORM/generated"
 
 test "$(sed -n 's/^version=//p' build/release-$PLATFORM/generated/release.txt)" = "$VERSION"
 test "$(sed -n 's/^commit=//p' build/release-$PLATFORM/generated/release.txt)" = "$SHA"

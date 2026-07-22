@@ -89,15 +89,33 @@ dependency_usage_for_package() {
 
 source_url_for_package() {
     case "$1" in
-        zlib) printf '%s\n' "$ZLIB_URL" ;;
-        xz) printf '%s\n' "$XZ_URL" ;;
-        openssl) printf '%s\n' "$OPENSSL_URL" ;;
-        curl) printf '%s\n' "$CURL_URL" ;;
-        libarchive) printf '%s\n' "$LIBARCHIVE_URL" ;;
-        argtable3) printf '%s\n' "$ARGTABLE3_URL" ;;
-        uthash) printf '%s\n' "$UTHASH_URL" ;;
-        unity) printf '%s\n' "$UNITY_URL" ;;
-        libevent) printf '%s\n' "$LIBEVENT_URL" ;;
+        zlib)
+            printf '%s\n' "$ZLIB_URL"
+            ;;
+        xz)
+            printf '%s\n' "$XZ_URL"
+            ;;
+        openssl)
+            printf '%s\n' "$OPENSSL_URL"
+            ;;
+        curl)
+            printf '%s\n' "$CURL_URL"
+            ;;
+        libarchive)
+            printf '%s\n' "$LIBARCHIVE_URL"
+            ;;
+        argtable3)
+            printf '%s\n' "$ARGTABLE3_URL"
+            ;;
+        uthash)
+            printf '%s\n' "$UTHASH_URL"
+            ;;
+        unity)
+            printf '%s\n' "$UNITY_URL"
+            ;;
+        libevent)
+            printf '%s\n' "$LIBEVENT_URL"
+            ;;
         *)
             echo "Error: unknown source package '$1'." >&2
             return 1
@@ -107,30 +125,70 @@ source_url_for_package() {
 
 minimum_bytes_for_package() {
     case "$1" in
-        zlib) printf '%s\n' "$ZLIB_MIN_BYTES" ;;
-        xz) printf '%s\n' "$XZ_MIN_BYTES" ;;
-        openssl) printf '%s\n' "$OPENSSL_MIN_BYTES" ;;
-        curl) printf '%s\n' "$CURL_MIN_BYTES" ;;
-        libevent) printf '%s\n' "$LIBEVENT_MIN_BYTES" ;;
-        libarchive) printf '%s\n' "$LIBARCHIVE_MIN_BYTES" ;;
-        argtable3) printf '%s\n' "$ARGTABLE3_MIN_BYTES" ;;
-        uthash) printf '%s\n' "$UTHASH_MIN_BYTES" ;;
-        unity) printf '%s\n' "$UNITY_MIN_BYTES" ;;
-        *) printf '%s\n' 0 ;;
+        zlib)
+            printf '%s\n' "$ZLIB_MIN_BYTES"
+            ;;
+        xz)
+            printf '%s\n' "$XZ_MIN_BYTES"
+            ;;
+        openssl)
+            printf '%s\n' "$OPENSSL_MIN_BYTES"
+            ;;
+        curl)
+            printf '%s\n' "$CURL_MIN_BYTES"
+            ;;
+        libevent)
+            printf '%s\n' "$LIBEVENT_MIN_BYTES"
+            ;;
+        libarchive)
+            printf '%s\n' "$LIBARCHIVE_MIN_BYTES"
+            ;;
+        argtable3)
+            printf '%s\n' "$ARGTABLE3_MIN_BYTES"
+            ;;
+        uthash)
+            printf '%s\n' "$UTHASH_MIN_BYTES"
+            ;;
+        unity)
+            printf '%s\n' "$UNITY_MIN_BYTES"
+            ;;
+        *)
+            printf '%s\n' 0
+            ;;
     esac
 }
 
 sha256_for_package() {
     case "$1" in
-        zlib) printf '%s\n' "$ZLIB_SHA256" ;;
-        xz) printf '%s\n' "$XZ_SHA256" ;;
-        openssl) printf '%s\n' "$OPENSSL_SHA256" ;;
-        curl) printf '%s\n' "$CURL_SHA256" ;;
-        libarchive) printf '%s\n' "$LIBARCHIVE_SHA256" ;;
-        argtable3) printf '%s\n' "$ARGTABLE3_SHA256" ;;
-        uthash) printf '%s\n' "$UTHASH_SHA256" ;;
-        unity) printf '%s\n' "$UNITY_SHA256" ;;
-        libevent) printf '%s\n' "$LIBEVENT_SHA256" ;;
-        *) return 1 ;;
+        zlib)
+            printf '%s\n' "$ZLIB_SHA256"
+            ;;
+        xz)
+            printf '%s\n' "$XZ_SHA256"
+            ;;
+        openssl)
+            printf '%s\n' "$OPENSSL_SHA256"
+            ;;
+        curl)
+            printf '%s\n' "$CURL_SHA256"
+            ;;
+        libarchive)
+            printf '%s\n' "$LIBARCHIVE_SHA256"
+            ;;
+        argtable3)
+            printf '%s\n' "$ARGTABLE3_SHA256"
+            ;;
+        uthash)
+            printf '%s\n' "$UTHASH_SHA256"
+            ;;
+        unity)
+            printf '%s\n' "$UNITY_SHA256"
+            ;;
+        libevent)
+            printf '%s\n' "$LIBEVENT_SHA256"
+            ;;
+        *)
+            return 1
+            ;;
     esac
 }

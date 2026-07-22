@@ -11,7 +11,9 @@ validate_release_inputs
 
 case "$SHOULD_RELEASE" in
     0|1) ;;
-    *) fail "invalid SHOULD_RELEASE value: $SHOULD_RELEASE" ;;
+    *)
+        fail "invalid SHOULD_RELEASE value: $SHOULD_RELEASE"
+        ;;
 esac
 
 # Persist the exact decision consumed later by the manual release workflow.

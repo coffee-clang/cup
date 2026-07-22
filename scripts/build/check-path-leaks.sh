@@ -35,7 +35,9 @@ check_forbidden_path() {
 for path in "$@"; do
     [ -n "$path" ] || continue
     case "$path" in
-        / | .) continue ;;
+        / | .)
+            continue
+            ;;
     esac
 
     check_forbidden_path "$path" || exit 1

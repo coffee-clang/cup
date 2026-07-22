@@ -22,7 +22,8 @@ printf '%s\n' "$TESTS_RUN_ATTEMPT" | grep -Eq '^[1-9][0-9]*$' ||
 # Build the common immutable assets from the same locally tagged source revision.
 create_local_release_tag
 mkdir -p build/release-common/generated dist/common
-CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release ./scripts/version.sh generate build/release-common/generated
+CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release \
+    ./scripts/version.sh generate build/release-common/generated
 
 test "$(sed -n 's/^version=//p' build/release-common/generated/release.txt)" = "$VERSION"
 test "$(sed -n 's/^commit=//p' build/release-common/generated/release.txt)" = "$SHA"

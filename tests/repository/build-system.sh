@@ -74,27 +74,46 @@ printf '%s\n' 1.0 >"$TMP_ROOT/compiler-version"
 cat >"$fake_bin/uname" <<EOF_UNAME
 #!/bin/sh
 case "\${1:-}" in
-    -s) cat '$TMP_ROOT/host-system' ;;
-    -m) cat '$TMP_ROOT/host-machine' ;;
-    *) exit 2 ;;
+    -s)
+        cat '$TMP_ROOT/host-system'
+        ;;
+    -m)
+        cat '$TMP_ROOT/host-machine'
+        ;;
+    *)
+        exit 2
+        ;;
 esac
 EOF_UNAME
 
 cat >"$fake_bin/fakecc" <<EOF_CC
 #!/bin/sh
 case "\$*" in
-    -dumpmachine) cat '$TMP_ROOT/compiler-target' ;;
-    '-dumpfullversion -dumpversion'|-dumpversion) cat '$TMP_ROOT/compiler-version' ;;
-    --version) printf 'fakecc %s\\n' "\$(cat '$TMP_ROOT/compiler-version')" ;;
-    *) printf 'unexpected fake compiler arguments: %s\\n' "\$*" >&2; exit 9 ;;
+    -dumpmachine)
+        cat '$TMP_ROOT/compiler-target'
+        ;;
+    '-dumpfullversion -dumpversion'|-dumpversion)
+        cat '$TMP_ROOT/compiler-version'
+        ;;
+    --version)
+        printf 'fakecc %s\\n' "\$(cat '$TMP_ROOT/compiler-version')"
+        ;;
+    *)
+        printf 'unexpected fake compiler arguments: %s\\n' "\$*" >&2
+        exit 9
+        ;;
 esac
 EOF_CC
 
 cat >"$fake_bin/fakewindres" <<'EOF_WINDRES'
 #!/bin/sh
 case "${1:-}" in
-    --version) printf '%s\n' 'fakewindres 1.0' ;;
-    *) exit 0 ;;
+    --version)
+        printf '%s\n' 'fakewindres 1.0'
+        ;;
+    *)
+        exit 0
+        ;;
 esac
 EOF_WINDRES
 chmod +x "$fake_bin/uname" "$fake_bin/fakecc" "$fake_bin/fakewindres"
@@ -261,5 +280,21 @@ MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'CC := gcc'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'WINDRES := windres'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" '-D_WIN32_WINNT=0x0A00'
+
+# The help output is the public index of supported Make entry points. Keep it
+# complete so contributors do not need to inspect recipes to discover commands.
+help_output=$(MAKEFLAGS= MAKEOVERRIDES= \
+    make -C "$PROJECT_ROOT" --no-print-directory -s help)
+for target in \
+    debug coverage sanitizers release clean help deps check-dependencies \
+    check-toolchain check-binary test test-unit test-integration test-posix \
+    test-repository test-coverage test-sanitizers test-portability-linux \
+    test-windows test-release test-unit-build test-helpers test-build version \
+    validate-release release-metadata finalize-release check-ca-bundle \
+    update-ca-bundle docs-assets docs serve reset-dev-home; do
+    assert_contains "$help_output" "make $target"
+done
+assert_not_contains "$help_output" 'make _build'
+assert_contains "$help_output" 'Supported platforms:'
 
 printf '%s\n' 'Build-system contract tests passed.'

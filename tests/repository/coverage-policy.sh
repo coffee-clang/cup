@@ -6,7 +6,10 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 runner=$ROOT/tests/runners/coverage.sh
 environment=$ROOT/tests/support/environment.sh
 
-[ -x "$runner" ] || { echo 'coverage runner is not executable' >&2; exit 1; }
+if [ ! -x "$runner" ]; then
+    echo 'coverage runner is not executable' >&2
+    exit 1
+fi
 for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function' \
         'coverage.json' 'coverage.xml' 'coverage-summary.json' \
         'linux-x64|linux-arm64' 'macos-x64|macos-arm64' 'windows-x64' \
@@ -63,21 +66,33 @@ for required in generation_status threshold_status html_status \
         'integers from 0 to 100' 'The gcov backend requires GCC' \
         'powershell.exe -NoProfile' '$TIMEOUT_COMMAND'; do
     grep -Fq -- "$required" "$runner" || {
-        echo "coverage runner is missing regression guard: $required" >&2; exit 1; }
+        echo "coverage runner is missing regression guard: $required" >&2
+        exit 1
+    }
 done
 for required in 'MSYSTEM:-}' CLANG64 llvm-windres \
-        'working ASan/UBSan runtimes' 'linux-x64|linux-arm64) CC="${CC:-clang}"'; do
+        'working ASan/UBSan runtimes' 'CC="${CC:-clang}"'; do
     grep -Fq -- "$required" "$sanitizer_runner" || {
-        echo "sanitizer runner is missing regression guard: $required" >&2; exit 1; }
+        echo "sanitizer runner is missing regression guard: $required" >&2
+        exit 1
+    }
 done
 
-for required in 'make PLATFORM="$platform" CC=clang'         'make CC=clang test-unit' 'CC=clang check-binary'; do
+for required in \
+        'make PLATFORM="$platform" CC=clang' \
+        'make CC=clang test-unit' \
+        'CC=clang check-binary'; do
     grep -Fq -- "$required" "$source_runner" || {
         echo "Linux secondary compiler pass is missing: $required" >&2
         exit 1
     }
 done
-for required in 'source)' 'linux-x64' 'clang openssl'         'sanitizers)' 'clang llvm'; do
+for required in \
+        'source)' \
+        'linux-x64' \
+        'clang openssl' \
+        'sanitizers)' \
+        'clang llvm'; do
     grep -Fq -- "$required" "$prepare_runner" || {
         echo "POSIX compiler-tool ownership is missing: $required" >&2
         exit 1

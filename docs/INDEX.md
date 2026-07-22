@@ -83,11 +83,12 @@ to the `cup-components` repository and are not duplicated here.
 
 ## Documentation authority
 
-The current source, tests and generated release contracts are authoritative.
-Historical documentation was used to recover design rationale and discarded
-alternatives, but superseded command names, layouts and release models are not
-retained as current behavior.
+The current source code, automated tests and release contracts define the
+implemented behavior of `cup`. The documentation describes the current
+supported design and does not present superseded command names, directory
+layouts or release models as active behavior.
 
-Each document explains the implemented contract and the reason for decisions
-that are not obvious from the interface. It does not reproduce a chronological
-log of development discussions.
+Design documents include rationale only when it is necessary to explain an
+implemented constraint, interface or operational guarantee. They are organized
+as a reference to the current system rather than as a record of the development
+process.

@@ -39,7 +39,9 @@ fi
 dependency_file=$CUP_BUILD_DEPS_PREFIX/.cup-deps-config
 dependency_identity=$(sed -n 's/^dependency_id=//p' "$dependency_file" 2>/dev/null || true)
 case "$dependency_identity" in
-    *[!0-9a-f]*|'') dependency_identity=missing ;;
+    *[!0-9a-f]*|'')
+        dependency_identity=missing
+        ;;
 esac
 [ "${#dependency_identity}" -eq 64 ] || dependency_identity=missing
 

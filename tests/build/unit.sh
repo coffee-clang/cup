@@ -11,8 +11,12 @@ cup_test_require_dependencies
 # Build configuration and dependency selection.
 PLATFORM="$CUP_TEST_PLATFORM"
 case "$PLATFORM" in
-    macos-*) CC="${CC:-clang}" ;;
-    *) CC="${CC:-gcc}" ;;
+    macos-*)
+        CC="${CC:-clang}"
+        ;;
+    *)
+        CC="${CC:-gcc}"
+        ;;
 esac
 TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}"
 TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L"

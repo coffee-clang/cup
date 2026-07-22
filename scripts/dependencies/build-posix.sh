@@ -12,10 +12,18 @@ REQUESTED_MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-}"
 
 if [ -z "$PLATFORM" ]; then
     case "$(uname -s):$(uname -m)" in
-        Linux:x86_64|Linux:amd64) PLATFORM=linux-x64 ;;
-        Linux:aarch64|Linux:arm64) PLATFORM=linux-arm64 ;;
-        Darwin:x86_64|Darwin:amd64) PLATFORM=macos-x64 ;;
-        Darwin:arm64|Darwin:aarch64) PLATFORM=macos-arm64 ;;
+        Linux:x86_64|Linux:amd64)
+            PLATFORM=linux-x64
+            ;;
+        Linux:aarch64|Linux:arm64)
+            PLATFORM=linux-arm64
+            ;;
+        Darwin:x86_64|Darwin:amd64)
+            PLATFORM=macos-x64
+            ;;
+        Darwin:arm64|Darwin:aarch64)
+            PLATFORM=macos-arm64
+            ;;
         *)
             echo "Error: unable to select a supported native dependency platform." >&2
             exit 1

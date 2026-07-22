@@ -21,10 +21,14 @@ require_tool() {
 
 case "$PLATFORM" in
     linux-x64|linux-arm64) ;;
-    *) fail "unsupported platform '$PLATFORM'" ;;
+    *)
+        fail "unsupported platform '$PLATFORM'"
+        ;;
 esac
 case "$JOBS" in
-    ''|*[!0-9]*|0) fail "CUP_TEST_JOBS must be a positive integer" ;;
+    ''|*[!0-9]*|0)
+        fail "CUP_TEST_JOBS must be a positive integer"
+        ;;
 esac
 
 for tool in cc curl make openssl sha256sum tar; do

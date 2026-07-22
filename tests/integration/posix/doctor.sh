@@ -59,7 +59,9 @@ package_metadata="$package_metadata/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0/info.tx
 package_metadata_mode=$(ls -ld "$package_metadata" | awk '{print $1}')
 case "$package_metadata_mode" in
     *w*) ;;
-    *) fail 'doctor changed package metadata permissions' ;;
+    *)
+        fail 'doctor changed package metadata permissions'
+        ;;
 esac
 
 rm -f "$TEST_HOME/.cup/uninstall.pending" "$TEST_HOME/.cup/transaction.txt"

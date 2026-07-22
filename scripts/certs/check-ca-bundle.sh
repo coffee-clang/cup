@@ -16,10 +16,18 @@ fail() {
 }
 
 [ -s "$PEM" ] && [ -s "$META" ] || fail 'bundle or metadata is missing'
-value() { sed -n "s/^$1=//p" "$META"; }
+value() {
+    sed -n "s/^$1=//p" "$META"
+}
 [ "$(value format)" = 1 ] || fail 'unsupported metadata format'
 source_url=$(value source)
-case "$source_url" in https://*) ;; *) fail 'metadata source must use HTTPS' ;; esac
+case "$source_url" in
+    https://*)
+        ;;
+    *)
+        fail 'metadata source must use HTTPS'
+        ;;
+esac
 
 if command -v sha256sum >/dev/null 2>&1; then
     actual=$(sha256sum "$PEM" | awk '{print $1}')
@@ -36,9 +44,17 @@ count=$(grep -c '^-----BEGIN CERTIFICATE-----$' "$PEM")
 
 source_date=$(value source_date)
 max_age=$(value max_age_days)
-case "$max_age" in ''|*[!0-9]*|0) fail 'invalid max_age_days' ;; esac
+case "$max_age" in
+    ''|*[!0-9]*|0)
+        fail 'invalid max_age_days'
+        ;;
+esac
 [ "$max_age" -le 365 ] || fail 'max_age_days exceeds the repository safety ceiling'
-case "$NOW_EPOCH" in ''|*[!0-9]*) fail 'invalid current epoch' ;; esac
+case "$NOW_EPOCH" in
+    ''|*[!0-9]*)
+        fail 'invalid current epoch'
+        ;;
+esac
 
 source_epoch=$(perl -MTime::Piece -e '
     my ($date)=@ARGV;

@@ -10,19 +10,31 @@ HOST_TRIPLE=x86_64-w64-mingw32
 
 case "${MSYSTEM:-}" in
     UCRT64)
-        [ "${MINGW_PREFIX:-}" = /ucrt64 ] || {
-            echo "Error: UCRT64 requires MINGW_PREFIX=/ucrt64." >&2; exit 1; }
+        if [ "${MINGW_PREFIX:-}" != /ucrt64 ]; then
+            echo "Error: UCRT64 requires MINGW_PREFIX=/ucrt64." >&2
+            exit 1
+        fi
         RUNTIME_POLICY=msys2-ucrt64
         TOOLCHAIN_LABEL=UCRT64
-        CC=gcc; AR=ar; RANLIB=ranlib; STRIP=strip; WINDRES=windres
+        CC=gcc
+        AR=ar
+        RANLIB=ranlib
+        STRIP=strip
+        WINDRES=windres
         DEFAULT_DEPS_VARIANT=windows-x64
         ;;
     CLANG64)
-        [ "${MINGW_PREFIX:-}" = /clang64 ] || {
-            echo "Error: CLANG64 requires MINGW_PREFIX=/clang64." >&2; exit 1; }
+        if [ "${MINGW_PREFIX:-}" != /clang64 ]; then
+            echo "Error: CLANG64 requires MINGW_PREFIX=/clang64." >&2
+            exit 1
+        fi
         RUNTIME_POLICY=msys2-clang64
         TOOLCHAIN_LABEL=CLANG64
-        CC=clang; AR=llvm-ar; RANLIB=llvm-ranlib; STRIP=llvm-strip; WINDRES=llvm-windres
+        CC=clang
+        AR=llvm-ar
+        RANLIB=llvm-ranlib
+        STRIP=llvm-strip
+        WINDRES=llvm-windres
         DEFAULT_DEPS_VARIANT=windows-x64-clang64
         ;;
     *)

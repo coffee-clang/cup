@@ -96,7 +96,10 @@ else
     compiler_target=$("$CC" -dumpmachine)
     case "$compiler_target" in
         x86_64-w64-mingw32|x86_64-w64-windows-gnu) ;;
-        *) echo "Windows compiler target '$compiler_target' is unsupported." >&2; exit 1 ;;
+        *)
+            echo "Windows compiler target '$compiler_target' is unsupported." >&2
+            exit 1
+            ;;
     esac
     toolchain=$(dependency_windows_toolchain_identity \
         "$host_triple" "$CC" "$AR" "$RANLIB" "$STRIP" "$WINDRES" \

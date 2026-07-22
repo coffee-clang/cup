@@ -402,21 +402,58 @@ release:
 help:
 	@printf '%s\n' \
 		'Build targets:' \
-		'  make              development build' \
-		'  make debug        diagnostic build with rich symbols' \
-		'  make coverage     coverage-instrumented build' \
-		'  make sanitizers   ASan/UBSan build for the selected native platform' \
-		'  make release      platform release build (fully static on Linux; Apple-system-only on macOS)' \
-		'  make check-binary verify the current native executable policy' \
-		'  JOBS=4 make deps  prepare pinned dependencies with controlled parallelism' \
-		'  make test         native regression suite' \
-		'  make test-coverage     native coverage gate and reports' \
-		'  make test-sanitizers   native ASan/UBSan gate' \
-		'  make test-portability-linux  Linux HTTPS/proxy/package smoke test' \
-		'  make clean        remove build outputs' \
+		'  make                         development build' \
+		'  make debug                   diagnostic build with rich symbols' \
+		'  make coverage                coverage-instrumented build' \
+		'  make sanitizers              ASan/UBSan build for the native platform' \
+		'  make release                 release build for the selected platform' \
+		'  make clean                   remove build outputs' \
+		'  make help                    list all public Make targets' \
 		'' \
-		'Local flag additions: EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS, EXTRA_LDLIBS' \
-		'Platform selector: PLATFORM=$(SUPPORTED_PLATFORM)'
+		'Dependency and toolchain targets:' \
+		'  JOBS=4 make deps             prepare the pinned dependency prefix' \
+		'  make check-dependencies      validate the dependency prefix' \
+		'  make check-toolchain         validate the selected native toolchain' \
+		'  make check-binary            inspect the built executable policy' \
+		'' \
+		'Test targets:' \
+		'  make test                    complete native regression suite' \
+		'  make test-unit               C unit tests' \
+		'  make test-integration        native integration tests' \
+		'  make test-posix              alias for test-integration' \
+		'  make test-repository         repository contract tests' \
+		'  make test-coverage           coverage gate and reports' \
+		'  make test-sanitizers         ASan/UBSan gate' \
+		'  make test-portability-linux  Linux HTTPS/proxy/package smoke test' \
+		'  make test-windows            Windows unit, integration and repo tests' \
+		'  make test-release RELEASE_DIR=<dir>' \
+		'                               validate an unpacked release candidate' \
+		'' \
+		'Test build helpers:' \
+		'  make test-unit-build         compile C unit-test binaries only' \
+		'  make test-helpers            compile integration-test helpers only' \
+		'  make test-build              compile product, unit tests and helpers' \
+		'' \
+		'Version and release targets:' \
+		'  make version                 print generated build identity' \
+		'  make validate-release        validate VERSION, tag and clean tree' \
+		'  make release-metadata        print generated version metadata path' \
+		'  make finalize-release        strip/check a release build' \
+		'' \
+		'Certificate and documentation targets:' \
+		'  make check-ca-bundle         validate the checked-in CA bundle' \
+		'  make update-ca-bundle        download and validate a new CA bundle' \
+		'  make docs-assets             fetch pinned documentation assets' \
+		'  make docs                    build the documentation site' \
+		'  make serve                   serve documentation locally' \
+		'' \
+		'Maintenance target:' \
+		'  CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home' \
+		'                               remove build outputs and the dev ~/.cup' \
+		'' \
+		'Local additions: EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS, EXTRA_LDLIBS' \
+		'Current platform: $(PLATFORM)' \
+		'Supported platforms: $(SUPPORTED_PLATFORM)'
 
 _build: $(TARGET)
 

@@ -111,7 +111,9 @@ JSON
 }
 JSON
         ;;
-    *) exit 2 ;;
+    *)
+        exit 2
+        ;;
 esac
 MOCK
 chmod +x "$MOCK_BIN/gh"

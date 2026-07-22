@@ -26,7 +26,9 @@ package_metadata="$TEST_HOME/.cup/components/compiler/clang"
 package_metadata="$package_metadata/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5/info.txt"
 package_metadata_mode=$(ls -ld "$package_metadata" | awk '{print $1}')
 case "$package_metadata_mode" in
-    *w*) fail 'repair did not protect adopted package metadata' ;;
+    *w*)
+        fail 'repair did not protect adopted package metadata'
+        ;;
 esac
 
 # State entries that no longer have a package are removed together with their

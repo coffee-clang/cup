@@ -10,12 +10,20 @@ cup_test_require_dependencies
 PLATFORM="$CUP_TEST_PLATFORM"
 CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}"
 case "$PLATFORM" in
-    macos-*) CC="${CC:-clang}" ;;
-    *) CC="${CC:-gcc}" ;;
+    macos-*)
+        CC="${CC:-clang}"
+        ;;
+    *)
+        CC="${CC:-gcc}"
+        ;;
 esac
 case "$PLATFORM" in
-    windows-x64) EXE_SUFFIX=.exe ;;
-    *) EXE_SUFFIX= ;;
+    windows-x64)
+        EXE_SUFFIX=.exe
+        ;;
+    *)
+        EXE_SUFFIX=
+        ;;
 esac
 OUT="$ROOT/build/$PLATFORM/$CONFIGURATION/tests/helpers"
 pkg_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
@@ -30,7 +38,9 @@ case "$PLATFORM" in
 esac
 case "$CONFIGURATION" in
     development|debug) ;;
-    release) CFLAGS="-std=c11 -Wall -Wextra -Werror -O2" ;;
+    release)
+        CFLAGS="-std=c11 -Wall -Wextra -Werror -O2"
+        ;;
     coverage)
         case "$PLATFORM" in
             macos-*)
@@ -47,7 +57,10 @@ case "$CONFIGURATION" in
         CFLAGS="$CFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer"
         LDFLAGS="$LDFLAGS -fsanitize=address,undefined"
         ;;
-    *) printf 'Unsupported helper configuration: %s\n' "$CONFIGURATION" >&2; exit 2 ;;
+    *)
+        printf 'Unsupported helper configuration: %s\n' "$CONFIGURATION" >&2
+        exit 2
+        ;;
 esac
 
 if [ "$PLATFORM" != windows-x64 ]; then
