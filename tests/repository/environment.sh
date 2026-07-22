@@ -301,6 +301,12 @@ dependency_id=$id"; then
     if prepare_dependency_prefix /tmp/./install "$metadata" 1; then
         exit 1
     fi
+    if prepare_dependency_prefix "/tmp/with space/install" "$metadata" 1; then
+        exit 1
+    fi
+    if prepare_dependency_prefix /tmp/install "$metadata" 2; then
+        exit 1
+    fi
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 0 ]
     [ -n "$CUP_DEPS_STAGE_ROOT" ]
@@ -395,6 +401,16 @@ EOF_WINDOWS_PATHS
         "-L$final/lib -Wl,-rpath,/usr/lib -lcurl" \
         "$CUP_DEPS_BUILD_PREFIX" "$final"; then
         fail "host runtime search path was accepted in dependency metadata"
+    fi
+    if dependency_link_flags_valid \
+        "-L$final/lib -Wl,-R,/usr/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "host -R runtime path was accepted in dependency metadata"
+    fi
+    if dependency_link_flags_valid \
+        "-L$final/lib -R/usr/lib -lcurl" \
+        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
+        fail "direct host -R path was accepted in dependency metadata"
     fi
     if dependency_link_flags_valid "-L" \
         "$CUP_DEPS_BUILD_PREFIX" "$final"; then
@@ -500,6 +516,9 @@ bash -eu -o pipefail -c '
     abort_dependency_prefix
     [ ! -e "$build" ]
     [ ! -e "$final" ]
+    [ -z "$CUP_DEPS_STAGE_ROOT" ]
+    [ -z "$CUP_DEPS_BUILD_PREFIX" ]
+    [ -z "$CUP_DEPS_FINAL_PREFIX" ]
 ' sh "$DEPENDENCY_COMMON" "$FAILED_PREFIX"
 
 leftovers=$(find "$TMP_ROOT" -maxdepth 1 -name '.*.staging.*' -print)

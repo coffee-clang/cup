@@ -169,6 +169,7 @@ build_openssl() {
     local neutral_prefix=/__cup_runtime__/openssl
     local install_root
     local payload
+    local openssl_cflags
 
     archive="$SRC_DIR/openssl-${OPENSSL_VERSION}.tar.gz"
     source="$BUILD_DIR/openssl-${OPENSSL_VERSION}"
@@ -181,12 +182,13 @@ build_openssl() {
 
     echo "==> Building OpenSSL ${OPENSSL_VERSION} for ${OPENSSL_TARGET}"
     cd "$source"
-    # OpenSSL records --prefix/--openssldir in libcrypto. Use a deterministic,
-    # deliberately nonexistent runtime namespace, then relocate only generated
-    # build metadata to the actual transactional CUP prefix.
-    # shellcheck disable=SC2086
+    # OpenSSL records both its configured directories and CFLAGS in libcrypto.
+    # Keep runtime directories neutral and remove path-bearing prefix-map flags
+    # from the exposed build information. OpenSSL compiles from relative source
+    # paths without debug information, so the remaining flags are reproducible.
+    openssl_cflags=$(dependency_buildinfo_safe_cflags "$CUP_DEPENDENCY_CFLAGS")
     CC="$CC" AR="$AR" RANLIB="$RANLIB" \
-        CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
+        CFLAGS="$openssl_cflags" \
         ./Configure "$OPENSSL_TARGET" \
             --prefix="$neutral_prefix" \
             --openssldir="$neutral_prefix" \
@@ -280,7 +282,6 @@ build_libarchive() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
-        --disable-nls \
         --disable-acl \
         --without-bz2lib \
         --without-lzo2 \
@@ -364,7 +365,10 @@ main() {
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
         exit 0
     fi
-    trap 'abort_dependency_prefix' EXIT HUP INT TERM
+    trap 'abort_dependency_prefix' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     require_tool curl
     require_tool tar
     require_tool make
@@ -385,7 +389,7 @@ main() {
     build_openssl
     build_curl
     build_libarchive
-    build_libevent_static "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+    build_libevent_static "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB"
     build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB"

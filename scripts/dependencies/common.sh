@@ -94,6 +94,34 @@ dependency_reproducible_cflags() {
     fi
 }
 
+# Removes path-remapping options from flags that a dependency exposes as
+# runtime build information. OpenSSL records its configured CFLAGS in
+# libcrypto, so retaining these options would preserve the original host and
+# transactional paths as literal strings even though the compiler remaps
+# __FILE__ and debug data correctly.
+dependency_buildinfo_safe_cflags() {
+    local raw_flags="$1"
+    local flag
+    local -a kept=()
+    local -a words=()
+
+    read -r -a words <<<"$raw_flags"
+    for flag in "${words[@]}"; do
+        case "$flag" in
+            -ffile-prefix-map=*|-fdebug-prefix-map=*|-fmacro-prefix-map=*)
+                continue
+                ;;
+        esac
+        kept+=("$flag")
+    done
+
+    if [ "${#kept[@]}" -eq 0 ]; then
+        printf '%s\n' '-O2'
+    else
+        printf '%s\n' "${kept[*]}"
+    fi
+}
+
 # Refuses dependency archives containing transient or machine-specific roots.
 # Runtime-neutral OpenSSL defaults under /__cup_runtime__ are intentionally
 # allowed; actual runner, checkout and staging paths are not.
@@ -494,7 +522,7 @@ dependency_link_path_is_private() {
     return 1
 }
 
-dependency_link_flags_reference_path() {
+dependency_text_references_path() {
     local flags="$1"
     local path="$2"
     local variant
@@ -528,13 +556,16 @@ dependency_link_flags_valid() {
         token=${words[index]}
         path=
         case "$token" in
-            -L|-F)
+            -L|-F|-R|-rpath|--rpath|--rpath-link|--library-path|--sysroot|-B)
                 ((index + 1 < ${#words[@]})) || return 1
                 index=$((index + 1))
                 path=${words[index]}
                 ;;
-            -L?*|-F?*)
+            -L?*|-F?*|-R?*|-B?*)
                 path=${token:2}
+                ;;
+            -rpath=*|--rpath=*|--rpath-link=*|--library-path=*|--sysroot=*)
+                path=${token#*=}
                 ;;
             -Wl,*)
                 IFS=, read -r -a linker_parts <<< "${token#-Wl,}"
@@ -542,15 +573,15 @@ dependency_link_flags_valid() {
                     part=${linker_parts[part_index]}
                     path=
                     case "$part" in
-                        -L|-F|-rpath|-rpath-link|--library-path)
+                        -L|-F|-R|-rpath|--rpath|-rpath-link|--rpath-link|--library-path|--sysroot|-B)
                             ((part_index + 1 < ${#linker_parts[@]})) || return 1
                             part_index=$((part_index + 1))
                             path=${linker_parts[part_index]}
                             ;;
-                        -L?*|-F?*)
+                        -L?*|-F?*|-R?*|-B?*)
                             path=${part:2}
                             ;;
-                        -rpath=*|-rpath-link=*|--library-path=*)
+                        -rpath=*|--rpath=*|-rpath-link=*|--rpath-link=*|--library-path=*|--sysroot=*)
                             path=${part#*=}
                             ;;
                         /*|[A-Za-z]:[\\/]*)
@@ -581,9 +612,15 @@ dependency_link_flags_valid() {
     case " $flags " in
         *" -lacl "*) return 1 ;;
     esac
-    dependency_link_flags_reference_path "$flags" "$expected_prefix" || return 1
+    if ! dependency_text_references_path "$flags" "$expected_prefix"; then
+        echo "Error: dependency link metadata does not reference the private prefix:" \
+            "$expected_prefix" >&2
+        return 1
+    fi
     if [ "$prefix" != "$expected_prefix" ] &&
-        dependency_link_flags_reference_path "$flags" "$prefix"; then
+        dependency_text_references_path "$flags" "$prefix"; then
+        echo "Error: dependency link metadata still references the staging prefix:" \
+            "$prefix" >&2
         return 1
     fi
 }
@@ -617,6 +654,11 @@ dependency_prefix_complete() {
     local prefix="$1"
     local use_openssl="${2:-1}"
     local metadata_prefix="${3:-$prefix}"
+
+    case "$use_openssl" in
+        0 | 1) ;;
+        *) return 1 ;;
+    esac
 
     test_dependency_prefix_complete "$prefix" &&
         [ -x "$prefix/bin/curl-config" ] &&
@@ -666,6 +708,14 @@ prepare_dependency_prefix() {
         echo "Error: invalid dependency prefix metadata." >&2
         return 1
     }
+    case "$use_openssl" in
+        0 | 1) ;;
+        *)
+            echo "Error: dependency OpenSSL policy must be 0 or 1." >&2
+            return 1
+            ;;
+    esac
+    dependency_require_whitespace_free_path "dependency prefix" "$final_prefix" || return 1
 
     case "$final_prefix" in
         /)
@@ -714,6 +764,10 @@ abort_dependency_prefix() {
         [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
         rm -rf -- "$CUP_DEPS_STAGE_ROOT"
     fi
+    CUP_DEPS_PREFIX_READY=0
+    CUP_DEPS_FINAL_PREFIX=
+    CUP_DEPS_STAGE_ROOT=
+    CUP_DEPS_BUILD_PREFIX=
 }
 
 dependency_metadata_contains_staging() {
@@ -737,59 +791,95 @@ normalize_dependency_metadata() {
     local staged_native=
     local final_native=
     local staged_windows=
-    local final_windows=
-    local staging_directory=${CUP_DEPS_STAGE_ROOT##*/}
+    local stage_root="${CUP_DEPS_STAGE_ROOT:-}"
+    local staging_directory=
     local metadata
 
-    [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] || return 0
+    [ -d "$prefix" ] || {
+        echo "Error: dependency metadata prefix does not exist: $prefix" >&2
+        return 1
+    }
+    [ -n "$final_prefix" ] || {
+        echo "Error: final dependency prefix is empty." >&2
+        return 1
+    }
+
+    if [ -n "$stage_root" ]; then
+        staging_directory=${stage_root##*/}
+    fi
 
     # MSYS-generated metadata can use POSIX paths, drive-letter paths with
     # forward slashes, or native paths with backslashes. Normalize every
-    # spelling before the transactional directory is committed.
-    if command -v cygpath >/dev/null 2>&1; then
-        staged_native=$(cygpath -m "$staged_prefix")
-        final_native=$(cygpath -m "$final_prefix")
-        staged_windows=$(cygpath -w "$staged_prefix")
-        final_windows=$(cygpath -w "$final_prefix")
+    # spelling of the installed payload to the final prefix. Compiler
+    # prefix-map options are build-only and must not be propagated by .pc,
+    # CMake or *-config files, so remove those options instead of rewriting
+    # their transient source roots to another machine-specific directory.
+    if [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] &&
+        command -v cygpath >/dev/null 2>&1; then
+        staged_native=$(cygpath -m "$staged_prefix" 2>/dev/null || true)
+        final_native=$(cygpath -m "$final_prefix" 2>/dev/null || true)
+        staged_windows=$(cygpath -w "$staged_prefix" 2>/dev/null || true)
     fi
 
-    # Configure scripts may preserve dependency search paths even when their
-    # own --prefix is the final installation path. Rewrite only generated text
-    # metadata; archives and other binary payloads are intentionally untouched.
     while IFS= read -r -d '' metadata; do
+        if ! perl -0777 -e 'my $data = <>; exit(index($data, "\0") < 0 ? 0 : 1)' "$metadata"; then
+            echo "Error: generated dependency metadata is not a text file: $metadata" >&2
+            return 1
+        fi
+
         CUP_STAGED_PREFIX="$staged_prefix" CUP_FINAL_PREFIX="$final_prefix" \
         CUP_STAGED_NATIVE="$staged_native" CUP_FINAL_NATIVE="$final_native" \
-        CUP_STAGED_WINDOWS="$staged_windows" CUP_FINAL_WINDOWS="$final_windows" \
-            perl -0pi -e '
+        CUP_STAGED_WINDOWS="$staged_windows" \
+            perl -0777 -pi -e '
                 sub path_pattern {
                     my ($path) = @_;
                     my @parts = split(/[\\\/]+/, $path, -1);
                     return join("[\\\\/]+", map { quotemeta($_) } @parts);
                 }
                 sub replace_path {
-                    my ($from, $to) = @_;
-                    return unless length $from;
+                    my ($from, $to, $case_insensitive) = @_;
+                    return unless length($from) && $from ne $to;
                     my $pattern = path_pattern($from);
-                    s/$pattern/$to/gi;
+                    if ($case_insensitive) {
+                        s/$pattern/$to/gi;
+                    } else {
+                        s/$pattern/$to/g;
+                    }
                 }
-                replace_path($ENV{CUP_STAGED_WINDOWS}, $ENV{CUP_FINAL_NATIVE});
-                replace_path($ENV{CUP_STAGED_NATIVE}, $ENV{CUP_FINAL_NATIVE});
-                replace_path($ENV{CUP_STAGED_PREFIX}, $ENV{CUP_FINAL_PREFIX});
+
+                replace_path($ENV{CUP_STAGED_WINDOWS}, $ENV{CUP_FINAL_NATIVE}, 1);
+                replace_path($ENV{CUP_STAGED_NATIVE}, $ENV{CUP_FINAL_NATIVE}, 1);
+                replace_path($ENV{CUP_STAGED_PREFIX}, $ENV{CUP_FINAL_PREFIX}, 0);
+
+                # These flags describe the dependency build itself. Keeping
+                # them in consumer metadata both leaks transactional paths and
+                # incorrectly applies CUP bootstrap mappings to later builds.
+                s{(^|[\s"\x27=])-f(?:file|debug|macro)-prefix-map=[^\s"\x27();]+}{$1}gm;
             ' "$metadata"
 
-        if LC_ALL=C grep -F -I -q -- "$staged_prefix" "$metadata" || \
-            { [ -n "$staged_native" ] && \
-              LC_ALL=C grep -F -I -q -- "$staged_native" "$metadata"; } || \
-            { [ -n "$staged_windows" ] && \
-              LC_ALL=C grep -F -I -q -- "$staged_windows" "$metadata"; } || \
-            { [ -n "$staging_directory" ] && \
-              LC_ALL=C grep -F -I -q -- "$staging_directory" "$metadata"; }; then
-            echo "Error: generated metadata still contains the staging prefix: $metadata" >&2
+        if [ -n "$staged_prefix" ] && [ "$staged_prefix" != "$final_prefix" ] &&
+            dependency_text_references_path "$(cat "$metadata")" "$staged_prefix"; then
+            echo "Error: generated metadata still contains the staged payload prefix: $metadata" >&2
             return 1
+        fi
+        if [ -n "$stage_root" ]; then
+            while IFS= read -r variant; do
+                [ -n "$variant" ] || continue
+                if LC_ALL=C grep -F -I -q -- "$variant" "$metadata"; then
+                    echo "Error: generated metadata still contains the staging root '$variant': $metadata" >&2
+                    return 1
+                fi
+            done < <(dependency_path_variants "$stage_root")
+            if [ -n "$staging_directory" ] &&
+                LC_ALL=C grep -F -I -q -- "$staging_directory" "$metadata"; then
+                echo "Error: generated metadata still contains the staging directory" \
+                    "'$staging_directory': $metadata" >&2
+                return 1
+            fi
         fi
     done < <(find "$prefix" -type f \
         \( -name '*.pc' -o -name '*.la' -o -name '*.cmake' \
-           -o -name '*-config' -o -name 'curl-config' \) -print0)
+           -o -name '*-config' \) -print0)
 }
 
 finish_dependency_prefix() {
@@ -913,7 +1003,7 @@ extract_archive() {
             ;;
         *)
             echo "Error: unsupported archive format '$archive'." >&2
-            exit 1
+            return 1
             ;;
     esac
 }
@@ -921,12 +1011,12 @@ extract_archive() {
 
 # Test-only portable network dependency shared by platform bootstraps.
 build_libevent_static() {
-    local src_dir="$2"
-    local build_dir="$3"
-    local compiler="$4"
-    local archiver="$5"
-    local ranlib_tool="$6"
-    local host_triple="${7:-}"
+    local src_dir="$1"
+    local build_dir="$2"
+    local compiler="$3"
+    local archiver="$4"
+    local ranlib_tool="$5"
+    local host_triple="${6:-}"
     local archive="$src_dir/libevent-${LIBEVENT_VERSION}.tar.gz"
     local source="$build_dir/libevent-${LIBEVENT_VERSION}"
 
@@ -980,7 +1070,7 @@ build_argtable3_uthash_unity() {
     for file in "$source"/src/*.c; do
         object="$object_dir/argtable3-$(basename "${file%.c}").o"
         # shellcheck disable=SC2086
-        "$compiler" -O2 ${CUP_DEPENDENCY_CFLAGS:-} -I"$source/src" -c "$file" -o "$object"
+        "$compiler" ${CUP_DEPENDENCY_CFLAGS:--O2} -I"$source/src" -c "$file" -o "$object"
     done
     "$archiver" rcs "$prefix/lib/libargtable3.a" "$object_dir"/argtable3-*.o
     "$ranlib_tool" "$prefix/lib/libargtable3.a"
@@ -1007,7 +1097,7 @@ build_argtable3_uthash_unity() {
     download_source unity "$archive"
     extract_archive "$archive" "$source"
     # shellcheck disable=SC2086
-    "$compiler" -O2 ${CUP_DEPENDENCY_CFLAGS:-} -I"$source/src" -c "$source/src/unity.c" \
+    "$compiler" ${CUP_DEPENDENCY_CFLAGS:--O2} -I"$source/src" -c "$source/src/unity.c" \
         -o "$object_dir/unity.o"
     "$archiver" rcs "$prefix/lib/libunity.a" "$object_dir/unity.o"
     "$ranlib_tool" "$prefix/lib/libunity.a"

@@ -180,7 +180,6 @@ build_libarchive() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
-        --disable-nls \
         --disable-acl \
         --without-bz2lib \
         --without-lzo2 \
@@ -282,7 +281,10 @@ main() {
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
         exit 0
     fi
-    trap 'abort_dependency_prefix' EXIT HUP INT TERM
+    trap 'abort_dependency_prefix' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     require_tool curl
     require_tool cmp
     require_tool diff
@@ -304,7 +306,7 @@ main() {
     build_xz
     build_curl
     build_libarchive
-    build_libevent_static "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
+    build_libevent_static "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB" "$HOST_TRIPLE"
     build_argtable3_uthash_unity "$PREFIX" "$SRC_DIR" "$BUILD_DIR" \
         "$CC" "$AR" "$RANLIB"
