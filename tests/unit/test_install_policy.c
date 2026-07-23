@@ -190,8 +190,7 @@ CupError system_create_temp_file(
 }
 
 CupError system_sync_file(FILE *file) {
-    return file != NULL && fflush(file) == 0 && fsync(fileno(file)) == 0 ? CUP_OK
-                                                                         : CUP_ERR_FILESYSTEM;
+    return test_sync_file(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 CupError system_replace_file(const char *source,

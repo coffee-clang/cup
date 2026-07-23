@@ -10,6 +10,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 
 static inline int test_mkdir(const char *path, int mode) {
     (void)mode;
@@ -41,8 +42,16 @@ static inline char *test_make_temp_directory(char *buffer,
     }
     return buffer;
 }
+
+static inline int test_sync_file(FILE *file) {
+    if (file == NULL || fflush(file) != 0) {
+        return -1;
+    }
+    return _commit(_fileno(file));
+}
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 
 static inline int test_mkdir(const char *path, int mode) {
     return mkdir(path, (mode_t)mode);
@@ -62,6 +71,13 @@ static inline char *test_make_temp_directory(char *buffer,
         return NULL;
     }
     return mkdtemp(buffer);
+}
+
+static inline int test_sync_file(FILE *file) {
+    if (file == NULL || fflush(file) != 0) {
+        return -1;
+    }
+    return fsync(fileno(file));
 }
 #endif
 
