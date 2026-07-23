@@ -65,11 +65,12 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           CUP_TEST_PLATFORM: ${{ matrix.platform }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
+          CUP_MACOS_COVERAGE_DIAGNOSTICS_DIR: ${{ runner.temp }}/cup-macos-coverage-diagnostics/${{ matrix.platform }}
         run: scripts/ci/macos-coverage-diagnostics.sh
       - name: Add diagnostic summary
         if: always()
         run: |
-          summary="build/diagnostics/macos-coverage/${{ matrix.platform }}/summary.md"
+          summary="${{ runner.temp }}/cup-macos-coverage-diagnostics/${{ matrix.platform }}/summary.md"
           if [ -f "$summary" ]; then
             cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           else
@@ -79,6 +80,6 @@ jobs:
         if: always()
         with:
           name: cup-macos-coverage-diagnostics-${{ matrix.platform }}
-          path: build/diagnostics/macos-coverage/${{ matrix.platform }}/
+          path: ${{ runner.temp }}/cup-macos-coverage-diagnostics/${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 14
