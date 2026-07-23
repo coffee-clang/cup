@@ -145,7 +145,7 @@ export CUP_TEST_BINARY="$ROOT/build/$PLATFORM/coverage/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
 if [ "$COVERAGE_BACKEND" = llvm ]; then
     mkdir -p "$REPORT_DIR/profiles"
-    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m-%p.profraw"
+    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m.profraw"
 fi
 
 run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \
@@ -203,14 +203,12 @@ common_args=(
     --print-summary
 )
 if [ "$COVERAGE_BACKEND" = llvm ]; then
-    # llvm-cov exports canonical absolute source paths. Absolute filters avoid
-    # discarding every record when gcovr cannot relativize Apple LLVM paths.
-    llvm_root_filter=$(printf '%s\n' "$ROOT" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
+    # Apple Clang may export absolute or compilation-relative filenames. With
+    # no explicit include filter, gcovr derives one from --root and handles
+    # both forms. Only non-product directories are excluded explicitly.
     common_args+=(
-        --filter "$llvm_root_filter/src/"
-        --filter "$llvm_root_filter/include/"
-        --exclude "$llvm_root_filter/tests/"
-        --exclude "$llvm_root_filter/build/"
+        --exclude 'tests/'
+        --exclude 'build/'
     )
 else
     common_args+=(
@@ -221,9 +219,11 @@ else
     )
 fi
 backend_args=()
+search_args=()
 gcovr_command=(gcovr)
 if [ "$COVERAGE_BACKEND" = llvm ]; then
     gcovr_command=(env "PATH=$LLVM_TOOL_DIR:$PATH" gcovr)
+    search_args+=("$REPORT_DIR/profiles")
     backend_args+=(--llvm-profdata-executable "$LLVM_PROFDATA")
     backend_args+=(--llvm-cov-binary "$CUP_TEST_BINARY")
     while IFS= read -r binary; do
@@ -236,6 +236,7 @@ run_gcovr() {
     jobs=$1
     "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
         "${gcovr_command[@]}" -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
+        "${search_args[@]}" \
         --txt "$REPORT_DIR/summary.txt" \
         --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
         --json "$REPORT_DIR/coverage.json" --json-pretty \

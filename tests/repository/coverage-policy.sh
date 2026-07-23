@@ -16,16 +16,20 @@ for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function
         '--llvm-profdata-executable' '--llvm-cov-binary' \
         'CUP_TEST_TIMEOUT_COMMAND' 'powershell.exe' \
         'cup_test_require_gcovr_llvm' 'build/$PLATFORM/coverage/tests' \
-        'profiles/%m-%p.profraw' 'CUP_COVERAGE_REPORT_TIMEOUT:-600' \
-        'llvm_root_filter=' '--filter "$llvm_root_filter/src/"' \
-        '--filter "$llvm_root_filter/include/"'; do
+        'profiles/%m.profraw' 'CUP_COVERAGE_REPORT_TIMEOUT:-600' \
+        'search_args+=("$REPORT_DIR/profiles")' \
+        "--exclude 'tests/'" "--exclude 'build/'"; do
     grep -Fq -- "$required" "$runner" || {
         echo "coverage runner is missing: $required" >&2
         exit 1
     }
 done
-if grep -Fq -- 'profiles/%m.profraw' "$runner"; then
-    echo 'coverage runner uses merged module profiles that gcovr cannot map reliably' >&2
+if grep -Fq -- 'profiles/%m-%p.profraw' "$runner"; then
+    echo 'coverage runner creates one LLVM profile per process instead of merging by module' >&2
+    exit 1
+fi
+if grep -Fq -- 'llvm_root_filter=' "$runner"; then
+    echo 'coverage runner hard-codes one LLVM filename form instead of relying on --root' >&2
     exit 1
 fi
 for required in cup_test_find_timeout cup_test_require_tool \

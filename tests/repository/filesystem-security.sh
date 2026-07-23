@@ -68,5 +68,11 @@ for test_name in test_package_extract.c test_package_archive.c test_filesystem.c
 done
 [ -f "$PROJECT_ROOT/tests/integration/windows/filesystem-archives.ps1" ] ||
     fail 'native Windows filesystem/archive integration suite is missing'
+windows_archive_test=$PROJECT_ROOT/tests/integration/windows/filesystem-archives.ps1
+for token in 'List[object]' 'Assert-ZipContainsExactEntries' '-ccontains' \
+        'bin/clang.cmd' 'bin/CLANG.cmd'; do
+    grep -F -- "$token" "$windows_archive_test" >/dev/null ||
+        fail "Windows archive fixture guard is missing: $token"
+done
 
 printf '%s\n' 'Filesystem and archive security contracts passed.'

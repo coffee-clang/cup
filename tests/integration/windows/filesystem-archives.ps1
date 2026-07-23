@@ -13,7 +13,7 @@ function New-CustomZipPackage {
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
-        [hashtable]$ExtraEntries
+        [System.Collections.IDictionary]$ExtraEntries
     )
 
     Add-Type -AssemblyName System.IO.Compression
@@ -36,24 +36,37 @@ function New-CustomZipPackage {
         try {
             [void]$zip.CreateEntry("$packageName/")
             [void]$zip.CreateEntry("$packageName/bin/")
-            $entries = [ordered]@{
-                "$packageName/info.txt" = (
+            # Keep entries as a sequence rather than a hashtable. PowerShell
+            # hashtables compare string keys case-insensitively, which would
+            # collapse clang.cmd and CLANG.cmd before the ZIP is created.
+            $entries = [System.Collections.Generic.List[object]]::new()
+            $entries.Add([pscustomobject]@{
+                Name = "$packageName/info.txt"
+                Content = (
                     "package.component=compiler`n" +
                     "package.tool=clang`n" +
                     "package.version=$Version`n" +
                     "platform.host=$platform`n" +
                     "platform.target=$platform`n" +
                     "entry.clang=bin/clang.cmd`n")
-                "$packageName/bin/clang.cmd" = "@echo off`r`necho clang-$Version-$platform`:clang`r`n"
-            }
+            })
+            $entries.Add([pscustomobject]@{
+                Name = "$packageName/bin/clang.cmd"
+                Content = "@echo off`r`necho clang-$Version-$platform`:clang`r`n"
+            })
             foreach ($name in $ExtraEntries.Keys) {
-                $entries[$name] = [string]$ExtraEntries[$name]
+                $entries.Add([pscustomobject]@{
+                    Name = [string]$name
+                    Content = [string]$ExtraEntries[$name]
+                })
             }
-            foreach ($name in $entries.Keys) {
-                $entry = $zip.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal)
+            foreach ($entrySpec in $entries) {
+                $entry = $zip.CreateEntry(
+                    $entrySpec.Name,
+                    [System.IO.Compression.CompressionLevel]::Optimal)
                 $entryStream = $entry.Open()
                 try {
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$entries[$name])
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($entrySpec.Content)
                     $entryStream.Write($bytes, 0, $bytes.Length)
                 } finally {
                     $entryStream.Dispose()
@@ -72,6 +85,37 @@ function New-CustomZipPackage {
     return [pscustomobject]@{
         PackageName = $packageName
         Archive = $archive
+    }
+}
+
+
+# Validate generated ZIP entry names with ordinal comparison before cup consumes
+# the fixture. This prevents a broken fixture from being reported as a cup bug.
+function Assert-ZipContainsExactEntries {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Archive,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Names
+    )
+
+    $stream = [System.IO.File]::OpenRead($Archive)
+    try {
+        $zip = [System.IO.Compression.ZipArchive]::new(
+            $stream, [System.IO.Compression.ZipArchiveMode]::Read, $false)
+        try {
+            $actual = @($zip.Entries | ForEach-Object { $_.FullName })
+            foreach ($name in $Names) {
+                if (-not ($actual -ccontains $name)) {
+                    Fail-Test "ZIP fixture is missing exact entry: $name"
+                }
+            }
+        } finally {
+            $zip.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
     }
 }
 
@@ -145,9 +189,12 @@ try {
     $caseVersion = "30.1.1"
     Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $caseVersion
     $casePackage = "clang-$caseVersion-windows-x64-windows-x64"
-    [void](New-CustomZipPackage -Version $caseVersion -ExtraEntries @{
+    $caseFixture = New-CustomZipPackage -Version $caseVersion -ExtraEntries @{
         "$casePackage/bin/CLANG.cmd" = "collision`n"
-    })
+    }
+    Assert-ZipContainsExactEntries -Archive $caseFixture.Archive -Names @(
+        "$casePackage/bin/clang.cmd",
+        "$casePackage/bin/CLANG.cmd")
     [void](Assert-InstallRejected $caseVersion)
 
     $traversalVersion = "30.1.2"
