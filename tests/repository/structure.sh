@@ -29,6 +29,20 @@ for required in \
     [ -f "$required" ] || fail "required file is missing: $required"
 done
 
+# Dependency metadata is parsed identically on every runner. Pin its checkout
+# representation to LF and reject carriage returns in the tracked files.
+carriage_return=$(printf '\r')
+for file in config/dependencies.lock config/dependencies.recipe; do
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        attribute=$(git check-attr eol -- "$file")
+        [ "$attribute" = "$file: eol: lf" ] ||
+            fail "$file must be checked out with LF line endings"
+    fi
+    if LC_ALL=C grep -q "$carriage_return" "$file"; then
+        fail "$file contains carriage-return characters"
+    fi
+done
+
 [ ! -e tests/README.md ] || fail 'test documentation belongs in docs/development/TESTING.md'
 
 unexpected=$(find tests/unit -type f ! -name '*.c' ! -name '*.h' -print)
@@ -47,15 +61,25 @@ unversioned_actions=$(find .github/workflows -type f -name '*.yml' \
 [ -z "$unversioned_actions" ] ||
     fail "external actions must use numeric major tags:\n$unversioned_actions"
 
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    shell_files=$(git ls-files -- '*.sh')
+else
+    shell_files=$(find scripts tests -type f -name '*.sh' -print)
+fi
+
 nonportable_shell=$(
-    grep -RInE --exclude=structure.sh --include='*.sh' \
-        '(readlink[[:space:]]+-f|stat[[:space:]]+(-c|--format)|date[[:space:]]+-d|xargs[[:space:]]+-r|sort[[:space:]]+-V|find.*[[:space:]]-printf)' \
-        scripts tests 2>/dev/null || :
+    for script in $shell_files; do
+        [ "$script" = tests/repository/structure.sh ] && continue
+        grep -HnE \
+            '(readlink[[:space:]]+-f|stat[[:space:]]+(-c|--format)|date[[:space:]]+-d|xargs[[:space:]]+-r|sort[[:space:]]+-V|find.*[[:space:]]-printf)' \
+            "$script" 2>/dev/null || :
+    done
 )
 [ -z "$nonportable_shell" ] || fail "non-portable shell options remain:\n$nonportable_shell"
 
 # The first line defines ownership: standalone shell programs have a shebang
-# and mode 100755; sourced libraries have no shebang and mode 100644.
+# and mode 100755; sourced libraries have no shebang and mode 100644. Local,
+# ignored helpers are outside this repository contract.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git ls-files -s -- '*.sh' | while read -r mode object stage path; do
         first=$(sed -n '1p' "$path")
@@ -68,7 +92,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     done
 fi
 
-for script in $(find scripts tests -type f -name '*.sh'); do
+for script in $shell_files; do
     first=$(sed -n '1p' "$script")
     case "$first" in
         '#!'*) [ -x "$script" ] || fail "entry point is not executable: $script" ;;
