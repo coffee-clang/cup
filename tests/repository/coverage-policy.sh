@@ -16,7 +16,9 @@ for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function
         '--llvm-profdata-executable' '--llvm-cov-binary' \
         'CUP_TEST_TIMEOUT_COMMAND' 'powershell.exe' \
         'cup_test_require_gcovr_llvm' 'build/$PLATFORM/coverage/tests' \
-        'profiles/%m-%p.profraw' 'CUP_COVERAGE_REPORT_TIMEOUT:-600'; do
+        'profiles/%m-%p.profraw' 'CUP_COVERAGE_REPORT_TIMEOUT:-600' \
+        'llvm_root_filter=' '--filter "$llvm_root_filter/src/"' \
+        '--filter "$llvm_root_filter/include/"'; do
     grep -Fq -- "$required" "$runner" || {
         echo "coverage runner is missing: $required" >&2
         exit 1

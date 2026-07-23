@@ -199,13 +199,27 @@ fi
 
 common_args=(
     --root "$ROOT"
-    --filter 'src/'
-    --filter 'include/'
-    --exclude 'tests/'
-    --exclude 'build/'
     --merge-mode-functions separate
     --print-summary
 )
+if [ "$COVERAGE_BACKEND" = llvm ]; then
+    # llvm-cov exports canonical absolute source paths. Absolute filters avoid
+    # discarding every record when gcovr cannot relativize Apple LLVM paths.
+    llvm_root_filter=$(printf '%s\n' "$ROOT" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
+    common_args+=(
+        --filter "$llvm_root_filter/src/"
+        --filter "$llvm_root_filter/include/"
+        --exclude "$llvm_root_filter/tests/"
+        --exclude "$llvm_root_filter/build/"
+    )
+else
+    common_args+=(
+        --filter 'src/'
+        --filter 'include/'
+        --exclude 'tests/'
+        --exclude 'build/'
+    )
+fi
 backend_args=()
 gcovr_command=(gcovr)
 if [ "$COVERAGE_BACKEND" = llvm ]; then

@@ -29,10 +29,7 @@ curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.
 ### Windows PowerShell
 
 ```powershell
-$installer = Join-Path $env:TEMP "install-cup.ps1"
-iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 `
-    -OutFile $installer
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+& ([scriptblock]::Create((irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1)))
 ```
 
 The installer places CUP under `~/.cup` or `%USERPROFILE%\.cup` and verifies the
@@ -69,18 +66,3 @@ The complete reference is available in
 - [Build](docs/development/BUILD.md)
 - [Testing](docs/development/TESTING.md)
 - [Releases](docs/development/RELEASES.md)
-
-## Build from source
-
-A normal build or test prepares the pinned dependency prefix when it is missing
-and reuses it when its platform, profile, recipe and source lock are compatible:
-
-```sh
-make PLATFORM=linux-x64
-make PLATFORM=linux-x64 test
-```
-
-Use `make quality` for repository and workflow checks, or `make check` for the
-complete local verification. `make help` lists every public build, dependency,
-test, release, certificate and documentation target. Additional details are
-documented in [BUILD](docs/development/BUILD.md).

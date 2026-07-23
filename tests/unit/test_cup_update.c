@@ -487,7 +487,11 @@ static void test_update_success(void) {
     TEST_ASSERT_EQUAL_INT(1, helper_prepare_calls);
     TEST_ASSERT_EQUAL_INT(1, transaction_begin_calls);
     TEST_ASSERT_EQUAL_INT(1, helper_calls);
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(0, executable_calls);
+#else
     TEST_ASSERT_EQUAL_INT(2, executable_calls);
+#endif
     TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
@@ -666,6 +670,7 @@ static void test_stage_failures(void) {
     verify_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
 
+#if !defined(_WIN32)
     reset_scenario();
     fail_executable_call = 1;
     executable_result = CUP_ERR_FILESYSTEM;
@@ -675,6 +680,7 @@ static void test_stage_failures(void) {
     fail_executable_call = 2;
     executable_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+#endif
 }
 
 /* Suite registration. */
