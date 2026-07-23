@@ -130,27 +130,34 @@ jobs:
       - id: cache-posix
         if: matrix.family != 'windows'
         run: |
+          prefix="$HOME/deps/${{ matrix.platform }}/install"
           key=$(scripts/dependencies/verify.sh \
             '${{ matrix.platform }}' --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: cache-windows
         if: matrix.family == 'windows'
         shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
           prefix="$HOME/deps/windows-x64/install"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         if: matrix.family != 'windows'
         with:
-          path: ~/deps/${{ matrix.platform }}/install
+          path: ${{ steps.cache-posix.outputs.prefix }}
           key: ${{ steps.cache-posix.outputs.key }}
+          fail-on-cache-miss: true
       - uses: actions/cache@v5
         if: matrix.family == 'windows'
         with:
           path: ${{ steps.cache-windows.outputs.path }}
           key: ${{ steps.cache-windows.outputs.key }}
+          fail-on-cache-miss: true
       - name: Build POSIX release
         if: matrix.family != 'windows'
         env:
@@ -160,11 +167,15 @@ jobs:
           TAG: ${{ needs.metadata.outputs.tag }}
           SHA: ${{ needs.metadata.outputs.sha }}
           CUP_CI_ENVIRONMENT_PREPARED: 1
+          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
         run: scripts/release/build-platform.sh
       - name: Build POSIX release test helpers
         if: matrix.family != 'windows'
+        env:
+          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
         run: >-
           make PLATFORM='${{ matrix.platform }}'
+          DEPS_PREFIX="$DEPS_PREFIX"
           CUP_TEST_CONFIGURATION=release test-helpers
       - name: Build Windows release
         if: matrix.family == 'windows'
@@ -175,12 +186,18 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
           TAG: ${{ needs.metadata.outputs.tag }}
           SHA: ${{ needs.metadata.outputs.sha }}
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
+          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
         run: scripts/release/build-platform.sh
       - name: Build Windows release test helpers
         if: matrix.family == 'windows'
         shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
+          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
         run: >-
-          make PLATFORM=windows-x64 CUP_TEST_CONFIGURATION=release test-helpers
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX"
+          CUP_TEST_CONFIGURATION=release test-helpers
       - uses: actions/upload-artifact@v7
         with:
           name: cup-release-${{ matrix.platform }}

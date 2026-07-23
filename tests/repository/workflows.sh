@@ -39,6 +39,20 @@ for required in 'workflow_call:' 'uses: ./.github/workflows/dependencies.yml' \
         'Tests gate'; do
     require_text "$TESTS" "$required"
 done
+
+# Dependency consumers must restore exactly the path used by the producer and
+# pass that resolved prefix to every build or test entry point.
+for consumer in "$TESTS" "$RELEASE" "$DEBUG"; do
+    require_text "$consumer" 'fail-on-cache-miss: true'
+    require_text "$consumer" 'DEPS_PREFIX:'
+    reject_text "$consumer" 'path: ~/deps/'
+done
+require_text "$TESTS" 'path: ${{ steps.cache.outputs.prefix }}'
+require_text "$TESTS" 'path: ${{ steps.cache-posix.outputs.prefix }}'
+require_text "$TESTS" 'DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}'
+reject_text "$TESTS" 'source-windows.ps1'
+[ ! -e "$ROOT/scripts/ci/source-windows.ps1" ] || \
+    fail 'obsolete PowerShell source-test wrapper still exists'
 reject_text "$TESTS" 'scripts/release/'
 reject_text "$TESTS" 'gh release'
 

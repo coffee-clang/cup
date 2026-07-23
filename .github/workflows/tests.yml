@@ -64,17 +64,21 @@ jobs:
       - id: cache
         name: Resolve dependency cache
         run: |
+          prefix="$HOME/deps/${{ matrix.platform }}/install"
           key=$(scripts/dependencies/verify.sh \
             '${{ matrix.platform }}' --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         with:
-          path: ~/deps/${{ matrix.platform }}/install
+          path: ${{ steps.cache.outputs.prefix }}
           key: ${{ steps.cache.outputs.key }}
+          fail-on-cache-miss: true
       - name: Run source tests
         env:
           PLATFORM: ${{ matrix.platform }}
           FAMILY: ${{ matrix.family }}
+          DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
           CUP_CI_ENVIRONMENT_PREPARED: 1
         run: scripts/ci/source-posix.sh
 
@@ -108,20 +112,29 @@ jobs:
       - id: cache
         name: Resolve dependency cache
         shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
           prefix="$HOME/deps/windows-x64/install"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         with:
           path: ${{ steps.cache.outputs.path }}
           key: ${{ steps.cache.outputs.key }}
+          fail-on-cache-miss: true
       - name: Run source tests
         shell: msys2 {0}
-        run: >-
-          powershell.exe -NoProfile -ExecutionPolicy Bypass
-          -File scripts/ci/source-windows.ps1
+        env:
+          PLATFORM: windows-x64
+          CUP_TEST_PLATFORM: windows-x64
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
+          DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
+        run: |
+          make PLATFORM="$PLATFORM" DEPS_PREFIX="$DEPS_PREFIX" test
+          make PLATFORM="$PLATFORM" DEPS_PREFIX="$DEPS_PREFIX" check-binary
 
   coverage:
     name: Coverage (${{ matrix.platform }})
@@ -181,32 +194,40 @@ jobs:
       - id: cache-posix
         if: matrix.family != 'windows'
         run: |
+          prefix="$HOME/deps/${{ matrix.platform }}/install"
           key=$(scripts/dependencies/verify.sh \
             '${{ matrix.platform }}' --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: cache-windows
         if: matrix.family == 'windows'
         shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
           prefix="$HOME/deps/windows-x64/install"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         if: matrix.family != 'windows'
         with:
-          path: ~/deps/${{ matrix.platform }}/install
+          path: ${{ steps.cache-posix.outputs.prefix }}
           key: ${{ steps.cache-posix.outputs.key }}
+          fail-on-cache-miss: true
       - uses: actions/cache@v5
         if: matrix.family == 'windows'
         with:
           path: ${{ steps.cache-windows.outputs.path }}
           key: ${{ steps.cache-windows.outputs.key }}
+          fail-on-cache-miss: true
       - name: Collect POSIX coverage
         if: matrix.family != 'windows'
         env:
           PLATFORM: ${{ matrix.platform }}
           CUP_TEST_PLATFORM: ${{ matrix.platform }}
+          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CUP_COVERAGE_MIN_LINES: 85
           CUP_COVERAGE_MIN_BRANCHES: 70
           CUP_COVERAGE_MIN_FUNCTIONS: 97
@@ -217,6 +238,8 @@ jobs:
         env:
           PLATFORM: windows-x64
           CUP_TEST_PLATFORM: windows-x64
+          CUP_DEPENDENCY_PROFILE: ucrt64-gcc
+          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CUP_COVERAGE_MIN_LINES: 85
           CUP_COVERAGE_MIN_BRANCHES: 70
           CUP_COVERAGE_MIN_FUNCTIONS: 97
@@ -287,8 +310,10 @@ jobs:
       - id: cache-posix
         if: matrix.family != 'windows'
         run: |
+          prefix="$HOME/deps/${{ matrix.platform }}/install"
           key=$(scripts/dependencies/verify.sh \
             '${{ matrix.platform }}' --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: cache-windows
         if: matrix.family == 'windows'
@@ -298,23 +323,27 @@ jobs:
         run: |
           prefix="$HOME/deps/windows-x64-clang64/install"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         if: matrix.family != 'windows'
         with:
-          path: ~/deps/${{ matrix.platform }}/install
+          path: ${{ steps.cache-posix.outputs.prefix }}
           key: ${{ steps.cache-posix.outputs.key }}
+          fail-on-cache-miss: true
       - uses: actions/cache@v5
         if: matrix.family == 'windows'
         with:
           path: ${{ steps.cache-windows.outputs.path }}
           key: ${{ steps.cache-windows.outputs.key }}
+          fail-on-cache-miss: true
       - name: Run POSIX sanitizer tests
         if: matrix.family != 'windows'
         env:
           PLATFORM: ${{ matrix.platform }}
           CUP_TEST_PLATFORM: ${{ matrix.platform }}
+          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CC: clang
         run: tests/runners/sanitizers.sh
       - name: Run Windows sanitizer tests
@@ -324,6 +353,7 @@ jobs:
           PLATFORM: windows-x64
           CUP_TEST_PLATFORM: windows-x64
           CUP_DEPENDENCY_PROFILE: clang64
+          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CC: clang
         run: tests/runners/sanitizers.sh
       - uses: actions/upload-artifact@v7
