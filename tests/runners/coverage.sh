@@ -145,7 +145,7 @@ export CUP_TEST_BINARY="$ROOT/build/$PLATFORM/coverage/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
 if [ "$COVERAGE_BACKEND" = llvm ]; then
     mkdir -p "$REPORT_DIR/profiles"
-    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m.profraw"
+    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m-%p.profraw"
 fi
 
 run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \

@@ -8,6 +8,7 @@
 #include "checksum.h"
 #include "command_context.h"
 #include "commands.h"
+#include "constants.h"
 #include "error.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -270,7 +271,8 @@ CupError layout_get_uninstall_path(char *buffer, size_t size) {
     if (setup_result() != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return copy_test_path(buffer, size, "installed/uninstall.sh");
+    return buffer_write_result(
+        snprintf(buffer, size, "%s/installed/%s", temp_dir, CUP_UNINSTALL_FILENAME), size);
 }
 
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
@@ -380,7 +382,7 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         TEST_ASSERT_TRUE(strstr(url, "cup-linux-x64") != NULL);
         write_text(destination, "binary\n");
     } else if (fetch_calls == 6) {
-        TEST_ASSERT_TRUE(strstr(url, "uninstall.sh") != NULL);
+        TEST_ASSERT_TRUE(strstr(url, CUP_UNINSTALL_FILENAME) != NULL);
         write_text(destination, "#!/bin/sh\n");
     } else if (fetch_calls == 7) {
         TEST_ASSERT_TRUE(strstr(url, "packages.cfg") != NULL);
