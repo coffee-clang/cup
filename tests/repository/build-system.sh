@@ -336,6 +336,10 @@ assert_contains "$platform_header" '_mkdir('
 assert_contains "$platform_header" '_mktemp_s('
 assert_contains "$platform_header" 'RUNNER_TEMP'
 
+helper_build=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
+assert_contains "$helper_build" '-lws2_32 -liphlpapi'
+assert_contains "$helper_build" '$event_libs $PLATFORM_LIBS'
+
 # Test runners must receive the same explicit platform, dependency prefix and
 # compiler used for the binaries they execute. This also keeps custom prefixes
 # working through nested make and shell entry points.

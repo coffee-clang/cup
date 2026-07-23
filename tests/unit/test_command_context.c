@@ -532,7 +532,7 @@ static void test_load_contracts(void) {
 
 static void test_entry_requests(void) {
     PackageRequest request;
-    PackageCatalog catalog;
+    PackageCatalog catalog = {0};
     FILE *stream;
     char output[128];
 

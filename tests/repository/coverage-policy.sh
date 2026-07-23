@@ -15,12 +15,17 @@ for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function
         'linux-x64|linux-arm64' 'macos-x64|macos-arm64' 'windows-x64' \
         '--llvm-profdata-executable' '--llvm-cov-binary' \
         'CUP_TEST_TIMEOUT_COMMAND' 'powershell.exe' \
-        'cup_test_require_gcovr_llvm' 'build/$PLATFORM/coverage/tests'; do
+        'cup_test_require_gcovr_llvm' 'build/$PLATFORM/coverage/tests' \
+        'profiles/%m.profraw' 'CUP_COVERAGE_REPORT_TIMEOUT:-600'; do
     grep -Fq -- "$required" "$runner" || {
         echo "coverage runner is missing: $required" >&2
         exit 1
     }
 done
+if grep -Fq -- '%m-%p.profraw' "$runner"; then
+    echo 'coverage runner disables LLVM online profile merging with %p' >&2
+    exit 1
+fi
 for required in cup_test_find_timeout cup_test_require_tool \
         'brew install gcovr' 'mingw-w64-ucrt-x86_64-gcovr'; do
     grep -Fq -- "$required" "$environment" || {

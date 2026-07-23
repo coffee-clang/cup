@@ -17,9 +17,11 @@ case "$PLATFORM" in
         CC="${CC:-gcc}"
         ;;
 esac
+PLATFORM_LIBS=""
 case "$PLATFORM" in
     windows-x64)
         EXE_SUFFIX=.exe
+        PLATFORM_LIBS="-lws2_32 -liphlpapi"
         ;;
     *)
         EXE_SUFFIX=
@@ -77,7 +79,7 @@ event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libevent_extra libevent_core)
 "$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
-    "$ROOT/tests/helpers/network-helper.c" $LDFLAGS $event_libs \
+    "$ROOT/tests/helpers/network-helper.c" $LDFLAGS $event_libs $PLATFORM_LIBS \
     -o "$OUT/network-helper$EXE_SUFFIX"
 
 printf 'All test helpers compiled for %s (%s).\n' "$PLATFORM" "$CONFIGURATION"
