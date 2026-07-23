@@ -16,7 +16,6 @@ verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" "cup-$PLATFORM"
 chmod +x "$release_dir/cup-$PLATFORM" "$release_dir/install.sh"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
 
-CUP_TEST_SKIP_BUILD=1 \
 CUP_TEST_PLATFORM="$PLATFORM" \
 CUP_TEST_BINARY="$PWD/$release_dir/cup-$PLATFORM" \
 CUP_TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}" \

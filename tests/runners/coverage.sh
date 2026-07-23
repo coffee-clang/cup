@@ -163,7 +163,7 @@ if [ "$PLATFORM" = windows-x64 ]; then
 else
     run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=coverage CUP_TEST_PLATFORM="$PLATFORM" \
-            CUP_TEST_SKIP_BUILD=1 CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
+            CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \
             "$ROOT/tests/runners/integration-posix.sh"
 fi

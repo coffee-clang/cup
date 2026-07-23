@@ -343,8 +343,6 @@ makefile_text=$(cat "$PROJECT_ROOT/Makefile")
 assert_contains "$makefile_text" \
     "CUP_TEST_PLATFORM='\$(PLATFORM)' DEPS_PREFIX='\$(DEPS_PREFIX)'"
 assert_contains "$makefile_text" \
-    "CC='\$(CC)' CUP_TEST_SKIP_BUILD=1"
-assert_contains "$makefile_text" \
     "CUP_TEST_CONFIGURATION='\$(CUP_TEST_CONFIGURATION)'"
 
 printf '%s\n' 'Build-system contract tests passed.'

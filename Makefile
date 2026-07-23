@@ -622,8 +622,7 @@ test: deps
 			$(MAKE) --no-print-directory test-build PLATFORM='$(PLATFORM)' \
 				DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' && \
 			CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
-				CC='$(CC)' CUP_TEST_SKIP_BUILD=1 \
-				CUP_TEST_CONFIGURATION=development \
+				CC='$(CC)' CUP_TEST_CONFIGURATION=development \
 				./tests/runners/all-posix.sh ;; \
 	esac
 
@@ -640,8 +639,7 @@ test-integration: deps
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CONFIGURATION=development
 	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
-		CC='$(CC)' CUP_TEST_SKIP_BUILD=1 \
-		CUP_TEST_CONFIGURATION=development \
+		CC='$(CC)' CUP_TEST_CONFIGURATION=development \
 		./tests/runners/integration-posix.sh
 
 quality:

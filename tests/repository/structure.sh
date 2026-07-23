@@ -37,6 +37,20 @@ for required in \
     [ -f "$required" ] || fail "required file is missing: $required"
 done
 
+# Dependency metadata is parsed identically on every runner. Pin its checkout
+# representation to LF and reject carriage returns in the tracked files.
+carriage_return=$(printf '\r')
+for file in config/dependencies.lock config/dependencies.recipe; do
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        attribute=$(git check-attr eol -- "$file")
+        [ "$attribute" = "$file: eol: lf" ] ||
+            fail "$file must be checked out with LF line endings"
+    fi
+    if LC_ALL=C grep -q "$carriage_return" "$file"; then
+        fail "$file contains carriage-return characters"
+    fi
+done
+
 [ ! -e tests/README.md ] || fail 'test documentation belongs in docs/development/TESTING.md'
 
 unexpected=$(find tests/unit -type f ! -name '*.c' ! -name '*.h' -print)

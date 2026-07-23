@@ -13,7 +13,7 @@ Makefile    text eol=lf whitespace=-tab-in-indent
 *.pem       text eol=lf
 *.cfg       text eol=lf
 *.txt       text eol=lf
-*.lock      text eol=lf
-*.recipe    text eol=lf
+*.lock    text eol=lf
+*.recipe  text eol=lf
 VERSION     text eol=lf
 .editorconfig text eol=lf

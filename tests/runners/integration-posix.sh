@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Runs all POSIX real-CLI workflow owners against a prepared or freshly built executable.
+# Purpose: Runs all POSIX real-CLI workflow owners against a prepared executable.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -29,16 +29,10 @@ run_suite() {
     fi
 }
 
-if [ "${CUP_TEST_SKIP_BUILD:-0}" = 1 ]; then
-    TESTS_ROOT="$ROOT/tests"
-    export TESTS_ROOT
-    . "$TESTS_ROOT/support/posix-cli.sh"
-    require_test_binary
-else
-    cup_test_require_dependencies
-    run_suite "Building development binaries for $CUP_TEST_PLATFORM..." \
-        build.sh
-fi
+TESTS_ROOT="$ROOT/tests"
+export TESTS_ROOT
+. "$TESTS_ROOT/support/posix-cli.sh"
+require_test_binary
 
 run_suite 'Testing package catalog checksum schema...' package-catalog.sh
 run_suite 'Testing unsafe package archives...' archive-safety.sh

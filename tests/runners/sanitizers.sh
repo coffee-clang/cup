@@ -119,7 +119,6 @@ run_logged 'Compiling sanitizer unit tests and helpers...' "$REPORT_DIR/test-bui
     make -C "$ROOT" "${MAKE_PLATFORM_ARGS[@]}" \
         CUP_TEST_CONFIGURATION=sanitizers test-unit-build test-helpers
 
-export CUP_TEST_SKIP_BUILD=1
 export CUP_TEST_BINARY="$ROOT/build/$PLATFORM/sanitizers/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
 run_logged 'Running sanitizer unit tests...' "$REPORT_DIR/unit.log" \
@@ -137,7 +136,7 @@ if [ "$PLATFORM" = windows-x64 ]; then
 else
     run_logged 'Running sanitizer POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=sanitizers CUP_TEST_PLATFORM="$PLATFORM" \
-            CUP_TEST_SKIP_BUILD=1 CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
+            CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \
             "$ROOT/tests/runners/integration-posix.sh"
 fi
