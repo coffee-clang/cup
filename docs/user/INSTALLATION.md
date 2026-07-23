@@ -91,11 +91,21 @@ uninstall helper are protected read-only after installation.
 
 ## Windows PowerShell
 
+The README uses a single command suitable for copy and paste. The equivalent
+expanded form is easier to inspect and reports download or installer failures:
+
 ```powershell
 $installer = Join-Path $env:TEMP "install-cup.ps1"
-iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 `
-    -OutFile $installer
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+try {
+    iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 `
+        -OutFile $installer -ErrorAction Stop
+    powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+    if ($LASTEXITCODE -ne 0) {
+        throw "cup installer failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+}
 ```
 
 The native installer supports `windows-x64` and writes:

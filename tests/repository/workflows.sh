@@ -8,6 +8,7 @@ DEPENDENCIES=$ROOT/.github/workflows/dependencies.yml
 TESTS=$ROOT/.github/workflows/tests.yml
 RELEASE=$ROOT/.github/workflows/release.yml
 DEBUG=$ROOT/.github/workflows/debug.yml
+DIAGNOSTICS=$ROOT/.github/workflows/macos-coverage-diagnostics.yml
 
 fail() {
     printf 'Workflow contract test failed: %s\n' "$*" >&2
@@ -42,7 +43,7 @@ done
 
 # Dependency consumers must restore exactly the path used by the producer and
 # pass that resolved prefix to every build or test entry point.
-for consumer in "$TESTS" "$RELEASE" "$DEBUG"; do
+for consumer in "$TESTS" "$RELEASE" "$DEBUG" "$DIAGNOSTICS"; do
     require_text "$consumer" 'fail-on-cache-miss: true'
     require_text "$consumer" 'DEPS_PREFIX:'
     reject_text "$consumer" 'path: ~/deps/'
@@ -65,12 +66,21 @@ done
 # downloads would require a run-id selector and are intentionally forbidden.
 reject_text "$RELEASE" 'run-id:'
 
-require_text "$DEBUG" 'uses: ./.github/workflows/dependencies.yml'
+for required in 'workflow_dispatch:' 'push:' '- main' \
+        'uses: ./.github/workflows/dependencies.yml'; do
+    require_text "$DEBUG" "$required"
+done
+
+for required in 'workflow_dispatch:' 'diagnostics/macos-coverage' \
+        'uses: ./.github/workflows/dependencies.yml' \
+        'scripts/ci/macos-coverage-diagnostics.sh' 'actions/upload-artifact@v7'; do
+    require_text "$DIAGNOSTICS" "$required"
+done
+reject_text "$DIAGNOSTICS" 'CUP_COVERAGE_MIN_'
 
 reject_text "$DEPENDENCIES" 'push:'
 require_text "$DEPENDENCIES" 'group: cup-dependencies-'
 require_text "$DEPENDENCIES" 'cancel-in-progress: false'
-reject_text "$DEBUG" 'push:'
 if grep -R -Fq 'C:/msys64/home/runneradmin' "$ROOT/.github/workflows"; then
     fail 'workflow cache paths must not depend on a runner account name'
 fi

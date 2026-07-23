@@ -29,7 +29,7 @@ curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.
 ### Windows PowerShell
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1)))
+powershell -NoProfile -ExecutionPolicy Bypass -Command '$installer = Join-Path $env:TEMP "install-cup.ps1"; iwr "https://github.com/coffee-clang/cup/releases/latest/download/install.ps1" -OutFile $installer; & $installer'
 ```
 
 The installer places CUP under `~/.cup` or `%USERPROFILE%\.cup` and verifies the

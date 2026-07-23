@@ -239,9 +239,21 @@ workflow does not build or publish release candidates.
 
 ### Debug artifacts
 
-`.github/workflows/debug.yml` is dispatched manually when diagnostic executables
-or native symbol data are needed. It uses the same dependency caches and binary
-inspection policy. Debug artifacts never satisfy a release gate.
+`.github/workflows/debug.yml` runs automatically on pushes to `main` and can also
+be dispatched manually. It uses the same dependency caches and binary inspection
+policy. Debug artifacts never satisfy a release gate.
+
+### Temporary macOS coverage diagnostics
+
+`.github/workflows/macos-coverage-diagnostics.yml` is isolated from the normal
+coverage gate. It runs only when manually dispatched or when pushing the
+`diagnostics/macos-coverage` branch. The workflow compares LLVM prefix-map
+variants, records the exact `xcrun` toolchain, exports native branch data for a
+minimal probe and real CUP binaries, and uploads the raw profiles and gcovr logs.
+
+It applies no coverage thresholds and does not alter the official report. Once
+the macOS failure is classified and the permanent fix is validated, remove this
+workflow and `scripts/ci/macos-coverage-diagnostics.sh`.
 
 ### Release
 

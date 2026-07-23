@@ -1,0 +1,84 @@
+name: macOS coverage diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diagnostics/macos-coverage
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cup-macos-coverage-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: Dependencies (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-x64-apple-clang
+          - macos-arm64-apple-clang
+    uses: ./.github/workflows/dependencies.yml
+    with:
+      target: ${{ matrix.target }}
+
+  diagnostics:
+    name: Diagnose coverage (${{ matrix.platform }})
+    needs: dependencies
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: macos-arm64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Prepare diagnostic toolchain
+        env:
+          FAMILY: macos
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh coverage
+      - id: cache
+        run: |
+          prefix="$HOME/deps/${{ matrix.platform }}/install"
+          key=$(scripts/dependencies/verify.sh \
+            '${{ matrix.platform }}' --print-cache-key)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.cache.outputs.prefix }}
+          key: ${{ steps.cache.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Capture LLVM and gcovr evidence
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          CUP_TEST_PLATFORM: ${{ matrix.platform }}
+          DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
+        run: scripts/ci/macos-coverage-diagnostics.sh
+      - name: Add diagnostic summary
+        if: always()
+        run: |
+          summary="build/diagnostics/macos-coverage/${{ matrix.platform }}/summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Diagnostic summary was not generated.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cup-macos-coverage-diagnostics-${{ matrix.platform }}
+          path: build/diagnostics/macos-coverage/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14
