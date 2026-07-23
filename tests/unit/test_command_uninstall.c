@@ -10,6 +10,7 @@
 #include "system.h"
 #include "runtime_journal.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,7 @@
  * counters record the calls made by production code.
  */
 
-static char temp_dir[] = "/tmp/cup-uninstall-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static int root_is_directory;
 static CupError inspect_root_result;
 static CupError lock_result;
@@ -260,7 +261,8 @@ static void test_marker_cleanup(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-uninstall-test"));
     UNITY_BEGIN();
     RUN_TEST(test_invalid_runtime);
     RUN_TEST(test_pending_or_missing);

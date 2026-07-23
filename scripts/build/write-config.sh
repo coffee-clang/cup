@@ -35,15 +35,12 @@ if [ -n "$windres_command" ]; then
     windres_version=$($windres_command --version 2>/dev/null | first_line || true)
 fi
 
-# Bind object reuse to the verified dependency generation.
-dependency_file=$CUP_BUILD_DEPS_PREFIX/.cup-deps-config
-dependency_identity=$(sed -n 's/^dependency_id=//p' "$dependency_file" 2>/dev/null || true)
-case "$dependency_identity" in
-    *[!0-9a-f]*|'')
-        dependency_identity=missing
-        ;;
-esac
-[ "${#dependency_identity}" -eq 64 ] || dependency_identity=missing
+# Bind object reuse to the verified dependency manifest.
+dependency_file=$CUP_BUILD_DEPS_PREFIX/.cup-dependencies
+dependency_platform=$(sed -n 's/^platform=//p' "$dependency_file" 2>/dev/null || true)
+dependency_profile=$(sed -n 's/^profile=//p' "$dependency_file" 2>/dev/null || true)
+dependency_recipe=$(sed -n 's/^recipe=//p' "$dependency_file" 2>/dev/null || true)
+dependency_lock_sha256=$(sed -n 's/^lock_sha256=//p' "$dependency_file" 2>/dev/null || true)
 
 # Replace the stamp only when its semantic contents change.
 mkdir -p "$(dirname "$output")"
@@ -69,7 +66,10 @@ trap 'rm -f "$temporary"' EXIT HUP INT TERM
     printf 'ldflags=%s\n' "${CUP_BUILD_LDFLAGS:-}"
     printf 'ldlibs=%s\n' "${CUP_BUILD_LDLIBS:-}"
     printf 'deps_prefix=%s\n' "$CUP_BUILD_DEPS_PREFIX"
-    printf 'dependency_identity=%s\n' "$dependency_identity"
+    printf 'dependency_platform=%s\n' "$dependency_platform"
+    printf 'dependency_profile=%s\n' "$dependency_profile"
+    printf 'dependency_recipe=%s\n' "$dependency_recipe"
+    printf 'dependency_lock_sha256=%s\n' "$dependency_lock_sha256"
     printf 'official_build=%s\n' "$CUP_BUILD_OFFICIAL"
 } >"$temporary"
 

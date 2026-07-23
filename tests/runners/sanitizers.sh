@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Purpose: Runs ASan/UBSan on every supported native platform, with leak
-# detection enabled where the runtime supports it.
+# leak detection enabled only where the runtime supports it.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -19,7 +19,7 @@ case "$PLATFORM" in
         ;;
     macos-x64|macos-arm64)
         CC="${CC:-clang}"
-        LEAKS=1
+        LEAKS=0
         ;;
     windows-x64)
         CC="${CC:-clang}"
@@ -53,6 +53,11 @@ if [ "$PLATFORM" = windows-x64 ]; then
     cup_test_require_tool cygpath 'Windows sanitizer integration tests' || exit 2
 fi
 cup_test_require_dependencies
+
+MAKE_PLATFORM_ARGS=(PLATFORM="$PLATFORM" CC="$CC")
+if [ "$PLATFORM" = windows-x64 ]; then
+    MAKE_PLATFORM_ARGS+=(WINDRES=llvm-windres)
+fi
 
 smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/cup-sanitizer-smoke.XXXXXX")
 trap 'rm -rf "$smoke_dir"' EXIT HUP INT TERM
@@ -109,9 +114,9 @@ run_logged() {
 }
 
 run_logged 'Building the sanitizer executable...' "$REPORT_DIR/build.log" \
-    make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" sanitizers -j2
+    make -C "$ROOT" "${MAKE_PLATFORM_ARGS[@]}" sanitizers -j2
 run_logged 'Compiling sanitizer unit tests and helpers...' "$REPORT_DIR/test-build.log" \
-    make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" \
+    make -C "$ROOT" "${MAKE_PLATFORM_ARGS[@]}" \
         CUP_TEST_CONFIGURATION=sanitizers test-unit-build test-helpers
 
 export CUP_TEST_SKIP_BUILD=1

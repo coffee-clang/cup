@@ -8,6 +8,7 @@
 #include "path.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -63,7 +64,7 @@ static void remove_tree_real(const char *path) {
 }
 
 static void make_dir(const char *path) {
-    TEST_ASSERT_TRUE(mkdir(path, 0700) == 0 || errno == EEXIST);
+    TEST_ASSERT_TRUE(test_mkdir(path, 0700) == 0 || errno == EEXIST);
 }
 
 static void write_file(const char *path, const char *text) {

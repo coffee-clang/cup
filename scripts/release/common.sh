@@ -1,4 +1,3 @@
-#!/usr/bin/env sh
 
 # Purpose: Shared release-script library for validation, hashing and immutable asset preparation.
 # Sourced by candidate decision, assembly and publication entry points.
@@ -37,9 +36,7 @@ validate_release_inputs() {
         fail "invalid SHA: $SHA"
 }
 
-# Validate the immutable provenance record shared by candidate inspection and
-# publication. Empty expected values skip the corresponding workflow identity
-# check while preserving the file format and source identity checks.
+# Validate the immutable provenance record produced by the release workflow.
 validate_provenance_file() {
     file=$1
     expected_repository=${2:-}
@@ -68,12 +65,12 @@ validate_provenance_file() {
             next
         }
         $1 == "source_commit" && NF == 2 && $2 == sha { seen_commit++; next }
-        $1 == "tests_run_id" && NF == 2 && valid_number($2) {
+        $1 == "release_run_id" && NF == 2 && valid_number($2) {
             run_id=$2
             seen_run_id++
             next
         }
-        $1 == "tests_run_attempt" && NF == 2 && valid_number($2) {
+        $1 == "release_run_attempt" && NF == 2 && valid_number($2) {
             run_attempt=$2
             seen_run_attempt++
             next

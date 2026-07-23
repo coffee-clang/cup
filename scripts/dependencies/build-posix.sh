@@ -140,7 +140,7 @@ build_zlib() {
     echo "==> Building zlib ${ZLIB_VERSION}"
     cd "$source"
 
-    CFLAGS="$CUP_DEPENDENCY_CFLAGS" CHOST="" ./configure \
+    CC="$CC" CFLAGS="$CUP_DEPENDENCY_CFLAGS" CHOST="" ./configure \
         --prefix="$INSTALL_PREFIX" \
         --static
 
@@ -161,7 +161,7 @@ build_xz() {
     echo "==> Building xz ${XZ_VERSION}"
     cd "$source"
 
-    CFLAGS="$CUP_DEPENDENCY_CFLAGS" ./configure \
+    CC="$CC" CFLAGS="$CUP_DEPENDENCY_CFLAGS" ./configure \
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
@@ -226,7 +226,7 @@ build_curl() {
     echo "==> Building curl ${CURL_VERSION}"
     cd "$source"
 
-    CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
+    CC="$CC" CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="$(library_flags)" \
     PKG_CONFIG_PATH="$pkg_dirs" \
@@ -280,7 +280,7 @@ build_libarchive() {
     echo "==> Building libarchive ${LIBARCHIVE_VERSION}"
     cd "$source"
 
-    CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
+    CC="$CC" CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="$(library_flags)" \
     PKG_CONFIG_PATH="$pkg_dirs" \
@@ -353,27 +353,23 @@ verify() {
 }
 
 main() {
-    local toolchain
-    local id
+    local profile
     local metadata
 
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
     require_sha256_tool
-    toolchain=$(dependency_posix_toolchain_identity \
-        "$CC" "$AR" "$RANLIB" "$OPENSSL_TARGET" \
-        "$CUP_POSIX_PLATFORM_POLICY")
-    id=$(dependency_id "$PLATFORM" "$toolchain" 1 "$PROJECT_ROOT" \
-        "$SCRIPT_DIR/sources.sh" \
-        "$SCRIPT_DIR/common.sh" \
-        "$SCRIPT_DIR/build-posix.sh")
-    metadata=$(dependency_metadata "$PLATFORM" "$id")
+    profile=$(dependency_profile "$PLATFORM")
+    metadata=$(dependency_metadata "$PLATFORM" "$profile")
+    dependency_acquire_build_lock "$DEPS_ROOT"
+    trap 'abort_dependency_prefix; dependency_release_build_lock' EXIT
     prepare_dependency_prefix "$DEPS_PREFIX" "$metadata" 1
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
+        dependency_release_build_lock
+        trap - EXIT
         exit 0
     fi
-    trap 'abort_dependency_prefix' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -405,6 +401,7 @@ main() {
         "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_FINAL_PREFIX"
     verify
     finish_dependency_prefix "$PREFIX"
+    dependency_release_build_lock
     trap - EXIT HUP INT TERM
 }
 

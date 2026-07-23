@@ -6,7 +6,20 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 . "$ROOT/tests/support/environment.sh"
-. "$ROOT/tests/support/quality-status.sh"
+cup_quality_final_status() {
+    local status
+
+    for status in "$@"; do
+        case "$status" in
+            ''|*[!0-9]*) return 2 ;;
+        esac
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$status"
+            return 0
+        fi
+    done
+    printf '0\n'
+}
 cup_test_prepare_environment
 PLATFORM="$CUP_TEST_PLATFORM"
 REPORT_DIR="${CUP_COVERAGE_DIR:-$ROOT/build/coverage/$PLATFORM}"
@@ -80,8 +93,7 @@ else
     cup_test_require_gcovr_llvm || exit 2
     LLVM_PROFDATA=$(cup_test_find_llvm_tool llvm-profdata) || exit 2
     LLVM_COV=$(cup_test_find_llvm_tool llvm-cov) || exit 2
-    PATH="$(dirname "$LLVM_COV"):$PATH"
-    export PATH
+    LLVM_TOOL_DIR=$(dirname "$LLVM_COV")
 fi
 if [ "$PLATFORM" = windows-x64 ]; then
     cup_test_require_tool powershell.exe 'Windows coverage integration tests' || exit 2
@@ -195,7 +207,9 @@ common_args=(
     --print-summary
 )
 backend_args=()
+gcovr_command=(gcovr)
 if [ "$COVERAGE_BACKEND" = llvm ]; then
+    gcovr_command=(env "PATH=$LLVM_TOOL_DIR:$PATH" gcovr)
     backend_args+=(--llvm-profdata-executable "$LLVM_PROFDATA")
     backend_args+=(--llvm-cov-binary "$CUP_TEST_BINARY")
     while IFS= read -r binary; do
@@ -207,7 +221,7 @@ fi
 run_gcovr() {
     jobs=$1
     "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-        gcovr -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
+        "${gcovr_command[@]}" -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
         --txt "$REPORT_DIR/summary.txt" \
         --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
         --json "$REPORT_DIR/coverage.json" --json-pretty \
@@ -234,7 +248,7 @@ threshold_status=0
 if reports_complete && [ "$generation_status" -eq 0 ]; then
     printf '==> Validating coverage thresholds from the saved tracefile...\n' >>"$REPORT_DIR/gcovr.log"
     (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-        gcovr --root "$ROOT" --merge-mode-functions separate \
+        "${gcovr_command[@]}" --root "$ROOT" --merge-mode-functions separate \
         --add-tracefile "$REPORT_DIR/coverage.json" --print-summary \
         --fail-under-line "$LINE_THRESHOLD" \
         --fail-under-branch "$BRANCH_THRESHOLD" \
@@ -246,7 +260,7 @@ html_status=0
 if reports_complete; then
     printf '==> Rendering HTML coverage report...\n'
     (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$HTML_TIMEOUT" \
-        gcovr --root "$ROOT" --merge-mode-functions separate \
+        "${gcovr_command[@]}" --root "$ROOT" --merge-mode-functions separate \
         --add-tracefile "$REPORT_DIR/coverage.json" \
         --html-details "$REPORT_DIR/index.html" --no-html-syntax-highlighting) \
         >"$REPORT_DIR/html.log" 2>&1 || html_status=$?

@@ -9,6 +9,7 @@
 #include "interrupt.h"
 #include "package_archive.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -83,7 +84,7 @@ static void remove_tree(const char *path) {
 }
 
 static void make_dir(const char *path) {
-    TEST_ASSERT_TRUE(mkdir(path, 0700) == 0 || errno == EEXIST);
+    TEST_ASSERT_TRUE(test_mkdir(path, 0700) == 0 || errno == EEXIST);
 }
 
 void setUp(void) {

@@ -72,22 +72,15 @@ The complete reference is available in
 
 ## Build from source
 
-After extracting a ZIP snapshot, restore the repository shell permissions
-before running any direct script entry points:
+A normal build or test prepares the pinned dependency prefix when it is missing
+and reuses it when its platform, profile, recipe and source lock are compatible:
 
 ```sh
-sh scripts/fix-shell-permissions.sh --fix
-```
-
-Then prepare the pinned dependencies explicitly, build and run the complete
-native verification suite:
-
-```sh
-JOBS=4 make PLATFORM=linux-x64 deps
 make PLATFORM=linux-x64
 make PLATFORM=linux-x64 test
 ```
 
-`make help` lists every public build, test, release, certificate and
-documentation target. Additional details are documented in
-[BUILD](docs/development/BUILD.md).
+Use `make quality` for repository and workflow checks, or `make check` for the
+complete local verification. `make help` lists every public build, dependency,
+test, release, certificate and documentation target. Additional details are
+documented in [BUILD](docs/development/BUILD.md).

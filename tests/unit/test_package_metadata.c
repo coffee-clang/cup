@@ -6,6 +6,7 @@
 #include "error.h"
 #include "package_metadata.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +16,7 @@
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-info-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -165,7 +166,7 @@ static void test_line_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
 
     build_path(path, sizeof(path), "directory");
-    TEST_ASSERT_EQUAL_INT(0, mkdir(path, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_metadata_load(&info, path));
     TEST_ASSERT_EQUAL_INT(0, rmdir(path));
 
@@ -200,7 +201,8 @@ static void test_query_guards(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-info-test"));
     UNITY_BEGIN();
     RUN_TEST(test_load_fields);
     RUN_TEST(test_storage_growth);

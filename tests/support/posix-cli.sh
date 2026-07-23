@@ -1,4 +1,3 @@
-#!/bin/sh
 
 # Purpose: Sourced POSIX integration library for isolated cup homes, catalogs,
 # package fixtures and generated wrappers. This file is sourced, not executed.

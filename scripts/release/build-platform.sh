@@ -44,15 +44,8 @@ case "$FAMILY" in
         ;;
 esac
 
-case "$FAMILY" in
-    linux|macos)
-        dependency_builder=scripts/dependencies/build-posix.sh
-        ;;
-    windows)
-        dependency_builder=scripts/dependencies/build-windows.sh
-        ;;
-esac
-JOBS="${JOBS:-4}" PLATFORM="$PLATFORM" bash "$dependency_builder"
+# The public release target owns idempotent dependency preparation. A restored
+# cache is reused; a missing or incompatible prefix is rebuilt transactionally.
 make check-ca-bundle
 CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" release
 CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \

@@ -5,17 +5,6 @@ specific output layout used by `cup`.
 
 ## Public build interface
 
-When the repository is distributed as a ZIP snapshot, the archive extractor may
-lose Unix executable bits. Restore the intended shell entry-point/library modes
-before invoking repository scripts:
-
-```sh
-sh scripts/fix-shell-permissions.sh --fix
-```
-
-The same script supports `--check`; repository structure tests use that mode so
-the permission policy has one authoritative implementation.
-
 The platform remains the only public selector:
 
 ```text
@@ -32,12 +21,9 @@ make PLATFORM=linux-x64 sanitizers
 make PLATFORM=linux-x64 release
 ```
 
-The removed `LINK_MODE`, `BUILD_MODE`, `DEBUG_SYMBOLS`, `COVERAGE`,
-`SANITIZERS` and `RELEASE_BUILD` selectors are rejected rather than retained as
-compatibility aliases. A normal local `make release` produces release-mode code
-with a development version identity. Official identity remains restricted to
-the controlled candidate workflow.
-
+A normal local `make release` produces release-mode code with a development
+version identity. Official identity remains restricted to the controlled
+candidate workflow.
 
 ## Quality-tool prerequisites
 
@@ -74,10 +60,10 @@ configuration.
 Every configuration contains `build-config.txt`. It records the platform,
 configuration, host architecture, compiler command/path/target/version, resource
 compiler identity, effective preprocessor/compiler/linker flags, dependency
-prefix identity and official-build status. The file is replaced atomically only
-when this content changes. Objects depend on it, so changing the compiler,
-`EXTRA_*` flags, dependency identity or official status invalidates the prior
-objects without rebuilding when the identity is unchanged.
+compatibility metadata and official-build status. The file is replaced atomically
+only when this content changes. Objects depend on it, so changing the compiler,
+`EXTRA_*` flags, dependency metadata or official status invalidates prior
+objects without forcing an unrelated dependency rebuild.
 
 ## Compiler configuration
 
@@ -159,12 +145,14 @@ not enter the CUP application link or any published CUP executable. `gcovr` and
 sanitizer runtime support are host tools and are not part of the application
 prefix contract.
 
-The canonical source lock is `scripts/dependencies/sources.sh`. The adjacent
+The canonical versions and source SHA-256 values are stored in
+`config/dependencies.lock`. Download locations and transport checks remain in
+`scripts/dependencies/sources.sh`. The adjacent
 `scripts/dependencies/THIRD_PARTY_NOTICES.txt` preserves the corresponding
 notices and license texts and is published as a release disclosure; it is not an
 alternate dependency resolver.
 
-## One complete dependency prefix
+## Dependency prefixes and compatibility
 
 The canonical production/native prefix is:
 
@@ -172,41 +160,65 @@ The canonical production/native prefix is:
 ~/deps/<platform>/install
 ```
 
-The Windows sanitizer job intentionally uses a second, toolchain-distinct
-prefix because CLANG64 archives must not be mixed with the UCRT64/GCC release
-graph:
+Windows sanitizers use a separate CLANG64 prefix because CLANG64 archives must
+not be mixed with the UCRT64/GCC production graph:
 
 ```text
 ~/deps/windows-x64-clang64/install
 ```
 
-Either prefix can be overridden with `DEPS_PREFIX`. The separation is by
-toolchain identity, not by development/release scope. Relative overrides are
-normalized to an absolute path before they enter compiler flags or
-`build-config.txt`.
+`DEPS_PREFIX` can override these paths. Explicit build and dependency paths must
+be absolute and whitespace-free so GNU Make, generated metadata and MSYS2 path
+conversion share one unambiguous representation.
 
-A source checkout may be placed in a path containing ordinary spaces. CUP
-escapes the absolute source include path before invoking the compiler and tests
-this with a real native build. Explicit `BUILD_DIR` and `DEPS_PREFIX` values are
-currently required to be whitespace-free: GNU Make target names and generated
-`curl-config`/`pkg-config` metadata do not yet share one portable quoting model
-across POSIX and MSYS2. Unsupported values fail immediately instead of being
-silently split.
+Dependency preparation is driven by two small repository files:
 
-Prepare the prefix explicitly with controlled parallelism:
-
-```sh
-JOBS=4 make PLATFORM=linux-x64 deps
+```text
+config/dependencies.lock
+config/dependencies.recipe
 ```
 
-`JOBS` must be a positive integer and defaults to `4`. The builders do not
-derive an unbounded value from the machine CPU count. They also normalize
-`LC_ALL`, `LANG`, `TZ` and the process umask, and discard ambient compiler,
-linker, package-discovery, cache and Make flags before configuring third-party
-projects. Package recipes then supply only their explicit canonical flags.
+`dependencies.lock` contains the pinned package versions and source SHA-256
+values. `dependencies.recipe` contains one positive integer. The recipe is
+incremented only when a change alters the produced prefix, such as a build flag,
+TLS backend, runtime profile, installed layout or library set. Comments and
+formatting do not change compatibility.
 
-For an offline Linux x64 build using the verified source bundle, populate the
-canonical source directory before running the same command:
+A committed prefix contains `.cup-dependencies`:
+
+```ini
+prefix_format=4
+platform=<platform>
+profile=<gcc|apple-clang|ucrt64-gcc|clang64>
+recipe=<positive integer>
+lock_sha256=<semantic lock digest>
+```
+
+The lock digest is calculated from the canonical package names, versions and
+source checksums. It does not hash the text of the build scripts. Reuse still
+requires every expected header, archive and generated metadata file to pass the
+normal prefix validation; the manifest alone is never sufficient.
+
+The local dependency commands are:
+
+```sh
+JOBS=4 make PLATFORM=<platform> deps
+make PLATFORM=<platform> deps-check
+make PLATFORM=<platform> deps-force
+make PLATFORM=<platform> deps-clean
+```
+
+- `deps` reuses a compatible prefix or builds it transactionally;
+- `deps-check` validates without modifying anything;
+- `deps-force` rebuilds even when the current prefix is compatible;
+- `deps-clean` removes the selected prefix and its build state.
+
+Public build and test targets depend on the idempotent `deps` target. A fresh
+checkout can therefore run `make test` directly. Existing compatible prefixes
+are checked and reused without network access or recompilation.
+
+For an offline Linux x64 build, place the verified source archives in the
+canonical source directory before invoking the same target:
 
 ```sh
 mkdir -p "$HOME/deps/linux-x64"
@@ -215,11 +227,10 @@ tar -xJf cup-linux-x64-dependency-sources.tar.xz \
 JOBS=4 make PLATFORM=linux-x64 deps
 ```
 
-Every cached archive is still checked for minimum size and exact SHA-256. A
-valid cache entry is reused without network access; an invalid entry is removed
-and fetched again through the normal verified download path.
+Every cached source archive is checked for minimum size and exact SHA-256. An
+invalid archive is removed and downloaded again; a valid one is reused.
 
-Dependency preparation is owned by five files:
+Dependency preparation is implemented by:
 
 ```text
 scripts/dependencies/sources.sh
@@ -229,52 +240,19 @@ scripts/dependencies/build-windows.sh
 scripts/dependencies/verify.sh
 ```
 
-`sources.sh` is the canonical source lock. `common.sh` is a non-executable
-library for identity, download, staging and prefix validation. The executable
-POSIX and Windows builders own their platform recipes, while `verify.sh` checks
-a prepared prefix without downloading or rebuilding anything. Linux and macOS
-share `build-posix.sh`; platform settings are selected directly from `PLATFORM`
-instead of thin wrappers. The builders download pinned source archives, verify
-their SHA-256 values and configure packages for the final prefix. Installation
-is redirected below
-a separate sibling `DESTDIR`, so generated files such as `curl-config`,
-`libarchive.pc` and compiled library defaults retain the final path rather than
-a disposable staging path. Generated text metadata is normalized, and its
-link flags are validated for residual staging paths before the payload replaces
-the final prefix. Binary archives are not rewritten because embedded build or
-debug paths do not control the linker. The committed prefix records exactly three identity fields:
+The builders normalize the environment, construct a sibling staging tree,
+normalize generated text metadata, reject forbidden build or host paths, verify
+the complete result and replace the final prefix transactionally. OpenSSL uses
+the neutral `/__cup_runtime__/openssl` namespace (without the leading space in
+the actual configured path) and automatic configuration loading remains
+disabled. Windows uses Schannel and does not include OpenSSL.
 
-```ini
-prefix_format=3
-platform=<platform>
-dependency_id=<sha256>
-```
-
-The dependency ID hashes the canonical source versions, URLs, archive digests,
-minimum-size policy, applicable TLS graph, essential toolchain identity and the
-ordered dependency recipe scripts. Canonical pins are repository constants and
-cannot be replaced by ambient variables. A matching identity is not sufficient
-by itself: every required header, archive and metadata file is checked before a
-prefix is reused. An incomplete
-or path-contaminated staging tree is discarded without exposing it as the
-final prefix.
-
-The complete prefix contains Argtable3, uthash, Unity, libevent, curl,
-libarchive, zlib, xz and, on POSIX, OpenSSL. Windows uses Schannel and therefore
-does not require OpenSSL in its prefix. Libevent remains test-only even though
-it shares the deterministic platform prefix.
-
-## Explicit preparation contract
-
-Compilation and test targets validate the prefix but never create it. A missing
-or incomplete prefix fails with an instruction to run `make PLATFORM=<platform>
-deps`. This keeps dependency installation visible, avoids network access hidden
-inside `make test`, and makes failures attributable to either preparation or
-compilation.
-
-CI follows the same contract: environment setup installs host prerequisites,
-then invokes the explicit dependency preparation package command before compiling
-or running tests.
+GitHub Actions uses the same manifest through `.github/workflows/dependencies.yml`.
+Its cache keys are readable combinations of platform, profile, recipe and lock
+digest. Tests and releases call the workflow automatically, while maintainers
+can dispatch it manually for all profiles or one selected profile. Preparation is
+serialized per platform/profile so overlapping runs do not rebuild the same missing
+cache. A cache miss runs the same `make deps` path used by local developers.
 
 ## One pinned application dependency graph
 
@@ -345,11 +323,9 @@ metadata with rollback protection. See
 
 ## Make targets
 
-`make help` is the authoritative compact index of all public targets. It includes
-builds, dependency checks, complete and focused test suites, release/version
-operations, CA maintenance and documentation commands.
+`make help` is the authoritative index of public targets.
 
-Common build and dependency targets:
+Build and dependency targets:
 
 ```sh
 make
@@ -357,21 +333,23 @@ make debug
 make coverage
 make sanitizers
 make release
+make clean
 JOBS=4 make PLATFORM=<platform> deps
-make check-dependencies
+make PLATFORM=<platform> deps-check
+make PLATFORM=<platform> deps-force
+make PLATFORM=<platform> deps-clean
 make check-toolchain
 make check-binary
-make clean
 ```
 
-Test targets:
+Behavioral tests and repository quality are intentionally separate:
 
 ```sh
 make test
 make test-unit
 make test-integration
-make test-posix
-make test-repository
+make quality
+make check
 make test-coverage
 make test-sanitizers
 make test-portability-linux
@@ -379,8 +357,11 @@ make test-windows
 make test-release RELEASE_DIR=<candidate-directory>
 ```
 
-Test-only build helpers are also public because CI and focused local workflows
-use them directly:
+`make test` runs unit and native integration behavior. `make quality` checks the
+repository, scripts, workflows and documentation contracts. `make check` runs
+dependency preparation, both groups and their required build steps.
+
+Test-only build helpers remain public for CI and focused local work:
 
 ```sh
 make test-unit-build
@@ -402,7 +383,7 @@ make check-ca-bundle
 make update-ca-bundle
 ```
 
-Destructive local cleanup is guarded:
+Destructive local cleanup remains guarded:
 
 ```sh
 CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home

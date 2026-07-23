@@ -47,7 +47,7 @@ for token in GetFullPathNameW 'L"\\\\?\\"' SetCurrentDirectoryW; do
     grep -F "$token" "$extract_source" >/dev/null ||
         fail "Windows package extraction is missing long-path support: $token"
 done
-grep -F '<longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>' \
+grep -F '<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>' \
     "$version_script" >/dev/null ||
     fail 'Windows executable manifest is not long-path aware'
 

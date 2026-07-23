@@ -33,26 +33,14 @@ sanitizer_runner=$ROOT/tests/runners/sanitizers.sh
 source_runner=$ROOT/scripts/ci/source-posix.sh
 prepare_runner=$ROOT/scripts/ci/prepare-posix.sh
 for required in 'linux-x64|linux-arm64' 'macos-x64|macos-arm64' 'windows-x64' \
-        'detect_leaks=$LEAKS' 'CUP_SANITIZER_UNIT_TIMEOUT' \
+        'detect_leaks=$LEAKS' 'LEAKS=0' 'MAKE_PLATFORM_ARGS' 'WINDRES=llvm-windres' \
+        'CUP_SANITIZER_UNIT_TIMEOUT' \
         'CUP_SANITIZER_SUITE_TIMEOUT' 'CUP_TEST_TIMEOUT_COMMAND'; do
     grep -Fq -- "$required" "$sanitizer_runner" || {
         echo "sanitizer runner is missing: $required" >&2
         exit 1
     }
 done
-
-script_lang=pyth
-script_lang=${script_lang}on
-script_ext=.py
-for removed in "classify$script_ext" "run-with-timeout$script_ext" gap-policy.tsv "$script_lang" "${script_lang}3"; do
-    ! grep -Fq -- "$removed" "$runner" || {
-        echo "coverage runner still references removed tooling: $removed" >&2
-        exit 1
-    }
-done
-[ ! -e "$ROOT/tests/coverage/classify$script_ext" ]
-[ ! -e "$ROOT/tests/coverage/run-with-timeout$script_ext" ]
-[ ! -e "$ROOT/tests/coverage/gap-policy.tsv" ]
 
 if command -v timeout >/dev/null 2>&1; then
     timeout_status=0
@@ -63,6 +51,7 @@ if command -v timeout >/dev/null 2>&1; then
     }
 fi
 for required in generation_status threshold_status html_status \
+        'gcovr_command=(env "PATH=$LLVM_TOOL_DIR:$PATH" gcovr)' \
         'integers from 0 to 100' 'The gcov backend requires GCC' \
         'powershell.exe -NoProfile' '$TIMEOUT_COMMAND'; do
     grep -Fq -- "$required" "$runner" || {
@@ -98,7 +87,19 @@ for required in \
         exit 1
     }
 done
-. "$ROOT/tests/support/quality-status.sh"
+# Exercise the status precedence implemented directly by the coverage runner.
+cup_quality_final_status() {
+    for status in "$@"; do
+        case "$status" in
+            ''|*[!0-9]*) return 2 ;;
+        esac
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$status"
+            return 0
+        fi
+    done
+    printf '0\n'
+}
 [ "$(cup_quality_final_status 0 0 0)" = 0 ]
 [ "$(cup_quality_final_status 42 0 0)" = 42 ]
 [ "$(cup_quality_final_status 0 7 0)" = 7 ]

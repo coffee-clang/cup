@@ -1,317 +1,272 @@
 # Testing
 
-This document defines the verification layers, their ownership and the explicit
-environment contract used locally and by GitHub Actions.
+This document defines the verification layers used by `cup`, their ownership
+and the local and GitHub Actions entry points.
 
-## Objective
+## Objectives
 
-Each behavior has one primary test owner. Unit, repository, integration and
-release-candidate tests protect different boundaries; repeated checks are kept
-only when they validate distinct trust transitions.
+The test system separates three questions:
+
+1. does the C implementation satisfy its behavioral contracts;
+2. do complete native workflows behave correctly on their owning platform;
+3. is the repository and its automation internally coherent.
+
+These questions use different targets so a repository-format problem is not
+reported as a failed unit test and a successful unit suite is not confused with
+complete release verification.
 
 ## Repository layout
 
 ```text
-tests/
-  unit/                 C tests and generated-header fixtures
-  repository/           repository, build and release-script contracts
-  integration/posix/    POSIX real-CLI workflows
-  integration/windows/  Windows native real-CLI workflows
-  release/              completed candidate asset tests
-  support/              sourced assertions and fixture builders
-  runners/              stable Make and CI package commands
+tests/unit/              deterministic C unit suites
+tests/integration/posix/ native POSIX command workflows
+tests/integration/windows.ps1
+                         native Windows command workflows
+tests/repository/        source, script, workflow and policy contracts
+tests/release/           tests for already built release candidates
+tests/runners/           stable orchestration entry points
+tests/support/           shared test-only libraries and fixtures
 ```
 
-Operational setup and publication scripts live under `scripts/ci/` and
-`scripts/release/`. The repository structure test rejects obsolete workflow
-names, the former `entrypoints` module paths and the removed dependency-scope
-model.
+The production source remains under `src/`. Tests may expose controlled
+boundaries through test-only hooks, but production code does not depend on test
+runners or fixtures.
+
+## Local target model
+
+### Behavioral verification
+
+```sh
+make PLATFORM=<platform> test
+```
+
+`make test` prepares or reuses the compatible dependency prefix, compiles the
+necessary binaries and runs:
+
+```text
+C unit tests
+native integration tests
+```
+
+Focused forms are:
+
+```sh
+make PLATFORM=<platform> test-unit
+make PLATFORM=<platform> test-integration
+```
+
+On Windows, `make test-windows` is the native PowerShell-owned aggregate.
+
+### Repository quality
+
+```sh
+make quality
+```
+
+This target does not require the complete third-party prefix. It verifies
+contracts such as:
+
+```text
+repository structure and tracked-file policy
+shell syntax and entry-point permissions
+Makefile public targets and platform selection
+workflow responsibilities and YAML structure
+dependency lock, recipe and transaction behavior
+release metadata and publication recovery
+documentation and generated-file policy
+```
+
+Repository tests check current external or operational guarantees. They do not
+freeze helper ownership, the textual order of YAML steps or other internal
+organization that can change without altering behavior.
+
+### Complete local verification
+
+```sh
+make PLATFORM=<platform> check
+```
+
+`make check` composes dependency preparation, behavioral tests and repository
+quality. It is the recommended command before a substantial push.
+
+Coverage and sanitizer gates remain explicit because they require additional
+host tools and take longer than the normal development loop:
+
+```sh
+make PLATFORM=<platform> test-coverage
+make PLATFORM=<platform> test-sanitizers
+```
+
+## Dependency preparation
+
+A developer can run `make test` on a fresh checkout. The public test target first
+runs the idempotent dependency preparation path:
+
+- a compatible prefix is verified and reused;
+- a missing or incompatible prefix is built transactionally;
+- `DEPS_PREFIX` may select an explicitly prepared native prefix;
+- `deps-check` is available when validation without modification is required.
+
+The compatibility manifest records platform, profile, recipe and the semantic
+source-lock digest. It is independent of comments and script formatting. See
+[BUILD](BUILD.md#dependency-prefixes-and-compatibility).
 
 ## C unit tests
 
-C tests own deterministic module contracts, parser boundaries, exact size and
-validation limits, and failure branches that can be isolated through controlled
-external calls. Stubs may replace operating-system or network boundaries, but
-the production module under test is compiled and executed.
+Unit suites use Unity and are compiled as separate executables. Each suite owns
+one coherent module or cross-module contract. Test binaries are written below:
 
-Test names are concise because the source file already identifies the owning
-module. A case uses `test_<scenario>_<result>` only when both parts add useful
-information; there is no arbitrary character limit.
+```text
+build/<platform>/<configuration>/tests/unit/
+```
 
-Ownership follows production responsibilities:
+Unit tests cover deterministic behavior, parser boundaries, state validation,
+transaction state machines, package metadata, archive policy, wrapper planning,
+update rules and error propagation. Expected failure diagnostics may appear in
+the log while the corresponding assertion passes.
 
-- command suites cover parsing-independent command policy and public output;
-- package suites cover identities, catalogs, metadata, archives, cache and
-  installation operations;
-- state, journal and transaction suites cover persistence and recovery choices;
-- filesystem, layout and system suites cover concrete platform primitives;
-- wrapper and CUP-update suites cover derived executables and detached helpers.
+Test-only fault injection must be explicit and local. It may replace filesystem,
+network or transaction boundaries, but it must not turn production code into a
+second implementation used only by tests.
 
-`test_package_archive` uses real archives for reader and payload compatibility,
-while `test_archive_faults` owns deterministic libarchive adapter failures and
-preflight limits. `test_package_transaction` owns package-journal parsing and
-recovery decisions. `test_runtime_journal` and `test_cup_update_journal` own the
-shared blocker and CUP-update protocol respectively.
+## Native integration tests
 
-`test_storage` combines concrete POSIX system, filesystem and layout cases in
-one binary because they share process-wide HOME, permission and lock state. The
-cases remain separated by source file. Code after `fork()` may not be reflected
-completely by gcov because a child may terminate with `_exit`; final filesystem
-state is therefore the authoritative assertion for those cases.
+POSIX and Windows integration suites exercise the built CLI through real files,
+processes and command invocations. They own behavior that cannot be established
+by a pure unit test, including:
 
-## Repository contract tests
+```text
+installation and removal lifecycle
+state and wrapper persistence
+transaction recovery
+concurrent command exclusion
+doctor and repair behavior
+detached uninstall helpers
+platform path and permission semantics
+```
 
-Shell tests under `tests/repository/` verify:
-
-- version and tag policy;
-- release metadata and checksum schemas;
-- dependency-prefix preparation and linker isolation;
-- workflow ownership and exact Tests-run provenance;
-- release candidate metadata;
-- resumable, idempotent publication;
-- deterministic CA generation;
-- repository structure and obsolete-path removal.
-
-They invoke the real repository scripts instead of reimplementing their policy.
-
-## POSIX integration tests
-
-POSIX integration uses the real executable with an isolated HOME and exercises
-multi-process state, locks, permissions, concurrent commands, recovery,
-detached helpers and managed wrappers. Files are grouped by one externally
-visible workflow owner:
-
-- `build.sh` prepares the development executable used by the runner; static
-  build-system policy remains in repository tests.
-- `package-catalog.sh` owns catalog trust and checksum selection; parser edge
-  cases remain in `test_package_catalog`.
-- `archive-safety.sh` owns real archive formats, format mismatch and malicious
-  archives through `cup install`; adapter failures remain in unit tests.
-- `cli-contract.sh` owns top-level dispatch, help and Argtable3 shapes.
-- `package-lifecycle.sh` owns the complete install/default/update/inspect/remove
-  workflow.
-- `install-policy.sh` owns preferences, profiles and curated toolchains.
-- `state.sh` owns persisted records, scope identity and invalid-state rejection.
-- `wrappers.sh` owns wrapper creation, drift, collisions and repair.
-- `recovery.sh` owns decisions at persistent transaction commit boundaries.
-- `repair.sh` owns reconstruction, quarantine and ambiguity preservation.
-- `doctor.sh` owns read-only diagnosis and proof that observation does not
-  mutate damage.
-- `concurrency.sh` owns real multi-process lock serialization.
-- `uninstall.sh` owns detached cleanup and canonical-root removal.
-
-Shared assertions live in `tests/support/common.sh`; package and CLI fixtures
-live in `tests/support/posix-cli.sh`. Integration functions are named after the
-behavior they prove, not after implementation details or issue numbers. A suite
-that expects a coherent final runtime uses `assert_cup_healthy` (or
-`Assert-CupHealthy` on Windows), which checks the summary and rejects hidden
-issues, warnings and incomplete inspections instead of discarding doctor output.
-The state suites assert exact persisted records; catalog and default formatting
-remain owned by the package lifecycle suites.
-
-## Windows integration tests
-
-Windows uses a native PowerShell harness for Windows paths and attributes,
-PowerShell process invocation, `.cmd` wrapper quoting, native package layout and
-detached helpers. `filesystem-archives.ps1` owns private root ACLs, ZIP path
-collisions, declared/actual format mismatch, reparse-point cleanup and paths
-beyond `MAX_PATH`. Native execution is required; cross-compilation is not
-treated as a substitute for Windows behavior.
+Linux and macOS use the POSIX runner. Windows uses the PowerShell suite and the
+wide-character Windows implementation. A POSIX simulation is not a substitute
+for native Windows behavior.
 
 ## Release candidate tests
 
-`tests/release/` consumes an already built candidate directory. It verifies
-asset names, exact checksum entries, the static executable, native CLI workflows
-and generated installers. Candidate tests never rebuild source, so the bytes
-that pass are the bytes eligible for publication.
+```sh
+make PLATFORM=<platform> test-release RELEASE_DIR=<candidate-directory>
+```
 
-## Runners and Make targets
+Release tests consume an already assembled candidate. They do not rebuild CUP.
+They verify the exact executable and common assets that are eligible for
+publication, including checksums, version identity, CLI startup and installer or
+uninstaller behavior.
 
-Stable runners only compose owners and configure instrumentation:
+In GitHub Actions the candidate is uploaded once, downloaded onto its native
+runner and tested there. Publication consumes the same artifact bytes only after
+all native candidate jobs succeed.
+
+## Coverage
+
+`make test-coverage` runs the behavioral owners with instrumentation and writes
+reports below:
 
 ```text
-unit.sh               execute unit binaries compiled by Make
-repository.sh         run repository contracts
-integration-posix.sh  run POSIX real-CLI workflows
-all-posix.sh          compose the normal POSIX regression
-coverage.sh           reuse owners with GCC coverage instrumentation
-sanitizers.sh         reuse owners with ASan, UBSan and LeakSanitizer
+build/coverage/<platform>/
 ```
 
-Make package commands are:
+Linux and Windows use GCC/gcov. macOS uses Clang source-based coverage with
+`llvm-profdata` and `llvm-cov`. `gcovr` produces the common text, XML, JSON and
+HTML reports. Thresholds are applied per platform so platform-specific branches
+cannot disappear inside one aggregate number.
 
-```sh
-make test
-make test-unit
-make test-repository
-make test-integration
-make test-windows
-make test-coverage
-make test-sanitizers
-```
+Coverage is evidence for implemented contracts. It is not a reason to add
+unreachable workflows or assertions that merely execute defensive lines.
 
-## Explicit local environment
+## Sanitizers
 
-The runners derive the native CUP platform from `uname` unless
-`CUP_TEST_PLATFORM` is explicitly set. A generic ambient `PLATFORM` value such
-as `linux/amd64` is ignored because it is not a CUP platform identifier.
+`make test-sanitizers` runs AddressSanitizer and UndefinedBehaviorSanitizer with
+Clang/Compiler-RT on every supported platform. Linux enables leak detection;
+macOS and Windows run ASan/UBSan without leak detection. Windows uses the
+separate CLANG64 dependency profile, while production and coverage remain owned
+by UCRT64/GCC.
 
-The default dependency prefix is:
-
-```text
-~/deps/<platform>/install
-```
-
-Prepare it before any compiling test:
-
-```sh
-make PLATFORM=<platform> deps
-```
-
-Tests do not download or build dependencies implicitly. They validate the
-complete platform prefix, including Argtable3, uthash, Unity, libevent, curl,
-libarchive and their configured transitive libraries, and fail with the explicit
-preparation command when the prefix is incomplete.
-
-The prefix is complete and is the only third-party graph used by development,
-debug, coverage, sanitizer and release configurations. CUP and archive-related
-unit suites consume the prefix headers, static archives and scoped link metadata;
-host libcurl and libarchive development libraries are not part of the build.
-Unity is linked by exact archive path. Libevent is linked only into the combined
-`network-helper`, which supplies the local HTTP server and HTTP CONNECT proxy
-fixtures without becoming a CUP runtime dependency.
-
-A native CI environment may override `DEPS_PREFIX`. The Windows source, debug
-and release jobs all run `JOBS=4 make PLATFORM=windows-x64 deps` inside MSYS2
-UCRT64. They build the complete pinned prefix from source and do not consume
-pacman-provided curl, libarchive or Argtable3 binaries.
+Sanitizer artifacts and runtimes are diagnostic only and never enter an official
+release candidate.
 
 ## Linux network portability
 
-The dedicated target:
+The focused target:
 
 ```sh
 make PLATFORM=linux-x64 test-portability-linux
 ```
 
-uses local-only fixtures and CUP's real release executable. It generates a
-temporary CA, serves a package over HTTPS, verifies that an unrelated CA is
-rejected, repeats the package lifecycle through an HTTP CONNECT proxy, executes
-the generated wrapper and finishes with `cup doctor`.
+uses local fixtures and the real release executable to exercise DNS, embedded-CA
+HTTPS validation, direct and proxied downloads, checksum validation, extraction,
+wrapper execution and `cup doctor`. It remains separate from the normal local
+test loop because certificate and proxy orchestration is comparatively costly.
 
-This target is not part of the ordinary `make test` loop. It is a focused CI
-gate for the glibc standalone path and avoids turning normal source tests into
-network or certificate orchestration. It does not by itself establish a final
-minimum distribution version or require adoption of musl.
+## GitHub Actions workflows
 
-## Coverage
+### Dependencies
 
-`make test-coverage` runs natively on all five supported platforms. Linux and
-Windows use GCC-compatible gcov data; macOS uses Clang source-based coverage
-with `llvm-profdata` and `llvm-cov`. `gcovr` normalizes both backends into the
-same text, XML, JSON, JSON-summary and HTML artifacts under
-`build/coverage/<platform>/`.
+`.github/workflows/dependencies.yml` owns reusable dependency preparation. It:
 
-The gate executes instrumented unit tests plus the native integration owner:
-POSIX suites on Linux/macOS and the PowerShell suite on Windows. The same line,
-function and branch thresholds are applied independently to every platform so
-platform-specific C branches cannot be hidden by an aggregate-only report.
-The runner records compiler/tool versions, preserves logs, bounds unit and
-integration execution with `timeout`/`gtimeout`, and prints concrete installation
-guidance when an optional quality tool is missing. macOS requires `gcovr` 8.5 or
-newer because that is the first supported source-based LLVM backend.
+- can be dispatched manually for all profiles or one selected profile;
+- is called automatically by Tests and Release;
+- serializes each platform/profile so overlapping runs reuse the cache prepared first;
+- restores a platform/profile cache and falls back to `make deps` on a miss;
+- verifies the final prefix with `make deps-check`.
 
-## Sanitizers
+The cache is an optimization, never a prerequisite for correctness.
 
-`make test-sanitizers` runs Clang/Compiler-RT AddressSanitizer and
-UndefinedBehaviorSanitizer on Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
-Linux and macOS also enable LeakSanitizer; Windows uses an isolated MSYS2
-CLANG64 dependency graph with leak detection disabled. Linux release and native
-integration ownership remains GCC, while UCRT64/GCC remains the Windows
-production and coverage toolchain. The official Windows release remains
-GCC-built.
+### Tests
 
-The Linux x64 source job additionally performs a complete Clang application
-build, binary-policy inspection and C unit-test pass after the primary GCC
-native suite. This secondary pass is deliberately narrower than the primary
-owner: integration and network-portability behavior are not duplicated merely
-to increase the matrix.
-Sanitizer logs are stored under `build/sanitizers/<platform>/`. Unit and native
-integration execution are bounded so a sanitizer-discovered deadlock cannot
-stall a runner indefinitely.
-
-The sanitizer configuration is deliberately separate from release linking:
-ASan runtimes are diagnostic dependencies and are never accepted in official
-release artifacts.
-
-## GitHub Actions integration
-
-`.github/workflows/tests.yml` is the complete application verification workflow.
-It runs automatically for pushes to `main` and can be dispatched manually.
-It owns:
+`.github/workflows/tests.yml` runs on pushes to `main`, manual dispatch and
+reusable workflow calls. It first calls the dependency workflow for all required
+profiles, then runs independent jobs for:
 
 ```text
+repository quality
 Linux x64 and ARM64 source tests
 macOS x64 and ARM64 source tests
 Windows x64 source tests
-native coverage gates for all five platforms
-native ASan/UBSan gates for all five platforms
-release candidate builds for all supported platforms
-native execution of every candidate
-one final Tests gate
+coverage on all five platform identifiers
+ASan/UBSan on all five platform identifiers
 ```
 
-A manual run outside `main` performs source verification but does not create a
-publishable candidate. On `main`, the prepare job checks the public release
-state. A new or draft version produces candidate jobs; an already published
-version runs source gates only.
+A final gate reports failure when any required family did not succeed. The test
+workflow does not build or publish release candidates.
 
-`.github/workflows/release.yml` performs no compilation or testing. It accepts
-only a successful `Tests` run for the exact selected `main` SHA, downloads that
-run's artifacts, validates their metadata and delegates publication. See
-[RELEASES](RELEASES.md).
+### Debug artifacts
 
-`.github/workflows/debug.yml` produces downloadable, non-stripped development
-executables and platform-native symbol data for every supported platform. It is
-diagnostic-only and does not replace native coverage or sanitizer ownership.
+`.github/workflows/debug.yml` is dispatched manually when diagnostic executables
+or native symbol data are needed. It uses the same dependency caches and binary
+inspection policy. Debug artifacts never satisfy a release gate.
+
+### Release
+
+`.github/workflows/release.yml` is manual and calls the reusable Tests workflow
+for the selected `main` commit. It then builds candidates, tests the exact
+artifacts natively and publishes them in the same release run. Publication uses
+only evidence and candidate bytes produced by that run. See [RELEASES](RELEASES.md).
 
 ## Ownership rules
 
-A repeated assertion is acceptable only when the second suite crosses a
-different trust boundary. For example, a unit test proves that a wrapper plan
-rejects a collision, while the POSIX integration suite proves that the real CLI
-leaves state and the filesystem unchanged after that rejection. Repeating the
-same parser error or the same pure helper result in both layers is redundant.
-
-`tests/repository/assertions.sh` enforces the assertion discipline: every local
-C test is registered exactly once and has an observable assertion, every named
-POSIX integration test is invoked once, failure-output fixtures are consumed,
-opaque placeholder assertions are forbidden, and health checks may not discard
-doctor output. These are structural safeguards, not substitutes for reviewing
-whether each assertion proves the intended contract.
-
 Before adding a test:
 
-1. identify the smallest public or internal contract that failed;
-2. place deterministic branches in the owning C unit suite;
-3. keep one real-CLI happy path and the essential failure transition in the
-   integration owner;
-4. use repository tests only for static files, scripts and pipeline policy;
-5. do not add cases whose only purpose is executing defensive lines that cannot
-   occur through a valid caller.
+1. identify the smallest behavior or operational guarantee that failed;
+2. place deterministic branches in the owning unit suite;
+3. keep real multi-module or CLI transitions in the native integration owner;
+4. use repository tests only for static source and automation contracts;
+5. repeat a check only when a second trust boundary provides different evidence.
 
-- Unit-test internal deterministic branches once.
-- Integration-test the externally visible workflow joining modules.
-- Keep platform-native behavior in the native suite.
-- Keep release policy in versioned scripts rather than duplicating it in YAML.
-- Share helpers only where there are multiple real consumers.
-- Retain repeated validation only across distinct trust boundaries.
-- Treat coverage as evidence of contracts, not as a reason to create fake
-  workflows.
+Shared helpers are justified only by multiple real consumers. The assertion
+quality contract ensures tests are registered, invoked and observable, but it
+does not replace review of whether each assertion proves the intended behavior.
 
 ## Related documents
 
 - [ARCHITECTURE](../design/ARCHITECTURE.md) — runtime ownership;
 - [BUILD](BUILD.md) — dependency and linker contracts;
-- [RELEASES](RELEASES.md) — candidate and publication gates;
+- [RELEASES](RELEASES.md) — same-run candidate and publication gates;
 - [PLATFORMS](../design/PLATFORMS.md) — native responsibilities.

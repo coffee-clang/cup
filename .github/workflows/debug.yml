@@ -1,12 +1,6 @@
-# Produces non-stripped development binaries and platform-native symbol data.
-# These diagnostics are intentionally separate from official release assets.
-
 name: Debug artifacts
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -17,9 +11,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # POSIX diagnostics retain native symbols and a reproducible rebuild description.
+  dependencies:
+    name: Dependencies (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64-gcc
+          - linux-arm64-gcc
+          - macos-x64-apple-clang
+          - macos-arm64-apple-clang
+          - windows-x64-ucrt64
+    uses: ./.github/workflows/dependencies.yml
+    with:
+      target: ${{ matrix.target }}
+
   posix:
     name: Debug build (${{ matrix.platform }})
+    needs: dependencies
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -45,9 +54,17 @@ jobs:
       - name: Prepare POSIX debug toolchain
         env:
           FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
         run: scripts/ci/prepare-posix.sh source
-      - name: Build pinned dependency prefix
-        run: make PLATFORM=${{ matrix.platform }} deps
+      - id: cache
+        run: |
+          key=$(scripts/dependencies/verify.sh \
+            '${{ matrix.platform }}' --print-cache-key)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: ${{ steps.cache.outputs.key }}
       - name: Build diagnostic executable
         run: |
           make PLATFORM=${{ matrix.platform }} debug
@@ -56,14 +73,15 @@ jobs:
       - name: Package debug information
         shell: bash
         run: |
-          set -eu
+          set -euo pipefail
           out="dist/debug/${{ matrix.platform }}"
           binary="build/${{ matrix.platform }}/debug/bin/cup"
           generated="build/${{ matrix.platform }}/debug/generated"
           mkdir -p "$out"
           cp "$binary" "$out/cup"
           cp "$generated/release.txt" "$out/release.txt"
-          cp "build/${{ matrix.platform }}/debug/binary-inspection.txt" "$out/binary-inspection.txt"
+          cp "build/${{ matrix.platform }}/debug/binary-inspection.txt" \
+            "$out/binary-inspection.txt"
           if [ "${{ matrix.family }}" = macos ]; then
             compiler=clang
           else
@@ -88,14 +106,14 @@ jobs:
             -C "$out" .
       - uses: actions/upload-artifact@v7
         with:
+          name: cup-debug-${{ matrix.platform }}
           path: dist/debug/cup-debug-${{ matrix.platform }}.tar.gz
-          archive: false
           if-no-files-found: error
           retention-days: 30
 
-  # Windows diagnostics are built natively with the same UCRT64 dependency graph.
   windows:
     name: Debug build (windows-x64)
+    needs: dependencies
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -120,13 +138,21 @@ jobs:
             gcc:p
             binutils:p
             pkgconf:p
-      - name: Build pinned dependency prefix
+      - id: cache
         shell: msys2 {0}
-        run: JOBS=4 make PLATFORM=windows-x64 deps
+        run: |
+          prefix="$HOME/deps/windows-x64/install"
+          key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.cache.outputs.path }}
+          key: ${{ steps.cache.outputs.key }}
       - name: Build and package diagnostic executable
         shell: msys2 {0}
         run: |
-          set -eu
+          set -euo pipefail
           make PLATFORM=windows-x64 debug
           make PLATFORM=windows-x64 CUP_BUILD_CONFIGURATION=debug check-binary
           out=dist/debug/windows-x64
@@ -135,7 +161,8 @@ jobs:
           mkdir -p "$out"
           cp "$binary" "$out/cup.exe"
           cp "$generated/release.txt" "$out/release.txt"
-          cp build/windows-x64/debug/binary-inspection.txt "$out/binary-inspection.txt"
+          cp build/windows-x64/debug/binary-inspection.txt \
+            "$out/binary-inspection.txt"
           objcopy --only-keep-debug "$binary" "$out/cup.debug"
           objdump -h "$binary" > "$out/sections.txt"
           file "$binary" > "$out/file.txt"
@@ -149,7 +176,7 @@ jobs:
           tar -czf dist/debug/cup-debug-windows-x64.tar.gz -C "$out" .
       - uses: actions/upload-artifact@v7
         with:
+          name: cup-debug-windows-x64
           path: dist/debug/cup-debug-windows-x64.tar.gz
-          archive: false
           if-no-files-found: error
           retention-days: 30

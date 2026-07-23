@@ -189,20 +189,127 @@ grep -Fq 'is not a text file' "$TMP_ROOT/binary-metadata.out"
 rm -f "$metadata_prefix/lib/pkgconfig/binary.cmake"
 CUP_DEPS_STAGE_ROOT=
 
-first_id=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-id)
-second_id=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-id)
-[ "$first_id" = "$second_id" ] || {
-    echo 'dependency identity is not deterministic' >&2
+lock_root="$TMP_ROOT/build-lock"
+dependency_acquire_build_lock "$lock_root"
+[ -f "$lock_root/.cup-dependencies.lock/owner" ] || {
+    echo 'dependency build lock did not record its owner' >&2
     exit 1
 }
-case "$first_id" in
-    *[!0-9a-f]*)
-        echo 'dependency identity is not hexadecimal' >&2
+if (dependency_acquire_build_lock "$lock_root") >"$TMP_ROOT/lock.out" 2>&1; then
+    echo 'dependency build lock accepted a concurrent owner' >&2
+    exit 1
+fi
+grep -Fq 'another dependency build is active' "$TMP_ROOT/lock.out"
+dependency_release_build_lock
+[ ! -e "$lock_root/.cup-dependencies.lock" ] || {
+    echo 'dependency build lock was not released' >&2
+    exit 1
+}
+
+# Do not steal a lock while its creator is between mkdir and owner creation.
+sleep 5 &
+delayed_owner=$!
+mkdir -p "$lock_root/.cup-dependencies.lock"
+(
+    sleep 0.1
+    printf '%s\n' "$delayed_owner" > "$lock_root/.cup-dependencies.lock/owner"
+) &
+owner_writer=$!
+if dependency_acquire_build_lock "$lock_root"         >"$TMP_ROOT/delayed-lock.out" 2>&1; then
+    echo 'dependency build lock stole a lock before its owner was recorded' >&2
+    exit 1
+fi
+wait "$owner_writer"
+grep -Fq 'another dependency build is active' "$TMP_ROOT/delayed-lock.out"
+kill "$delayed_owner" 2>/dev/null || true
+wait "$delayed_owner" 2>/dev/null || true
+rm -rf -- "$lock_root/.cup-dependencies.lock"
+
+mkdir -p "$lock_root/.cup-dependencies.lock"
+printf '%s\n' stale > "$lock_root/.cup-dependencies.lock/owner"
+dependency_acquire_build_lock "$lock_root"
+[ "$(cat "$lock_root/.cup-dependencies.lock/owner")" = "$$" ] || {
+    echo 'stale dependency build lock was not recovered' >&2
+    exit 1
+}
+dependency_release_build_lock
+
+first_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+second_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+[ "$first_key" = "$second_key" ] || {
+    echo 'dependency cache key is not deterministic' >&2
+    exit 1
+}
+case "$first_key" in
+    cup-deps-linux-x64-gcc-r1-[0-9a-f]*) ;;
+    *)
+        echo "unexpected dependency cache key: $first_key" >&2
         exit 1
         ;;
 esac
-[ "${#first_id}" -eq 64 ] || {
-    echo 'dependency identity must contain 64 hexadecimal characters' >&2
+
+# Comments and ordering in the data lock do not change semantic compatibility.
+lock_copy="$TMP_ROOT/dependencies.lock"
+recipe_copy="$TMP_ROOT/dependencies.recipe"
+cp "$ROOT/config/dependencies.lock" "$lock_copy"
+cp "$ROOT/config/dependencies.recipe" "$recipe_copy"
+commented_key=$(CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+printf '%s\n' '# transport note only' >> "$lock_copy"
+reordered="$TMP_ROOT/dependencies-reordered.lock"
+{
+    sed -n '1p' "$lock_copy"
+    sed -n '2,$p' "$lock_copy" | grep -v '^#' | sort
+    printf '%s\n' '# transport note only'
+} > "$reordered"
+formatted_key=$(CUP_DEPENDENCY_LOCK_FILE="$reordered" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+[ "$commented_key" = "$formatted_key" ] || {
+    echo 'dependency cache key changes for lock comments or ordering' >&2
+    exit 1
+}
+
+sed 's/^zlib.version=.*/zlib.version=1.3.2 invalid/' "$reordered" > "$lock_copy"
+if CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+        CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+        "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
+        >"$TMP_ROOT/lock-whitespace.out" 2>&1; then
+    echo 'dependency lock accepted whitespace in a value' >&2
+    exit 1
+fi
+grep -Fq 'must not contain whitespace' "$TMP_ROOT/lock-whitespace.out"
+
+sed 's|^zlib.version=.*|zlib.version=../escape|' "$reordered" > "$lock_copy"
+if CUP_DEPENDENCY_LOCK_FILE="$lock_copy"         CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy"         "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key         >"$TMP_ROOT/lock-version.out" 2>&1; then
+    echo 'dependency lock accepted an unsafe version' >&2
+    exit 1
+fi
+grep -Fq 'invalid ZLIB.version' "$TMP_ROOT/lock-version.out"
+
+printf '1\n2\n' > "$recipe_copy"
+if CUP_DEPENDENCY_LOCK_FILE="$reordered"         CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy"         "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key         >"$TMP_ROOT/recipe-lines.out" 2>&1; then
+    echo 'dependency recipe accepted multiple lines' >&2
+    exit 1
+fi
+grep -Fq 'one positive integer' "$TMP_ROOT/recipe-lines.out"
+printf '1\n' > "$recipe_copy"
+
+sed 's/^zlib.version=.*/zlib.version=9.9.9/' "$reordered" > "$lock_copy"
+changed_lock_key=$(CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+[ "$changed_lock_key" != "$formatted_key" ] || {
+    echo 'dependency source version did not invalidate the cache key' >&2
+    exit 1
+}
+printf '%s\n' 2 > "$recipe_copy"
+changed_recipe_key=$(CUP_DEPENDENCY_LOCK_FILE="$reordered" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
+[ "$changed_recipe_key" != "$formatted_key" ] || {
+    echo 'dependency recipe version did not invalidate the cache key' >&2
     exit 1
 }
 
@@ -222,4 +329,14 @@ for package in zlib xz openssl curl libarchive argtable3 uthash unity libevent; 
     esac
 done
 
-printf '%s\n' 'Dependency path-neutralization, identity and transport tests passed.'
+printf '%s\n' 'Dependency path-neutralization, cache and transport tests passed.'
+
+# Windows libarchive must not discover the runner's unpinned libiconv package.
+grep -Fq -- '--without-iconv' "$ROOT/scripts/dependencies/build-windows.sh" || {
+    echo 'Windows libarchive does not disable unpinned iconv discovery' >&2
+    exit 1
+}
+grep -Fq -- 'unpinned libiconv' "$ROOT/scripts/dependencies/build-windows.sh" || {
+    echo 'Windows dependency verification does not reject libiconv metadata' >&2
+    exit 1
+}

@@ -193,8 +193,9 @@ Release candidate binaries are also downloaded and tested on native runners.
 
 Coverage and ASan/UBSan run natively on all five platform identifiers. Linux
 and Windows coverage use GCC/gcov, while macOS uses Clang source-based coverage.
-All sanitizer jobs use Clang/Compiler-RT; leak detection is enabled on Linux and
-macOS, while Windows uses an isolated CLANG64 graph without leak detection.
+All sanitizer jobs use Clang/Compiler-RT. LeakSanitizer is enabled on Linux;
+macOS and Windows run ASan/UBSan without leak detection. Windows uses an
+isolated CLANG64 dependency graph.
 Linux source, integration and release ownership remains GCC, with a secondary
 Linux x64 Clang application/unit pass. Windows release and coverage builds
 remain UCRT64/GCC. Linux x64 additionally owns a local network-portability smoke

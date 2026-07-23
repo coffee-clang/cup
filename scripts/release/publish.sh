@@ -10,13 +10,13 @@ set -eu
 : "${GH_REPO:?GH_REPO is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${SOURCE_REPOSITORY:?SOURCE_REPOSITORY is required}"
-: "${TESTS_RUN_ID:?TESTS_RUN_ID is required}"
-: "${TESTS_RUN_ATTEMPT:?TESTS_RUN_ATTEMPT is required}"
+: "${RELEASE_RUN_ID:?RELEASE_RUN_ID is required}"
+: "${RELEASE_RUN_ATTEMPT:?RELEASE_RUN_ATTEMPT is required}"
 
 dist=${1:-dist}
 validate_release_inputs
 
-# Public asset allowlist. Internal decision files never cross the release boundary.
+# Public asset allowlist for the verified release candidate.
 public_assets="
 packages.cfg
 install.cfg
@@ -44,10 +44,6 @@ for asset in candidate.env $public_assets; do
     [ -f "$dist/$asset" ] || fail "missing asset: $asset"
 done
 
-# Internal CI markers must not become public release assets.
-[ -f "$dist/release-decision.env" ] ||
-    fail 'missing internal release decision metadata'
-
 test "$(sed -n 's/^format=//p' "$dist/release.txt")" = 1
 test "$(sed -n 's/^version=//p' "$dist/release.txt")" = "$VERSION"
 test "$(sed -n 's/^commit=//p' "$dist/release.txt")" = "$SHA"
@@ -56,8 +52,8 @@ test "$(wc -l < "$dist/release.txt" | tr -d '[:space:]')" = 3
 validate_provenance_file \
     "$dist/provenance.txt" \
     "$SOURCE_REPOSITORY" \
-    "$TESTS_RUN_ID" \
-    "$TESTS_RUN_ATTEMPT"
+    "$RELEASE_RUN_ID" \
+    "$RELEASE_RUN_ATTEMPT"
 
 awk -F= -v version="$VERSION" -v tag="$TAG" -v sha="$SHA" '
     $1 == "VERSION" && NF == 2 && $2 == version { seen_version++; next }
@@ -69,19 +65,6 @@ awk -F= -v version="$VERSION" -v tag="$TAG" -v sha="$SHA" '
             exit 1
     }
 ' "$dist/candidate.env" || fail 'candidate metadata does not match the release inputs'
-awk -F= -v version="$VERSION" -v tag="$TAG" -v sha="$SHA" '
-    $1 == "SHOULD_RELEASE" && NF == 2 && $2 == "1" { seen_decision++; next }
-    $1 == "VERSION" && NF == 2 && $2 == version { seen_version++; next }
-    $1 == "TAG" && NF == 2 && $2 == tag { seen_tag++; next }
-    $1 == "SHA" && NF == 2 && $2 == sha { seen_sha++; next }
-    { invalid=1 }
-    END {
-        if (invalid || seen_decision != 1 || seen_version != 1 ||
-                seen_tag != 1 || seen_sha != 1)
-            exit 1
-    }
-' "$dist/release-decision.env" ||
-    fail 'release decision metadata does not match the verified candidate'
 grep -F "CUP_RELEASE_VERSION=\"$VERSION\"" "$dist/install.sh"
 grep -F "CUP_RELEASE_TAG=\"$TAG\"" "$dist/install.sh"
 grep -F "CUP_RELEASE_COMMIT=\"$SHA\"" "$dist/install.sh"
@@ -118,7 +101,7 @@ remote_tag_exists=0
 
 # The public download repository is intentionally separate from the private
 # source repository. Its tag commit therefore cannot identify the tested
-# source revision; release.txt and the verified Tests artifacts carry SHA.
+# source revision; release.txt and the verified release artifacts carry SHA.
 release_exists=0
 release_is_draft=false
 release_query_error=$(mktemp "${TMPDIR:-/tmp}/cup-release-query.XXXXXX") ||

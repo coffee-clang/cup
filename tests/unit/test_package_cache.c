@@ -13,6 +13,7 @@
 #include "package_archive.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <curl/curl.h>
 
@@ -529,7 +530,7 @@ static void assert_download_destination_failures(const char *destination) {
         download_file("https://example.invalid", long_path, DOWNLOAD_VALIDATE_NONEMPTY));
 
     reset_mocks();
-    TEST_ASSERT_EQUAL_INT(0, mkdir(destination, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(destination, 0755));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FILESYSTEM,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
@@ -797,7 +798,7 @@ static void test_package_failures(void) {
     TEST_ASSERT_TRUE(snprintf(slash + 1,
                               sizeof(checksum_path) - (size_t)(slash + 1 - checksum_path),
                               "SHA256SUMS") > 0);
-    TEST_ASSERT_EQUAL_INT(0, mkdir(checksum_path, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(checksum_path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           package_cache_fetch(archive_path,
                                               sizeof(archive_path),
@@ -817,7 +818,7 @@ static void test_cache_discard(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_cache_discard(path));
 
     build_path(path, sizeof(path), "cache-directory");
-    TEST_ASSERT_EQUAL_INT(0, mkdir(path, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_cache_discard(path));
 
     build_path(path, sizeof(path), "readonly-cache");

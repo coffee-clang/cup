@@ -144,6 +144,28 @@ if cup_test_dependencies_ready; then
 fi
 printf 'Source-test environment contract tests passed.\n'
 
+printf '==> Testing macOS dependency tool preparation...\n'
+FAKE_BREW_DIR="$TMP_ROOT/fake-brew"
+FAKE_BREW_LOG="$TMP_ROOT/brew.log"
+mkdir -p "$FAKE_BREW_DIR"
+cat >"$FAKE_BREW_DIR/brew" <<EOF_BREW
+#!/bin/sh
+printf '%s\n' "\$*" >>'$FAKE_BREW_LOG'
+case "\${1:-}" in
+    list) exit 0 ;;
+    install|update) exit 0 ;;
+    *) exit 2 ;;
+esac
+EOF_BREW
+chmod +x "$FAKE_BREW_DIR/brew"
+PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
+    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" dependencies
+for package in perl pkg-config xz; do
+    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
+        fail "macOS dependency preparation omitted $package"
+done
+printf 'macOS dependency tool preparation tests passed.\n'
+
 printf '==> Testing explicit dependency preparation...\n'
 FAKE_ROOT="$TMP_ROOT/fake-project"
 DEPENDENCY_BUILD_LOG="$TMP_ROOT/dependency-build.log"
@@ -272,32 +294,35 @@ Libs: -L\${libdir} -levent_extra
 EOF_EVENT_EXTRA_PC
     }
 
-    recipe_root=$(mktemp -d)
-    printf "%s\n" "recipe one" >"$recipe_root/one.sh"
-    printf "%s\n" "recipe two" >"$recipe_root/two.sh"
-    id=$(dependency_id test-platform test-toolchain 1 "$recipe_root" \
-        "$recipe_root/one.sh" "$recipe_root/two.sh")
-    metadata=$(dependency_metadata test-platform "$id")
+    lock_sha256=$(dependency_lock_sha256)
+    recipe=$(dependency_recipe_version)
+    metadata=$(dependency_metadata linux-x64 gcc)
     [ "$(printf "%s\n" "$metadata" | sed -n "1p")" = \
-        "prefix_format=3" ]
+        "prefix_format=4" ]
     [ "$(printf "%s\n" "$metadata" | sed -n "2p")" = \
-        "platform=test-platform" ]
+        "platform=linux-x64" ]
     [ "$(printf "%s\n" "$metadata" | sed -n "3p")" = \
-        "dependency_id=$id" ]
+        "profile=gcc" ]
+    [ "$(printf "%s\n" "$metadata" | sed -n "4p")" = \
+        "recipe=$recipe" ]
+    [ "$(printf "%s\n" "$metadata" | sed -n "5p")" = \
+        "lock_sha256=$lock_sha256" ]
     dependency_metadata_valid "$metadata"
-    old_id=$id
-    printf "%s\n" "recipe changed" >>"$recipe_root/two.sh"
-    id=$(dependency_id test-platform test-toolchain 1 "$recipe_root" \
-        "$recipe_root/one.sh" "$recipe_root/two.sh")
-    [ "$id" != "$old_id" ]
-    if dependency_metadata_valid "prefix_format=2
-platform=test-platform
-dependency_id=$id"; then
+    if dependency_metadata_valid "prefix_format=3
+platform=linux-x64
+profile=gcc
+recipe=$recipe
+lock_sha256=$lock_sha256"; then
+        exit 1
+    fi
+    if dependency_metadata_valid "prefix_format=4
+platform=linux-x64
+profile=apple-clang
+recipe=$recipe
+lock_sha256=$lock_sha256"; then
         exit 1
     fi
 
-    metadata=$(dependency_metadata test-platform \
-        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
     if prepare_dependency_prefix relative-prefix "$metadata" 1; then
         exit 1
     fi
@@ -436,7 +461,7 @@ EOF_WINDOWS_PATHS
     [ -f "$final/new.txt" ]
     [ ! -e "$final/old.txt" ]
     [ ! -e "$final/.cup-deps-building" ]
-    [ "$(cat "$final/.cup-deps-config")" = "$metadata" ]
+    [ "$(cat "$final/.cup-dependencies")" = "$metadata" ]
     [ "$("$final/bin/curl-config")" = "-L$final/lib -lcurl" ]
 
     prepare_dependency_prefix "$final" "$metadata" 1
@@ -521,8 +546,7 @@ bash -eu -o pipefail -c '
     final=$2
     . "$common"
 
-    metadata=$(dependency_metadata test-platform \
-        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+    metadata=$(dependency_metadata linux-x64 gcc)
     prepare_dependency_prefix "$final" "$metadata" 1
     build=$CUP_DEPS_BUILD_PREFIX
     printf "partial\n" >"$build/partial.txt"
@@ -577,23 +601,24 @@ done
 printf 'Failed dependency build cleanup and retry tests passed.\n'
 
 printf '==> Testing target-based build configurations...\n'
+print_dependency_prefix() {
+    (
+        cd "$PROJECT_ROOT"
+        printf '%s\n' \
+            'print-deps-prefix:' \
+            '	@printf "%s\n" "$(DEPS_PREFIX)"' |
+            make --no-print-directory -s -f Makefile -f - \
+                "$@" print-deps-prefix
+    )
+}
+
 PINNED_PREFIX="$TMP_ROOT/pinned-prefix"
 create_complete_prefix "$PINNED_PREFIX" 1
-resolved_prefix=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -s DEPS_PREFIX="$PINNED_PREFIX" \
-        --eval='print-deps-prefix: ; @printf "%s\n" "$(DEPS_PREFIX)"' \
-        print-deps-prefix
-)
+resolved_prefix=$(print_dependency_prefix DEPS_PREFIX="$PINNED_PREFIX")
 assert_equals "$resolved_prefix" "$PINNED_PREFIX"
 
-normalized_prefix=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -s \
-        DEPS_PREFIX="$PINNED_PREFIX/../$(basename "$PINNED_PREFIX")" \
-        --eval='print-deps-prefix: ; @printf "%s\n" "$(DEPS_PREFIX)"' \
-        print-deps-prefix
-)
+normalized_prefix=$(print_dependency_prefix \
+    DEPS_PREFIX="$PINNED_PREFIX/../$(basename "$PINNED_PREFIX")")
 assert_equals "$normalized_prefix" "$PINNED_PREFIX"
 
 if make -C "$PROJECT_ROOT" --no-print-directory -n \
@@ -726,22 +751,6 @@ assert_contains "$release_command" "$PINNED_PREFIX/lib/libcurl.a"
 assert_contains "$release_command" "$PINNED_PREFIX/lib/libarchive.a"
 assert_contains "$release_command" '-static'
 
-for removed in \
-        'LINK_MODE=dynamic' \
-        'BUILD_MODE=development' \
-        'DEBUG_SYMBOLS=1' \
-        'COVERAGE=1' \
-        'SANITIZERS=1' \
-        'RELEASE_BUILD=1'; do
-    if (
-        cd "$PROJECT_ROOT"
-        make --no-print-directory -n PLATFORM=linux-x64 $removed
-    ) >"$TMP_ROOT/removed-selector.out" 2>&1; then
-        fail "removed build selector was accepted: $removed"
-    fi
-    assert_contains "$(cat "$TMP_ROOT/removed-selector.out")" \
-        'were removed; use target-based builds and EXTRA_* flags'
-done
 help_output=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -s help
@@ -754,26 +763,38 @@ printf 'Target-based build configuration tests passed.\n'
 
 printf '==> Testing dependency diagnostics...\n'
 missing_prefix="$TMP_ROOT/missing-prefix"
+(
+    cd "$PROJECT_ROOT"
+    make --no-print-directory -n PLATFORM=linux-x64 \
+        DEPS_PREFIX="$missing_prefix" all
+) >"$TMP_ROOT/missing-prefix.out" 2>&1 || true
+assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" 'build-posix.sh'
+assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" \
+    'make --no-print-directory _build'
 if (
     cd "$PROJECT_ROOT"
-    make --no-print-directory -s DEPS_PREFIX="$missing_prefix" all
-) >"$TMP_ROOT/missing-prefix.out" 2>&1; then
-    fail 'development build accepted an incomplete dependency prefix'
+    make --no-print-directory -s PLATFORM=linux-x64 \
+        DEPS_PREFIX="$missing_prefix" deps-check
+) >"$TMP_ROOT/deps-check-missing.out" 2>&1; then
+    fail 'deps-check accepted a missing dependency prefix'
 fi
-assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" \
-    "Run 'make PLATFORM=linux-x64 deps' first."
+assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
+    'Pinned dependency prefix is missing, incomplete or incompatible'
 
+default_deps_prefix="$HOME/deps/linux-x64/install"
 deps_command=$(
     cd "$PROJECT_ROOT"
+    unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES
     make --no-print-directory -B -n PLATFORM=linux-x64 deps
 )
 assert_contains "$deps_command" 'build-posix.sh'
 assert_contains "$deps_command" "JOBS=''"
-assert_contains "$deps_command" "${DEPS_PREFIX:-$HOME/deps/linux-x64/install}"
+assert_contains "$deps_command" "$default_deps_prefix"
 assert_not_contains "$deps_command" 'CUP_DEPS_SCOPE'
 custom_deps_prefix="$TMP_ROOT/custom-deps-prefix"
 custom_deps_command=$(
     cd "$PROJECT_ROOT"
+    unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES
     make --no-print-directory -B -n PLATFORM=linux-x64 \
         DEPS_PREFIX="$custom_deps_prefix" deps
 )
@@ -790,14 +811,6 @@ done
 for executable in build-posix.sh build-windows.sh verify.sh; do
     path="$DEPENDENCY_DIR/$executable"
     [ -x "$path" ] || fail "dependency entry point is missing or not executable: $executable"
-done
-for retired in \
-        bootstrap-common.sh bootstrap-posix-deps.sh bootstrap-linux-deps.sh \
-        bootstrap-macos-deps.sh bootstrap-windows-deps.sh check-prefix.sh \
-        source-windows-deps.sh; do
-    if find "$PROJECT_ROOT/scripts" -type f -name "$retired" | grep -q .; then
-        fail "retired dependency script remains: $retired"
-    fi
 done
 if PLATFORM=macos-x64 MACOSX_DEPLOYMENT_TARGET=12.0 \
         bash "$DEPENDENCY_DIR/build-posix.sh" \
@@ -819,7 +832,7 @@ printf '==> Testing dependency inventory, scopes and notices...\n'
 DEPENDENCY_SOURCES="$DEPENDENCY_DIR/sources.sh"
 DEPENDENCY_NOTICES="$DEPENDENCY_DIR/THIRD_PARTY_NOTICES.txt"
 [ -f "$DEPENDENCY_NOTICES" ] || fail 'third-party notices file is missing'
-packages=$(sh -eu -c '. "$1"; all_source_packages' sh "$DEPENDENCY_SOURCES")
+packages=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; all_source_packages' sh "$DEPENDENCY_SOURCES")
 expected_packages='zlib
 xz
 openssl
@@ -832,22 +845,22 @@ libevent'
 [ "$packages" = "$expected_packages" ] ||
     fail 'canonical dependency inventory changed unexpectedly'
 for package in zlib xz openssl curl libarchive argtable3 uthash; do
-    scope=$(sh -eu -c '. "$1"; dependency_scope_for_package "$2"' \
+    scope=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
         sh "$DEPENDENCY_SOURCES" "$package")
     [ "$scope" = runtime ] || fail "$package does not have runtime scope"
 done
 for package in unity libevent; do
-    scope=$(sh -eu -c '. "$1"; dependency_scope_for_package "$2"' \
+    scope=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
         sh "$DEPENDENCY_SOURCES" "$package")
     [ "$scope" = test ] || fail "$package does not have test scope"
 done
-[ "$(sh -eu -c '. "$1"; dependency_usage_for_package uthash' \
+[ "$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package uthash' \
     sh "$DEPENDENCY_SOURCES")" = header-only ] ||
     fail 'uthash usage classification is incorrect'
-[ "$(sh -eu -c '. "$1"; dependency_usage_for_package libevent' \
+[ "$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package libevent' \
     sh "$DEPENDENCY_SOURCES")" = network-test-library ] ||
     fail 'libevent usage classification is incorrect'
-if sh -eu -c '. "$1"; dependency_scope_for_package unknown' \
+if sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package unknown' \
         sh "$DEPENDENCY_SOURCES" >/dev/null 2>&1; then
     fail 'dependency scope lookup accepted an unknown package'
 fi

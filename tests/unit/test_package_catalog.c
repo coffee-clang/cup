@@ -9,6 +9,7 @@
 #include "system.h"
 #include "text.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@
  * counters record the calls made by production code.
  */
 
-static char temp_dir[] = "/tmp/cup-catalog-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char installed_path[MAX_PATH_LEN];
 static CupError layout_error;
 static CupError exists_error;
@@ -290,7 +291,7 @@ static void test_source_choice(void) {
 
         TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
         TEST_ASSERT_TRUE(snprintf(config_path, sizeof(config_path), "%s/config", temp_dir) > 0);
-        if (mkdir(config_path, 0755) != 0) {
+        if (test_mkdir(config_path, 0755) != 0) {
             TEST_ASSERT_EQUAL_INT(EEXIST, errno);
         }
         TEST_ASSERT_TRUE(
@@ -725,7 +726,8 @@ static void test_registry_catalog(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-catalog-test"));
     UNITY_BEGIN();
     RUN_TEST(test_load_queries);
     RUN_TEST(test_source_choice);

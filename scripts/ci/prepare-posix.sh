@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 
 # Purpose: Installs the native POSIX tools required by one CI profile before
-# the dependency identity is calculated and its cache is restored.
+# the dependency cache key is resolved and its prefix is restored.
 set -eu
 
 profile=${1:?CI profile is required}
@@ -14,7 +14,7 @@ fail() {
 }
 
 case "$profile" in
-    source | coverage | sanitizers | release)
+    dependencies | source | coverage | sanitizers | release)
         ;;
     *)
         fail "unsupported profile: $profile"
@@ -25,6 +25,8 @@ case "$family" in
     linux)
         packages='build-essential ca-certificates curl file git make perl pkg-config tar xz-utils'
         case "$profile" in
+            dependencies)
+                ;;
             source)
                 # The primary Linux build uses GCC. Clang is installed only for
                 # the x64 secondary compiler pass; OpenSSL is needed only by
@@ -58,7 +60,7 @@ case "$family" in
         ;;
     macos)
         case "$profile" in
-            source)
+            dependencies | source)
                 packages='perl pkg-config xz'
                 ;;
             coverage)

@@ -9,6 +9,7 @@
 #include "system.h"
 #include "text.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -73,8 +74,9 @@ static const char *valid_policy(void) {
 }
 
 void setUp(void) {
-    char template_path[] = "/tmp/cup-policy-unit-XXXXXX";
-    TEST_ASSERT_NOT_NULL(mkdtemp(template_path));
+    char template_path[CUP_TEST_TEMP_PATH_SIZE];
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        template_path, sizeof(template_path), "cup-policy-unit"));
     strcpy(root, template_path);
     path_join(official_path, sizeof(official_path), root, "install.cfg");
     path_join(preferences_path, sizeof(preferences_path), root, "preferences.txt");

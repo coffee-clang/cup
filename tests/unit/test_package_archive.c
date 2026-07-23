@@ -6,6 +6,7 @@
 #include "package_archive.h"
 
 #include "unity.h"
+#include "test_platform.h"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -199,7 +200,7 @@ static void test_payload_required(void) {
 
     write_bytes(empty, "", 0);
     write_bytes(invalid, "garbage", 7);
-    TEST_ASSERT_EQUAL_INT(0, mkdir(directory, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(directory, 0755));
     create_archive(directories_only, "tar.gz", 0);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_is_valid(NULL, "tar.gz", &valid));

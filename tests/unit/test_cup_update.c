@@ -16,6 +16,7 @@
 #include "system.h"
 #include "package_transaction.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +29,7 @@
  * counters record the calls made by production code.
  */
 
-static char temp_dir[] = "/tmp/cup-cup-update-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char remote_version[64];
 static char remote_commit[64];
 static char versioned_version[64];
@@ -327,7 +328,7 @@ CupError system_create_temp_directory(const char *directory,
     if (snprintf(path, path_size, "%s/staging-%u", temp_dir, staging_serial) <= 0) {
         return CUP_ERR_TEMPORARY;
     }
-    return mkdir(path, 0700) == 0 ? CUP_OK : CUP_ERR_TEMPORARY;
+    return test_mkdir(path, 0700) == 0 ? CUP_OK : CUP_ERR_TEMPORARY;
 }
 
 CupError system_set_executable(const char *path, int executable) {
@@ -679,11 +680,12 @@ static void test_stage_failures(void) {
 int main(void) {
     char tmp_path[1024];
 
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-cup-update-test"));
     TEST_ASSERT_TRUE(snprintf(tmp_path, sizeof(tmp_path), "%s/tmp", temp_dir) > 0);
-    TEST_ASSERT_EQUAL_INT(0, mkdir(tmp_path, 0700));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(tmp_path, 0700));
     TEST_ASSERT_TRUE(snprintf(tmp_path, sizeof(tmp_path), "%s/installed", temp_dir) > 0);
-    TEST_ASSERT_EQUAL_INT(0, mkdir(tmp_path, 0700));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(tmp_path, 0700));
 
     UNITY_BEGIN();
     RUN_TEST(test_installed_preflight);

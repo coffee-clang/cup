@@ -200,7 +200,9 @@ build_libarchive() {
         --without-xml2 \
         --without-expat \
         --without-nettle \
-        --without-openssl
+        --without-openssl \
+        --without-iconv \
+        --without-libiconv-prefix
 
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"
@@ -247,6 +249,12 @@ verify() {
     verify_link_metadata_value curl "$curl_flags" || exit 1
     verify_link_metadata_value libarchive "$archive_flags" || exit 1
     verify_link_metadata_value libevent "$event_flags" || exit 1
+    case " $archive_flags " in
+        *" -liconv "*)
+            echo "Error: libarchive metadata depends on unpinned libiconv." >&2
+            exit 1
+            ;;
+    esac
 
     if ! dependency_prefix_complete "$PREFIX" 0 "$CUP_DEPS_FINAL_PREFIX"; then
         echo "Error: generated dependency prefix is incomplete." >&2
@@ -263,8 +271,7 @@ verify() {
 # Ordered Windows x64 bootstrap.
 main() {
     local compiler_target
-    local toolchain
-    local id
+    local profile
     local metadata
 
     require_tool "$CC"
@@ -281,19 +288,16 @@ main() {
             exit 1
             ;;
     esac
-    toolchain=$(dependency_windows_toolchain_identity \
-        "$HOST_TRIPLE" "$CC" "$AR" "$RANLIB" "$STRIP" "$WINDRES" \
-        "$RUNTIME_POLICY")
-    id=$(dependency_id "$PLATFORM" "$toolchain" 0 "$PROJECT_ROOT" \
-        "$SCRIPT_DIR/sources.sh" \
-        "$SCRIPT_DIR/common.sh" \
-        "$SCRIPT_DIR/build-windows.sh")
-    metadata=$(dependency_metadata "$PLATFORM" "$id")
+    profile=$(dependency_profile "$PLATFORM")
+    metadata=$(dependency_metadata "$PLATFORM" "$profile")
+    dependency_acquire_build_lock "$DEPS_ROOT"
+    trap 'abort_dependency_prefix; dependency_release_build_lock' EXIT
     prepare_dependency_prefix "$DEPS_PREFIX" "$metadata" 0
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
+        dependency_release_build_lock
+        trap - EXIT
         exit 0
     fi
-    trap 'abort_dependency_prefix' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -326,6 +330,7 @@ main() {
         "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_FINAL_PREFIX"
     verify
     finish_dependency_prefix "$PREFIX"
+    dependency_release_build_lock
     trap - EXIT HUP INT TERM
 }
 

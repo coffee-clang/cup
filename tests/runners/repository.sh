@@ -1,48 +1,35 @@
 #!/usr/bin/env bash
 
-# Purpose: Runs repository, generation and release-script contract tests.
+# Purpose: Runs repository, generation and release-script quality contracts.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 
-printf '==> Testing repository structure...\n'
-"$ROOT/tests/repository/structure.sh"
-printf '==> Testing source-test environment...\n'
-"$ROOT/tests/repository/environment.sh"
-printf '==> Testing dependency path neutralization...\n'
-"$ROOT/tests/repository/dependencies.sh"
-printf '==> Testing embedded CA metadata...\n'
-"$ROOT/scripts/certs/check-ca-bundle.sh"
-printf '==> Testing build configuration identity...\n'
-"$ROOT/tests/repository/build-system.sh"
-printf '==> Testing binary inspection policy...\n'
-"$ROOT/tests/repository/binary-inspection.sh"
-printf '==> Testing assertion quality...\n'
-"$ROOT/tests/repository/assertions.sh"
-printf '==> Testing coverage gap policy...\n'
-"$ROOT/tests/repository/coverage-policy.sh"
-printf '==> Testing version policy...\n'
-"$ROOT/tests/repository/version-policy.sh"
-printf '==> Testing release metadata validation...\n'
-"$ROOT/tests/repository/release-metadata.sh"
-printf '==> Testing filesystem and archive security...\n'
-"$ROOT/tests/repository/filesystem-security.sh"
-printf '==> Testing release candidate decision...\n'
-"$ROOT/tests/repository/release-prepare.sh"
-printf '==> Testing workflow ownership...\n'
-"$ROOT/tests/repository/workflows.sh"
-printf '==> Testing Tests-run provenance...\n'
-"$ROOT/tests/repository/tests-run.sh"
-printf '==> Testing release candidate metadata...\n'
-"$ROOT/tests/repository/release-candidate.sh"
-printf '==> Testing release publication recovery...\n'
-"$ROOT/tests/repository/release-publish.sh"
+run_check() {
+    local label=$1
+    local script=$2
+
+    printf '==> %s\n' "$label"
+    "$ROOT/$script"
+}
+
+run_check 'Testing repository structure...' tests/repository/structure.sh
+run_check 'Testing source-test environment...' tests/repository/environment.sh
+run_check 'Testing dependency contracts...' tests/repository/dependencies.sh
+run_check 'Testing embedded CA metadata...' scripts/certs/check-ca-bundle.sh
+run_check 'Testing build configuration...' tests/repository/build-system.sh
+run_check 'Testing binary inspection policy...' tests/repository/binary-inspection.sh
+run_check 'Testing assertion quality...' tests/repository/assertions.sh
+run_check 'Testing coverage policy...' tests/repository/coverage-policy.sh
+run_check 'Testing version policy...' tests/repository/version-policy.sh
+run_check 'Testing release metadata...' tests/repository/release-metadata.sh
+run_check 'Testing filesystem and archive security...' tests/repository/filesystem-security.sh
+run_check 'Testing workflow responsibilities...' tests/repository/workflows.sh
+run_check 'Testing release publication recovery...' tests/repository/release-publish.sh
 
 if [ "${CUP_TEST_WITH_BUILD_OUTPUT:-0}" = 1 ]; then
-    printf '==> Testing deterministic CA bundle generation...\n'
-    "$ROOT/tests/repository/certs.sh"
-    printf '==> Testing checkout paths containing spaces...\n'
-    "$ROOT/tests/repository/build-paths.sh"
+    run_check 'Testing deterministic CA bundle generation...' tests/repository/certs.sh
+    run_check 'Testing checkout paths containing spaces...' tests/repository/build-paths.sh
 fi
 
-printf 'All repository contract tests passed.\n'
+printf 'All repository quality checks passed.\n'

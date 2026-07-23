@@ -6,18 +6,18 @@ set -eu
 
 . "$(dirname "$0")/common.sh"
 
-# Validate workflow provenance before generating any candidate metadata.
+# Validate release-workflow provenance before generating candidate metadata.
 : "${SOURCE_REPOSITORY:?SOURCE_REPOSITORY is required}"
-: "${TESTS_RUN_ID:?TESTS_RUN_ID is required}"
-: "${TESTS_RUN_ATTEMPT:?TESTS_RUN_ATTEMPT is required}"
+: "${RELEASE_RUN_ID:?RELEASE_RUN_ID is required}"
+: "${RELEASE_RUN_ATTEMPT:?RELEASE_RUN_ATTEMPT is required}"
 
 printf '%s\n' "$SOURCE_REPOSITORY" |
     grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ||
     fail "invalid SOURCE_REPOSITORY: $SOURCE_REPOSITORY"
-printf '%s\n' "$TESTS_RUN_ID" | grep -Eq '^[1-9][0-9]*$' ||
-    fail "invalid TESTS_RUN_ID: $TESTS_RUN_ID"
-printf '%s\n' "$TESTS_RUN_ATTEMPT" | grep -Eq '^[1-9][0-9]*$' ||
-    fail "invalid TESTS_RUN_ATTEMPT: $TESTS_RUN_ATTEMPT"
+printf '%s\n' "$RELEASE_RUN_ID" | grep -Eq '^[1-9][0-9]*$' ||
+    fail "invalid RELEASE_RUN_ID: $RELEASE_RUN_ID"
+printf '%s\n' "$RELEASE_RUN_ATTEMPT" | grep -Eq '^[1-9][0-9]*$' ||
+    fail "invalid RELEASE_RUN_ATTEMPT: $RELEASE_RUN_ATTEMPT"
 
 # Build the common immutable assets from the same locally tagged source revision.
 create_local_release_tag
@@ -37,7 +37,7 @@ cp scripts/install/uninstall-cup-windows.ps1 dist/common/uninstall.ps1
 prepare_installer scripts/install/install-cup.sh dist/common/install.sh
 prepare_installer scripts/install/install-cup-windows.ps1 dist/common/install.ps1
 chmod +x dist/common/install.sh dist/common/uninstall.sh
-# Internal candidate identity and public source-workflow provenance.
+# Internal candidate identity and public release-workflow provenance.
 cat > dist/common/candidate.env <<EOF_CANDIDATE
 VERSION=$VERSION
 TAG=$TAG
@@ -48,8 +48,8 @@ format=1
 version=$VERSION
 source_repository=$SOURCE_REPOSITORY
 source_commit=$SHA
-tests_run_id=$TESTS_RUN_ID
-tests_run_attempt=$TESTS_RUN_ATTEMPT
+release_run_id=$RELEASE_RUN_ID
+release_run_attempt=$RELEASE_RUN_ATTEMPT
 EOF_PROVENANCE
 
 # The installer checksum file intentionally covers only assets it consumes.

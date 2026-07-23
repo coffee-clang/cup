@@ -4,6 +4,7 @@
 
 #include "checksum.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +13,7 @@
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-checksum-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -262,7 +263,8 @@ static void test_checksum_validation(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-checksum-test"));
     UNITY_BEGIN();
     RUN_TEST(test_sha256_vectors);
     RUN_TEST(test_padding_boundaries);

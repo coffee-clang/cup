@@ -7,11 +7,20 @@ set -eu
 platform=${1:?platform is required}
 compiler=${2:?compiler is required}
 windres=${3:-}
+configuration=${4:-development}
 
 fail() {
     printf 'toolchain: %s\n' "$*" >&2
     exit 1
 }
+
+case "$configuration" in
+    development|debug|coverage|sanitizers|release)
+        ;;
+    *)
+        fail "unsupported build configuration '$configuration'"
+        ;;
+esac
 
 # Compiler commands may contain simple launcher arguments. Whitespace inside
 # the compiler executable path remains outside the command-string contract; this
@@ -99,13 +108,9 @@ case "$platform" in
             MINGW*:x86_64|MSYS*:x86_64)
                 ;;
             *)
-                fail "PLATFORM '$platform' requires a native MSYS2 UCRT64 x64 host, got $host_system/$host_machine"
+                fail "PLATFORM '$platform' requires a native MSYS2 x64 host, got $host_system/$host_machine"
                 ;;
         esac
-        [ "${MSYSTEM:-}" = UCRT64 ] ||
-            fail "PLATFORM '$platform' requires MSYSTEM=UCRT64"
-        [ "${MINGW_PREFIX:-}" = /ucrt64 ] ||
-            fail "PLATFORM '$platform' requires MINGW_PREFIX=/ucrt64"
         case "${MSYSTEM_CARCH:-x86_64}" in
             x86_64)
                 ;;
@@ -117,14 +122,54 @@ case "$platform" in
             x86_64-w64-mingw32|x86_64*-windows-gnu)
                 ;;
             *)
-                fail "compiler target '$target' does not match the UCRT64 policy for $platform"
+                fail "compiler target '$target' does not match $platform"
                 ;;
         esac
+
+        compiler_id=$($compiler --version 2>/dev/null | sed -n '1p')
+        case "$configuration" in
+            sanitizers)
+                [ "${MSYSTEM:-}" = CLANG64 ] ||
+                    fail "windows-x64 sanitizers require MSYSTEM=CLANG64"
+                [ "${MINGW_PREFIX:-}" = /clang64 ] ||
+                    fail "windows-x64 sanitizers require MINGW_PREFIX=/clang64"
+                case "$compiler_id" in
+                    *clang*|*Clang*)
+                        ;;
+                    *)
+                        fail "windows-x64 sanitizers require Clang, got: $compiler_id"
+                        ;;
+                esac
+                ;;
+            *)
+                [ "${MSYSTEM:-}" = UCRT64 ] ||
+                    fail "windows-x64 $configuration builds require MSYSTEM=UCRT64"
+                [ "${MINGW_PREFIX:-}" = /ucrt64 ] ||
+                    fail "windows-x64 $configuration builds require MINGW_PREFIX=/ucrt64"
+                case "$compiler_id" in
+                    *gcc*|*GCC*)
+                        ;;
+                    *)
+                        fail "windows-x64 $configuration builds require GCC, got: $compiler_id"
+                        ;;
+                esac
+                ;;
+        esac
+
         [ -n "$windres" ] || fail 'WINDRES is required for windows-x64'
         set -- $windres
         windres_program=${1:-}
         command -v "$windres_program" >/dev/null 2>&1 ||
             fail "resource compiler '$windres_program' was not found"
+        if [ "$configuration" = sanitizers ]; then
+            case "$(basename "$windres_program")" in
+                llvm-windres|llvm-windres.exe)
+                    ;;
+                *)
+                    fail "windows-x64 sanitizers require llvm-windres"
+                    ;;
+            esac
+        fi
         ;;
     *)
         fail "unsupported platform '$platform'"

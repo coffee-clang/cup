@@ -46,9 +46,14 @@ printf '%s\n' '0.2.0' > "$repo/VERSION"
     assert_equals "$(wc -l < generated/release.txt | tr -d '[:space:]')" '3'
     grep -Fx '#include "version.h"' generated/version.rc >/dev/null ||
         fail 'Windows version resource does not include generated version metadata'
-    grep -F '<longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>' \
+    grep -F '<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>' \
         generated/version.rc >/dev/null ||
         fail 'Windows version resource is not long-path aware'
+    grep -F 'version=""1.0""' generated/version.rc >/dev/null ||
+        fail 'Windows version resource does not use RC quote escaping'
+    if grep -F '\"' generated/version.rc >/dev/null; then
+        fail 'Windows version resource uses C escaping inside RC strings'
+    fi
     grep -Fx '#define CUP_VERSION_OFFICIAL 1' generated/version.h >/dev/null ||
         fail 'official generated header does not mark the build as official'
 

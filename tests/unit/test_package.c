@@ -9,6 +9,7 @@
 #include "registry.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stddef.h>
 
@@ -78,7 +79,7 @@ CupError layout_create_recovery_dir(char *buffer, size_t size, const PackageIden
     if (written < 0 || (size_t)written >= size) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    if (mkdir(buffer, 0755) != 0) {
+    if (test_mkdir(buffer, 0755) != 0) {
         return CUP_ERR_FILESYSTEM;
     }
     return CUP_OK;
@@ -119,7 +120,7 @@ static void write_text(const char *path, const char *text) {
 }
 
 static void make_dir(const char *path) {
-    TEST_ASSERT_TRUE(mkdir(path, 0755) == 0 || access(path, F_OK) == 0);
+    TEST_ASSERT_TRUE(test_mkdir(path, 0755) == 0 || access(path, F_OK) == 0);
 }
 
 static void make_parent_chain(const char *relative) {

@@ -36,8 +36,8 @@ format=1
 version=$VERSION
 source_repository=example/cup-source
 source_commit=$SHA
-tests_run_id=41
-tests_run_attempt=2
+release_run_id=41
+release_run_attempt=2
 EOF_PROVENANCE
 printf 'third-party licenses\n' > "$DIST/THIRD_PARTY_NOTICES.txt"
 printf 'CUP_RELEASE_VERSION="%s"\nCUP_RELEASE_TAG="%s"\nCUP_RELEASE_COMMIT="%s"\n' \
@@ -51,8 +51,6 @@ for platform in linux-x64 linux-arm64 macos-x64 macos-arm64; do
 done
 printf 'windows\n' > "$DIST/cup-windows-x64.exe"
 printf 'VERSION=%s\nTAG=%s\nSHA=%s\n' "$VERSION" "$TAG" "$SHA" > "$DIST/candidate.env"
-printf 'SHOULD_RELEASE=1\nVERSION=%s\nTAG=%s\nSHA=%s\n' \
-    "$VERSION" "$TAG" "$SHA" > "$DIST/release-decision.env"
 
 write_checksums() {
     local output=$1
@@ -164,7 +162,7 @@ run_publish() {
     PATH="$MOCK_BIN:$PATH" MOCK_STATE="$MOCK_STATE" MOCK_DIST="$DIST" \
         VERSION="$VERSION" TAG="$TAG" SHA="$SHA" \
         SOURCE_REPOSITORY=example/cup-source \
-        TESTS_RUN_ID=41 TESTS_RUN_ATTEMPT=2 \
+        RELEASE_RUN_ID=41 RELEASE_RUN_ATTEMPT=2 \
         GH_TOKEN=test GH_REPO=example/cup \
         "$ROOT/scripts/release/publish.sh" "$DIST"
 }
@@ -180,16 +178,6 @@ fi
 grep -F 'candidate metadata does not match' \
     "$TMP_ROOT/duplicate-candidate.out" >/dev/null
 mv "$TMP_ROOT/candidate.env.valid" "$DIST/candidate.env"
-
-cp "$DIST/release-decision.env" "$TMP_ROOT/release-decision.env.valid"
-printf 'SHA=%s\n' "$SHA" >> "$DIST/release-decision.env"
-if run_publish > "$TMP_ROOT/duplicate-decision.out" 2>&1; then
-    printf 'duplicate release decision metadata unexpectedly passed validation\n' >&2
-    exit 1
-fi
-grep -F 'release decision metadata does not match' \
-    "$TMP_ROOT/duplicate-decision.out" >/dev/null
-mv "$TMP_ROOT/release-decision.env.valid" "$DIST/release-decision.env"
 
 run_publish >/dev/null
 [ "$(cat "$MOCK_STATE/draft")" = false ]

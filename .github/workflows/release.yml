@@ -1,19 +1,9 @@
-# Publish only artifacts produced by one successful Tests run for the exact
-# main-branch commit selected by this manual workflow.
-
 name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      tests_run_id:
-        description: >-
-          Successful Tests run id for this commit; leave empty to resolve it automatically
-        required: false
-        type: string
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -21,17 +11,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Publication reuses an already successful Tests run and never rebuilds its assets.
-  release:
-    name: Publish verified release
+  metadata:
+    name: Resolve release metadata
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      sha: ${{ steps.metadata.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - id: metadata
-        name: Resolve source metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -41,46 +33,262 @@ jobs:
           }
           version=$(./scripts/version.sh base)
           sha=$(git rev-parse HEAD)
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
-      - id: tests
-        name: Resolve successful Tests run
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  tests:
+    name: Source quality gates
+    needs: metadata
+    uses: ./.github/workflows/tests.yml
+
+  common-assets:
+    name: Prepare common release assets
+    needs:
+      - metadata
+      - tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+      - name: Prepare common assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
           SOURCE_REPOSITORY: ${{ github.repository }}
-          SHA: ${{ steps.metadata.outputs.sha }}
-          TESTS_RUN_ID: ${{ inputs.tests_run_id }}
-        run: scripts/release/resolve-tests-run.sh
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: scripts/release/common-assets.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-release-common
+          path: dist/common/*
+          if-no-files-found: error
+          retention-days: 30
+
+  build-release:
+    name: Build release (${{ matrix.platform }})
+    needs:
+      - metadata
+      - tests
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: linux
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+          - platform: windows-x64
+            runner: windows-latest
+            family: windows
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        if: matrix.family == 'windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            ca-certificates
+            curl
+            diffutils
+            file
+            git
+            make
+            perl
+            tar
+            xz
+            zip
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+      - name: Prepare POSIX release toolchain
+        if: matrix.family != 'windows'
+        env:
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh release
+      - id: cache-posix
+        if: matrix.family != 'windows'
+        run: |
+          key=$(scripts/dependencies/verify.sh \
+            '${{ matrix.platform }}' --print-cache-key)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - id: cache-windows
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: |
+          prefix="$HOME/deps/windows-x64/install"
+          key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        if: matrix.family != 'windows'
+        with:
+          path: ~/deps/${{ matrix.platform }}/install
+          key: ${{ steps.cache-posix.outputs.key }}
+      - uses: actions/cache@v5
+        if: matrix.family == 'windows'
+        with:
+          path: ${{ steps.cache-windows.outputs.path }}
+          key: ${{ steps.cache-windows.outputs.key }}
+      - name: Build POSIX release
+        if: matrix.family != 'windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          FAMILY: ${{ matrix.family }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+          CUP_CI_ENVIRONMENT_PREPARED: 1
+        run: scripts/release/build-platform.sh
+      - name: Build POSIX release test helpers
+        if: matrix.family != 'windows'
+        run: >-
+          make PLATFORM='${{ matrix.platform }}'
+          CUP_TEST_CONFIGURATION=release test-helpers
+      - name: Build Windows release
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        env:
+          PLATFORM: windows-x64
+          FAMILY: windows
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+        run: scripts/release/build-platform.sh
+      - name: Build Windows release test helpers
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        run: >-
+          make PLATFORM=windows-x64 CUP_TEST_CONFIGURATION=release test-helpers
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-release-${{ matrix.platform }}
+          path: dist/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-symbols-${{ matrix.platform }}
+          path: dist/symbols/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cup-test-helpers-${{ matrix.platform }}
+          path: build/${{ matrix.platform }}/release/tests/helpers/*
+          if-no-files-found: error
+          retention-days: 30
+
+  native-release-tests:
+    name: Native release tests (${{ matrix.platform }})
+    needs:
+      - metadata
+      - common-assets
+      - build-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            family: posix
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: posix
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: posix
+          - platform: macos-arm64
+            runner: macos-15
+            family: posix
+          - platform: windows-x64
+            runner: windows-latest
+            family: windows
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
-          run-id: ${{ steps.tests.outputs.run_id }}
-          github-token: ${{ github.token }}
+          pattern: cup-release-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: cup-test-helpers-${{ matrix.platform }}
+          path: build/${{ matrix.platform }}/release/tests/helpers
+      - name: Restore POSIX helper permissions
+        if: matrix.family == 'posix'
+        run: chmod +x build/${{ matrix.platform }}/release/tests/helpers/*
+      - name: Test POSIX release
+        if: matrix.family == 'posix'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          CUP_TEST_CONFIGURATION: release
+        run: tests/release/posix.sh release
+      - name: Test Windows release
+        if: matrix.family == 'windows'
+        shell: powershell
+        env:
+          CUP_TEST_CONFIGURATION: release
+        run: >-
+          powershell.exe -NoProfile -ExecutionPolicy Bypass
+          -File tests/release/windows.ps1
+          -ReleaseDir release
+          -Version '${{ needs.metadata.outputs.version }}'
+
+  publish:
+    name: Publish verified release
+    needs:
+      - metadata
+      - common-assets
+      - build-release
+      - native-release-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
           pattern: cup-release-*
           path: candidate
           merge-multiple: true
-      - id: candidate
-        name: Validate tested candidate
-        env:
-          EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
-          EXPECTED_TAG: ${{ steps.metadata.outputs.tag }}
-          EXPECTED_SHA: ${{ steps.metadata.outputs.sha }}
-          EXPECTED_SOURCE_REPOSITORY: ${{ github.repository }}
-          EXPECTED_TESTS_RUN_ID: ${{ steps.tests.outputs.run_id }}
-          EXPECTED_TESTS_RUN_ATTEMPT: ${{ steps.tests.outputs.run_attempt }}
-        run: scripts/release/candidate-info.sh candidate
-      - name: Release already exists
-        if: steps.candidate.outputs.should_release == '0'
-        run: echo '${{ steps.candidate.outputs.tag }} is already published; nothing to release.'
-      - name: Publish tested candidate
-        if: steps.candidate.outputs.should_release == '1'
+      - name: Publish exact tested candidate
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
           GH_REPO: coffee-clang/cup
-          VERSION: ${{ steps.candidate.outputs.version }}
-          TAG: ${{ steps.candidate.outputs.tag }}
-          SHA: ${{ steps.candidate.outputs.sha }}
-          SOURCE_REPOSITORY: ${{ steps.candidate.outputs.source_repository }}
-          TESTS_RUN_ID: ${{ steps.candidate.outputs.tests_run_id }}
-          TESTS_RUN_ATTEMPT: ${{ steps.candidate.outputs.tests_run_attempt }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: scripts/release/publish.sh candidate

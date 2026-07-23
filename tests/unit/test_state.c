@@ -7,6 +7,7 @@
 #include "package.h"
 #include "state.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -473,7 +474,7 @@ static void test_save_load(void) {
     state_path_error = CUP_OK;
 
     state_path(path, sizeof(path));
-    TEST_ASSERT_EQUAL_INT(0, mkdir(path, 0755));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
     TEST_ASSERT_EQUAL_INT(0, rmdir(path));
 }

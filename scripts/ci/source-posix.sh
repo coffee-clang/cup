@@ -30,8 +30,6 @@ if [ "${CUP_CI_ENVIRONMENT_PREPARED:-0}" != 1 ]; then
     FAMILY="$family" PLATFORM="$platform" "$(dirname "$0")/prepare-posix.sh" source
 fi
 
-make PLATFORM="$platform" deps
-
 PLATFORM="$platform" CUP_TEST_PLATFORM="$platform" make test
 make PLATFORM="$platform" check-binary
 

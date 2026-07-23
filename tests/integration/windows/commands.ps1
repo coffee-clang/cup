@@ -45,12 +45,13 @@ try {
     Assert-Contains $current "status: active"
 
     $config = Invoke-Cup -CommandArgs @("config")
-    Assert-Contains $config "compiler [windows-x64]"
-    Assert-Contains $config "official default: clang"
+    Assert-Contains $config "Install selections for host 'windows-x64', target 'windows-x64'"
+    Assert-Contains $config "compiler           clang"
+    Assert-Contains $config "official default"
     Invoke-Cup -CommandArgs @("config", "set", "compiler", "clang", "--target", "windows-x64") | Out-Null
-    Assert-Contains (Invoke-Cup -CommandArgs @("config", "--target", "windows-x64")) "source: user preference"
+    Assert-Contains (Invoke-Cup -CommandArgs @("config", "--target", "windows-x64")) "user preference"
     Invoke-Cup -CommandArgs @("config", "reset", "compiler", "--target", "windows-x64") | Out-Null
-    Assert-Contains (Invoke-Cup -CommandArgs @("config", "--target", "windows-x64")) "source: official default"
+    Assert-Contains (Invoke-Cup -CommandArgs @("config", "--target", "windows-x64")) "official default"
 
     $catalog = Invoke-Cup -CommandArgs @("search", "compiler")
     Assert-Contains $catalog "Available tools for component 'compiler'"

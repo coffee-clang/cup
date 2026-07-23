@@ -1,0 +1,227 @@
+name: Dependencies
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Dependency platform/profile target, or all
+        required: false
+        default: all
+        type: string
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Dependency platform/profile target
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux-x64-gcc
+          - linux-arm64-gcc
+          - macos-x64-apple-clang
+          - macos-arm64-apple-clang
+          - windows-x64-ucrt64
+          - windows-x64-clang64
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Resolve dependency targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - id: plan
+        shell: bash
+        env:
+          REQUESTED_TARGET: ${{ inputs.target || 'all' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_TARGET" in
+            all)
+              targets='["linux-x64-gcc","linux-arm64-gcc","macos-x64-apple-clang","macos-arm64-apple-clang","windows-x64-ucrt64","windows-x64-clang64"]'
+              ;;
+            linux-x64-gcc|linux-arm64-gcc|macos-x64-apple-clang|macos-arm64-apple-clang|windows-x64-ucrt64|windows-x64-clang64)
+              targets="[\"$REQUESTED_TARGET\"]"
+              ;;
+            *)
+              echo "Unsupported dependency target: $REQUESTED_TARGET" >&2
+              exit 2
+              ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  prepare:
+    name: Prepare ${{ matrix.target }}
+    needs: plan
+    concurrency:
+      group: cup-dependencies-${{ matrix.target }}-${{ github.ref }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    runs-on: ${{ matrix.target == 'linux-x64-gcc' && 'ubuntu-latest' || matrix.target == 'linux-arm64-gcc' && 'ubuntu-24.04-arm' || matrix.target == 'macos-x64-apple-clang' && 'macos-15-intel' || matrix.target == 'macos-arm64-apple-clang' && 'macos-15' || 'windows-latest' }}
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        if: matrix.target == 'windows-x64-ucrt64'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            ca-certificates
+            curl
+            diffutils
+            file
+            git
+            make
+            perl
+            tar
+            xz
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+
+      - uses: msys2/setup-msys2@v2
+        if: matrix.target == 'windows-x64-clang64'
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            ca-certificates
+            curl
+            diffutils
+            file
+            git
+            make
+            perl
+            tar
+            xz
+          pacboy: >-
+            clang:p
+            compiler-rt:p
+            llvm:p
+            pkgconf:p
+
+      - id: posix
+        name: Resolve POSIX dependency target
+        if: ${{ !startsWith(matrix.target, 'windows-') }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            linux-x64-gcc)
+              platform=linux-x64
+              profile=gcc
+              family=linux
+              ;;
+            linux-arm64-gcc)
+              platform=linux-arm64
+              profile=gcc
+              family=linux
+              ;;
+            macos-x64-apple-clang)
+              platform=macos-x64
+              profile=apple-clang
+              family=macos
+              ;;
+            macos-arm64-apple-clang)
+              platform=macos-arm64
+              profile=apple-clang
+              family=macos
+              ;;
+            *)
+              echo "Unsupported POSIX dependency target: $TARGET" >&2
+              exit 2
+              ;;
+          esac
+          prefix="$HOME/deps/$platform/install"
+          key=$(CUP_DEPENDENCY_PROFILE="$profile" \
+            scripts/dependencies/verify.sh "$platform" --print-cache-key)
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "family=$family" >> "$GITHUB_OUTPUT"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare POSIX dependency toolchain
+        if: ${{ !startsWith(matrix.target, 'windows-') }}
+        env:
+          FAMILY: ${{ steps.posix.outputs.family }}
+          PLATFORM: ${{ steps.posix.outputs.platform }}
+        run: scripts/ci/prepare-posix.sh dependencies
+
+      - uses: actions/cache@v5
+        if: ${{ !startsWith(matrix.target, 'windows-') }}
+        with:
+          path: ${{ steps.posix.outputs.prefix }}
+          key: ${{ steps.posix.outputs.key }}
+
+      - name: Prepare POSIX dependency prefix
+        if: ${{ !startsWith(matrix.target, 'windows-') }}
+        env:
+          CUP_DEPENDENCY_PROFILE: ${{ steps.posix.outputs.profile }}
+        run: |
+          JOBS=4 make PLATFORM='${{ steps.posix.outputs.platform }}' \
+            DEPS_PREFIX='${{ steps.posix.outputs.prefix }}' deps
+          make PLATFORM='${{ steps.posix.outputs.platform }}' \
+            DEPS_PREFIX='${{ steps.posix.outputs.prefix }}' deps-check
+
+      - id: windows
+        name: Resolve Windows dependency target
+        if: ${{ startsWith(matrix.target, 'windows-') }}
+        shell: msys2 {0}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            windows-x64-ucrt64)
+              profile=ucrt64-gcc
+              variant=windows-x64
+              ;;
+            windows-x64-clang64)
+              profile=clang64
+              variant=windows-x64-clang64
+              ;;
+            *)
+              echo "Unsupported Windows dependency target: $TARGET" >&2
+              exit 2
+              ;;
+          esac
+          prefix="$HOME/deps/$variant/install"
+          key=$(CUP_DEPENDENCY_PROFILE="$profile" \
+            scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "cache_path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        if: ${{ startsWith(matrix.target, 'windows-') }}
+        with:
+          path: ${{ steps.windows.outputs.cache_path }}
+          key: ${{ steps.windows.outputs.key }}
+
+      - name: Prepare Windows dependency prefix
+        if: ${{ startsWith(matrix.target, 'windows-') }}
+        shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ${{ steps.windows.outputs.profile }}
+        run: |
+          JOBS=4 make PLATFORM=windows-x64 \
+            DEPS_PREFIX='${{ steps.windows.outputs.prefix }}' deps
+          make PLATFORM=windows-x64 \
+            DEPS_PREFIX='${{ steps.windows.outputs.prefix }}' deps-check

@@ -58,17 +58,6 @@ ifeq ($(origin PLATFORM),environment)
 endif
 PLATFORM ?= $(NATIVE_PLATFORM)
 
-# The public build interface is target-based. These former selectors are
-# intentionally rejected instead of retained as compatibility aliases.
-REMOVED_BUILD_SELECTORS := \
-    LINK_MODE BUILD_MODE RELEASE_BUILD CUP_RELEASE_BUILD \
-    COVERAGE SANITIZERS DEBUG_SYMBOLS
-ifneq ($(strip $(foreach variable,$(REMOVED_BUILD_SELECTORS),\
-        $(if $(filter command\ line environment,$(origin $(variable))),$(variable)))),)
-    $(error LINK_MODE, BUILD_MODE, RELEASE_BUILD, CUP_RELEASE_BUILD, COVERAGE, \
-        SANITIZERS and DEBUG_SYMBOLS were removed; use target-based builds and EXTRA_* flags)
-endif
-
 # Mandatory project flags are owned by the Makefile. Command-line additions use
 # the explicit EXTRA_* variables so language, warning and linkage policy cannot
 # be erased accidentally. Environment values are ignored by the final override.
@@ -96,11 +85,12 @@ endif
 
 # Validate selectors only for targets that compile the executable.
 NON_BUILD_GOALS := \
-    all debug coverage sanitizers release help clean reset-dev-home deps docs-assets \
-    docs serve version release-metadata validate-release test test-posix \
-    test-integration test-unit test-unit-build test-helpers test-build \
-    test-repository test-release test-windows test-portability-linux \
-    test-coverage test-sanitizers update-ca-bundle check-ca-bundle finalize-release
+    all debug coverage sanitizers release help clean reset-dev-home deps \
+    deps-check deps-force deps-clean quality check docs-assets docs serve \
+    version release-metadata validate-release test test-integration test-unit \
+    test-unit-build test-helpers test-build test-release test-windows \
+    test-portability-linux test-coverage test-sanitizers update-ca-bundle \
+    check-ca-bundle finalize-release check-toolchain check-binary
 ifeq ($(strip $(MAKECMDGOALS)),)
     NEED_BUILD_CONFIG := 0
 else ifneq ($(strip $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS))),)
@@ -287,7 +277,14 @@ endif
 # Every configuration uses one complete pinned third-party graph. Release adds
 # the platform standalone policy, but it does not select a different set of
 # headers or libraries from development, debug, coverage or sanitizers.
-DEPS_PREFIX ?= $(HOME)/deps/$(PLATFORM)/install
+DEPS_VARIANT := $(PLATFORM)
+ifeq ($(PLATFORM),windows-x64)
+    ifeq ($(MSYSTEM),CLANG64)
+        DEPS_VARIANT := windows-x64-clang64
+    endif
+endif
+DEPS_ROOT ?= $(HOME)/deps/$(DEPS_VARIANT)
+DEPS_PREFIX ?= $(DEPS_ROOT)/install
 DEPS_PREFIX_INPUT := $(DEPS_PREFIX)
 ifneq ($(findstring $(space),$(DEPS_PREFIX_INPUT)),)
     $(error DEPS_PREFIX must not contain whitespace)
@@ -372,31 +369,31 @@ MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 # Build, maintenance, test and documentation entry points.
 .PHONY: \
     all debug coverage sanitizers release help _build clean reset-dev-home \
-    deps check-dependencies check-toolchain check-binary docs-assets docs serve version \
-    release-metadata \
-    validate-release test test-posix test-integration test-unit \
-    test-unit-build test-helpers test-build test-repository test-release \
-    test-windows test-portability-linux test-coverage test-sanitizers \
-    update-ca-bundle check-ca-bundle finalize-release FORCE
+    deps deps-check deps-force deps-clean check-toolchain check-binary \
+    _check-binary quality check docs-assets docs serve version release-metadata \
+    validate-release test test-integration test-unit test-unit-build \
+    test-helpers test-build test-release test-windows test-portability-linux \
+    test-coverage test-sanitizers update-ca-bundle check-ca-bundle \
+    finalize-release FORCE
 
 BUILD_RECURSE = $(MAKE) --no-print-directory _build \
     PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
     CC='$(CC)' WINDRES='$(WINDRES)' \
     CUP_OFFICIAL_BUILD='$(CUP_OFFICIAL_BUILD)'
 
-all:
+all: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=development
 
-debug:
+debug: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=debug
 
-coverage:
+coverage: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=coverage
 
-sanitizers:
+sanitizers: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=sanitizers
 
-release:
+release: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=release
 
 help:
@@ -411,21 +408,23 @@ help:
 		'  make help                    list all public Make targets' \
 		'' \
 		'Dependency and toolchain targets:' \
-		'  JOBS=4 make deps             prepare the pinned dependency prefix' \
-		'  make check-dependencies      validate the dependency prefix' \
+		'  JOBS=4 make deps             reuse or build the pinned dependency prefix' \
+		'  make deps-check              validate without modifying the prefix' \
+		'  make deps-force              rebuild the prefix transactionally' \
+		'  make deps-clean              remove dependency build state and prefix' \
 		'  make check-toolchain         validate the selected native toolchain' \
-		'  make check-binary            inspect the built executable policy' \
+		'  make check-binary            build and inspect the executable policy' \
 		'' \
-		'Test targets:' \
-		'  make test                    complete native regression suite' \
+		'Test and quality targets:' \
+		'  make test                    unit and native integration tests' \
 		'  make test-unit               C unit tests' \
 		'  make test-integration        native integration tests' \
-		'  make test-posix              alias for test-integration' \
-		'  make test-repository         repository contract tests' \
+		'  make quality                 repository and workflow quality checks' \
+		'  make check                   dependencies, tests and quality checks' \
 		'  make test-coverage           coverage gate and reports' \
 		'  make test-sanitizers         ASan/UBSan gate' \
 		'  make test-portability-linux  Linux HTTPS/proxy/package smoke test' \
-		'  make test-windows            Windows unit, integration and repo tests' \
+		'  make test-windows            Windows unit and integration tests' \
 		'  make test-release RELEASE_DIR=<dir>' \
 		'                               validate an unpacked release candidate' \
 		'' \
@@ -465,22 +464,39 @@ deps:
 			echo "Unsupported PLATFORM '$(PLATFORM)' for dependencies." >&2; \
 			exit 1 ;; \
 	esac; \
-	JOBS='$(JOBS)' PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+	JOBS='$(JOBS)' PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		MACOSX_DEPLOYMENT_TARGET='$(MACOSX_DEPLOYMENT_TARGET)' \
 		bash "$$builder"
 
-check-dependencies:
-	@./scripts/dependencies/verify.sh \
-		'$(PLATFORM)' '$(DEPS_PREFIX)' || { \
-		echo "Run 'make PLATFORM=$(PLATFORM) deps' first." >&2; \
-		exit 1; \
-	}
+deps-check:
+	@CUP_DEPENDENCY_PROFILE='$(CUP_DEPENDENCY_PROFILE)' \
+		./scripts/dependencies/verify.sh '$(PLATFORM)' '$(DEPS_PREFIX)'
+
+deps-force:
+	+@CUP_DEPS_FORCE=1 $(MAKE) --no-print-directory deps \
+		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)'
+
+deps-clean:
+	@case '$(DEPS_ROOT)' in \
+		''|/) echo 'Refusing to remove an unsafe dependency root.' >&2; exit 1 ;; \
+		/*) ;; \
+		*) echo 'Dependency root must be absolute: $(DEPS_ROOT)' >&2; exit 1 ;; \
+	esac
+	@rm -rf -- '$(DEPS_ROOT)'
 
 check-toolchain:
 	@./scripts/build/validate-toolchain.sh \
-		'$(PLATFORM)' '$(CC)' '$(WINDRES)'
+		'$(PLATFORM)' '$(CC)' '$(WINDRES)' '$(CONFIGURATION)'
 
-check-binary: $(BINARY_INSPECTION)
+check-binary: deps
+	+@$(MAKE) --no-print-directory _check-binary \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		CC='$(CC)' WINDRES='$(WINDRES)' \
+		CUP_BUILD_CONFIGURATION='$(CUP_BUILD_CONFIGURATION)'
+
+_check-binary: $(BINARY_INSPECTION)
 	@cat "$(BINARY_INSPECTION)"
 
 $(BINARY_INSPECTION): $(TARGET) scripts/build/inspect-binary.sh
@@ -513,7 +529,7 @@ $(CA_BUNDLE_HEADER) $(CA_BUNDLE_SOURCE): $(CA_BUNDLE_STAMP)
 		$(MAKE) "$(CA_BUNDLE_STAMP)"; \
 	}
 
-$(BUILD_CONFIG): FORCE Makefile scripts/build/write-config.sh | check-dependencies check-toolchain
+$(BUILD_CONFIG): FORCE Makefile scripts/build/write-config.sh | deps-check check-toolchain
 	@CUP_BUILD_PLATFORM='$(PLATFORM)' \
 		CUP_BUILD_CONFIGURATION='$(CONFIGURATION)' \
 		CUP_BUILD_CC='$(CC)' \
@@ -575,29 +591,29 @@ reset-dev-home:
 	@clear 2>/dev/null || true
 
 # The Makefile owns compilation of product and test binaries. Runners only
-# execute already-built programs and compose behavioral suites.
+# execute already-built programs and compose behavioral or repository suites.
 CUP_TEST_CONFIGURATION ?= development
 
-test-unit-build:
+test-unit-build: deps
 	@CUP_TEST_PLATFORM='$(PLATFORM)' \
 		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		./tests/build/unit.sh
 
-test-helpers:
+test-helpers: deps
 	@CUP_TEST_PLATFORM='$(PLATFORM)' \
 		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		./tests/build/helpers.sh
 
-test-build:
+test-build: deps
 	+@$(MAKE) --no-print-directory all PLATFORM='$(PLATFORM)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)'
 	+@$(MAKE) --no-print-directory test-unit-build test-helpers \
 		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CONFIGURATION=development
 
-test:
+test: deps
 	@case '$(PLATFORM)' in \
 		windows-x64) \
 			$(MAKE) --no-print-directory test-windows PLATFORM='$(PLATFORM)' \
@@ -605,56 +621,70 @@ test:
 		*) \
 			$(MAKE) --no-print-directory test-build PLATFORM='$(PLATFORM)' \
 				DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' && \
-			CUP_TEST_SKIP_BUILD=1 CUP_TEST_CONFIGURATION=development \
+			CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+				CC='$(CC)' CUP_TEST_SKIP_BUILD=1 \
+				CUP_TEST_CONFIGURATION=development \
 				./tests/runners/all-posix.sh ;; \
 	esac
 
-test-unit:
+test-unit: deps
 	+@$(MAKE) --no-print-directory test-unit-build PLATFORM='$(PLATFORM)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CONFIGURATION=development
-	@CUP_TEST_CONFIGURATION=development ./tests/runners/unit.sh
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		CC='$(CC)' CUP_TEST_CONFIGURATION=development \
+		./tests/runners/unit.sh
 
-test-repository:
-	@./tests/runners/repository.sh
-
-test-posix: test-integration
-
-test-integration:
+test-integration: deps
 	+@$(MAKE) --no-print-directory all test-helpers PLATFORM='$(PLATFORM)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CONFIGURATION=development
-	@CUP_TEST_SKIP_BUILD=1 CUP_TEST_CONFIGURATION=development \
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		CC='$(CC)' CUP_TEST_SKIP_BUILD=1 \
+		CUP_TEST_CONFIGURATION=development \
 		./tests/runners/integration-posix.sh
 
-test-release:
+quality:
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
+		./tests/runners/repository.sh
+
+check:
+	+@$(MAKE) --no-print-directory test PLATFORM='$(PLATFORM)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)'
+	+@CUP_TEST_WITH_BUILD_OUTPUT=1 $(MAKE) --no-print-directory quality \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)'
+
+test-release: deps
 	@test -n "$(RELEASE_DIR)" || { echo "Set RELEASE_DIR=<candidate-dir>" >&2; exit 2; }
 	+@$(MAKE) --no-print-directory test-helpers PLATFORM='$(PLATFORM)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
-		CUP_TEST_CONFIGURATION=development
-	@CUP_TEST_CONFIGURATION=development ./tests/release/posix.sh "$(RELEASE_DIR)"
+		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)'
+	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		CC='$(CC)' CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
+		./tests/release/posix.sh "$(RELEASE_DIR)"
 
-test-coverage:
+test-coverage: deps
 	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		./tests/runners/coverage.sh
 
-test-sanitizers:
+test-sanitizers: deps
 	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		./tests/runners/sanitizers.sh
 
-test-portability-linux:
+test-portability-linux: deps
 	@PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		./tests/portability/linux-network.sh
 
-test-windows:
+test-windows: deps
 	+@$(MAKE) --no-print-directory test-build PLATFORM=windows-x64 \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)'
-	@CUP_TEST_PLATFORM=windows-x64 CUP_TEST_CONFIGURATION=development \
+	@CUP_TEST_PLATFORM=windows-x64 DEPS_PREFIX='$(DEPS_PREFIX)' \
+		CC='$(CC)' CUP_TEST_CONFIGURATION=development \
 		./tests/runners/unit.sh
 	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
 		"$$(cygpath -w '$(PROJECT_ROOT)/tests/integration/windows/run.ps1')" \
 		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')"
-	@./tests/runners/repository.sh
 
 check-ca-bundle:
 	@./scripts/certs/check-ca-bundle.sh

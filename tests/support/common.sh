@@ -1,4 +1,3 @@
-#!/bin/sh
 
 # Purpose: Sourced POSIX test library for assertions, hashing, temporary directories and cleanup.
 

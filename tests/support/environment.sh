@@ -1,4 +1,3 @@
-#!/bin/sh
 
 # Purpose: Resolves the native source-test platform and validates the explicit
 # dependency prefix. Test runners never bootstrap dependencies implicitly.
