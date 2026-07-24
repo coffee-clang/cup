@@ -632,9 +632,21 @@ CupError system_is_regular_file(const char *path, int *is_regular) {
 CupError checksum_validate_assets(const char *path,
                                   const char *const *required_assets,
                                   size_t required_count) {
-    (void)path;
-    (void)required_assets;
-    (void)required_count;
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(required_assets);
+
+    if (required_count == CUP_COMMON_CHECKSUM_ASSET_COUNT) {
+        TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, required_assets[0]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, required_assets[1]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, required_assets[2]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, required_assets[3]);
+        return CUP_OK;
+    }
+
+    TEST_ASSERT_EQUAL_UINT(3, required_count);
+    TEST_ASSERT_EQUAL_STRING("cup-linux-x64", required_assets[0]);
+    TEST_ASSERT_EQUAL_STRING(CUP_UNINSTALL_FILENAME, required_assets[1]);
+    TEST_ASSERT_EQUAL_STRING(CUP_RELEASE_METADATA_FILENAME, required_assets[2]);
     return CUP_OK;
 }
 

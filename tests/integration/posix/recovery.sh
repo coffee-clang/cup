@@ -9,7 +9,21 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin recovery
 prepare_command_environment
-run_cup repair >/dev/null
+
+write_common_checksums() {
+    destination=$1
+    package_catalog=$2
+    install_policy=$3
+
+    {
+        printf '%s  packages.cfg\n' "$(hash_file "$package_catalog")"
+        printf '%s  install.cfg\n' "$(hash_file "$install_policy")"
+        printf '%s  install.sh\n' \
+            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup.sh")"
+        printf '%s  install.ps1\n' \
+            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup-windows.ps1")"
+    } > "$destination"
+}
 
 install_cup_assets_fixture() {
     mkdir -p "$TEST_HOME/.cup/bin" "$TEST_HOME/.cup/config" \
@@ -25,8 +39,6 @@ install_cup_assets_fixture() {
     chmod 0555 "$TEST_HOME/.cup/helpers/uninstall.sh"
 
     binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-    package_catalog_hash=$(hash_file "$TEST_HOME/.cup/config/packages.cfg")
-    install_policy_hash=$(hash_file "$TEST_HOME/.cup/config/install.cfg")
     uninstall_hash=$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")
     base_version=$(sed -n '1p' "$PROJECT_ROOT/VERSION" | tr -d '\r')
     metadata="format=1
@@ -35,10 +47,10 @@ commit=abcdef0
 "
     metadata_hash=$(hash_text "$metadata")
 
-    {
-        printf '%s  packages.cfg\n' "$package_catalog_hash"
-        printf '%s  install.cfg\n' "$install_policy_hash"
-    } > "$TEST_HOME/.cup/config/SHA256SUMS.common"
+    write_common_checksums \
+        "$TEST_HOME/.cup/config/SHA256SUMS.common" \
+        "$TEST_HOME/.cup/config/packages.cfg" \
+        "$TEST_HOME/.cup/config/install.cfg"
     {
         printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
         printf '%s  uninstall.sh\n' "$uninstall_hash"
@@ -193,12 +205,10 @@ chmod 0755 "$staging/binary.new" "$staging/uninstall.new"
 
 binary_hash=$(hash_file "$staging/binary.new")
 uninstall_hash=$(hash_file "$staging/uninstall.new")
-package_catalog_hash=$(hash_file "$staging/manifest.new")
-install_policy_hash=$(hash_file "$staging/install-config.new")
-{
-    printf '%s  packages.cfg\n' "$package_catalog_hash"
-    printf '%s  install.cfg\n' "$install_policy_hash"
-} > "$staging/common-checksums.new"
+write_common_checksums \
+    "$staging/common-checksums.new" \
+    "$staging/manifest.new" \
+    "$staging/install-config.new"
 {
     printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
     printf '%s  uninstall.sh\n' "$uninstall_hash"

@@ -293,13 +293,15 @@ static CupError repair_cup_assets_checksums(void) {
 
 static CupError refresh_common_checksums(void) {
     char path[MAX_PATH_LEN];
-    const char *assets[] = {CUP_PACKAGES_FILENAME, CUP_INSTALL_POLICY_FILENAME};
 
     if (layout_get_common_checksums_path(path, sizeof(path)) != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
-    return repair_checksum_file(
-        path, CUP_COMMON_CHECKSUMS_FILENAME, assets, sizeof(assets) / sizeof(assets[0]), 1);
+    return repair_checksum_file(path,
+                                CUP_COMMON_CHECKSUMS_FILENAME,
+                                CUP_COMMON_CHECKSUM_ASSETS,
+                                CUP_COMMON_CHECKSUM_ASSET_COUNT,
+                                1);
 }
 
 static CupError refresh_platform_checksums(void) {

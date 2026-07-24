@@ -13,7 +13,9 @@ fail() {
 
 tracked_shell_scripts() {
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git ls-files -- '*.sh'
+        git ls-files -- '*.sh' | while IFS= read -r script; do
+            [ -f "$script" ] && printf '%s\n' "$script"
+        done
     else
         find scripts tests -type f -name '*.sh' -print
     fi
@@ -85,6 +87,7 @@ nonportable_shell=$(
 # and mode 100755; sourced libraries have no shebang and mode 100644.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git ls-files -s -- '*.sh' | while read -r mode object stage path; do
+        [ -f "$path" ] || continue
         first=$(sed -n '1p' "$path")
         case "$first" in
             '#!'*) expected=100755 ;;
