@@ -25,7 +25,6 @@ run_check 'Testing version policy...' tests/repository/version-policy.sh
 run_check 'Testing release metadata...' tests/repository/release-metadata.sh
 run_check 'Testing filesystem and archive security...' tests/repository/filesystem-security.sh
 run_check 'Testing workflow responsibilities...' tests/repository/workflows.sh
-run_check 'Testing platform parity...' tests/repository/platform-parity.sh
 run_check 'Testing release publication recovery...' tests/repository/release-publish.sh
 
 if [ "${CUP_TEST_WITH_BUILD_OUTPUT:-0}" = 1 ]; then

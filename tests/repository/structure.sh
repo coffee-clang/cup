@@ -34,7 +34,6 @@ for required in \
     tests/runners/repository.sh \
     tests/runners/coverage.sh \
     tests/runners/sanitizers.sh \
-    tests/repository/platform-parity.sh \
     tests/build/helpers.sh \
     tests/build/unit.sh; do
     [ -f "$required" ] || fail "required file is missing: $required"

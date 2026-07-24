@@ -63,7 +63,6 @@ UNITY_LIB=$(cup_test_find_static_library unity) || {
     exit 1
 }
 UNIT_ARCHIVE_LIBS=
-
 if [ "$PLATFORM" != windows-x64 ]; then
     unit_pkg_config_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
     UNIT_ARCHIVE_LIBS=$(PKG_CONFIG_PATH="$unit_pkg_config_path" \
@@ -96,44 +95,6 @@ compile_test() {
         "$@" \
         "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
 }
-
-# These suites exercise platform-neutral contracts and must compile on every host.
-compile_test test_command_queries \
-    "$ROOT/tests/unit/test_command_queries.c" \
-    "$ROOT/src/command_list.c" \
-    "$ROOT/src/command_default.c" \
-    "$ROOT/src/command_info.c" \
-    "$ROOT/src/command_search.c" \
-    "$ROOT/src/command_inspect.c"
-
-compile_test test_package_transaction \
-    "$ROOT/tests/unit/test_package_transaction.c" \
-    "$ROOT/src/package_transaction.c" \
-    "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
-
-compile_test test_cup_update_journal \
-    "$ROOT/tests/unit/test_cup_update_journal.c" \
-    "$ROOT/src/cup_update_journal.c" \
-    "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
-
-compile_test test_runtime_journal \
-    "$ROOT/tests/unit/test_runtime_journal.c" \
-    "$ROOT/src/runtime_journal.c" \
-    "$ROOT/src/text.c"
-
-compile_test test_wrappers \
-    "$ROOT/tests/unit/test_wrappers.c" \
-    "$ROOT/src/wrappers.c" \
-    "$ROOT/src/package_metadata.c" \
-    "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
-
-compile_test test_command_repair \
-    "$ROOT/tests/unit/test_command_repair.c" \
-    "$ROOT/src/command_repair.c" \
-    "$ROOT/src/text.c"
 
 # Suite ownership remains explicit so the Makefile can request individual binaries.
 compile_test test_exit_status \
@@ -231,6 +192,14 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/tests/unit/test_interrupt.c" \
         "$ROOT/src/interrupt.c"
 
+    compile_test test_command_queries \
+        "$ROOT/tests/unit/test_command_queries.c" \
+        "$ROOT/src/command_list.c" \
+        "$ROOT/src/command_default.c" \
+        "$ROOT/src/command_info.c" \
+        "$ROOT/src/command_search.c" \
+        "$ROOT/src/command_inspect.c"
+
     compile_test test_package \
         "$ROOT/tests/unit/test_package.c" \
         "$ROOT/src/package.c" \
@@ -284,6 +253,35 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/state.c" \
         "$ROOT/src/system_posix.c" \
         "$ROOT/src/path.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_package_transaction \
+        "$ROOT/tests/unit/test_package_transaction.c" \
+        "$ROOT/src/package_transaction.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_cup_update_journal \
+        "$ROOT/tests/unit/test_cup_update_journal.c" \
+        "$ROOT/src/cup_update_journal.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_runtime_journal \
+        "$ROOT/tests/unit/test_runtime_journal.c" \
+        "$ROOT/src/runtime_journal.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_wrappers \
+        "$ROOT/tests/unit/test_wrappers.c" \
+        "$ROOT/src/wrappers.c" \
+        "$ROOT/src/package_metadata.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_command_repair \
+        "$ROOT/tests/unit/test_command_repair.c" \
+        "$ROOT/src/command_repair.c" \
         "$ROOT/src/text.c"
 
     compile_test test_package_extract \

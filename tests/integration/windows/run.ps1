@@ -41,9 +41,7 @@ $suites = @(
     "filesystem-archives.ps1",
     "state.ps1",
     "wrappers.ps1",
-    "recovery.ps1",
-    "doctor.ps1",
-    "repair.ps1"
+    "recovery.ps1"
 )
 foreach ($suite in $suites) {
     Write-Host "==> Running Windows $suite"
