@@ -402,7 +402,13 @@ CupError checksum_validate_assets(const char *checksum_path,
                                   size_t asset_count) {
     TEST_ASSERT_NOT_NULL(checksum_path);
     TEST_ASSERT_NOT_NULL(asset_names);
-    TEST_ASSERT_TRUE(asset_count == 3 || asset_count == 2);
+    TEST_ASSERT_TRUE(asset_count == 3 || asset_count == CUP_COMMON_CHECKSUM_ASSET_COUNT);
+    if (asset_count == CUP_COMMON_CHECKSUM_ASSET_COUNT) {
+        TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, asset_names[0]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, asset_names[1]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, asset_names[2]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, asset_names[3]);
+    }
     return checksum_schema_valid ? CUP_OK : CUP_ERR_VALIDATION;
 }
 

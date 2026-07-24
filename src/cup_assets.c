@@ -259,7 +259,6 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
 static CupError inspect_installed_assets(CupAssetsInspection *inspection) {
     InstalledAssetPaths paths;
     CupError err;
-    const char *common_assets[] = {CUP_PACKAGES_FILENAME, CUP_INSTALL_POLICY_FILENAME};
     const char *platform_assets[3];
 
     /* Resolve the complete installed generation before inspecting any individual asset. */
@@ -274,8 +273,8 @@ static CupError inspect_installed_assets(CupAssetsInspection *inspection) {
     platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
 
     err = inspect_checksum_file(paths.common_checksums,
-                                common_assets,
-                                sizeof(common_assets) / sizeof(common_assets[0]),
+                                CUP_COMMON_CHECKSUM_ASSETS,
+                                CUP_COMMON_CHECKSUM_ASSET_COUNT,
                                 &inspection->common_checksums);
     if (err == CUP_OK) {
         err = inspect_checksum_file(paths.platform_checksums,

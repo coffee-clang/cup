@@ -55,9 +55,17 @@
 /* Shared file names and development paths. */
 #define CUP_PACKAGES_FILENAME "packages.cfg"
 #define CUP_INSTALL_POLICY_FILENAME "install.cfg"
+#define CUP_INSTALL_POSIX_FILENAME "install.sh"
+#define CUP_INSTALL_WINDOWS_FILENAME "install.ps1"
 #define CUP_PREFERENCES_FILENAME "preferences.txt"
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
+#define CUP_COMMON_CHECKSUM_ASSET_COUNT 4u
+#define CUP_COMMON_CHECKSUM_ASSETS \
+    ((const char *const[]){CUP_PACKAGES_FILENAME, \
+                           CUP_INSTALL_POLICY_FILENAME, \
+                           CUP_INSTALL_POSIX_FILENAME, \
+                           CUP_INSTALL_WINDOWS_FILENAME})
 #define CUP_UNINSTALL_MARKER_FILENAME "uninstall.pending"
 #define CUP_RELEASE_LATEST_URL "https://github.com/coffee-clang/cup/releases/latest/download"
 #define CUP_RELEASE_VERSIONED_URL_TEMPLATE \

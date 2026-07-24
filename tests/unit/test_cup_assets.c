@@ -178,9 +178,11 @@ CupError checksum_validate_assets(const char *checksum_path,
     TEST_ASSERT_NOT_NULL(asset_names);
     TEST_ASSERT_TRUE(asset_count >= 1);
     if (strcmp(checksum_path, "/common") == 0) {
-        TEST_ASSERT_EQUAL_UINT(2, asset_count);
+        TEST_ASSERT_EQUAL_UINT(CUP_COMMON_CHECKSUM_ASSET_COUNT, asset_count);
         TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, asset_names[0]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, asset_names[1]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, asset_names[2]);
+        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, asset_names[3]);
         return common_schema_result;
     }
     TEST_ASSERT_EQUAL_UINT(3, asset_count);

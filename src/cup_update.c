@@ -468,7 +468,6 @@ static CupError fetch_verified_release_metadata(const CupUpdateFiles *files,
                                                 const ReleaseMetadata *latest,
                                                 ReleaseMetadata *versioned) {
     const char *platform_assets[3];
-    const char *common_assets[2];
     CupError err;
 
     err = download_file(
@@ -487,16 +486,14 @@ static CupError fetch_verified_release_metadata(const CupUpdateFiles *files,
     platform_assets[0] = files->binary_name;
     platform_assets[1] = CUP_UNINSTALL_FILENAME;
     platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
-    common_assets[0] = CUP_PACKAGES_FILENAME;
-    common_assets[1] = CUP_INSTALL_POLICY_FILENAME;
 
     err = checksum_validate_assets(files->staged_platform_checksums,
                                    platform_assets,
                                    sizeof(platform_assets) / sizeof(platform_assets[0]));
     if (err == CUP_OK) {
         err = checksum_validate_assets(files->staged_common_checksums,
-                                       common_assets,
-                                       sizeof(common_assets) / sizeof(common_assets[0]));
+                                       CUP_COMMON_CHECKSUM_ASSETS,
+                                       CUP_COMMON_CHECKSUM_ASSET_COUNT);
     }
     if (err == CUP_OK) {
         err = verify_downloaded_asset(files->staged_platform_checksums,

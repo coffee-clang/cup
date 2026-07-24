@@ -263,7 +263,6 @@ static CupError repair_cup_assets_checksums(void) {
     char platform_path[MAX_PATH_LEN];
     char platform_name[MAX_IDENTIFIER_LEN];
     char binary_asset[MAX_IDENTIFIER_LEN];
-    const char *common_assets[] = {CUP_PACKAGES_FILENAME, CUP_INSTALL_POLICY_FILENAME};
     const char *platform_assets[3];
 
     if (layout_get_common_checksums_path(common_path, sizeof(common_path)) != CUP_OK ||
@@ -279,8 +278,8 @@ static CupError repair_cup_assets_checksums(void) {
 
     err = repair_checksum_file(common_path,
                                CUP_COMMON_CHECKSUMS_FILENAME,
-                               common_assets,
-                               sizeof(common_assets) / sizeof(common_assets[0]),
+                               CUP_COMMON_CHECKSUM_ASSETS,
+                               CUP_COMMON_CHECKSUM_ASSET_COUNT,
                                0);
     if (err != CUP_OK) {
         return err;
