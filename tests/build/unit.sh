@@ -24,9 +24,14 @@ TEST_CFLAGS="${TEST_CFLAGS:-}"
 TEST_LDFLAGS="${TEST_LDFLAGS:-}"
 case "$PLATFORM" in
     macos-*)
-        TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE"
+        TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE \
+            -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
         TEST_CFLAGS="$TEST_CFLAGS -mmacosx-version-min=13.0"
         TEST_LDFLAGS="$TEST_LDFLAGS -mmacosx-version-min=13.0"
+        ;;
+    linux-*)
+        TEST_CPPFLAGS="$TEST_CPPFLAGS \
+            -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
         ;;
 esac
 case "$TEST_CONFIGURATION" in

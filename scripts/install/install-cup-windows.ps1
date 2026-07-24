@@ -111,7 +111,8 @@ function Test-WindowsX64 {
 # Download and strict checksum validation.
 function Download-File([string]$Url, [string]$Output) {
     try {
-        $response = Invoke-WebRequest -Uri $Url -OutFile $Output -UseBasicParsing
+        $response = Invoke-WebRequest -Uri $Url -OutFile $Output `
+            -UseBasicParsing -PassThru -ErrorAction Stop
         $finalUri = $null
         if ($null -ne $response.BaseResponse) {
             if ($null -ne $response.BaseResponse.ResponseUri) {

@@ -27,6 +27,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(CUP_USE_OPENSSL_INIT)
+#include <openssl/ssl.h>
+
+int OPENSSL_init_ssl(uint64_t options, const OPENSSL_INIT_SETTINGS *settings) {
+    (void)options;
+    (void)settings;
+    return 1;
+}
+#endif
+
 #define MAX_SEQUENCE 16
 
 /*

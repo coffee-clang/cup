@@ -85,7 +85,7 @@ endif
 
 # Validate selectors only for targets that compile the executable.
 NON_BUILD_GOALS := \
-    all debug coverage sanitizers release help clean reset-dev-home deps \
+    all build debug coverage sanitizers release help clean reset-dev-home deps \
     deps-check deps-force deps-clean quality check docs-assets docs serve \
     version release-metadata validate-release test test-integration test-unit \
     test-unit-build test-helpers test-build test-release test-windows \
@@ -368,7 +368,7 @@ MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 
 # Build, maintenance, test and documentation entry points.
 .PHONY: \
-    all debug coverage sanitizers release help _build clean reset-dev-home \
+    all build debug coverage sanitizers release help _build clean reset-dev-home \
     deps deps-check deps-force deps-clean check-toolchain check-binary \
     _check-binary quality check docs-assets docs serve version release-metadata \
     validate-release test test-integration test-unit test-unit-build \
@@ -383,6 +383,8 @@ BUILD_RECURSE = $(MAKE) --no-print-directory _build \
 
 all: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=development
+
+build: all
 
 debug: deps
 	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=debug
@@ -399,7 +401,7 @@ release: deps
 help:
 	@printf '%s\n' \
 		'Build targets:' \
-		'  make                         development build' \
+		'  make, make build             development build' \
 		'  make debug                   diagnostic build with rich symbols' \
 		'  make coverage                coverage-instrumented build' \
 		'  make sanitizers              ASan/UBSan build for the native platform' \

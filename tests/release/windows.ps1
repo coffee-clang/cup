@@ -72,12 +72,18 @@ Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64
 
 $binary = (Resolve-Path (Join-Path $ReleaseDir "cup-windows-x64.exe")).Path
 $actual = & $binary --version
+if ($LASTEXITCODE -ne 0) {
+    throw "Release candidate --version failed with exit code $LASTEXITCODE"
+}
 if ($actual -ne "cup $Version") {
     throw "Unexpected version: $actual"
 }
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
     -File tests/integration/windows/run.ps1 -CupPath $binary
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows integration tests failed with exit code $LASTEXITCODE"
+}
 
 # Serve the candidate locally and smoke-test the generated installer in a fresh profile.
 $port = 18080 + (Get-Random -Maximum 1000)
@@ -141,12 +147,24 @@ try {
 
     powershell.exe -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $ReleaseDir "install.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows installer failed with exit code $LASTEXITCODE"
+    }
     $installed = Join-Path $env:USERPROFILE ".cup\bin\cup.exe"
+    if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
+        throw "Windows installer did not create $installed"
+    }
     $installedVersion = & $installed --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed cup --version failed with exit code $LASTEXITCODE"
+    }
     if ($installedVersion -ne "cup $Version") {
         throw "Unexpected installed version: $installedVersion"
     }
     & $installed doctor
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed cup doctor failed with exit code $LASTEXITCODE"
+    }
 } finally {
     foreach ($name in $originalEnvironment.Keys) {
         $value = $originalEnvironment[$name]
