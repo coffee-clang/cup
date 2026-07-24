@@ -9,21 +9,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin recovery
 prepare_command_environment
-
-write_common_checksums() {
-    destination=$1
-    package_catalog=$2
-    install_policy=$3
-
-    {
-        printf '%s  packages.cfg\n' "$(hash_file "$package_catalog")"
-        printf '%s  install.cfg\n' "$(hash_file "$install_policy")"
-        printf '%s  install.sh\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup.sh")"
-        printf '%s  install.ps1\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup-windows.ps1")"
-    } > "$destination"
-}
+run_cup repair >/dev/null
 
 write_common_checksums() {
     destination=$1
