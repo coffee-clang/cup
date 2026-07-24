@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseDir,
     [Parameter(Mandatory = $true)]
-    [string]$Version
+    [string]$Version,
+    [Parameter(Mandatory = $true)]
+    [string]$SourceSha
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,11 +66,27 @@ function Assert-ChecksumFile {
     }
 }
 
-# Validate the candidate binary and run the existing Windows integration owner.
+# Validate the candidate checksums, metadata and native executable.
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
     -ExpectedNames @("cup-windows-x64.exe", "uninstall.ps1", "release.txt")
+
+$releaseMetadataPath = Join-Path $ReleaseDir "release.txt"
+$releaseMetadata = @(Get-Content -LiteralPath $releaseMetadataPath)
+$expectedMetadata = @(
+    "format=1",
+    "version=$Version",
+    "commit=$SourceSha"
+)
+if ($releaseMetadata.Count -ne $expectedMetadata.Count) {
+    throw "release.txt must contain exactly three lines"
+}
+for ($i = 0; $i -lt $expectedMetadata.Count; $i++) {
+    if ($releaseMetadata[$i] -ne $expectedMetadata[$i]) {
+        throw "Unexpected release.txt line $($i + 1): $($releaseMetadata[$i])"
+    }
+}
 
 $binary = (Resolve-Path (Join-Path $ReleaseDir "cup-windows-x64.exe")).Path
 $actual = & $binary --version
@@ -77,12 +95,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 if ($actual -ne "cup $Version") {
     throw "Unexpected version: $actual"
-}
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-    -File tests/integration/windows/run.ps1 -CupPath $binary
-if ($LASTEXITCODE -ne 0) {
-    throw "Windows integration tests failed with exit code $LASTEXITCODE"
 }
 
 # Serve the candidate locally and smoke-test the generated installer in a fresh profile.
@@ -160,6 +172,11 @@ try {
     }
     if ($installedVersion -ne "cup $Version") {
         throw "Unexpected installed version: $installedVersion"
+    }
+    $candidateHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+    $installedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+    if ($installedHash -ne $candidateHash) {
+        throw "Installed cup does not match the tested release candidate"
     }
     & $installed doctor
     if ($LASTEXITCODE -ne 0) {

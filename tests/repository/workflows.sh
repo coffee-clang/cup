@@ -34,7 +34,8 @@ for required in 'workflow_call:' 'workflow_dispatch:' 'actions/cache@v5' \
     require_text "$DEPENDENCIES" "$required"
 done
 
-for required in 'workflow_call:' 'uses: ./.github/workflows/dependencies.yml' \
+for required in 'push:' 'workflow_dispatch:' \
+        'uses: ./.github/workflows/dependencies.yml' \
         'run: make quality' 'Source tests' 'Coverage' 'Sanitizers' \
         'Tests gate'; do
     require_text "$TESTS" "$required"
@@ -56,11 +57,14 @@ reject_text "$TESTS" 'source-windows.ps1'
 reject_text "$TESTS" 'scripts/release/'
 reject_text "$TESTS" 'gh release'
 
-for required in 'workflow_dispatch:' 'uses: ./.github/workflows/tests.yml' \
+for required in 'workflow_dispatch:' 'actions: read' \
+        'Verify successful Tests run for exact commit' 'gh run list' \
+        '--workflow tests.yml' '--commit "$SHA"' \
         'build-release:' 'native-release-tests:' 'scripts/release/publish.sh' \
         'pattern: cup-release-*' 'PUBLIC_RELEASE_TOKEN'; do
     require_text "$RELEASE" "$required"
 done
+reject_text "$RELEASE" 'uses: ./.github/workflows/tests.yml'
 # Release candidates must come from the current run; cross-run artifact
 # downloads would require a run-id selector and are intentionally forbidden.
 reject_text "$RELEASE" 'run-id:'

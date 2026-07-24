@@ -213,18 +213,19 @@ test loop because certificate and proxy orchestration is comparatively costly.
 `.github/workflows/dependencies.yml` owns reusable dependency preparation. It:
 
 - can be dispatched manually for all profiles or one selected profile;
-- is called automatically by Tests and Release;
+- is called automatically by Tests;
 - serializes each platform/profile so overlapping runs reuse the cache prepared first;
 - restores a platform/profile cache and falls back to `make deps` on a miss;
 - verifies the final prefix with `make deps-check`.
 
-The cache is an optimization, never a prerequisite for correctness.
+Tests can rebuild a missing cache. Release requires the successful Tests result
+and the matching verified dependency prefixes prepared by that workflow.
 
 ### Tests
 
-`.github/workflows/tests.yml` runs on pushes to `main`, manual dispatch and
-reusable workflow calls. It first calls the dependency workflow for all required
-profiles, then runs independent jobs for:
+`.github/workflows/tests.yml` runs on pushes to `main` and manual dispatch. It
+first calls the dependency workflow for all required profiles, then runs
+independent jobs for:
 
 ```text
 repository quality
@@ -246,10 +247,11 @@ policy. Debug artifacts never satisfy a release gate.
 
 ### Release
 
-`.github/workflows/release.yml` is manual and calls the reusable Tests workflow
-for the selected `main` commit. It then builds candidates, tests the exact
-artifacts natively and publishes them in the same release run. Publication uses
-only evidence and candidate bytes produced by that run. See [RELEASES](RELEASES.md).
+`.github/workflows/release.yml` is manual and first requires a successful Tests
+workflow for the exact selected `main` commit. It does not repeat repository
+quality, source, coverage or sanitizer jobs. It builds official candidates,
+performs release-specific native smoke tests on the exact artifacts and publishes
+those same bytes. See [RELEASES](RELEASES.md).
 
 ## Test placement
 

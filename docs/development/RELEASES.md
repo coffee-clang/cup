@@ -76,18 +76,21 @@ The documentation workflow remains independent.
 
 ### Dependency preparation
 
-The release path uses the same reusable dependency workflow and cache keys as
-normal source testing. A cache miss rebuilds the prefix through `make deps`; no
-release step depends on a cache being present.
+The Tests workflow prepares every pinned dependency profile. Release builds use
+the same cache keys and require those verified prefixes to be available. A cache
+miss stops the release and the Tests workflow must be rerun for the selected
+commit before another release attempt.
 
 ### Source gates
 
-`release.yml` calls `.github/workflows/tests.yml` as a reusable workflow for the
-selected `main` revision. The release cannot assemble candidates until all
-source, quality, coverage and sanitizer gates succeed.
+`release.yml` queries GitHub Actions for a completed successful `Tests` run whose
+`headSha` exactly matches the selected `main` revision. Only normal push or manual
+Tests runs are accepted. If no matching run exists, release construction stops.
 
-The reusable call belongs to the same release execution. There is no search for
-an earlier workflow run, no run-ID input and no cross-run candidate trust.
+The release does not repeat repository quality, source, coverage or sanitizer
+jobs. Their evidence is tied to the same source commit, while all candidate
+artifacts are still produced, tested and published within the current release
+run.
 
 ### Candidate construction
 
@@ -108,13 +111,16 @@ consume the exact bytes built by the owner runner.
 
 ### Native candidate verification
 
-The release workflow downloads the common and platform artifacts onto native
-runners. Each candidate is tested without rebuilding. The Windows candidate is
-verified by the Windows PowerShell suite; Linux and macOS candidates use the
-POSIX release runner.
+The release workflow downloads the common assets and only the matching platform
+artifact onto each native runner. Each candidate is tested without rebuilding.
+The release suites verify checksum membership and bytes, exact release metadata,
+the native executable version, installation from the generated installer in a
+fresh home and a successful `doctor` result. They intentionally do not repeat the
+full integration suites already owned by `tests.yml`.
 
 Publication depends on every native candidate job. This establishes that the
-published bytes, rather than a similar local rebuild, passed the release tests.
+published bytes, rather than a similar local rebuild, passed the release-specific
+checks.
 
 ## Public assets
 
@@ -209,17 +215,17 @@ release state simultaneously. Candidate build and native-test matrices use
 VERSION is updated manually
 the source revision is reviewed and committed
 the revision is pushed to main
-the normal Tests workflow may complete before release dispatch
-Release is dispatched from that main revision
-the release run executes its reusable source gates
+the normal Tests workflow completes successfully for that exact revision
+Release is dispatched from the same main revision
+the release run verifies the successful Tests result for the exact commit
 candidates are built for every supported platform
 the exact candidate artifacts are tested on native runners
 the verified generation is published
 ```
 
-The manual Release run is self-contained. Results from the normal Tests workflow
-are useful before dispatch, but publication depends only on gates and artifacts
-from the release run itself.
+The source-test evidence comes from the successful Tests run for the exact commit.
+Candidate construction, native release checks and publication remain contained in
+the Release run, and publication uses only candidate bytes produced by that run.
 
 ## CUP update relationship
 

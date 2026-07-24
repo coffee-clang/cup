@@ -8,18 +8,19 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 : "${PLATFORM:?PLATFORM is required}"
 : "${VERSION:?VERSION is required}"
+SHA=${SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 release_dir=${1:-release}
 
 verify_checksum_file_exact "$release_dir" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
 verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" "cup-$PLATFORM" uninstall.sh release.txt
 
+test "$(sed -n 's/^format=//p' "$release_dir/release.txt")" = 1
+test "$(sed -n 's/^version=//p' "$release_dir/release.txt")" = "$VERSION"
+test "$(sed -n 's/^commit=//p' "$release_dir/release.txt")" = "$SHA"
+test "$(wc -l < "$release_dir/release.txt" | tr -d '[:space:]')" = 3
+
 chmod +x "$release_dir/cup-$PLATFORM" "$release_dir/install.sh"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
-
-CUP_TEST_PLATFORM="$PLATFORM" \
-CUP_TEST_BINARY="$PWD/$release_dir/cup-$PLATFORM" \
-CUP_TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}" \
-    "$ROOT/tests/runners/integration-posix.sh"
 
 port=$((18080 + ($$ % 1000)))
 helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
@@ -66,4 +67,6 @@ CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
 CUP_INSTALL_NO_PATH_PROMPT=1 \
     sh "$release_dir/install.sh"
 "$test_home/.cup/bin/cup" --version | grep -Fx "cup $VERSION"
+test "$(hash_file "$test_home/.cup/bin/cup")" = \
+    "$(hash_file "$release_dir/cup-$PLATFORM")"
 "$test_home/.cup/bin/cup" doctor

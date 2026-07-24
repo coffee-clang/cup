@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -37,16 +38,44 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-  tests:
-    name: Source quality gates
+  verify-tests:
+    name: Verify successful Tests run for exact commit
     needs: metadata
-    uses: ./.github/workflows/tests.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require successful Tests run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+        run: |
+          set -euo pipefail
+          matches=$(gh run list \
+            --repo "$REPOSITORY" \
+            --workflow tests.yml \
+            --commit "$SHA" \
+            --status success \
+            --limit 100 \
+            --json conclusion,event,headSha,status,url \
+            --jq ".[] | select(.headSha == \"$SHA\" and \
+              .status == \"completed\" and \
+              .conclusion == \"success\" and \
+              (.event == \"push\" or .event == \"workflow_dispatch\")) | .url")
+          run_url=${matches%%$'\n'*}
+          [ -n "$run_url" ] || {
+            echo "No successful Tests run exists for commit $SHA." >&2
+            echo "Run the Tests workflow for this exact main commit before releasing." >&2
+            exit 1
+          }
+          echo "Using Tests evidence from $run_url"
 
   common-assets:
     name: Prepare common release assets
     needs:
       - metadata
-      - tests
+      - verify-tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -74,7 +103,7 @@ jobs:
     name: Build release (${{ matrix.platform }})
     needs:
       - metadata
-      - tests
+      - verify-tests
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -251,9 +280,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
-          pattern: cup-release-*
+          name: cup-release-common
           path: release
-          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: cup-release-${{ matrix.platform }}
+          path: release
       - uses: actions/download-artifact@v8
         with:
           name: cup-test-helpers-${{ matrix.platform }}
@@ -266,6 +298,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.metadata.outputs.version }}
+          SHA: ${{ needs.metadata.outputs.sha }}
           CUP_TEST_CONFIGURATION: release
         run: tests/release/posix.sh release
       - name: Test Windows release
@@ -278,6 +311,7 @@ jobs:
           -File tests/release/windows.ps1
           -ReleaseDir release
           -Version '${{ needs.metadata.outputs.version }}'
+          -SourceSha '${{ needs.metadata.outputs.sha }}'
 
   publish:
     name: Publish verified release
