@@ -61,10 +61,12 @@ for required in 'workflow_dispatch:' 'actions: read' \
         'Verify successful Tests run for exact commit' 'gh run list' \
         '--workflow tests.yml' '--commit "$SHA"' \
         'build-release:' 'native-release-tests:' 'scripts/release/publish.sh' \
-        'pattern: cup-release-*' 'PUBLIC_RELEASE_TOKEN'; do
+        'pattern: cup-release-*' 'contents: write' \
+        'GH_TOKEN: ${{ github.token }}' 'GH_REPO: ${{ github.repository }}'; do
     require_text "$RELEASE" "$required"
 done
 reject_text "$RELEASE" 'uses: ./.github/workflows/tests.yml'
+reject_text "$RELEASE" 'PUBLIC_RELEASE_TOKEN'
 # Release candidates must come from the current run; cross-run artifact
 # downloads would require a run-id selector and are intentionally forbidden.
 reject_text "$RELEASE" 'run-id:'

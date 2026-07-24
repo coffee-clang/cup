@@ -87,8 +87,9 @@ release graph. Sanitizers use Clang consistently so diagnostics and runtime
 behavior do not vary between GCC's libsanitizer and LLVM Compiler-RT.
 
 All C builds use C11 with warnings treated as errors. Development and debug use
-`-O0 -g3`; release uses `-O2 -DNDEBUG`; coverage and sanitizer instrumentation
-are isolated in their own directories. The debug target adds the richest
+`-O0 -g3`; release uses `-O2 -g1 -DNDEBUG` so separate native symbol
+artifacts remain useful after the public executable is stripped. Coverage and
+sanitizer instrumentation are isolated in their own directories. The debug target adds the richest
 portable symbol information selected for the platform.
 
 Mandatory flags are owned by the Makefile and cannot be replaced with direct

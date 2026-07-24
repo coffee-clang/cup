@@ -198,9 +198,9 @@ published as release downloads.
 - a draft is published only after remote assets have been downloaded and
   compared byte-for-byte.
 
-The publication job uses `PUBLIC_RELEASE_TOKEN` only after source and native
-candidate gates succeed. The automatic source-repository token remains
-read-only.
+The publication job receives `contents: write` only after source and native
+candidate gates succeed, and uses the run-scoped `github.token` to publish to
+the same repository. All earlier jobs keep read-only repository permissions.
 
 ## Concurrency
 

@@ -217,7 +217,7 @@ CONFIG_LDFLAGS_coverage := --coverage
 CONFIG_CFLAGS_sanitizers := -O0 -g3 -fsanitize=address,undefined \
     -fno-omit-frame-pointer
 CONFIG_LDFLAGS_sanitizers := -fsanitize=address,undefined
-CONFIG_CFLAGS_release := -O2 -DNDEBUG
+CONFIG_CFLAGS_release := -O2 -g1 -DNDEBUG
 
 # Native/cross toolchain selection by public platform identifier. Explicit
 # command-line CC/WINDRES values remain available for compiler-matrix and MSYS2
@@ -291,7 +291,8 @@ ifneq ($(findstring $(space),$(DEPS_PREFIX_INPUT)),)
 endif
 override DEPS_PREFIX := $(abspath $(DEPS_PREFIX_INPUT))
 DEPS_INCLUDE := $(DEPS_PREFIX)/include
-DEPS_LIB_DIRS := $(DEPS_PREFIX)/lib $(DEPS_PREFIX)/lib64
+DEPS_LIB_DIRS = $(foreach directory,$(DEPS_PREFIX)/lib $(DEPS_PREFIX)/lib64,\
+    $(if $(wildcard $(directory)),$(directory)))
 ARGTABLE_LIB = $(firstword $(wildcard \
     $(DEPS_PREFIX)/lib/libargtable3.a \
     $(DEPS_PREFIX)/lib64/libargtable3.a \

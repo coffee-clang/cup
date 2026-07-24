@@ -315,6 +315,8 @@ jobs:
 
   publish:
     name: Publish verified release
+    permissions:
+      contents: write
     needs:
       - metadata
       - common-assets
@@ -334,8 +336,8 @@ jobs:
           merge-multiple: true
       - name: Publish exact tested candidate
         env:
-          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
-          GH_REPO: coffee-clang/cup
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.metadata.outputs.version }}
           TAG: ${{ needs.metadata.outputs.tag }}
           SHA: ${{ needs.metadata.outputs.sha }}

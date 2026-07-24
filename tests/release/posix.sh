@@ -66,7 +66,18 @@ CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
 CUP_INSTALL_NO_PATH_PROMPT=1 \
     sh "$release_dir/install.sh"
-"$test_home/.cup/bin/cup" --version | grep -Fx "cup $VERSION"
-test "$(hash_file "$test_home/.cup/bin/cup")" = \
+installed_cup="$test_home/.cup/bin/cup"
+HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
+test "$(hash_file "$installed_cup")" = \
     "$(hash_file "$release_dir/cup-$PLATFORM")"
-"$test_home/.cup/bin/cup" doctor
+doctor_output=$(
+    cd "$test_home"
+    HOME="$test_home" "$installed_cup" doctor 2>&1
+)
+printf '%s\n' "$doctor_output"
+case "$doctor_output" in
+    *'development CUP assets'*|*'development catalog'*)
+        fail 'official installation unexpectedly used development CUP assets'
+        ;;
+esac
+printf '%s\n' "$doctor_output" | grep -F 'Doctor found no issues.' >/dev/null
