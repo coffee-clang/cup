@@ -252,33 +252,3 @@ cup_test_find_llvm_tool() {
     return 1
 }
 
-# Source-based LLVM coverage support was added by gcovr 8.5.
-cup_test_require_gcovr_llvm() {
-    _cup_test_version=$(gcovr --version 2>/dev/null | awk '
-        NR == 1 {
-            for (i = 1; i <= NF; ++i) {
-                if ($i ~ /^[0-9]+\.[0-9]+([.][0-9]+)?/) {
-                    print $i
-                    exit
-                }
-            }
-        }
-    ')
-    _cup_test_major=${_cup_test_version%%.*}
-    _cup_test_remainder=${_cup_test_version#*.}
-    _cup_test_minor=${_cup_test_remainder%%.*}
-    case "$_cup_test_major:$_cup_test_minor" in
-        *[!0-9:]*|:*)
-            printf 'Unable to determine the installed gcovr version.\n' >&2
-            return 1
-            ;;
-    esac
-    if [ "$_cup_test_major" -lt 8 ] || {
-        [ "$_cup_test_major" -eq 8 ] && [ "$_cup_test_minor" -lt 5 ]
-    }; then
-        printf 'gcovr 8.5 or newer is required for LLVM source-based coverage; found %s.\n' \
-            "$_cup_test_version" >&2
-        cup_test_tool_hint gcovr
-        return 1
-    fi
-}

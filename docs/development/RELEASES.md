@@ -203,23 +203,23 @@ non-cancelling `cup-release` group so two manual runs cannot mutate public
 release state simultaneously. Candidate build and native-test matrices use
 `fail-fast: false` so all independent platform outcomes remain visible.
 
-## Release procedure
+## Current release sequence
 
 ```text
-update VERSION manually
-review and commit the source revision
-push the revision to main
-use the normal Tests workflow for earlier feedback when desired
-dispatch Release from that main revision
-allow the release run to execute its reusable source gates
-build candidates for every supported platform
-test the exact candidate artifacts on native runners
-publish the verified generation
+VERSION is updated manually
+the source revision is reviewed and committed
+the revision is pushed to main
+the normal Tests workflow may complete before release dispatch
+Release is dispatched from that main revision
+the release run executes its reusable source gates
+candidates are built for every supported platform
+the exact candidate artifacts are tested on native runners
+the verified generation is published
 ```
 
-The manual Release run is self-contained. The normal Tests workflow can provide
-earlier feedback, while publication depends only on gates and artifacts from the
-release run itself.
+The manual Release run is self-contained. Results from the normal Tests workflow
+are useful before dispatch, but publication depends only on gates and artifacts
+from the release run itself.
 
 ## CUP update relationship
 

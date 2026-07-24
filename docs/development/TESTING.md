@@ -1,7 +1,7 @@
 # Testing
 
-This document defines the verification layers used by `cup`, their ownership
-and the local and GitHub Actions entry points.
+This document describes the verification layers used by `cup`, the behavior
+covered by each layer and the local and GitHub Actions entry points.
 
 ## Objectives
 
@@ -87,7 +87,7 @@ make PLATFORM=<platform> check
 ```
 
 `make check` composes dependency preparation, behavioral tests and repository
-quality. It is the recommended command before a substantial push.
+quality into the complete local verification path.
 
 Coverage and sanitizer gates remain explicit because they require additional
 host tools and take longer than the normal development loop:
@@ -99,8 +99,8 @@ make PLATFORM=<platform> test-sanitizers
 
 ## Dependency preparation
 
-A developer can run `make test` on a fresh checkout. The public test target first
-runs the idempotent dependency preparation path:
+`make test` can run on a fresh checkout. The public target first runs the
+idempotent dependency preparation path:
 
 - a compatible prefix is verified and reused;
 - a missing or incompatible prefix is built transactionally;
@@ -174,9 +174,10 @@ build/coverage/<platform>/
 ```
 
 Linux and Windows use GCC/gcov. macOS uses Clang source-based coverage with
-`llvm-profdata` and `llvm-cov`. `gcovr` produces the common text, XML, JSON and
-HTML reports. Thresholds are applied per platform so platform-specific branches
-cannot disappear inside one aggregate number.
+`llvm-profdata` and `llvm-cov`. GCC platforms produce text, XML, JSON and HTML
+through `gcovr`; macOS produces native LLVM text, JSON, LCOV and HTML reports.
+Thresholds are applied per platform so platform-specific branches cannot
+disappear inside one aggregate number.
 
 Coverage is evidence for implemented contracts. It is not a reason to add
 unreachable workflows or assertions that merely execute defensive lines.
@@ -243,18 +244,6 @@ workflow does not build or publish release candidates.
 be dispatched manually. It uses the same dependency caches and binary inspection
 policy. Debug artifacts never satisfy a release gate.
 
-### Temporary macOS coverage diagnostics
-
-`.github/workflows/macos-coverage-diagnostics.yml` is isolated from the normal
-coverage gate. It runs only when manually dispatched or when pushing the
-`diagnostics/macos-coverage` branch. The workflow compares LLVM prefix-map
-variants, records the exact `xcrun` toolchain, exports native branch data for a
-minimal probe and real CUP binaries, and uploads the raw profiles and gcovr logs.
-
-It applies no coverage thresholds and does not alter the official report. Once
-the macOS failure is classified and the permanent fix is validated, remove this
-workflow and `scripts/ci/macos-coverage-diagnostics.sh`.
-
 ### Release
 
 `.github/workflows/release.yml` is manual and calls the reusable Tests workflow
@@ -262,19 +251,19 @@ for the selected `main` commit. It then builds candidates, tests the exact
 artifacts natively and publishes them in the same release run. Publication uses
 only evidence and candidate bytes produced by that run. See [RELEASES](RELEASES.md).
 
-## Ownership rules
+## Test placement
 
-Before adding a test:
+The current test layout separates evidence by responsibility:
 
-1. identify the smallest behavior or operational guarantee that failed;
-2. place deterministic branches in the owning unit suite;
-3. keep real multi-module or CLI transitions in the native integration owner;
-4. use repository tests only for static source and automation contracts;
-5. repeat a check only when a second trust boundary provides different evidence.
+- deterministic module behavior is covered by the corresponding unit suite;
+- real multi-module and CLI transitions are covered by native integration tests;
+- repository tests cover static source, documentation and automation contracts;
+- repeated checks are retained only when a different trust boundary provides
+  distinct evidence.
 
-Shared helpers are justified only by multiple real consumers. The assertion
-quality contract ensures tests are registered, invoked and observable, but it
-does not replace review of whether each assertion proves the intended behavior.
+Shared test helpers are limited to behavior used by multiple suites. Assertion
+quality checks ensure that tests are registered, invoked and observable; the
+behavioral meaning of each assertion remains part of the test itself.
 
 ## Related documents
 

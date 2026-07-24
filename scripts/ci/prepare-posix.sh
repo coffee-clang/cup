@@ -64,7 +64,7 @@ case "$family" in
                 packages='perl pkg-config xz'
                 ;;
             coverage)
-                packages='coreutils gcovr perl pkg-config xz'
+                packages='coreutils perl pkg-config xz'
                 ;;
             sanitizers)
                 packages='coreutils perl pkg-config xz'

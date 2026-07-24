@@ -36,16 +36,16 @@ to related contracts where a boundary is crossed.
 - [SECURITY](design/SECURITY.md) collects the HTTPS, checksum, archive, path and
   CUP assets integrity rules.
 
-## Development
+## Build, verification and release
 
 - [BUILD](development/BUILD.md) describes build modes, dependencies, static CUP assets and
   generated sources.
-- [TESTING](development/TESTING.md) defines test ownership, fixtures, coverage, sanitizers
-  and repository structure.
+- [TESTING](development/TESTING.md) describes test layers, fixtures, coverage, sanitizers
+  and repository verification.
 - [RELEASES](development/RELEASES.md) describes version derivation, candidate artifacts,
   release gates and resumable publication.
 
-## Recommended reading order
+## Documentation paths
 
 For users:
 
@@ -53,7 +53,7 @@ For users:
 INSTALLATION -> COMMANDS -> PLATFORMS
 ```
 
-For implementation and operational review:
+For implementation and operational reference:
 
 ```text
 ARCHITECTURE -> PLATFORMS -> PACKAGES -> STATE -> TRANSACTIONS -> SECURITY

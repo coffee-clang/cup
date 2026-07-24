@@ -13,9 +13,10 @@ fi
 for required in '--fail-under-line' '--fail-under-branch' '--fail-under-function' \
         'coverage.json' 'coverage.xml' 'coverage-summary.json' \
         'linux-x64|linux-arm64' 'macos-x64|macos-arm64' 'windows-x64' \
-        '--llvm-profdata-executable' '--llvm-cov-binary' \
+        'coverage.profdata' 'coverage.lcov' 'LLVM_PROFDATA' 'LLVM_COV' \
+        '--path-equivalence' \
         'CUP_TEST_TIMEOUT_COMMAND' 'powershell.exe' \
-        'cup_test_require_gcovr_llvm' 'build/$PLATFORM/coverage/tests' \
+        'build/$PLATFORM/coverage/tests' \
         'CUP_COVERAGE_REPORT_TIMEOUT:-600' 'reports_complete' \
         'generation_status' 'threshold_status' 'html_status' \
         '--add-tracefile' "--exclude 'tests/'" "--exclude 'build/'"; do
@@ -54,7 +55,6 @@ if command -v timeout >/dev/null 2>&1; then
     }
 fi
 for required in generation_status threshold_status html_status \
-        'gcovr_command=(env "PATH=$LLVM_TOOL_DIR:$PATH" gcovr)' \
         'integers from 0 to 100' 'The gcov backend requires GCC' \
         'powershell.exe -NoProfile' '$TIMEOUT_COMMAND'; do
     grep -Fq -- "$required" "$runner" || {

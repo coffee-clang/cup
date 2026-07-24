@@ -249,10 +249,10 @@ disabled. Windows uses Schannel and does not include OpenSSL.
 
 GitHub Actions uses the same manifest through `.github/workflows/dependencies.yml`.
 Its cache keys are readable combinations of platform, profile, recipe and lock
-digest. Tests and releases call the workflow automatically, while maintainers
-can dispatch it manually for all profiles or one selected profile. Preparation is
-serialized per platform/profile so overlapping runs do not rebuild the same missing
-cache. A cache miss runs the same `make deps` path used by local developers.
+digest. Tests and releases call the workflow automatically, and manual dispatch
+is available for all profiles or one selected profile. Preparation is serialized
+per platform/profile so overlapping runs do not rebuild the same missing cache. A
+cache miss runs the same `make deps` path used by local verification.
 
 ## One pinned application dependency graph
 

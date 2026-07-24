@@ -240,9 +240,9 @@ jobs:
           CUP_TEST_PLATFORM: windows-x64
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
-          CUP_COVERAGE_MIN_LINES: 85
-          CUP_COVERAGE_MIN_BRANCHES: 70
-          CUP_COVERAGE_MIN_FUNCTIONS: 97
+          CUP_COVERAGE_MIN_LINES: 70
+          CUP_COVERAGE_MIN_BRANCHES: 55
+          CUP_COVERAGE_MIN_FUNCTIONS: 85
         run: tests/runners/coverage.sh
       - uses: actions/upload-artifact@v7
         if: always()

@@ -16,7 +16,7 @@
 - [Transactions](design/TRANSACTIONS.md)
 - [Security](design/SECURITY.md)
 
-# Development
+# Build, verification and release
 
 - [Build](development/BUILD.md)
 - [Testing](development/TESTING.md)
