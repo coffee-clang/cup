@@ -19,19 +19,22 @@ case "$PLATFORM" in
         ;;
 esac
 TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}"
-TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L"
+TEST_CPPFLAGS=
 TEST_CFLAGS="${TEST_CFLAGS:-}"
 TEST_LDFLAGS="${TEST_LDFLAGS:-}"
 case "$PLATFORM" in
     macos-*)
-        TEST_CPPFLAGS="$TEST_CPPFLAGS -D_DARWIN_C_SOURCE \
+        TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE \
             -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
         TEST_CFLAGS="$TEST_CFLAGS -mmacosx-version-min=13.0"
         TEST_LDFLAGS="$TEST_LDFLAGS -mmacosx-version-min=13.0"
         ;;
     linux-*)
-        TEST_CPPFLAGS="$TEST_CPPFLAGS \
+        TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L \
             -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
+        ;;
+    windows-x64)
+        TEST_CPPFLAGS="-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -DCURL_STATICLIB"
         ;;
 esac
 case "$TEST_CONFIGURATION" in
@@ -62,23 +65,20 @@ UNITY_LIB=$(cup_test_find_static_library unity) || {
     printf 'Unity static library was not found in %s.\n' "$DEPS_PREFIX" >&2
     exit 1
 }
-UNIT_ARCHIVE_LIBS=
-if [ "$PLATFORM" != windows-x64 ]; then
-    unit_pkg_config_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
-    UNIT_ARCHIVE_LIBS=$(PKG_CONFIG_PATH="$unit_pkg_config_path" \
-        PKG_CONFIG_LIBDIR="$unit_pkg_config_path" \
-        PKG_CONFIG_SYSROOT_DIR= \
-        pkg-config --static --libs libarchive) || {
-        printf 'Pinned libarchive metadata was not usable in %s.\n' \
-            "$DEPS_PREFIX" >&2
-        exit 1
-    }
-    [ -n "$UNIT_ARCHIVE_LIBS" ] || {
-        printf 'Pinned libarchive metadata was empty in %s.\n' \
-            "$DEPS_PREFIX" >&2
-        exit 1
-    }
-fi
+unit_pkg_config_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
+UNIT_ARCHIVE_LIBS=$(PKG_CONFIG_PATH="$unit_pkg_config_path" \
+    PKG_CONFIG_LIBDIR="$unit_pkg_config_path" \
+    PKG_CONFIG_SYSROOT_DIR= \
+    pkg-config --static --libs libarchive) || {
+    printf 'Pinned libarchive metadata was not usable in %s.\n' \
+        "$DEPS_PREFIX" >&2
+    exit 1
+}
+[ -n "$UNIT_ARCHIVE_LIBS" ] || {
+    printf 'Pinned libarchive metadata was empty in %s.\n' \
+        "$DEPS_PREFIX" >&2
+    exit 1
+}
 
 mkdir -p "$TEST_BUILD_DIR"
 
@@ -96,7 +96,50 @@ compile_test() {
         "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
 }
 
-# Suite ownership remains explicit so the Makefile can request individual binaries.
+# Suite registration remains explicit so the Makefile can request individual binaries.
+# Platform-neutral decision suites compile on every native target.
+compile_test test_command_queries \
+    "$ROOT/tests/unit/test_command_queries.c" \
+    "$ROOT/src/command_list.c" \
+    "$ROOT/src/command_default.c" \
+    "$ROOT/src/command_info.c" \
+    "$ROOT/src/command_search.c" \
+    "$ROOT/src/command_inspect.c"
+
+compile_test test_archive_faults \
+    "$ROOT/tests/unit/test_archive_faults.c"
+
+compile_test test_package_transaction \
+    "$ROOT/tests/unit/test_package_transaction.c" \
+    "$ROOT/src/package_transaction.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
+
+compile_test test_cup_update_journal \
+    "$ROOT/tests/unit/test_cup_update_journal.c" \
+    "$ROOT/src/cup_update_journal.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/sha256.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
+
+compile_test test_cup_update_helper \
+    "$ROOT/tests/unit/test_cup_update_helper.c" \
+    "$ROOT/src/cup_update_helper.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
+
+compile_test test_runtime_journal \
+    "$ROOT/tests/unit/test_runtime_journal.c" \
+    "$ROOT/src/runtime_journal.c" \
+    "$ROOT/src/text.c"
+
+compile_test test_command_repair \
+    "$ROOT/tests/unit/test_command_repair.c" \
+    "$ROOT/src/command_repair.c" \
+    "$ROOT/src/text.c"
+
+
 compile_test test_exit_status \
     "$ROOT/tests/unit/test_exit_status.c" \
     "$ROOT/src/exit_status.c"
@@ -187,54 +230,56 @@ compile_test test_command_context \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
+compile_test test_interrupt \
+    "$ROOT/tests/unit/test_interrupt.c" \
+    "$ROOT/src/interrupt.c"
+
+case "$PLATFORM" in
+    windows-x64)
+        PACKAGE_SYSTEM_SOURCE="$ROOT/src/system_windows.c"
+        PACKAGE_SYSTEM_LIBS=-ladvapi32
+        ;;
+    *)
+        PACKAGE_SYSTEM_SOURCE="$ROOT/src/system_posix.c"
+        PACKAGE_SYSTEM_LIBS=
+        ;;
+esac
+compile_test test_package \
+    "$ROOT/tests/unit/test_package.c" \
+    "$ROOT/src/package.c" \
+    "$ROOT/src/package_selector.c" \
+    "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/platform.c" \
+    "$ROOT/src/registry.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
+    $PACKAGE_SYSTEM_LIBS
+
+compile_test test_package_cache \
+    "$ROOT/tests/unit/test_package_cache.c" \
+    "$ROOT/src/download.c" \
+    "$ROOT/src/package_cache.c" \
+    "$ROOT/src/layout.c" \
+    "$ROOT/src/filesystem.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
+    "$ROOT/src/platform.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    $PACKAGE_SYSTEM_LIBS
+
+compile_test test_package_archive \
+    "$ROOT/tests/unit/test_package_archive.c" \
+    "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/package_archive.c" \
+    "$ROOT/src/interrupt.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    $PACKAGE_SYSTEM_LIBS \
+    $UNIT_ARCHIVE_LIBS
+
 if [ "$PLATFORM" != windows-x64 ]; then
-    compile_test test_interrupt \
-        "$ROOT/tests/unit/test_interrupt.c" \
-        "$ROOT/src/interrupt.c"
-
-    compile_test test_command_queries \
-        "$ROOT/tests/unit/test_command_queries.c" \
-        "$ROOT/src/command_list.c" \
-        "$ROOT/src/command_default.c" \
-        "$ROOT/src/command_info.c" \
-        "$ROOT/src/command_search.c" \
-        "$ROOT/src/command_inspect.c"
-
-    compile_test test_package \
-        "$ROOT/tests/unit/test_package.c" \
-        "$ROOT/src/package.c" \
-        "$ROOT/src/package_selector.c" \
-        "$ROOT/src/package_metadata.c" \
-        "$ROOT/src/platform.c" \
-        "$ROOT/src/registry.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c" \
-        "$ROOT/src/system_posix.c"
-
-    compile_test test_package_archive \
-        "$ROOT/tests/unit/test_package_archive.c" \
-        "$ROOT/src/package_archive_format.c" \
-        "$ROOT/src/package_archive.c" \
-        "$ROOT/src/interrupt.c" \
-        "$ROOT/src/system_posix.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c" \
-        $UNIT_ARCHIVE_LIBS
-
-    compile_test test_archive_faults \
-        "$ROOT/tests/unit/test_archive_faults.c"
-
-    compile_test test_package_cache \
-        "$ROOT/tests/unit/test_package_cache.c" \
-        "$ROOT/src/download.c" \
-        "$ROOT/src/package_cache.c" \
-        "$ROOT/src/layout.c" \
-        "$ROOT/src/filesystem.c" \
-        "$ROOT/src/system_posix.c" \
-        "$ROOT/src/platform.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
     compile_test test_storage \
         "$ROOT/tests/unit/test_storage.c" \
         "$ROOT/tests/unit/test_system_posix.c" \
@@ -248,50 +293,6 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c"
 
-    compile_test test_state \
-        "$ROOT/tests/unit/test_state.c" \
-        "$ROOT/src/state.c" \
-        "$ROOT/src/system_posix.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_package_transaction \
-        "$ROOT/tests/unit/test_package_transaction.c" \
-        "$ROOT/src/package_transaction.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_cup_update_journal \
-        "$ROOT/tests/unit/test_cup_update_journal.c" \
-        "$ROOT/src/cup_update_journal.c" \
-        "$ROOT/src/checksum.c" \
-        "$ROOT/src/sha256.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_cup_update_helper \
-        "$ROOT/tests/unit/test_cup_update_helper.c" \
-        "$ROOT/src/cup_update_helper.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_runtime_journal \
-        "$ROOT/tests/unit/test_runtime_journal.c" \
-        "$ROOT/src/runtime_journal.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_wrappers \
-        "$ROOT/tests/unit/test_wrappers.c" \
-        "$ROOT/src/wrappers.c" \
-        "$ROOT/src/package_metadata.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
-
-    compile_test test_command_repair \
-        "$ROOT/tests/unit/test_command_repair.c" \
-        "$ROOT/src/command_repair.c" \
-        "$ROOT/src/text.c"
-
     compile_test test_package_extract \
         "$ROOT/tests/unit/test_package_extract.c" \
         "$ROOT/src/package_archive_format.c" \
@@ -299,7 +300,53 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c" \
         $UNIT_ARCHIVE_LIBS
+else
+    compile_test test_system_windows \
+        "$ROOT/tests/unit/test_system_windows.c" \
+        "$ROOT/src/system_windows.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c" \
+        -ladvapi32
+
+    compile_test test_storage_windows \
+        "$ROOT/tests/unit/test_storage_windows.c" \
+        "$ROOT/tests/unit/test_filesystem.c" \
+        "$ROOT/tests/unit/test_layout.c" \
+        "$ROOT/src/layout.c" \
+        "$ROOT/src/filesystem.c" \
+        "$ROOT/src/system_windows.c" \
+        "$ROOT/src/interrupt.c" \
+        "$ROOT/src/platform.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c" \
+        -ladvapi32
 fi
+
+
+compile_test test_wrappers \
+    "$ROOT/tests/unit/test_wrappers.c" \
+    "$ROOT/src/wrappers.c" \
+    "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
+
+case "$PLATFORM" in
+    windows-x64)
+        STATE_SYSTEM_SOURCE="$ROOT/src/system_windows.c"
+        STATE_SYSTEM_LIBS=-ladvapi32
+        ;;
+    *)
+        STATE_SYSTEM_SOURCE="$ROOT/src/system_posix.c"
+        STATE_SYSTEM_LIBS=
+        ;;
+esac
+compile_test test_state \
+    "$ROOT/tests/unit/test_state.c" \
+    "$ROOT/src/state.c" \
+    "$STATE_SYSTEM_SOURCE" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    $STATE_SYSTEM_LIBS
 
 compile_test test_cup_update \
     "$ROOT/tests/unit/test_cup_update.c" \

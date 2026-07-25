@@ -107,7 +107,7 @@ windows-x64
 Common assets are assembled once. Each platform build produces its executable,
 platform checksum file, native symbol artifact and release-test helpers. Public
 candidate parts are uploaded as workflow artifacts so later jobs in the same run
-consume the exact bytes built by the owner runner.
+consume the exact bytes built by the corresponding platform runner.
 
 ### Native candidate verification
 
@@ -150,8 +150,8 @@ SHA256SUMS.windows-x64
 ```
 
 `THIRD_PARTY_NOTICES.txt` contains the notices and license texts corresponding
-to the pinned CUP dependency graph. Component tool packages remain owned by the
-separate `cup-components` project and are not embedded in a CUP release.
+to the pinned cup dependency graph. Component tool packages remain owned by the
+separate `cup-components` project and are not embedded in a cup release.
 
 ## Candidate validation
 
@@ -227,7 +227,7 @@ The source-test evidence comes from the successful Tests run for the exact commi
 Candidate construction, native release checks and publication remain contained in
 the Release run, and publication uses only candidate bytes produced by that run.
 
-## CUP update relationship
+## cup update relationship
 
 `cup update cup` is available only in official builds. It discovers the latest
 public version through `latest/release.txt`, then downloads immutable versioned

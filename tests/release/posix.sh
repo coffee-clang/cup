@@ -76,8 +76,8 @@ doctor_output=$(
 )
 printf '%s\n' "$doctor_output"
 case "$doctor_output" in
-    *'development CUP assets'*|*'development catalog'*)
-        fail 'official installation unexpectedly used development CUP assets'
+    *'development cup assets'*|*'development catalog'*)
+        fail 'official installation unexpectedly used development cup assets'
         ;;
 esac
 printf '%s\n' "$doctor_output" | grep -F 'Doctor found no issues.' >/dev/null
@@ -94,3 +94,49 @@ printf '%s\n' "$repair_output"
 test -d "$test_home/.cup/staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
+
+# A completion marker is accepted only for a complete installed generation. The failed
+# recovery must preserve both the executable and transaction evidence.
+bootstrap_staging="$test_home/.cup/.bootstrap"
+saved_update_helper="$test_home/saved-cup-update-helper"
+mkdir "$bootstrap_staging"
+: > "$bootstrap_staging/committed"
+mv "$test_home/.cup/helpers/cup-update-helper" "$saved_update_helper"
+if HOME="$test_home" \
+CUP_INSTALL_ALLOW_INSECURE=1 \
+CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+CUP_INSTALL_NO_PATH_PROMPT=1 \
+    sh "$release_dir/install.sh" >"$test_home/incomplete-bootstrap.out" 2>&1; then
+    fail 'incomplete committed bootstrap staging unexpectedly succeeded'
+fi
+grep -F 'completed bootstrap staging does not match a complete installed generation' \
+    "$test_home/incomplete-bootstrap.out" >/dev/null
+test -f "$bootstrap_staging/committed"
+test "$(hash_file "$installed_cup")" = "$binary_hash_before"
+mv "$saved_update_helper" "$test_home/.cup/helpers/cup-update-helper"
+
+# Reinstalling the same tested candidate now completes cleanup and leaves the executable valid.
+HOME="$test_home" \
+CUP_INSTALL_ALLOW_INSECURE=1 \
+CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+CUP_INSTALL_NO_PATH_PROMPT=1 \
+    sh "$release_dir/install.sh"
+test ! -e "$bootstrap_staging"
+test "$(hash_file "$installed_cup")" = "$binary_hash_before"
+HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
+
+# The assembled release performs its detached uninstall smoke test.
+uninstall_output=$(HOME="$test_home" "$installed_cup" uninstall --yes 2>&1)
+printf '%s\n' "$uninstall_output"
+printf '%s\n' "$uninstall_output" | grep -F \
+    'Uninstall started. The PATH entry was not removed.' >/dev/null
+attempt=0
+while [ "$attempt" -lt 200 ] && [ -e "$test_home/.cup" ]; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+[ ! -e "$test_home/.cup" ] || fail 'release uninstall did not remove the cup root'
+for residue in "$test_home"/.cup-uninstall.*; do
+    [ ! -e "$residue" ] && [ ! -L "$residue" ] ||
+        fail "release uninstall left staging behind: $residue"
+done

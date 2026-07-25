@@ -437,20 +437,28 @@ is_regular_asset() {
 }
 
 restore_permissions() {
-    is_regular_asset "$PACKAGES_CFG" && chmod 0444 "$PACKAGES_CFG"
-    is_regular_asset "$INSTALL_CONFIG" && chmod 0444 "$INSTALL_CONFIG"
-    is_regular_asset "$COMMON_CHECKSUMS" && chmod 0444 "$COMMON_CHECKSUMS"
-    is_regular_asset "$PLATFORM_CHECKSUMS" && chmod 0444 "$PLATFORM_CHECKSUMS"
-    if [ "$WINDOWS_SHELL_INSTALL" -eq 1 ]; then
-        is_regular_asset "$PACKAGES_CFG" && set_windows_read_only "$PACKAGES_CFG"
-        is_regular_asset "$INSTALL_CONFIG" && set_windows_read_only "$INSTALL_CONFIG"
-        is_regular_asset "$COMMON_CHECKSUMS" && set_windows_read_only "$COMMON_CHECKSUMS"
-        is_regular_asset "$PLATFORM_CHECKSUMS" && set_windows_read_only "$PLATFORM_CHECKSUMS"
-        is_regular_asset "$UNINSTALL_SCRIPT" && set_windows_read_only "$UNINSTALL_SCRIPT"
-    else
-        is_regular_asset "$UNINSTALL_SCRIPT" && chmod 0555 "$UNINSTALL_SCRIPT"
+    require_assets="${1:-0}"
+    if [ "$require_assets" -eq 1 ]; then
+        for path in "$PACKAGES_CFG" "$INSTALL_CONFIG" "$COMMON_CHECKSUMS" \
+            "$PLATFORM_CHECKSUMS" "$UNINSTALL_SCRIPT" "$UPDATE_HELPER"; do
+            is_regular_asset "$path" || return 1
+        done
     fi
-    is_regular_asset "$UPDATE_HELPER" && chmod 0755 "$UPDATE_HELPER"
+
+    if is_regular_asset "$PACKAGES_CFG"; then chmod 0444 "$PACKAGES_CFG" || return 1; fi
+    if is_regular_asset "$INSTALL_CONFIG"; then chmod 0444 "$INSTALL_CONFIG" || return 1; fi
+    if is_regular_asset "$COMMON_CHECKSUMS"; then chmod 0444 "$COMMON_CHECKSUMS" || return 1; fi
+    if is_regular_asset "$PLATFORM_CHECKSUMS"; then chmod 0444 "$PLATFORM_CHECKSUMS" || return 1; fi
+    if [ "$WINDOWS_SHELL_INSTALL" -eq 1 ]; then
+        if is_regular_asset "$PACKAGES_CFG"; then set_windows_read_only "$PACKAGES_CFG" || return 1; fi
+        if is_regular_asset "$INSTALL_CONFIG"; then set_windows_read_only "$INSTALL_CONFIG" || return 1; fi
+        if is_regular_asset "$COMMON_CHECKSUMS"; then set_windows_read_only "$COMMON_CHECKSUMS" || return 1; fi
+        if is_regular_asset "$PLATFORM_CHECKSUMS"; then set_windows_read_only "$PLATFORM_CHECKSUMS" || return 1; fi
+        if is_regular_asset "$UNINSTALL_SCRIPT"; then set_windows_read_only "$UNINSTALL_SCRIPT" || return 1; fi
+    elif is_regular_asset "$UNINSTALL_SCRIPT"; then
+        chmod 0555 "$UNINSTALL_SCRIPT" || return 1
+    fi
+    if is_regular_asset "$UPDATE_HELPER"; then chmod 0755 "$UPDATE_HELPER" || return 1; fi
     return 0
 }
 
@@ -458,15 +466,37 @@ rollback_asset() {
     key="$1"
     destination="$2"
     staging="$3"
+    backup="$staging/backup/$key"
+    absent="$backup.absent"
+    installed="$staging/installed/$key"
 
     clear_read_only "$destination" || return 1
-    if [ -f "$staging/installed/$key" ]; then
-        rm -f -- "$destination" || return 1
+    if { [ -e "$destination" ] || [ -L "$destination" ]; } &&
+        ! is_regular_asset "$destination"; then
+        return 1
     fi
-    if [ -e "$staging/backup/$key" ] || [ -L "$staging/backup/$key" ]; then
-        mv "$staging/backup/$key" "$destination" || return 1
-    elif [ -f "$staging/backup/$key.absent" ]; then
-        rm -f -- "$destination" || return 1
+    for evidence in "$backup" "$absent" "$installed"; do
+        if { [ -e "$evidence" ] || [ -L "$evidence" ]; } &&
+            ! is_regular_asset "$evidence"; then
+            return 1
+        fi
+    done
+    if is_regular_asset "$backup" && is_regular_asset "$absent"; then
+        return 1
+    fi
+    if is_regular_asset "$installed" &&
+        ! is_regular_asset "$backup" && ! is_regular_asset "$absent"; then
+        return 1
+    fi
+
+    if is_regular_asset "$backup"; then
+        mv -f -- "$backup" "$destination" || return 1
+    elif is_regular_asset "$absent"; then
+        if is_regular_asset "$installed"; then
+            rm -f -- "$destination" || return 1
+        elif [ -e "$destination" ] || [ -L "$destination" ]; then
+            return 1
+        fi
     fi
     return 0
 }
@@ -479,15 +509,27 @@ recover_staging() {
     fi
     [ -d "$staging" ] || return 0
 
+    if [ -f "$staging/committed" ] && [ ! -L "$staging/committed" ]; then
+        is_regular_asset "$cup_bin" && restore_permissions 1 ||
+            fail "completed bootstrap staging does not match a complete installed generation"
+        info "Finishing cleanup from a completed cup bootstrap installation."
+        rm -rf -- "$staging" ||
+            fail "could not remove completed bootstrap staging directory"
+        return 0
+    fi
+    if [ -e "$staging/committed" ] || [ -L "$staging/committed" ]; then
+        fail "bootstrap commit marker is not a regular file: $staging/committed"
+    fi
+
     info "Recovering an interrupted cup bootstrap installation."
     recovery_failed=0
-    rollback_asset binary "$cup_bin" "$staging" || recovery_failed=1
     rollback_asset manifest "$PACKAGES_CFG" "$staging" || recovery_failed=1
     rollback_asset install-config "$INSTALL_CONFIG" "$staging" || recovery_failed=1
     rollback_asset common-checksums "$COMMON_CHECKSUMS" "$staging" || recovery_failed=1
     rollback_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging" || recovery_failed=1
     rollback_asset uninstall "$UNINSTALL_SCRIPT" "$staging" || recovery_failed=1
     rollback_asset update-helper "$UPDATE_HELPER" "$staging" || recovery_failed=1
+    rollback_asset binary "$cup_bin" "$staging" || recovery_failed=1
     restore_permissions || recovery_failed=1
 
     if [ "$recovery_failed" -ne 0 ]; then
@@ -502,10 +544,14 @@ backup_asset() {
     destination="$2"
     staging="$3"
     clear_read_only "$destination"
-    if [ -e "$destination" ] || [ -L "$destination" ]; then
-        mv "$destination" "$staging/backup/$key"
+    if is_regular_asset "$destination"; then
+        cp -p "$destination" "$staging/backup/$key" ||
+            fail "could not back up $destination"
+    elif [ -e "$destination" ] || [ -L "$destination" ]; then
+        fail "existing bootstrap asset is not a regular file: $destination"
     else
-        : > "$staging/backup/$key.absent"
+        : > "$staging/backup/$key.absent" ||
+            fail "could not record absent asset: $destination"
     fi
 }
 
@@ -514,8 +560,17 @@ commit_asset() {
     source="$2"
     destination="$3"
     staging="$4"
-    mv "$source" "$destination"
-    : > "$staging/installed/$key"
+
+    is_regular_asset "$source" ||
+        fail "bootstrap staged asset is not a regular file: $source"
+    if { [ -e "$destination" ] || [ -L "$destination" ]; } &&
+        ! is_regular_asset "$destination"; then
+        fail "installed bootstrap asset is not a regular file: $destination"
+    fi
+    : > "$staging/installed/$key" ||
+        fail "could not record bootstrap replacement: $destination"
+    mv -f -- "$source" "$destination" ||
+        fail "could not install bootstrap asset: $destination"
 }
 
 cleanup_uninstall_residues() {
@@ -537,6 +592,21 @@ cleanup_uninstall_residues() {
             [ -L "$staged_root/bin/$installed_name" ]; then
             fail "unrecognized uninstall residue was preserved: $residue"
         fi
+        marker_line=$(cat "$staged_root/uninstall.pending" 2>/dev/null) ||
+            fail "unrecognized uninstall residue was preserved: $residue"
+        case "$marker_line" in
+            parent_pid=*)
+                marker_pid=${marker_line#parent_pid=}
+                case "$marker_pid" in
+                    ''|*[!0-9]*|0)
+                        fail "unrecognized uninstall residue was preserved: $residue"
+                        ;;
+                esac
+                ;;
+            *) fail "unrecognized uninstall residue was preserved: $residue" ;;
+        esac
+        [ "$(wc -l < "$staged_root/uninstall.pending" | tr -d '[:space:]')" -eq 1 ] ||
+            fail "unrecognized uninstall residue was preserved: $residue"
         info "Removing validated uninstall residue: $residue"
         rm -rf -- "$residue" ||
             fail "could not remove validated uninstall residue: $residue"
@@ -576,19 +646,23 @@ verify_bootstrap_assets() (
     validate_release_metadata \
         "$staging/release.txt" "$CUP_RELEASE_VERSION" "$CUP_RELEASE_COMMIT"
     cp "$staging/$cup_asset" "$staging/cup-update-helper"
+    chmod 0755 "$staging/$cup_asset" "$staging/cup-update-helper"
+    if [ "$WINDOWS_SHELL_INSTALL" -eq 0 ]; then
+        chmod 0555 "$staging/$uninstall_asset"
+    fi
 )
 
 backup_bootstrap_assets() (
     staging=$1
     cup_bin=$2
 
-    backup_asset binary "$cup_bin" "$staging"
     backup_asset manifest "$PACKAGES_CFG" "$staging"
     backup_asset install-config "$INSTALL_CONFIG" "$staging"
     backup_asset common-checksums "$COMMON_CHECKSUMS" "$staging"
     backup_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging"
     backup_asset uninstall "$UNINSTALL_SCRIPT" "$staging"
     backup_asset update-helper "$UPDATE_HELPER" "$staging"
+    backup_asset binary "$cup_bin" "$staging"
 )
 
 commit_bootstrap_assets() (
@@ -598,7 +672,6 @@ commit_bootstrap_assets() (
     platform=$4
     uninstall_asset=$5
 
-    commit_asset binary "$staging/$cup_asset" "$cup_bin" "$staging"
     commit_asset manifest "$staging/packages.cfg" "$PACKAGES_CFG" "$staging"
     commit_asset install-config "$staging/install.cfg" "$INSTALL_CONFIG" "$staging"
     commit_asset common-checksums \
@@ -607,6 +680,7 @@ commit_bootstrap_assets() (
         "$staging/SHA256SUMS.$platform" "$PLATFORM_CHECKSUMS" "$staging"
     commit_asset uninstall "$staging/$uninstall_asset" "$UNINSTALL_SCRIPT" "$staging"
     commit_asset update-helper "$staging/cup-update-helper" "$UPDATE_HELPER" "$staging"
+    commit_asset binary "$staging/$cup_asset" "$cup_bin" "$staging"
 )
 
 install_assets() {
@@ -643,13 +717,13 @@ install_assets() {
     rollback() {
         if [ "$committed" -eq 0 ] && [ -d "$staging" ]; then
             recovery_failed=0
-            rollback_asset binary "$cup_bin" "$staging" || recovery_failed=1
             rollback_asset manifest "$PACKAGES_CFG" "$staging" || recovery_failed=1
             rollback_asset install-config "$INSTALL_CONFIG" "$staging" || recovery_failed=1
             rollback_asset common-checksums "$COMMON_CHECKSUMS" "$staging" || recovery_failed=1
             rollback_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging" || recovery_failed=1
             rollback_asset uninstall "$UNINSTALL_SCRIPT" "$staging" || recovery_failed=1
             rollback_asset update-helper "$UPDATE_HELPER" "$staging" || recovery_failed=1
+            rollback_asset binary "$cup_bin" "$staging" || recovery_failed=1
             restore_permissions || recovery_failed=1
             if [ "$recovery_failed" -eq 0 ]; then
                 rm -rf -- "$staging"
@@ -669,15 +743,21 @@ install_assets() {
         "$staging" "$cup_asset" "$cup_bin" "$platform" "$uninstall_asset"
 
     chmod 0755 "$cup_bin"
-    restore_permissions
+    restore_permissions 1 || fail "installed bootstrap assets are incomplete or unsafe"
     if [ -e "$UNINSTALL_MARKER" ] || [ -L "$UNINSTALL_MARKER" ]; then
         rm -f -- "$UNINSTALL_MARKER" ||
             fail "failed to remove stale uninstall marker: $UNINSTALL_MARKER"
     fi
 
+    : > "$staging/committed" ||
+        fail "could not record completed bootstrap installation"
     committed=1
     trap - EXIT HUP INT TERM
-    rm -rf -- "$staging"
+    if ! rm -rf -- "$staging"; then
+        printf '%s\n' \
+            "Warning: cup was installed, but completed bootstrap staging could not be removed." \
+            >&2
+    fi
 
     info "cup installed successfully."
     info "Binary:    $cup_bin"
@@ -685,7 +765,6 @@ install_assets() {
     info "Install configuration: $INSTALL_CONFIG"
     info "Checksums: $COMMON_CHECKSUMS"
     info "           $PLATFORM_CHECKSUMS"
-    info "Update helper: $UPDATE_HELPER"
     info "Uninstall: $UNINSTALL_SCRIPT"
     offer_path_update
     if [ "$CUP_AVAILABLE_IN_PATH" -eq 1 ]; then

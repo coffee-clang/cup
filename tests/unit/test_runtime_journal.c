@@ -1,20 +1,20 @@
-#define _POSIX_C_SOURCE 200809L
 /* Exercises classification of the shared physical runtime journal. */
 
 #include "runtime_journal.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
  * counters record the calls made by production code.
  */
 
-static char journal_path[] = "/tmp/cup-runtime-journal-test-XXXXXX";
+static char journal_root[CUP_TEST_TEMP_PATH_SIZE];
+static char journal_path[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -23,15 +23,18 @@ static CupError buffer_write_result(int written, size_t size) {
 }
 
 void setUp(void) {
-    int fd = mkstemp(journal_path);
-    TEST_ASSERT_TRUE(fd >= 0);
-    TEST_ASSERT_EQUAL_INT(0, close(fd));
-    TEST_ASSERT_EQUAL_INT(0, unlink(journal_path));
+    int written;
+
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        journal_root, sizeof(journal_root), "cup-runtime-journal-test"));
+    written = snprintf(journal_path, sizeof(journal_path), "%s/transaction.txt", journal_root);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(journal_path));
 }
 
 void tearDown(void) {
-    (void)unlink(journal_path);
-    strcpy(journal_path, "/tmp/cup-runtime-journal-test-XXXXXX");
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(journal_root));
+    journal_root[0] = '\0';
+    journal_path[0] = '\0';
 }
 
 /*
@@ -83,7 +86,7 @@ static void test_rejects_invalid(void) {
     write_journal("operation=install\noperation=remove\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_detect(&kind));
 
-    write_journal("format=1\noperation=self-update\ntemporary_name=x\n");
+    write_journal("format=1\noperation=unknown-operation\ntemporary_name=x\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_detect(&kind));
 
     write_journal("format=1\ntemporary_name=x\n");

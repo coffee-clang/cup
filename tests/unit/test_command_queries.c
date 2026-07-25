@@ -18,11 +18,11 @@
 #include "state.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
@@ -164,15 +164,15 @@ static char *capture_result(CupError (*operation)(void), CupError *result) {
 
     TEST_ASSERT_NOT_NULL(capture);
     TEST_ASSERT_EQUAL_INT(0, fflush(stdout));
-    saved = dup(STDOUT_FILENO);
+    saved = test_dup_fd(TEST_PLATFORM_STDOUT_FD);
     TEST_ASSERT_TRUE(saved >= 0);
-    TEST_ASSERT_TRUE(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+    TEST_ASSERT_TRUE(test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDOUT_FD) >= 0);
 
     *result = operation();
 
     capture_flush_result = fflush(stdout);
-    restore_result = dup2(saved, STDOUT_FILENO);
-    close_result = close(saved);
+    restore_result = test_dup2_fd(saved, TEST_PLATFORM_STDOUT_FD);
+    close_result = test_close_fd(saved);
     TEST_ASSERT_EQUAL_INT(0, capture_flush_result);
     TEST_ASSERT_TRUE(restore_result >= 0);
     TEST_ASSERT_EQUAL_INT(0, close_result);

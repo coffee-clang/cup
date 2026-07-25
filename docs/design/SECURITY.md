@@ -13,11 +13,11 @@ Validation occurs in three places:
 release pipeline
   protects the asset set before publication
 
-CUP asset installer
+cup asset installer
   protects the initial executable and configuration before installation
 
 cup runtime
-  protects metadata, component packages and CUP-update assets before use
+  protects metadata, component packages and cup-update assets before use
 ```
 
 Some values are checked more than once. This is defense in depth at distinct
@@ -132,7 +132,7 @@ fails extraction or package validation, it is discarded and fetched once from
 the network. The retry distinguishes local cache corruption from a consistently
 invalid published package.
 
-Maximum download sizes are defined for metadata, CUP asset binaries and package
+Maximum download sizes are defined for metadata, cup asset binaries and package
 archives. The write callback refuses to exceed the selected limit even when a
 server omits or lies about `Content-Length`.
 
@@ -187,7 +187,7 @@ and refuses linked parents. Windows uses wide APIs, explicit reparse-point
 classification and long-path prefixes. This prevents a canonical package-level
 link from redirecting validation or cleanup outside `.cup`.
 
-The CUP root is private to its owner. POSIX enforces owner-only permissions;
+The cup root is private to its owner. POSIX enforces owner-only permissions;
 Windows uses a protected DACL limited to the current user, Local System and
 Administrators. `doctor` reports ownership or permission drift.
 
@@ -202,9 +202,9 @@ files within the package. Metadata is protected read-only after installation.
 `cup` does not repair individual metadata fields; an invalid package is replaced
 or quarantined as a whole.
 
-## CUP assets
+## cup assets
 
-The installed CUP asset generation is checked against:
+The installed cup asset generation is checked against:
 
 ```text
 SHA256SUMS.common
@@ -213,21 +213,21 @@ SHA256SUMS.<host>
 
 `SHA256SUMS.common` contains exactly `packages.cfg`, `install.cfg`, `install.sh`
 and `install.ps1`. The installers verify their delegated counterpart before
-execution, while CUP consumes the configuration records required for its asset
+execution, while cup consumes the configuration records required for its asset
 generation. The platform checksum file
 contains the executable, uninstall helper and `release.txt` records for that
-release generation. The CUP asset inspection verifies the catalog, installation policy, executable
+release generation. The cup asset inspection verifies the catalog, installation policy, executable
 and uninstall helper against those sets; `release.txt` is consumed during
-installer and CUP-update staging rather than retained as mutable local state.
+installer and cup-update staging rather than retained as mutable local state.
 `doctor` reports missing or altered files and permissions. An official `repair`
 can refresh checksum files, the catalog and the uninstall helper from its own
 immutable release. On both POSIX and Windows it never removes or replaces the
 canonical `cup` or `cup.exe` executable used by the current installation. A
 missing or altered executable must be recovered by the official installer, or
-by the detached update helper when a valid interrupted-update journal owns the
-rollback. A development build cannot restore official CUP assets.
+by the detached update helper when a valid interrupted-update journal assigns
+the rollback to it. A development build cannot restore official cup assets.
 
-## CUP-update assets
+## cup-update assets
 
 The `latest` alias is used only to discover `release.txt`. After a concrete
 version is known, every replacement file comes from the immutable `vX.Y.Z`
@@ -239,10 +239,10 @@ executable, uninstall helper and release metadata. The common set verifies
 accepted, so checksum-valid but structurally invalid policy cannot become the
 active generation.
 
-The detached helper replaces all six persistent CUP assets as one
+The detached helper replaces all six persistent cup assets as one
 recoverable generation. A mixed or partially published set is rejected before
 a journal is created. The transactional replacement is described in
-[TRANSACTIONS](TRANSACTIONS.md#cup-update-transaction).
+[TRANSACTIONS](TRANSACTIONS.md#cup-update-protocol).
 
 ## Release publication
 
@@ -290,7 +290,7 @@ extension.
 
 ## Implementation and verification
 
-Security-boundary ownership is listed in [ARCHITECTURE](ARCHITECTURE.md).
+Security-boundary responsibilities are listed in [ARCHITECTURE](ARCHITECTURE.md).
 Runtime, integration and release-contract verification are described in
 [TESTING](../development/TESTING.md).
 

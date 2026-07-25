@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Owns scoped install preferences, profiles and explicit toolchains.
+# Purpose: Exercises scoped install preferences, profiles and explicit toolchains.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

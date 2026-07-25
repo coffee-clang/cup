@@ -1,5 +1,5 @@
 /*
- * Persists, validates and recovers the deferred CUP update protocol. Package transactions remain
+ * Persists, validates and recovers the deferred cup update protocol. Package transactions remain
  * a separate journal owner.
  */
 
@@ -158,7 +158,7 @@ CupError cup_update_journal_begin(const char *temporary_path,
         return CUP_ERR_TRANSACTION;
     }
     if (exists) {
-        fprintf(stderr, "Error: an interrupted CUP operation must be repaired first.\n");
+        fprintf(stderr, "Error: an interrupted cup operation must be repaired first.\n");
         return CUP_ERR_TRANSACTION;
     }
 
@@ -490,34 +490,40 @@ CupError cup_update_result_report(void) {
     CupUpdateResult result;
     CupError err = cup_update_result_load(&result);
     if (err != CUP_OK) {
-        fprintf(stderr, "Warning: the previous CUP update result is invalid. Run 'cup doctor'.\n");
+        fprintf(stderr, "Warning: the previous cup update result is invalid. Run 'cup doctor'.\n");
         return err;
     }
     if (result.status == CUP_UPDATE_RESULT_SUCCESS) {
-        printf("Info: the previous CUP update completed successfully at version %s.\n",
+        printf("Info: the previous cup update completed successfully at version %s.\n",
                result.version);
     } else if (result.status == CUP_UPDATE_RESULT_FAILED) {
         fprintf(stderr,
-                "Warning: the previous CUP update failed (error %d). Run 'cup doctor' and 'cup "
+                "Warning: the previous cup update failed (error %d). Run 'cup doctor' and 'cup "
                 "repair'.\n",
                 result.error_code);
     }
     return CUP_OK;
 }
 
-/* CUP update recovery. */
+/* cup update recovery. */
 static CupError set_asset_permissions(const CupUpdateAsset *asset) {
     CupError err;
 
     if (asset->executable) {
         err = system_set_executable(asset->destination, 1);
         if (err != CUP_OK) {
+            fprintf(stderr,
+                    "Error: could not restore executable policy for cup update asset '%s'.\n",
+                    asset->destination);
             return CUP_ERR_TRANSACTION;
         }
     }
     if (asset->read_only) {
         err = system_set_read_only(asset->destination, 1);
         if (err != CUP_OK) {
+            fprintf(stderr,
+                    "Error: could not restore read-only policy for cup update asset '%s'.\n",
+                    asset->destination);
             return CUP_ERR_TRANSACTION;
         }
     }
@@ -626,7 +632,8 @@ static CupError restore_cup_update_asset(const char *staging,
 }
 
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
-                                    CupUpdateRecoveryMode mode) {
+                                    CupUpdateRecoveryMode mode,
+                                    CupUpdateRecoveryResult *result) {
     CupAssetsInspection inspection;
     CupError err;
     char staging[MAX_PATH_LEN];
@@ -645,6 +652,9 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
         (mode != CUP_UPDATE_RECOVER_REPLACE_BINARY &&
          mode != CUP_UPDATE_RECOVER_PRESERVE_BINARY)) {
         return CUP_ERR_INVALID_INPUT;
+    }
+    if (result != NULL) {
+        *result = CUP_UPDATE_RECOVERY_NONE;
     }
 
     /* Resolve canonical destinations and inspect the durable commit marker first. */
@@ -679,7 +689,8 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
 
     /* Backups are restored in a fixed order when the generation did not commit cleanly. */
     assets[0] = (CupUpdateAsset){CUP_UPDATE_BINARY_OLD, binary, 1, 0};
-    assets[1] = (CupUpdateAsset){CUP_UPDATE_UNINSTALL_OLD, uninstall, 1, 1};
+    assets[1] = (CupUpdateAsset){
+        CUP_UPDATE_UNINSTALL_OLD, uninstall, CUP_UNINSTALL_EXECUTABLE, 1};
     assets[2] = (CupUpdateAsset){CUP_UPDATE_PLATFORM_CHECKSUMS_OLD, platform_checksums, 0, 1};
     assets[3] = (CupUpdateAsset){CUP_UPDATE_PACKAGES_OLD, catalog, 0, 1};
     assets[4] = (CupUpdateAsset){CUP_UPDATE_INSTALL_POLICY_OLD, install_policy, 0, 1};
@@ -690,13 +701,19 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
         err = cup_assets_inspect(&inspection);
         if (err == CUP_OK && cup_assets_installed_is_valid(&inspection)) {
             err = cup_update_journal_clear();
-            if (err == CUP_OK) {
-                err = filesystem_remove_tree(staging);
+            if (err != CUP_OK) {
+                return err;
             }
-            if (err == CUP_OK) {
-                printf("Completed interrupted cup update transaction.\n");
+            if (filesystem_remove_tree(staging) != CUP_OK) {
+                fprintf(stderr,
+                        "Warning: the cup update completed, but stale update staging could not "
+                        "be removed. Run 'cup repair'.\n");
             }
-            return err;
+            if (result != NULL) {
+                *result = CUP_UPDATE_RECOVERY_FINALIZED;
+            }
+            printf("Completed interrupted cup update transaction.\n");
+            return CUP_OK;
         }
     } else if (marker_kind != SYSTEM_PATH_MISSING) {
         return CUP_ERR_TRANSACTION;
@@ -713,13 +730,17 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
         return CUP_ERR_TRANSACTION;
     }
 
-    /* Without a valid committed generation, restore every original asset and verify the result. */
-    for (i = 0; i < sizeof(assets) / sizeof(assets[0]); ++i) {
-        err = restore_cup_update_asset(
-            staging, &assets[i], mode == CUP_UPDATE_RECOVER_PRESERVE_BINARY && i == 0);
+    /* Without a valid committed generation, restore supporting assets first and the binary last. */
+    for (i = 1; i < sizeof(assets) / sizeof(assets[0]); ++i) {
+        err = restore_cup_update_asset(staging, &assets[i], 0);
         if (err != CUP_OK) {
             return err;
         }
+    }
+    err = restore_cup_update_asset(
+        staging, &assets[0], mode == CUP_UPDATE_RECOVER_PRESERVE_BINARY);
+    if (err != CUP_OK) {
+        return err;
     }
 
     err = cup_assets_inspect(&inspection);
@@ -728,11 +749,17 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
     }
 
     err = cup_update_journal_clear();
-    if (err == CUP_OK) {
-        err = filesystem_remove_tree(staging);
+    if (err != CUP_OK) {
+        return err;
     }
-    if (err == CUP_OK) {
-        printf("Rolled back interrupted cup update transaction.\n");
+    if (filesystem_remove_tree(staging) != CUP_OK) {
+        fprintf(stderr,
+                "Warning: the cup update was rolled back, but stale update staging could not "
+                "be removed. Run 'cup repair'.\n");
     }
-    return err;
+    if (result != NULL) {
+        *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
+    }
+    printf("Rolled back interrupted cup update transaction.\n");
+    return CUP_OK;
 }

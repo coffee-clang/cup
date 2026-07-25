@@ -18,8 +18,8 @@ package validation and local cache
 installation state and default selection
 managed wrappers
 transaction journals and recovery
-doctor, repair, CUP update and uninstall
-CUP asset installers and release workflows
+doctor, repair, cup update and uninstall
+cup asset installers and release workflows
 ```
 
 It does not build component tools during installation. Complete tool packages
@@ -109,8 +109,8 @@ system-wide toolchain directories
 a privileged service
 ```
 
-This choice makes ownership and recovery local to one user and allows the same
-state model on all supported systems.
+This choice keeps data and recovery local to one user and allows the same state
+model on all supported systems.
 
 ## PackageCatalog-driven installation
 
@@ -186,19 +186,19 @@ The canonical filesystem, state rules and entry-point naming are specified in
 
 ## PackageTransaction model
 
-Install, remove and CUP update can be interrupted after filesystem changes but
+Install, remove and cup update can be interrupted after filesystem changes but
 before the caller receives a final result. A persistent journal records the
 operation and temporary path before the first irreversible-looking step.
 
 The state replacement is the commit point for package installation and removal.
-CUP update has an explicit committed marker because its detached helper
-replaces CUP assets after the original process exits.
+cup update has an explicit committed marker because its detached helper
+replaces cup assets after the original process exits.
 
 The complete model is in [TRANSACTIONS](TRANSACTIONS.md).
 
 ## Portable and platform-specific layers
 
-Portable C owns domain and state-machine decisions. `system.h` defines the
+Portable C implements domain and state-machine decisions. `system.h` defines the
 platform contract for:
 
 ```text
@@ -221,7 +221,7 @@ Platform differences are documented in [PLATFORMS](PLATFORMS.md).
 ## C and script boundary
 
 A rule belongs in C when it is part of runtime semantics or must remain
-identical on all platforms. C owns:
+identical on all platforms. C is responsible for:
 
 - command parsing and domain validation;
 - catalog, state, journal and metadata parsing;
@@ -230,11 +230,12 @@ identical on all platforms. C owns:
 - commit, rollback and recovery decisions;
 - selection of canonical paths and assets.
 
-Scripts own operations outside the in-process runtime state machine:
+Scripts are responsible for operations outside the in-process runtime state
+machine:
 
 - building pinned third-party dependencies;
 - maintaining generated CA sources;
-- initial CUP asset installation;
+- initial cup asset installation;
 - detached deletion or replacement after `cup` exits;
 - CI runner preparation;
 - release candidate assembly and publication.
@@ -285,7 +286,7 @@ state.c
   installed and active package identities
 
 package_transaction.c / cup_update_journal.c / runtime_journal.c
-  separate package and CUP-update journals over the shared physical boundary
+  separate package and cup-update journals over the shared physical boundary
 
 wrappers.c
   deterministic wrapper plans derived from active package state
@@ -304,7 +305,7 @@ package.c / installed_package.c / package_metadata.c
   package identity, installed-package preconditions and metadata
 
 download.c / package_cache.c / checksum.c / sha256.c
-  HTTPS transfer, cache ownership, verification and SHA-256
+  HTTPS transfer, cache management, verification and SHA-256
 
 package_archive.c / package_extract.c
   archive preflight and safe extraction
@@ -317,19 +318,19 @@ system_posix.c / system_windows.c
   policy-neutral native operating-system primitives
 
 cup_update_helper.c
-  platform-specific detached replacement of CUP assets
+  platform-specific detached replacement of cup assets
 
 path.c / text.c / platform.c / interrupt.c
   focused parsing, path, platform and interrupt helpers
 
 cup_assets.c
-  installed CUP asset inspection and checksum verification
+  installed cup asset inspection and checksum verification
 ```
 
 ## Module granularity
 
 Files are divided by stable contracts rather than by a target line count. A
-separate module is useful when it owns a lifecycle, persistence rule, platform
+separate module is useful when it defines a lifecycle, persistence rule, platform
 boundary or independently reusable API. Splitting private helpers merely to
 shorten a file would instead expose state and increase coupling.
 
@@ -337,10 +338,10 @@ The larger modules are intentionally cohesive:
 
 - `system_posix.c` and `system_windows.c` each implement the complete native
   side of `system.h`;
-- `package_install.c` owns the reusable transactional installation operation;
-- `command_repair.c` owns one ordered reconciliation process and its private context;
+- `package_install.c` contains the reusable transactional installation operation;
+- `command_repair.c` contains one ordered reconciliation process and its private context;
 - the small `command_search.c`, `command_list.c`, `command_default.c`,
-  `command_info.c` and `command_inspect.c` handlers each own one public query.
+  `command_info.c` and `command_inspect.c` handlers each implement one public query.
 
 Conversely, `package_selector.c`, `platform.c` and `interrupt.c` remain small because each
 has a narrow contract used across otherwise unrelated flows. Combining them
@@ -362,7 +363,7 @@ DURABLE      replacement and required parent metadata were synchronized
 ```
 
 Callers use this state to decide whether rollback is valid. See
-[TRANSACTIONS](TRANSACTIONS.md#commit-state).
+[TRANSACTIONS](TRANSACTIONS.md#commit-state-errors).
 
 ## Design boundaries
 
@@ -375,14 +376,13 @@ cross-package dependency solving
 one merged global sysroot
 a configurable cup root
 automatic PATH cleanup
-nightly channels
 automatic VERSION increments
 signature infrastructure beyond HTTPS and published SHA-256 files
 ```
 
 These are not accidental omissions. They keep the installation model small,
 inspectable and recoverable. A future extension should be added only when its
-ownership and persistent contract are clear.
+responsibility and persistent contract are clear.
 
 ## Related documents
 

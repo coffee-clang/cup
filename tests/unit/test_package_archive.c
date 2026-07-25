@@ -13,12 +13,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-package-archive-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -215,12 +213,14 @@ static void test_payload_required(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-package-archive-test"));
     UNITY_BEGIN();
     RUN_TEST(test_format_parser);
     RUN_TEST(test_reader_contract);
     RUN_TEST(test_real_formats);
     RUN_TEST(test_format_mismatch);
     RUN_TEST(test_payload_required);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
     return UNITY_END();
 }

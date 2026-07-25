@@ -1,5 +1,5 @@
 /*
- * Runs the ordered deterministic reconciliation pipeline: transaction recovery, CUP asset
+ * Runs the ordered deterministic reconciliation pipeline: transaction recovery, cup asset
  * restoration, package scanning, state rebuilding, quarantine, cleanup and selector-point
  * repair.
  */
@@ -65,7 +65,7 @@ static CupError download_asset(const char *asset_name, char *path, size_t path_s
     (void)path;
     (void)path_size;
     fprintf(stderr,
-            "Error: a development build cannot restore official CUP assets. "
+            "Error: a development build cannot restore official cup assets. "
             "Run repair with the installed official cup binary or "
             "run the official installer.\n");
     return CUP_ERR_NOT_AVAILABLE;
@@ -322,7 +322,7 @@ static CupError refresh_platform_checksums(void) {
     return repair_checksum_file(path, name, assets, sizeof(assets) / sizeof(assets[0]), 1);
 }
 
-/* Verified CUP asset restoration. */
+/* Verified cup asset restoration. */
 static CupError repair_package_catalog(void) {
     PackageCatalog catalog;
     CupError err;
@@ -541,20 +541,16 @@ static CupError repair_uninstall_script(void) {
         if (err != CUP_OK) {
             return err;
         }
+        RepairAssetFlags flags = REPAIR_ASSET_READ_ONLY;
+
         printf("Restoring uninstall script.\n");
-#if defined(_WIN32)
-        return restore_asset(
-            script_path, CUP_UNINSTALL_FILENAME, checksums_path, REPAIR_ASSET_READ_ONLY);
-#else
-        return restore_asset(script_path,
-                             CUP_UNINSTALL_FILENAME,
-                             checksums_path,
-                             REPAIR_ASSET_EXECUTABLE | REPAIR_ASSET_READ_ONLY);
-#endif
+        if (CUP_UNINSTALL_EXECUTABLE) {
+            flags = (RepairAssetFlags)(flags | REPAIR_ASSET_EXECUTABLE);
+        }
+        return restore_asset(script_path, CUP_UNINSTALL_FILENAME, checksums_path, flags);
     }
 
-#if !defined(_WIN32)
-    {
+    if (CUP_UNINSTALL_EXECUTABLE) {
         int is_executable;
 
         err = system_is_executable(script_path, &is_executable);
@@ -569,7 +565,6 @@ static CupError repair_uninstall_script(void) {
             printf("Restored executable permissions on uninstall script.\n");
         }
     }
-#endif
 
     err = system_is_read_only(script_path, &is_read_only);
     if (err != CUP_OK) {
@@ -854,7 +849,8 @@ static CupError repair_pending_transaction(RepairContext *context) {
         err = cup_update_journal_load(&context->cup_update_journal, &update_status);
         if (err == CUP_OK && update_status == CUP_UPDATE_JOURNAL_LOADED) {
             err = cup_update_journal_recover(&context->cup_update_journal,
-                                             CUP_UPDATE_RECOVER_PRESERVE_BINARY);
+                                             CUP_UPDATE_RECOVER_PRESERVE_BINARY,
+                                             NULL);
         } else {
             err = CUP_ERR_TRANSACTION;
         }
@@ -876,7 +872,7 @@ static CupError repair_cup_assets(void) {
     }
     if (!cup_assets_has_installed_assets(&inspection) &&
         cup_assets_development_is_valid(&inspection)) {
-        printf("Using development CUP assets from the repository.\n");
+        printf("Using development cup assets from the repository.\n");
         return CUP_OK;
     }
 

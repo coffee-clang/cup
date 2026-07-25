@@ -1,12 +1,13 @@
 /*
- * Test focus: Exercises recursive composite filesystem behavior against the concrete POSIX
- * storage stack.
+ * Test focus: Exercises portable composite filesystem behavior against the selected native
+ * storage stack. Native link traversal remains in each system implementation suite.
  */
 
 #include "error.h"
 #include "filesystem.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 void setUp(void);
 void tearDown(void);
@@ -14,12 +15,10 @@ void tearDown(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-filesystem-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -54,7 +53,11 @@ static void test_tree_lifecycle(void) {
     TEST_ASSERT_TRUE(snprintf(file_path, sizeof(file_path), "%s/file", nested) > 0);
     write_text(file_path, "data");
     TEST_ASSERT_TRUE(snprintf(link_path, sizeof(link_path), "%s/link", root) > 0);
+#if defined(_WIN32)
+    write_text(link_path, "link-fixture");
+#else
     TEST_ASSERT_EQUAL_INT(0, symlink("nested/file", link_path));
+#endif
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(root));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(root, &exists));
@@ -70,6 +73,7 @@ static void test_tree_lifecycle(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_remove_tree(""));
 }
 
+#if !defined(_WIN32)
 static void test_remove_symlink_tree(void) {
     char root[1024];
     char external[1024];
@@ -93,6 +97,7 @@ static void test_remove_symlink_tree(void) {
     TEST_ASSERT_TRUE(exists);
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(external));
 }
+#endif
 
 static void test_count_and_clear(void) {
     char root[1024];
@@ -169,9 +174,13 @@ static void test_invalid_backup(void) {
 /* Suite registration. */
 
 void register_filesystem_tests(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-filesystem-test"));
     RUN_TEST(test_tree_lifecycle);
+#if !defined(_WIN32)
     RUN_TEST(test_remove_symlink_tree);
+#endif
     RUN_TEST(test_count_and_clear);
     RUN_TEST(test_invalid_backup);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
 }

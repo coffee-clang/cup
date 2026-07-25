@@ -4,6 +4,7 @@
  */
 
 #include "cup_assets.h"
+#include "constants.h"
 #include "download.h"
 #include "checksum.h"
 #include "commands.h"
@@ -324,9 +325,13 @@ CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStat
 }
 
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
-                                    CupUpdateRecoveryMode mode) {
+                                    CupUpdateRecoveryMode mode,
+                                    CupUpdateRecoveryResult *result) {
     (void)journal;
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_PRESERVE_BINARY, mode);
+    if (result != NULL) {
+        *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
+    }
     return recover_result;
 }
 
@@ -611,11 +616,13 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
-    return buffer_write_result(snprintf(buffer, size, "/tmp/cup"), size);
+    return buffer_write_result(
+        snprintf(buffer, size, "/tmp/%s", CUP_BINARY_FILENAME), size);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return buffer_write_result(snprintf(buffer, size, "/tmp/uninstall.sh"), size);
+    return buffer_write_result(
+        snprintf(buffer, size, "/tmp/%s", CUP_UNINSTALL_FILENAME), size);
 }
 
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
@@ -627,7 +634,7 @@ CupError layout_get_install_policy_path(char *buffer, size_t size) {
 }
 
 CupError cup_assets_platform_checksums_name(char *name, size_t size) {
-    return buffer_write_result(snprintf(name, size, "SHA256SUMS-linux-x64"), size);
+    return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
 }
 
 CupError cup_assets_binary_asset_name(char *name, size_t size) {
@@ -635,7 +642,14 @@ CupError cup_assets_binary_asset_name(char *name, size_t size) {
 }
 
 CupError system_is_regular_file(const char *path, int *is_regular) {
-    if (strcmp(path, "/tmp/cup") == 0) {
+    char binary_path[MAX_PATH_LEN];
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        buffer_write_result(
+            snprintf(binary_path, sizeof(binary_path), "/tmp/%s", CUP_BINARY_FILENAME),
+            sizeof(binary_path)));
+    if (strcmp(path, binary_path) == 0) {
         *is_regular = binary_regular;
         return CUP_OK;
     }
@@ -811,8 +825,15 @@ CupError system_move_path(const char *source,
 CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *commit_state) {
+    char binary_path[MAX_PATH_LEN];
+
     (void)source;
-    if (strcmp(destination, "/tmp/cup") == 0) {
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        buffer_write_result(
+            snprintf(binary_path, sizeof(binary_path), "/tmp/%s", CUP_BINARY_FILENAME),
+            sizeof(binary_path)));
+    if (strcmp(destination, binary_path) == 0) {
         binary_replace_calls++;
     }
     if (install_policy_replace_override && strcmp(destination, "/tmp/install.cfg") == 0) {
@@ -924,7 +945,7 @@ static void test_asset_permissions(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(set_read_only_calls >= 3);
-    TEST_ASSERT_TRUE(set_executable_calls >= 2);
+    TEST_ASSERT_TRUE(set_executable_calls >= (1 + CUP_UNINSTALL_EXECUTABLE));
 }
 
 static void test_cup_assets_restores(void) {
@@ -935,7 +956,7 @@ static void test_cup_assets_restores(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(fetch_calls >= 6);
     TEST_ASSERT_TRUE(set_read_only_calls >= 4);
-    TEST_ASSERT_TRUE(set_executable_calls >= 1);
+    TEST_ASSERT_TRUE(set_executable_calls >= CUP_UNINSTALL_EXECUTABLE);
 }
 
 static void test_binary_preserved_after_checksum_refresh(void) {

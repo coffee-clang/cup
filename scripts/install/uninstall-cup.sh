@@ -16,6 +16,11 @@ fail() {
 
 # Refuse any request that does not identify this exact helper and canonical root.
 [ -n "${HOME:-}" ] || fail "HOME is not set"
+case "$HOME" in
+    /) fail "HOME must not be the filesystem root" ;;
+    /*) ;;
+    *) fail "HOME must contain an absolute path" ;;
+esac
 [ "$CUP_ROOT" = "$EXPECTED_ROOT" ] || fail "refusing to remove a non-canonical cup root"
 case "$PARENT_PID" in
     ''|*[!0-9]*)
@@ -25,6 +30,21 @@ esac
 [ "$PARENT_PID" -gt 0 ] || fail "invalid parent process id"
 [ -n "$SELF_PATH" ] && [ "$SELF_PATH" = "$0" ] ||
     fail "self path does not match the running uninstall helper"
+[ -f "$SELF_PATH" ] && [ ! -L "$SELF_PATH" ] ||
+    fail "the running uninstall helper is not a regular file"
+if [ -e "$CUP_ROOT" ] || [ -L "$CUP_ROOT" ]; then
+    [ -d "$CUP_ROOT" ] && [ ! -L "$CUP_ROOT" ] ||
+        fail "canonical cup root is not a real directory"
+fi
+UNINSTALL_MARKER="$CUP_ROOT/uninstall.pending"
+[ -f "$UNINSTALL_MARKER" ] && [ ! -L "$UNINSTALL_MARKER" ] ||
+    fail "uninstall marker is missing or invalid"
+marker_line=$(cat "$UNINSTALL_MARKER" 2>/dev/null) ||
+    fail "uninstall marker could not be read"
+[ "$marker_line" = "parent_pid=$PARENT_PID" ] ||
+    fail "uninstall marker does not match the parent process"
+[ "$(wc -l < "$UNINSTALL_MARKER" | tr -d '[:space:]')" -eq 1 ] ||
+    fail "uninstall marker is invalid"
 
 # The installed process must release its executable and root before detachment.
 while kill -0 "$PARENT_PID" 2>/dev/null; do

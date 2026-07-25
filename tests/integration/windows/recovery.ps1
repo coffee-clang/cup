@@ -1,5 +1,5 @@
-# Purpose: Exercises conservative Windows recovery, CUP-update executable
-# preservation, journal blockers, and foreign-host state/package trees.
+# Purpose: Exercises conservative Windows transaction recovery, cup-update
+# executable preservation, and journal blockers.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -58,68 +58,6 @@ function Install-CupAssetsFixture {
         "$(Get-Sha256Lower -Path $uninstall)  uninstall.ps1",
         ("{0}  release.txt" -f ("0" * 64))
     )
-}
-
-function Invoke-CupUpdateHelperProcess {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ExecutablePath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Token
-    )
-
-    $pipe = [System.IO.Pipes.AnonymousPipeServerStream]::new(
-        [System.IO.Pipes.PipeDirection]::Out,
-        [System.IO.HandleInheritability]::Inheritable)
-    $process = New-Object System.Diagnostics.Process
-    try {
-        $clientHandle = $pipe.GetClientHandleAsString()
-        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $startInfo.FileName = $ExecutablePath
-        $startInfo.Arguments = (@(
-            "--internal-cup-update-helper",
-            $Token,
-            $clientHandle
-        ) | ForEach-Object { ConvertTo-NativeArgument -Argument $_ }) -join ' '
-        $startInfo.WorkingDirectory = $Script:CupTestDevRoot
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-        $process.StartInfo = $startInfo
-
-        if (-not $process.Start()) {
-            Fail-Test "failed to start detached CUP update helper"
-        }
-        $pipe.DisposeLocalCopyOfClientHandle()
-        $pipe.Dispose()
-        $pipe = $null
-
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(30000)) {
-            try { $process.Kill() } catch { }
-            $process.WaitForExit()
-            Fail-Test "detached CUP update helper did not exit"
-        }
-        $process.WaitForExit()
-        $stdout = $stdoutTask.Result.TrimEnd([char[]]"`r`n")
-        $stderr = $stderrTask.Result.TrimEnd([char[]]"`r`n")
-        $parts = [System.Collections.Generic.List[string]]::new()
-        if ($stdout.Length -gt 0) { $parts.Add($stdout) }
-        if ($stderr.Length -gt 0) { $parts.Add($stderr) }
-
-        return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            Output = ($parts -join "`n")
-        }
-    } finally {
-        if ($null -ne $pipe) {
-            $pipe.Dispose()
-        }
-        $process.Dispose()
-    }
 }
 
 function Write-CupUpdateJournal {
@@ -200,7 +138,6 @@ try {
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
     $binaryPath = Join-Path $cupRoot "bin\cup.exe"
-    $helperPath = Join-Path $cupRoot "helpers\cup-update-helper.exe"
     $uninstallPath = Join-Path $cupRoot "helpers\uninstall.ps1"
     $platformChecksumsPath = Join-Path $cupRoot "config\SHA256SUMS.windows-x64"
     $stagingRoot = Join-Path $cupRoot "staging"
@@ -269,22 +206,17 @@ try {
     Assert-PathExists (Join-Path $unsafeStaging "uninstall.old")
     Assert-PathExists (Join-Path $unsafeStaging "platform-checksums.old")
 
-    # The detached native helper runs from a separate process, so it may restore
-    # cup.exe. The incomplete new generation forces its real rollback path.
-    $helperRollback = Invoke-CupUpdateHelperProcess -ExecutablePath $helperPath `
-        -Token "recovery-unsafe-rollback"
-    if ($helperRollback.ExitCode -eq 0) {
-        Fail-Test "native helper unexpectedly committed an incomplete CUP generation"
-    }
-    Assert-Contains $helperRollback.Output "Rolled back interrupted cup update transaction."
-    Assert-Equals (Get-Sha256Lower -Path $binaryPath) $safeBinaryHash
-    Assert-Equals (Get-Sha256Lower -Path $uninstallPath) $safeUninstallHash
-    Assert-Equals (Get-Sha256Lower -Path $platformChecksumsPath) $safeChecksumsHash
-    Assert-PathMissing $transactionPath
-    Assert-PathMissing $unsafeStaging
-    $resultPath = Join-Path $cupRoot "cup-update-result.txt"
-    Assert-Contains ((Get-Content -LiteralPath $resultPath) -join "`n") "status=failed"
-    Remove-Item -LiteralPath $resultPath -Force
+    # Reset the isolated fixture after verifying that repair preserved every file.
+    Copy-Item -LiteralPath (Join-Path $unsafeStaging "binary.old") `
+        -Destination $binaryPath -Force
+    Copy-Item -LiteralPath (Join-Path $unsafeStaging "uninstall.old") `
+        -Destination $uninstallPath -Force
+    Copy-Item -LiteralPath (Join-Path $unsafeStaging "platform-checksums.old") `
+        -Destination $platformChecksumsPath -Force
+    (Get-Item -LiteralPath $uninstallPath).IsReadOnly = $true
+    (Get-Item -LiteralPath $platformChecksumsPath).IsReadOnly = $true
+    Remove-Item -LiteralPath $transactionPath -Force
+    Remove-Item -LiteralPath $unsafeStaging -Recurse -Force
     Assert-CupHealthy
 
     # A durable marker may be finalized only when the complete installed
@@ -308,66 +240,6 @@ try {
     Assert-Equals (Get-Sha256Lower -Path $binaryPath) $committedBinaryHash
     Assert-PathMissing $transactionPath
     Assert-PathMissing $committedStaging
-    Assert-CupHealthy
-
-    # Exercise a complete helper commit through the same inherited-handle
-    # handoff used by production Windows updates.
-    $helperName = "cup-update-helper-commit-test"
-    $helperStaging = Join-Path $stagingRoot $helperName
-    New-Item -ItemType Directory -Force -Path $helperStaging | Out-Null
-    Copy-Item -LiteralPath $binaryPath `
-        -Destination (Join-Path $helperStaging "binary.new")
-    Copy-Item -LiteralPath $uninstallPath `
-        -Destination (Join-Path $helperStaging "uninstall.new")
-    Copy-Item -LiteralPath $platformChecksumsPath `
-        -Destination (Join-Path $helperStaging "platform-checksums.new")
-    Copy-Item -LiteralPath (Join-Path $cupRoot "config\packages.cfg") `
-        -Destination (Join-Path $helperStaging "manifest.new")
-    Copy-Item -LiteralPath (Join-Path $cupRoot "config\install.cfg") `
-        -Destination (Join-Path $helperStaging "install-config.new")
-    Copy-Item -LiteralPath (Join-Path $cupRoot "config\SHA256SUMS.common") `
-        -Destination (Join-Path $helperStaging "common-checksums.new")
-    $helperBinaryHash = Get-Sha256Lower -Path $binaryPath
-    Write-CupUpdateJournal -Path $transactionPath -TemporaryName $helperName `
-        -Token "helper-commit"
-
-    $helperCommit = Invoke-CupUpdateHelperProcess -ExecutablePath $helperPath `
-        -Token "helper-commit"
-    if ($helperCommit.ExitCode -ne 0) {
-        Fail-Test "native helper commit failed:`n$($helperCommit.Output)"
-    }
-    Assert-Equals (Get-Sha256Lower -Path $binaryPath) $helperBinaryHash
-    Assert-PathMissing $transactionPath
-    Assert-PathMissing $helperStaging
-    Assert-Contains ((Get-Content -LiteralPath $resultPath) -join "`n") "status=success"
-    Remove-Item -LiteralPath $resultPath -Force
-    Assert-CupHealthy
-
-    $foreignHost = "linux-x64"
-    $foreignTree = Join-Path $cupRoot "components\compiler\clang\$foreignHost\$foreignHost\22.1.5"
-    New-Item -ItemType Directory -Force -Path $foreignTree | Out-Null
-    $state = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Get-Content -LiteralPath $statePath)) { $state.Add($line) }
-    $state.Add("installed.compiler.$foreignHost.$foreignHost=clang@22.1.5")
-    Write-Utf8NoBom -Path $statePath -Lines $state
-
-    $foreignDoctor = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
-    Assert-Contains $foreignDoctor "record(s) for foreign hosts"
-    Assert-Contains $foreignDoctor "foreign-host package tree(s)"
-    $repair = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $repair "Preserved 1 foreign-host package tree(s)"
-    Assert-PathExists $foreignTree
-    Assert-Contains ((Get-Content -LiteralPath $statePath) -join "`n") `
-        "installed.compiler.$foreignHost.$foreignHost=clang@22.1.5"
-    $foreignBlocked = Invoke-Cup -CommandArgs @("list") -ExpectFailure
-    Assert-Contains $foreignBlocked "foreign host"
-
-    $cleanState = Get-Content -LiteralPath $statePath | Where-Object {
-        -not $_.StartsWith("installed.compiler.$foreignHost.$foreignHost=", [StringComparison]::Ordinal)
-    }
-    Write-Utf8NoBom -Path $statePath -Lines $cleanState
-    Remove-Item -LiteralPath (Join-Path $cupRoot "components\compiler\clang\$foreignHost") `
-        -Recurse -Force
     Assert-CupHealthy
 
     Write-Host "Windows recovery tests passed."

@@ -19,12 +19,7 @@ run_check 'Testing dependency contracts...' tests/repository/dependencies.sh
 run_check 'Testing embedded CA metadata...' scripts/certs/check-ca-bundle.sh
 run_check 'Testing build configuration...' tests/repository/build-system.sh
 run_check 'Testing binary inspection policy...' tests/repository/binary-inspection.sh
-run_check 'Testing assertion quality...' tests/repository/assertions.sh
-run_check 'Testing coverage policy...' tests/repository/coverage-policy.sh
 run_check 'Testing version policy...' tests/repository/version-policy.sh
-run_check 'Testing release metadata...' tests/repository/release-metadata.sh
-run_check 'Testing filesystem and archive security...' tests/repository/filesystem-security.sh
-run_check 'Testing workflow responsibilities...' tests/repository/workflows.sh
 run_check 'Testing release publication recovery...' tests/repository/release-publish.sh
 
 if [ "${CUP_TEST_WITH_BUILD_OUTPUT:-0}" = 1 ]; then

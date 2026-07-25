@@ -4,7 +4,7 @@
 updates and selects compilers, linkers, debuggers and related tools without
 requiring administrator privileges or modifying system toolchain directories.
 
-## What CUP provides
+## What cup provides
 
 - verified package downloads over HTTPS;
 - per-host and per-target tool selections;
@@ -15,8 +15,8 @@ requiring administrator privileges or modifying system toolchain directories.
 
 Tool packages are produced separately by
 [`cup-components`](https://github.com/coffee-clang/cup-components). This
-repository contains the CUP CLI, installers, local state management and release
-pipeline.
+repository contains the cup CLI, installers, local state management and release
+assets.
 
 ## Install
 
@@ -32,11 +32,8 @@ curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.
 powershell -NoProfile -ExecutionPolicy Bypass -Command '$installer = Join-Path $env:TEMP "install-cup.ps1"; iwr "https://github.com/coffee-clang/cup/releases/latest/download/install.ps1" -OutFile $installer; & $installer'
 ```
 
-The installer places CUP under `~/.cup` or `%USERPROFILE%\.cup` and verifies the
+The installer places cup under `~/.cup` or `%USERPROFILE%\.cup` and verifies the
 release metadata and SHA-256 checksums before replacing existing assets.
-
-See the [installation guide](docs/user/INSTALLATION.md) for PATH handling,
-reinstallation and uninstall details.
 
 ## Quick start
 
@@ -52,8 +49,6 @@ cup doctor
 ```
 
 Use `cup help` for the command list and `cup help <command>` for detailed usage.
-The complete reference is available in
-[COMMANDS](docs/user/COMMANDS.md).
 
 ## Documentation
 

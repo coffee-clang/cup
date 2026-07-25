@@ -15,7 +15,7 @@ to related contracts where a boundary is crossed.
 
 ## User guide
 
-- [INSTALLATION](user/INSTALLATION.md) explains the CUP asset installers,
+- [INSTALLATION](user/INSTALLATION.md) explains the cup asset installers,
   reinstallation, canonical paths and uninstall behavior.
 - [COMMANDS](user/COMMANDS.md) is the complete CLI reference, including state changes
   and relevant failure conditions.
@@ -34,11 +34,11 @@ to related contracts where a boundary is crossed.
 - [TRANSACTIONS](design/TRANSACTIONS.md) defines journals, commit points, rollback,
   recovery, `doctor`, `repair` and uninstall.
 - [SECURITY](design/SECURITY.md) collects the HTTPS, checksum, archive, path and
-  CUP assets integrity rules.
+  cup assets integrity rules.
 
 ## Build, verification and release
 
-- [BUILD](development/BUILD.md) describes build modes, dependencies, static CUP assets and
+- [BUILD](development/BUILD.md) describes build modes, dependencies, static cup assets and
   generated sources.
 - [TESTING](development/TESTING.md) describes test layers, fixtures, coverage, sanitizers
   and repository verification.
@@ -81,14 +81,12 @@ cup
 recipes, Docker images, MSYS2/Homebrew setup and tool-specific packaging belong
 to the `cup-components` repository and are not duplicated here.
 
-## Documentation authority
+## Current scope
 
-The current source code, automated tests and release contracts define the
-implemented behavior of `cup`. The documentation describes the current
-supported design and does not present superseded command names, directory
-layouts or release models as active behavior.
+The documentation describes the current supported behavior and design.
+Superseded command names, directory layouts and release models are not presented
+as active behavior.
 
-Design documents include rationale only when it is necessary to explain an
-implemented constraint, interface or operational guarantee. They are organized
-as a reference to the current system rather than as a record of the development
-process.
+Design documents include rationale where it clarifies an implemented constraint,
+tradeoff or operational guarantee. They describe the current system rather than
+recording the development chronology.

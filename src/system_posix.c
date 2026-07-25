@@ -198,6 +198,9 @@ CupError system_start_uninstall(const char *cup_root,
     }
 
     if (pid == 0) {
+        if (setsid() < 0) {
+            _exit(127);
+        }
         execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script, parent_pid_text, (char *)NULL);
         _exit(127);
     }
@@ -489,6 +492,9 @@ CupError system_remove_tree(const char *path, int (*cancelled)(void)) {
     int parent_fd;
     CupError err;
 
+    if (cancelled != NULL && cancelled()) {
+        return CUP_ERR_INTERRUPT;
+    }
     err = split_parent_entry(path, parent, sizeof(parent), entry, sizeof(entry));
     if (err != CUP_OK) {
         return err;
@@ -824,7 +830,8 @@ CupError system_is_read_only(const char *path, int *is_read_only) {
     if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (lstat(path, &info) != 0 || S_ISLNK(info.st_mode)) {
+    if (lstat(path, &info) != 0 ||
+        (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode))) {
         return CUP_ERR_FILESYSTEM;
     }
     *is_read_only = (info.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0;
@@ -838,7 +845,8 @@ CupError system_set_read_only(const char *path, int read_only) {
     if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (lstat(path, &info) != 0 || S_ISLNK(info.st_mode)) {
+    if (lstat(path, &info) != 0 ||
+        (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode))) {
         return CUP_ERR_FILESYSTEM;
     }
 

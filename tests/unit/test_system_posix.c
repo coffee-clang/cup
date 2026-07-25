@@ -501,6 +501,7 @@ static void test_extra_paths(void) {
     char home_buffer[2];
     SystemCommitState state;
     SystemPathKind kind;
+    int read_only = 0;
     size_t count = 0;
     char cwd[1024];
 
@@ -518,6 +519,8 @@ static void test_extra_paths(void) {
     TEST_ASSERT_EQUAL_INT(0, mkfifo(fifo_path, 0600));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(fifo_path, &kind));
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_OTHER, kind);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_is_read_only(fifo_path, &read_only));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_set_read_only(fifo_path, 1));
 
     TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
     TEST_ASSERT_EQUAL_INT(0, chdir(temp_dir));

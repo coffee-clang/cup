@@ -15,8 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
@@ -86,9 +84,9 @@ void setUp(void) {
 }
 
 void tearDown(void) {
-    unlink(preferences_path);
-    unlink(official_path);
-    rmdir(root);
+    (void)test_unlink(preferences_path);
+    (void)test_unlink(official_path);
+    (void)test_rmdir(root);
 }
 
 /*
@@ -152,11 +150,11 @@ CupError layout_ensure_config(void) {
 }
 
 CupError system_path_exists(const char *path, int *exists) {
-    struct stat info;
+    TestPlatformStat info;
     if (path == NULL || exists == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (stat(path, &info) == 0) {
+    if (test_stat_path(path, &info) == 0) {
         *exists = 1;
         return CUP_OK;
     }
@@ -169,24 +167,12 @@ CupError system_path_exists(const char *path, int *exists) {
 
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
-    int descriptor;
-    int written;
-
-    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
-    if (written < 0 || (size_t)written >= path_size) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+    if (directory == NULL || prefix == NULL || path == NULL || path_size == 0 || file == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
-    descriptor = mkstemp(path);
-    if (descriptor < 0) {
-        return CUP_ERR_TEMPORARY;
-    }
-    *file = fdopen(descriptor, "w+b");
-    if (*file == NULL) {
-        close(descriptor);
-        unlink(path);
-        return CUP_ERR_TEMPORARY;
-    }
-    return CUP_OK;
+    return test_create_temp_file(directory, prefix, path, path_size, file) == 0
+               ? CUP_OK
+               : CUP_ERR_TEMPORARY;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -208,7 +194,7 @@ CupError system_replace_file(const char *source,
 }
 
 CupError system_remove_file(const char *path) {
-    return unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 CupError system_sync_parent_directory(const char *path) {

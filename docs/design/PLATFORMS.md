@@ -45,7 +45,7 @@ Linux/macOS  $HOME/.cup
 Windows      %USERPROFILE%\.cup
 ```
 
-Unix-like shells on Windows delegate CUP asset installation to PowerShell and
+Unix-like shells on Windows delegate cup asset installation to PowerShell and
 use the native Windows root.
 
 ## Executable names
@@ -77,7 +77,7 @@ entry-point implementation.
 - file and parent-directory synchronization;
 - advisory shared/exclusive locking;
 - directory traversal;
-- forked/detached helper execution;
+- detached helper execution;
 - process existence checks.
 
 Linux builds define `_POSIX_C_SOURCE=200809L`. macOS builds define
@@ -96,7 +96,7 @@ process operations. It handles:
 - temporary files and directories;
 - detached PowerShell helpers;
 - `.cmd` quoting and path conversion;
-- protected owner-private ACLs for the CUP root;
+- protected owner-private ACLs for the cup root;
 - `\\?\`/UNC long-path normalization and reparse-point checks.
 
 Using wide APIs avoids making the internal path model depend on the active ANSI
@@ -107,13 +107,13 @@ paths beyond `MAX_PATH` rather than treating larger C buffers as sufficient.
 
 ### POSIX
 
-The CUP root is created with mode `0700` under a restrictive process `umask`.
+The cup root is created with mode `0700` under a restrictive process `umask`.
 Installed executables and wrappers receive executable bits. Protected metadata
 receives write bits removed according to the project permission contract.
 
 ### Windows
 
-Windows does not use POSIX executable bits. The CUP root uses a protected DACL
+Windows does not use POSIX executable bits. The cup root uses a protected DACL
 restricted to the current user, Local System and Administrators. Executable
 validity is based on file type and expected extension/entry behavior. Protected
 metadata receives the read-only attribute.
@@ -155,10 +155,10 @@ POSIX copies and starts a shell helper. Windows copies and starts a PowerShell
 helper. Both receive the canonical root and parent process identifier, wait for
 the parent, atomically detach the root and delete the detached tree.
 
-### CUP update
+### cup update
 
 The platform layer generates or starts a helper capable of waiting for the
-running binary, reacquiring the lock and replacing the complete canonical CUP asset generation.
+running binary, reacquiring the lock and replacing the complete canonical cup asset generation.
 The portable C layer has already selected and verified those assets.
 
 See [TRANSACTIONS](TRANSACTIONS.md).
@@ -196,9 +196,9 @@ and Windows coverage use GCC/gcov, while macOS uses Clang source-based coverage.
 All sanitizer jobs use Clang/Compiler-RT. LeakSanitizer is enabled on Linux;
 macOS and Windows run ASan/UBSan without leak detection. Windows uses an
 isolated CLANG64 dependency graph.
-Linux source, integration and release ownership remains GCC, with a secondary
+Linux source, integration and release builds use GCC, with a secondary
 Linux x64 Clang application/unit pass. Windows release and coverage builds
-remain UCRT64/GCC. Linux x64 additionally owns a local network-portability smoke
+remain UCRT64/GCC. Linux x64 additionally runs a local network-portability smoke
 test that runs the static executable through
 DNS, embedded-CA HTTPS validation, direct and proxied package downloads,
 checksum verification and extraction. Native platform suites remain separate
@@ -216,7 +216,7 @@ operating systems. A new identifier requires coordinated support in:
 platform detection and validation
 system implementation or build selection
 catalog tuples
-static dependency CUP assets
+static dependency cup assets
 release asset naming
 installer detection
 source and native test runners
@@ -226,7 +226,7 @@ Adding a catalog entry alone is not sufficient.
 
 ## Implementation and verification
 
-Platform-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). Native
+Platform-module responsibilities are listed in [ARCHITECTURE](ARCHITECTURE.md). Native
 verification and candidate execution are described in
 [TESTING](../development/TESTING.md) and
 [RELEASES](../development/RELEASES.md).

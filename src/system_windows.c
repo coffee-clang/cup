@@ -25,21 +25,30 @@
 
 /* UTF-8 boundary conversion and native error reporting. */
 static CupError get_parent_path(const char *path, char *parent, size_t size) {
-    char *slash;
+    char *forward_slash;
+    char *backslash;
+    char *separator;
 
     if (text_is_empty(path) || parent == NULL || size == 0 ||
         text_copy(parent, size, path) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    slash = strrchr(parent, '/');
-    if (slash == NULL) {
+    forward_slash = strrchr(parent, '/');
+    backslash = strrchr(parent, '\\');
+    separator = forward_slash;
+    if (separator == NULL || (backslash != NULL && backslash > separator)) {
+        separator = backslash;
+    }
+    if (separator == NULL) {
         return text_format(parent, size, ".");
     }
-    if (slash == parent) {
-        slash[1] = '\0';
+    if (separator == parent ||
+        (separator == parent + 2 && parent[1] == ':' &&
+         (parent[2] == '/' || parent[2] == '\\'))) {
+        separator[1] = '\0';
     } else {
-        *slash = '\0';
+        *separator = '\0';
     }
     return CUP_OK;
 }
@@ -370,6 +379,17 @@ static int sid_is_private_principal(PSID sid, PSID user_sid) {
     return 0;
 }
 
+static int wide_path_is_absolute(const wchar_t *path) {
+    if (path == NULL) {
+        return 0;
+    }
+    if (iswalpha(path[0]) && path[1] == L':' &&
+        (path[2] == L'\\' || path[2] == L'/')) {
+        return 1;
+    }
+    return path[0] == L'\\' && path[1] == L'\\';
+}
+
 static int wide_path_is_volume_root(const wchar_t *path) {
     wchar_t volume[MAX_PATH_LEN];
     size_t path_length;
@@ -414,6 +434,10 @@ CupError system_get_home_dir(char *buffer, size_t size) {
         if (value[i] == L'/') {
             value[i] = L'\\';
         }
+    }
+    if (!wide_path_is_absolute(value)) {
+        fprintf(stderr, "Error: USERPROFILE must contain an absolute path.\n");
+        return CUP_ERR_FILESYSTEM;
     }
     length = GetFullPathNameW(value, MAX_PATH_LEN, absolute, NULL);
     if (length == 0 || length >= MAX_PATH_LEN || wide_path_is_volume_root(absolute)) {
@@ -489,7 +513,16 @@ CupError system_start_uninstall(const char *cup_root,
     startup.cb = sizeof(startup);
     ZeroMemory(&process, sizeof(process));
 
-    if (!CreateProcessW(NULL, wide_command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
+    if (!CreateProcessW(NULL,
+                        wide_command,
+                        NULL,
+                        NULL,
+                        FALSE,
+                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                        NULL,
+                        NULL,
+                        &startup,
+                        &process)) {
         print_windows_error("could not start uninstall process", temp_script);
         system_remove_file(temp_script);
         return CUP_ERR_FILESYSTEM;
@@ -1078,11 +1111,21 @@ CupError system_set_read_only(const char *path, int read_only) {
     wchar_t wide_path[MAX_PATH_LEN];
     DWORD attributes;
     SystemPathKind info;
+    CupError err;
 
-    if (utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
-        system_get_path_kind(path, &info) != CUP_OK ||
-        (info != SYSTEM_PATH_REGULAR_FILE && info != SYSTEM_PATH_DIRECTORY)) {
+    if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
+    }
+    err = utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = system_get_path_kind(path, &info);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (info != SYSTEM_PATH_REGULAR_FILE && info != SYSTEM_PATH_DIRECTORY) {
+        return CUP_ERR_FILESYSTEM;
     }
     attributes = GetFileAttributesW(wide_path);
     if (attributes == INVALID_FILE_ATTRIBUTES) {
@@ -1229,6 +1272,9 @@ CupError system_remove_tree(const char *path, int (*cancelled)(void)) {
 
     if (text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
+    }
+    if (cancelled != NULL && cancelled()) {
+        return CUP_ERR_INTERRUPT;
     }
     err = system_get_path_kind(path, &kind);
     if (err != CUP_OK || kind == SYSTEM_PATH_MISSING) {

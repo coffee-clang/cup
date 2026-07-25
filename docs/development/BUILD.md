@@ -53,8 +53,8 @@ build/<platform>/sanitizers/
 build/<platform>/release/
 ```
 
-Each directory owns its objects, generated version data, build identity and
-executable. Changing configuration therefore cannot reuse objects from another
+Each directory contains its own objects, generated version data, build identity
+and executable. Changing configuration therefore cannot reuse objects from another
 configuration.
 
 Every configuration contains `build-config.txt`. It records the platform,
@@ -73,14 +73,14 @@ when it provides independent diagnostic value:
 
 | Role | Linux | macOS | Windows |
 |---|---|---|---|
-| Development, native integration and release owner | GCC | Apple Clang | MSYS2 UCRT64 GCC |
+| Primary development, integration and release compiler | GCC | Apple Clang | MSYS2 UCRT64 GCC |
 | Secondary compiler portability | Clang build and C unit tests on x64 | Covered by the native compiler | Covered by the CLANG64 sanitizer path |
 | Coverage | GCC/gcov | Clang source-based coverage | UCRT64 GCC/gcov |
 | ASan/UBSan | Clang/Compiler-RT | Apple Clang | MSYS2 CLANG64 Clang/Compiler-RT |
 | Canonical dependency compiler | GCC | Apple Clang | UCRT64 GCC; separate CLANG64 prefix for sanitizers |
 
 This is intentional diversity, not interchangeable compiler selection. Release
-artifacts and native integration behavior always have one compiler owner. The
+artifacts and native integration behavior always use one primary compiler. The
 secondary Linux Clang pass compiles the complete application and runs all C unit
 tests against the same canonical dependency prefix; it does not create a second
 release graph. Sanitizers use Clang consistently so diagnostics and runtime
@@ -92,7 +92,7 @@ artifacts remain useful after the public executable is stripped. Coverage and
 sanitizer instrumentation are isolated in their own directories. The debug target adds the richest
 portable symbol information selected for the platform.
 
-Mandatory flags are owned by the Makefile and cannot be replaced with direct
+Mandatory flags are defined by the Makefile and cannot be replaced with direct
 `CPPFLAGS=`, `CFLAGS=`, `LDFLAGS=` or `LDLIBS=` command-line assignments. Local
 additions use:
 
@@ -113,14 +113,14 @@ Linux and macOS builds are native. Every Windows x64 path—development, tests,
 debug dependencies and release candidates—runs natively in an MSYS2 UCRT64
 shell and rejects the MINGW64/MSVCRT toolchain.
 
-macOS x64 and ARM64 currently use deployment target `13.0` for CUP and every
+macOS x64 and ARM64 currently use deployment target `13.0` for cup and every
 pinned dependency. Windows currently defines `_WIN32_WINNT` and `WINVER` as
 `0x0A00`. These are explicit CI build baselines, not yet final minimum-support
 promises; the final floors require evidence from native runners. The Makefile
 rejects conflicting ambient values and records the effective compiler/linker
 flags in `build-config.txt`.
 
-## Dependency ownership
+## Dependencies
 
 ### End-user runtime
 
@@ -142,7 +142,7 @@ run `cup`.
 
 Unity is linked only into C unit-test binaries. Libevent is linked only into the
 `network-helper` fixture used by release and network-portability tests; it does
-not enter the CUP application link or any published CUP executable. `gcovr` and
+not enter the cup application link or any published cup executable. `gcovr` and
 sanitizer runtime support are host tools and are not part of the application
 prefix contract.
 
@@ -359,10 +359,10 @@ make test-release RELEASE_DIR=<candidate-directory>
 ```
 
 `make test` runs unit and native integration behavior. `make quality` checks the
-repository, scripts, workflows and documentation contracts. `make check` runs
+repository, scripts, workflows and release contracts. `make check` runs
 dependency preparation, both groups and their required build steps.
 
-Test-only build helpers remain public for CI and focused local work:
+Focused test build targets are:
 
 ```sh
 make test-unit-build
@@ -403,7 +403,7 @@ release publication.
 ## Linux network portability smoke test
 
 `make PLATFORM=linux-x64 test-portability-linux` builds one isolated static
-release with a temporary test CA and exercises CUP itself against local
+release with a temporary test CA and exercises cup itself against local
 fixtures. It verifies rejection of an unknown CA, DNS resolution of `localhost`,
 direct HTTPS downloads, HTTP CONNECT proxy tunnelling, checksum validation,
 archive extraction, wrapper execution and `doctor`.
@@ -424,7 +424,7 @@ object format, exact architecture, SHA-256 and the native dynamic-link policy.
 On Linux, development and diagnostic configurations may depend only on the
 explicit system/compiler-runtime allowlist. A Linux release must have no ELF
 interpreter, `DT_NEEDED`, `RPATH` or `RUNPATH` entries. macOS does not provide
-the same fully static system-linking model: CUP links all pinned third-party
+the same fully static system-linking model: cup links all pinned third-party
 dependencies statically, while the Mach-O executable may dynamically reference
 only `/usr/lib` and public `/System/Library/Frameworks`. Homebrew, `@rpath`,
 `@loader_path`, `@executable_path` and `LC_RPATH` are rejected. The

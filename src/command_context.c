@@ -162,7 +162,7 @@ CupError command_context_begin(CommandContext *context,
         err = validate_cup_assets();
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Error: CUP assets are unavailable. "
+                    "Error: cup assets are unavailable. "
                     "Run the installer or execute cup from the repository root.\n");
             return err;
         }

@@ -12,15 +12,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
  * counters record the calls made by production code.
  */
 
-static char temp_dir[] = "/tmp/cup-state-unit-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static CupError state_path_error;
 
 /* Fixture lifecycle and local construction helpers. */
@@ -461,7 +459,7 @@ static void test_save_load(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate(&loaded));
 
     state_path(path, sizeof(path));
-    TEST_ASSERT_EQUAL_INT(0, unlink(path));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&loaded, &status));
     TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
     TEST_ASSERT_EQUAL_size_t(0, loaded.installed_count);
@@ -476,7 +474,7 @@ static void test_save_load(void) {
     state_path(path, sizeof(path));
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
-    TEST_ASSERT_EQUAL_INT(0, rmdir(path));
+    TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
 }
 
 static void test_state_record_errors(void) {
@@ -569,7 +567,11 @@ static void test_format_host_policy(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    int result;
+
+    if (test_make_temp_directory(temp_dir, sizeof(temp_dir), "cup-state-unit-test") == NULL) {
+        return 1;
+    }
     UNITY_BEGIN();
     RUN_TEST(test_mutators);
     RUN_TEST(test_scope_mutation);
@@ -580,5 +582,7 @@ int main(void) {
     RUN_TEST(test_state_record_errors);
     RUN_TEST(test_state_line_errors);
     RUN_TEST(test_format_host_policy);
-    return UNITY_END();
+    result = UNITY_END();
+    (void)test_remove_tree(temp_dir);
+    return result;
 }

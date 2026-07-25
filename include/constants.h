@@ -1,7 +1,7 @@
 #ifndef CUP_CONSTANTS_H
 #define CUP_CONSTANTS_H
 
-/* Central capacities, transfer/archive limits, and canonical CUP asset filenames. */
+/* Central capacities, transfer/archive limits, and canonical cup asset filenames. */
 
 /*
  * In-memory state capacity. One active package can exist for each component, host,
@@ -86,14 +86,18 @@
 #define CUP_UPDATE_COMMON_CHECKSUMS_OLD "common-checksums.old"
 #define CUP_UPDATE_COMMITTED "committed"
 #define CUP_UPDATE_RESULT_FILENAME "cup-update-result.txt"
-#define CUP_UPDATE_HELPER_FILENAME "cup-update-helper"
-
 #if defined(_WIN32)
+#define CUP_BINARY_FILENAME "cup.exe"
+#define CUP_UPDATE_HELPER_FILENAME "cup-update-helper.exe"
 #define CUP_UNINSTALL_FILENAME "uninstall.ps1"
 #define CUP_DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup-windows.ps1"
+#define CUP_UNINSTALL_EXECUTABLE 0
 #else
+#define CUP_BINARY_FILENAME "cup"
+#define CUP_UPDATE_HELPER_FILENAME "cup-update-helper"
 #define CUP_UNINSTALL_FILENAME "uninstall.sh"
 #define CUP_DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup.sh"
+#define CUP_UNINSTALL_EXECUTABLE 1
 #endif
 
 #define CUP_DEVELOPMENT_INSTALL_POLICY_PATH "config/install.cfg"

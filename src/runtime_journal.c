@@ -14,7 +14,7 @@
 
 #define RUNTIME_JOURNAL_LINE_LEN 512
 
-/* Central command policy for pending package transactions and CUP-update journals. */
+/* Central command policy for pending package transactions and cup-update journals. */
 CupError runtime_journal_detect(RuntimeJournalKind *kind) {
     FILE *file;
     CupError err;
@@ -95,7 +95,7 @@ CupError runtime_journal_require_none(void) {
     }
     fprintf(stderr,
             kind == RUNTIME_JOURNAL_CUP_UPDATE
-                ? "Error: a CUP update is pending or failed; retry shortly or run 'cup repair'.\n"
+                ? "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n"
                 : "Error: an interrupted package transaction must be repaired first.\n");
     return CUP_ERR_TRANSACTION;
 }

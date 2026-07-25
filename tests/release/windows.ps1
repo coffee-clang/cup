@@ -203,6 +203,75 @@ try {
     if ($LASTEXITCODE -ne 0 -or $versionAfterRepair -ne "cup $Version") {
         throw "Installed cup was not usable after repair"
     }
+
+
+    # A completion marker is accepted only for a complete installed generation. The failed
+    # recovery must preserve both cup.exe and the staging evidence.
+    $bootstrapStaging = Join-Path $env:USERPROFILE ".cup\.bootstrap"
+    $committedMarker = Join-Path $bootstrapStaging "committed"
+    $updateHelper = Join-Path $env:USERPROFILE ".cup\helpers\cup-update-helper.exe"
+    $savedUpdateHelper = Join-Path $env:USERPROFILE "saved-cup-update-helper.exe"
+    New-Item -ItemType Directory -Path $bootstrapStaging | Out-Null
+    New-Item -ItemType File -Path $committedMarker | Out-Null
+    Move-Item -LiteralPath $updateHelper -Destination $savedUpdateHelper
+    $incompleteOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $ReleaseDir "install.ps1") 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        throw "Incomplete committed Windows bootstrap staging unexpectedly succeeded"
+    }
+    if (($incompleteOutput -join "`n") -notlike
+        "*completed bootstrap staging does not match a complete installed generation*") {
+        throw "Incomplete committed Windows bootstrap failure was not explained"
+    }
+    if (-not (Test-Path -LiteralPath $committedMarker -PathType Leaf)) {
+        throw "Incomplete committed Windows bootstrap staging was not preserved"
+    }
+    if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
+        $binaryHashBeforeRepair) {
+        throw "Incomplete committed Windows bootstrap recovery changed cup.exe"
+    }
+    Move-Item -LiteralPath $savedUpdateHelper -Destination $updateHelper
+
+    # Reinstall the same tested candidate, complete cleanup and keep the executable valid.
+    powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $ReleaseDir "install.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows reinstall failed with exit code $LASTEXITCODE"
+    }
+    if (Test-Path -LiteralPath $bootstrapStaging) {
+        throw "Windows reinstall did not remove completed bootstrap staging"
+    }
+    $binaryHashAfterReinstall = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+    if ($binaryHashAfterReinstall -ne $candidateHash) {
+        throw "Windows reinstall changed the tested release executable"
+    }
+    $versionAfterReinstall = & $installed --version
+    if ($LASTEXITCODE -ne 0 -or $versionAfterReinstall -ne "cup $Version") {
+        throw "Installed cup was not usable after reinstall"
+    }
+
+    # The assembled candidate performs its detached uninstall smoke test.
+    $uninstallOutput = & $installed uninstall --yes 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed cup uninstall failed with exit code $LASTEXITCODE"
+    }
+    if (($uninstallOutput -join "`n") -notlike
+        "*Uninstall started. The PATH entry was not removed.*") {
+        throw "Installed cup uninstall did not report detached removal"
+    }
+    $cupRoot = Join-Path $env:USERPROFILE ".cup"
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ((Test-Path -LiteralPath $cupRoot) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (Test-Path -LiteralPath $cupRoot) {
+        throw "Release uninstall did not remove the cup root"
+    }
+    $residues = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force `
+        -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+    if ($residues.Count -ne 0) {
+        throw "Release uninstall left staging behind: $($residues[0].FullName)"
+    }
 } finally {
     foreach ($name in $originalEnvironment.Keys) {
         $value = $originalEnvironment[$name]

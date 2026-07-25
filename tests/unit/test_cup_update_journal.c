@@ -1,5 +1,4 @@
-#define _POSIX_C_SOURCE 200809L
-/* Exercises the strict deferred CUP update journal and persisted result. */
+/* Exercises the strict deferred cup update journal and persisted result. */
 
 #include "cup_assets.h"
 #include "cup_update_journal.h"
@@ -10,13 +9,10 @@
 #include "unity.h"
 #include "test_platform.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
@@ -27,8 +23,15 @@ static char root[MAX_PATH_LEN];
 static CupError replace_result;
 static SystemCommitState replace_state;
 static CupError permission_result;
+static CupError remove_tree_result;
 static int cup_assets_valid;
 static int remove_tree_calls;
+static int executable_calls;
+static int read_only_calls;
+static int writable_calls;
+static char last_executable_path[MAX_PATH_LEN];
+static char replaced_paths[8][MAX_PATH_LEN];
+static int replaced_path_count;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -43,24 +46,7 @@ static void join_test_path(char *buffer, size_t size, const char *left, const ch
 }
 
 static void remove_tree_real(const char *path) {
-    DIR *directory = opendir(path);
-    struct dirent *entry;
-
-    if (directory == NULL) {
-        (void)unlink(path);
-        return;
-    }
-    while ((entry = readdir(directory)) != NULL) {
-        char child[MAX_PATH_LEN];
-
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        join_test_path(child, sizeof(child), path, entry->d_name);
-        remove_tree_real(child);
-    }
-    (void)closedir(directory);
-    (void)rmdir(path);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(path));
 }
 
 static void make_dir(const char *path) {
@@ -89,12 +75,14 @@ static void assert_file_text(const char *path, const char *expected) {
 }
 
 static void reset_scenario(void) {
-    char template_path[] = "/tmp/cup-update-journal-unit-XXXXXX";
+    char template_path[CUP_TEST_TEMP_PATH_SIZE];
     char staging[MAX_PATH_LEN];
     char bin[MAX_PATH_LEN];
     char config[MAX_PATH_LEN];
 
-    TEST_ASSERT_NOT_NULL(mkdtemp(template_path));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        template_path, sizeof(template_path), "cup-update-journal-unit"));
+    TEST_ASSERT_TRUE(strlen(template_path) < sizeof(root));
     strcpy(root, template_path);
     join_test_path(staging, sizeof(staging), root, "staging");
     join_test_path(bin, sizeof(bin), root, "bin");
@@ -106,8 +94,15 @@ static void reset_scenario(void) {
     replace_result = CUP_OK;
     replace_state = SYSTEM_COMMIT_DURABLE;
     permission_result = CUP_OK;
+    remove_tree_result = CUP_OK;
     cup_assets_valid = 1;
     remove_tree_calls = 0;
+    executable_calls = 0;
+    read_only_calls = 0;
+    writable_calls = 0;
+    last_executable_path[0] = '\0';
+    replaced_path_count = 0;
+    memset(replaced_paths, 0, sizeof(replaced_paths));
 }
 
 void setUp(void) {
@@ -140,11 +135,11 @@ CupError layout_get_cup_update_result_path(char *buffer, size_t size) {
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "bin/cup");
+    return path_join(buffer, size, root, "bin/" CUP_BINARY_FILENAME);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "bin/uninstall.sh");
+    return path_join(buffer, size, root, "bin/" CUP_UNINSTALL_FILENAME);
 }
 
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
@@ -165,24 +160,9 @@ CupError layout_get_common_checksums_path(char *buffer, size_t size) {
 
 CupError system_create_temp_file(
     const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
-    int descriptor;
-    int written;
-
-    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
-    if (written < 0 || (size_t)written >= path_size) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    descriptor = mkstemp(path);
-    if (descriptor < 0) {
-        return CUP_ERR_TEMPORARY;
-    }
-    *file = fdopen(descriptor, "w+b");
-    if (*file == NULL) {
-        close(descriptor);
-        unlink(path);
-        return CUP_ERR_TEMPORARY;
-    }
-    return CUP_OK;
+    return test_create_temp_file(directory, prefix, path, path_size, file) == 0
+               ? CUP_OK
+               : CUP_ERR_TEMPORARY;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -193,6 +173,11 @@ CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *state) {
     *state = replace_state;
+    if (replaced_path_count < (int)(sizeof(replaced_paths) / sizeof(replaced_paths[0]))) {
+        TEST_ASSERT_TRUE(strlen(destination) < sizeof(replaced_paths[0]));
+        strcpy(replaced_paths[replaced_path_count], destination);
+        replaced_path_count++;
+    }
     if (replace_result != CUP_OK) {
         return replace_result;
     }
@@ -200,12 +185,12 @@ CupError system_replace_file(const char *source,
 }
 
 CupError system_path_exists(const char *path, int *exists) {
-    *exists = access(path, F_OK) == 0;
+    *exists = test_access_exists(path);
     return CUP_OK;
 }
 
 CupError system_remove_file(const char *path) {
-    return unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 CupError system_sync_parent_directory(const char *path) {
@@ -214,18 +199,16 @@ CupError system_sync_parent_directory(const char *path) {
 }
 
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
-    struct stat status;
+    TestPlatformStat status;
 
-    if (lstat(path, &status) != 0) {
+    if (test_stat_path(path, &status) != 0) {
         *kind = errno == ENOENT ? SYSTEM_PATH_MISSING : SYSTEM_PATH_OTHER;
         return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
     }
-    if (S_ISREG(status.st_mode)) {
+    if (test_stat_is_regular(&status)) {
         *kind = SYSTEM_PATH_REGULAR_FILE;
-    } else if (S_ISDIR(status.st_mode)) {
+    } else if (test_stat_is_directory(&status)) {
         *kind = SYSTEM_PATH_DIRECTORY;
-    } else if (S_ISLNK(status.st_mode)) {
-        *kind = SYSTEM_PATH_LINK;
     } else {
         *kind = SYSTEM_PATH_OTHER;
     }
@@ -233,19 +216,28 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
 }
 
 CupError system_set_executable(const char *path, int executable) {
-    (void)path;
-    (void)executable;
+    executable_calls++;
+    TEST_ASSERT_EQUAL_INT(1, executable);
+    TEST_ASSERT_TRUE(strlen(path) < sizeof(last_executable_path));
+    strcpy(last_executable_path, path);
     return permission_result;
 }
 
 CupError system_set_read_only(const char *path, int read_only) {
     (void)path;
-    (void)read_only;
+    if (read_only) {
+        read_only_calls++;
+    } else {
+        writable_calls++;
+    }
     return permission_result;
 }
 
 CupError filesystem_remove_tree(const char *path) {
     remove_tree_calls++;
+    if (remove_tree_result != CUP_OK) {
+        return remove_tree_result;
+    }
     remove_tree_real(path);
     return CUP_OK;
 }
@@ -354,7 +346,7 @@ static void test_model_and_begin(void) {
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_MISSING, status);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_begin("/tmp/self-update-old", "token", "1"));
+                          cup_update_journal_begin("/tmp/not-a-cup-update", "token", "1"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           cup_update_journal_begin(staging, "bad token", "1"));
 }
@@ -363,8 +355,8 @@ static void test_strict_load(void) {
     CupUpdateJournal journal;
     CupUpdateJournalStatus status;
 
-    write_journal("journal_version=2\noperation=self-update\n"
-                  "temporary_name=self-update-old\n");
+    write_journal("journal_version=2\noperation=unknown-operation\n"
+                  "temporary_name=unknown-operation-old\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_journal_load(&journal, &status));
 
     write_journal("format=1\noperation=cup-update\nphase=scheduled\n"
@@ -403,6 +395,7 @@ static void test_persisted_result(void) {
 
 static void test_recover_committed(void) {
     CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
@@ -415,15 +408,43 @@ static void test_recover_committed(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY));
+        CUP_OK, cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_FINALIZED, result);
     TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
-    TEST_ASSERT_TRUE(access(journal_path, F_OK) != 0);
+    TEST_ASSERT_TRUE(!test_access_exists(journal_path));
+}
+
+static void test_recover_committed_ignores_staging_cleanup_failure(void) {
+    CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    char staging[MAX_PATH_LEN];
+    char marker[MAX_PATH_LEN];
+    char journal_path[MAX_PATH_LEN];
+
+    cup_update_journal_init(&journal);
+    strcpy(journal.temporary_name, "cup-update-committed-cleanup-failure");
+    make_staging(journal.temporary_name, staging, sizeof(staging));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(marker, sizeof(marker), staging, CUP_UPDATE_COMMITTED));
+    write_file(marker, "ok");
+    write_journal("journal");
+    remove_tree_result = CUP_ERR_FILESYSTEM;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_FINALIZED, result);
+    TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
+    TEST_ASSERT_TRUE(test_access_exists(staging));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
+    TEST_ASSERT_TRUE(!test_access_exists(journal_path));
 }
 
 static void test_recover_rollback(void) {
     CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char path[MAX_PATH_LEN];
 
@@ -435,14 +456,49 @@ static void test_recover_rollback(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY));
+        CUP_OK, cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     assert_file_text(path, "old");
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
+    TEST_ASSERT_EQUAL_INT(CUP_UNINSTALL_EXECUTABLE ? 2 : 1, executable_calls);
+    TEST_ASSERT_EQUAL_INT(5, read_only_calls);
+    TEST_ASSERT_EQUAL_INT(6, writable_calls);
+    TEST_ASSERT_EQUAL_INT(6, replaced_path_count);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
+    TEST_ASSERT_EQUAL_STRING(path, replaced_paths[replaced_path_count - 1]);
+}
+
+static void test_recover_rollback_ignores_staging_cleanup_failure(void) {
+    CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    char staging[MAX_PATH_LEN];
+    char binary[MAX_PATH_LEN];
+    char journal_path[MAX_PATH_LEN];
+
+    cup_update_journal_init(&journal);
+    strcpy(journal.temporary_name, "cup-update-rollback-cleanup-failure");
+    make_staging(journal.temporary_name, staging, sizeof(staging));
+    create_backups(staging);
+    create_destination_files();
+    write_journal("journal");
+    remove_tree_result = CUP_ERR_FILESYSTEM;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
+    assert_file_text(binary, "old");
+    TEST_ASSERT_TRUE(test_access_exists(staging));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
+    TEST_ASSERT_TRUE(!test_access_exists(journal_path));
 }
 
 static void test_recover_preserves_running_binary(void) {
     CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
     char uninstall[MAX_PATH_LEN];
@@ -458,15 +514,18 @@ static void test_recover_preserves_running_binary(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY));
+        cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     assert_file_text(binary, "old");
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
     assert_file_text(uninstall, "old");
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
 static void test_recover_rejects_running_binary_replacement(void) {
     CupUpdateJournal journal;
+    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
     char uninstall[MAX_PATH_LEN];
@@ -481,14 +540,16 @@ static void test_recover_rejects_running_binary_replacement(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY));
+        cup_update_journal_recover(
+            &journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY, &result));
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
     assert_file_text(binary, "new");
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
     assert_file_text(uninstall, "new");
-    TEST_ASSERT_TRUE(access(staging, F_OK) == 0);
+    TEST_ASSERT_TRUE(test_access_exists(staging));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
-    TEST_ASSERT_TRUE(access(journal_path, F_OK) == 0);
+    TEST_ASSERT_TRUE(test_access_exists(journal_path));
 }
 
 /* Suite registration. */
@@ -499,7 +560,9 @@ int main(void) {
     RUN_TEST(test_strict_load);
     RUN_TEST(test_persisted_result);
     RUN_TEST(test_recover_committed);
+    RUN_TEST(test_recover_committed_ignores_staging_cleanup_failure);
     RUN_TEST(test_recover_rollback);
+    RUN_TEST(test_recover_rollback_ignores_staging_cleanup_failure);
     RUN_TEST(test_recover_preserves_running_binary);
     RUN_TEST(test_recover_rejects_running_binary_replacement);
     return UNITY_END();

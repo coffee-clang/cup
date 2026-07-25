@@ -11,8 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /* Shared fixture state used by the cases in this suite. */
 
@@ -168,7 +166,7 @@ static void test_line_failures(void) {
     build_path(path, sizeof(path), "directory");
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_metadata_load(&info, path));
-    TEST_ASSERT_EQUAL_INT(0, rmdir(path));
+    TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
 
     build_path(path, sizeof(path), "missing.txt");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Runs all POSIX real-CLI workflow owners against a prepared executable.
+# Purpose: Runs all POSIX real-CLI workflows against a prepared executable.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -45,6 +45,6 @@ run_suite 'Testing transaction recovery...' recovery.sh
 run_suite 'Testing deterministic repair...' repair.sh
 run_suite 'Testing read-only diagnostics...' doctor.sh
 run_suite 'Testing concurrent commands...' concurrency.sh
-run_suite 'Testing detached uninstall cleanup...' uninstall.sh
+run_suite 'Testing uninstall cleanup...' uninstall.sh
 
 printf 'All POSIX integration tests passed.\n'

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Owns public CLI dispatch, help aliases and stable exit statuses.
+# Purpose: Exercises public CLI dispatch, help aliases and stable exit statuses.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -72,10 +72,11 @@ test_help_aliases() {
     done
 
     output=$(run_cup help update)
-    assert_contains "$output" 'Without a selector, updates installed tools only; CUP itself is not updated.'
+    assert_contains "$output" 'Without a selector, updates installed tools only; cup itself is not updated.'
     output=$(run_cup help install)
     assert_contains "$output" "$CUP install <profile|toolchain> <name>"
     assert_not_contains "$output" '| install <profile|toolchain>'
+    assert_contains "$output" 'Select tar.xz, tar.gz or zip.'
     output=$(run_cup help config)
     assert_contains "$output" "$CUP config set <component> <tool>"
     assert_contains "$output" 'reset without component clears that scope only.'

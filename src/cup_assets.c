@@ -1,6 +1,6 @@
 /*
- * Inspects the installed CUP assets and verifies canonical assets against the published checksum
- * files. Development fallbacks are reported separately and never treated as an installed CUP
+ * Inspects the installed cup assets and verifies canonical assets against the published checksum
+ * files. Development fallbacks are reported separately and never treated as an installed cup
  * asset generation.
  */
 
@@ -136,7 +136,6 @@ static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-#if !defined(_WIN32)
     {
         int executable;
 
@@ -148,7 +147,6 @@ static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
             inspection->helper = CUP_ASSET_INVALID;
         }
     }
-#endif
     return CUP_OK;
 }
 
@@ -226,8 +224,7 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-#if !defined(_WIN32)
-    {
+    if (CUP_UNINSTALL_EXECUTABLE) {
         int executable;
 
         err = system_is_executable(paths->uninstall, &executable);
@@ -239,7 +236,6 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
             return CUP_OK;
         }
     }
-#endif
 
     if (inspection->platform_checksums != CUP_ASSET_VALID) {
         inspection->uninstall = CUP_ASSET_INVALID;
@@ -333,8 +329,7 @@ static CupError inspect_development_assets(CupAssetsInspection *inspection) {
         return err;
     }
     inspection->development_uninstall_valid = regular;
-#if !defined(_WIN32)
-    if (regular) {
+    if (regular && CUP_UNINSTALL_EXECUTABLE) {
         int executable;
 
         err = system_is_executable(CUP_DEVELOPMENT_UNINSTALL_PATH, &executable);
@@ -343,7 +338,6 @@ static CupError inspect_development_assets(CupAssetsInspection *inspection) {
         }
         inspection->development_uninstall_valid = executable;
     }
-#endif
     return CUP_OK;
 }
 

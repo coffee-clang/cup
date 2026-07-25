@@ -12,7 +12,7 @@ prepare_command_environment
 # Doctor is read-only and must also handle a repository development checkout
 # before the runtime has ever been initialized.
 output=$(run_cup doctor)
-assert_contains "$output" 'development CUP assets are available'
+assert_contains "$output" 'development cup assets are available'
 assert_contains "$output" 'cup runtime is not initialized'
 assert_contains "$output" 'Doctor found no issues.'
 
@@ -100,12 +100,12 @@ version=0.3.0
 RESULT
 run_cup_expect_failure "$TMP_ROOT/doctor-update-failed.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-update-failed.out")" \
-    'the previous CUP update failed with error 15 at version 0.3.0'
+    'the previous cup update failed with error 15 at version 0.3.0'
 
 printf 'invalid update result\n' > "$TEST_HOME/.cup/cup-update-result.txt"
 run_cup_expect_failure "$TMP_ROOT/doctor-update-invalid.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-update-invalid.out")" \
-    'the previous CUP update result is invalid'
+    'the previous cup update result is invalid'
 rm -f "$TEST_HOME/.cup/cup-update-result.txt"
 
 printf 'Doctor integration tests passed for %s.\n' "$TEST_PLATFORM"

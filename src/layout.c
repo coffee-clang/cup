@@ -1,5 +1,5 @@
 /*
- * Constructs every canonical path under the fixed per-user .cup root and creates CUP assets,
+ * Constructs every canonical path under the fixed per-user .cup root and creates cup assets,
  * runtime, cache, staging and recovery directories.
  */
 
@@ -27,12 +27,6 @@ static const char HELPERS_DIRECTORY[] = "helpers";
 static const char STATE_FILENAME[] = "state.txt";
 static const char LOCK_FILENAME[] = "cup.lock";
 static const char TRANSACTION_FILENAME[] = "transaction.txt";
-
-#if defined(_WIN32)
-static const char BINARY_FILENAME[] = "cup.exe";
-#else
-static const char BINARY_FILENAME[] = "cup";
-#endif
 
 /* Runtime directories that must exist after initialization. */
 static const char *const RUNTIME_DIRS[] = {
@@ -143,7 +137,7 @@ CupError layout_get_config_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, CONFIG_DIRECTORY);
 }
 
-/* Canonical singleton paths for state, journals, configuration and official CUP assets. */
+/* Canonical singleton paths for state, journals, configuration and official cup assets. */
 CupError layout_get_root(char *buffer, size_t size) {
     CupError err;
     char home[MAX_PATH_LEN];
@@ -262,22 +256,12 @@ CupError layout_get_cup_update_result_path(char *buffer, size_t size) {
 CupError layout_get_cup_update_helper_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
-    const char *filename = CUP_UPDATE_HELPER_FILENAME;
-#if defined(_WIN32)
-    char windows_name[MAX_IDENTIFIER_LEN];
-
-    err = text_format(windows_name, sizeof(windows_name), "%s.exe", filename);
-    if (err != CUP_OK) {
-        return err;
-    }
-    filename = windows_name;
-#endif
 
     err = build_root_path(directory, sizeof(directory), HELPERS_DIRECTORY);
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, filename);
+    return path_join(buffer, size, directory, CUP_UPDATE_HELPER_FILENAME);
 }
 
 CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
@@ -305,7 +289,7 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
         return err;
     }
 
-    return path_join(buffer, size, directory, BINARY_FILENAME);
+    return path_join(buffer, size, directory, CUP_BINARY_FILENAME);
 }
 
 /* Identity-bound paths for packages, cache entries, staging work and recovery evidence. */

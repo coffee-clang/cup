@@ -1,5 +1,5 @@
 /*
- * Runs the managed native helper copy used to complete a CUP update after the parent process
+ * Runs the managed native helper copy used to complete a cup update after the parent process
  * releases the executable and lock.
  */
 
@@ -42,7 +42,7 @@ typedef struct {
     int read_only;
 } HelperAsset;
 
-/* Fixed generation asset table. The helper replaces only the official CUP assets described here. */
+/* Fixed generation asset table. The helper replaces only the official cup assets described here. */
 static CupError build_asset_path(const char *staging, const char *name, char *buffer, size_t size) {
     return path_join(buffer, size, staging, name);
 }
@@ -62,7 +62,7 @@ static CupError initialize_assets(HelperAsset *assets, size_t count) {
 
     assets[1].new_name = CUP_UPDATE_UNINSTALL_NEW;
     assets[1].old_name = CUP_UPDATE_UNINSTALL_OLD;
-    assets[1].executable = 1;
+    assets[1].executable = CUP_UNINSTALL_EXECUTABLE;
     assets[1].read_only = 1;
     if (layout_get_uninstall_path(assets[1].destination, sizeof(assets[1].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
@@ -105,12 +105,18 @@ static CupError set_asset_permissions(const HelperAsset *asset) {
     if (asset->executable) {
         err = system_set_executable(asset->destination, 1);
         if (err != CUP_OK) {
+            fprintf(stderr,
+                    "Error: could not apply executable policy to cup update asset '%s'.\n",
+                    asset->destination);
             return err;
         }
     }
     if (asset->read_only) {
         err = system_set_read_only(asset->destination, 1);
         if (err != CUP_OK) {
+            fprintf(stderr,
+                    "Error: could not apply read-only policy to cup update asset '%s'.\n",
+                    asset->destination);
             return err;
         }
     }
@@ -246,7 +252,9 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
     if (err == CUP_OK) {
         (void)cup_update_result_write(CUP_UPDATE_RESULT_SUCCESS, 0, journal->version);
         if (filesystem_remove_tree(staging) != CUP_OK) {
-            return CUP_ERR_COMMIT;
+            fprintf(stderr,
+                    "Warning: cup was updated successfully, but stale update staging could not "
+                    "be removed. Run 'cup repair'.\n");
         }
     }
     return err;
@@ -254,20 +262,33 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
 
 /* Persistent completion channel. Detached failures are recorded for the next command and for doctor
  * diagnostics. */
-static void record_helper_failure(CupUpdateJournal *journal, CupError error, int recover) {
+static CupError record_helper_failure(CupUpdateJournal *journal,
+                                      CupError error,
+                                      int recover) {
+    CupError recovery_error = CUP_ERR_TRANSACTION;
+    CupUpdateRecoveryResult recovery_result = CUP_UPDATE_RECOVERY_NONE;
+
     if (journal == NULL) {
-        return;
+        return error;
     }
 
     if (recover &&
         cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error) == CUP_OK) {
-        if (cup_update_journal_recover(journal, CUP_UPDATE_RECOVER_REPLACE_BINARY) != CUP_OK) {
+        recovery_error = cup_update_journal_recover(
+            journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &recovery_result);
+        if (recovery_error != CUP_OK) {
             (void)cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
         }
     } else {
         (void)cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
     }
+
+    if (recovery_error == CUP_OK && recovery_result == CUP_UPDATE_RECOVERY_FINALIZED) {
+        (void)cup_update_result_write(CUP_UPDATE_RESULT_SUCCESS, 0, journal->version);
+        return CUP_OK;
+    }
     (void)cup_update_result_write(CUP_UPDATE_RESULT_FAILED, (int)error, journal->version);
+    return error;
 }
 
 static CupError acquire_helper_lock(SystemLock *lock) {
@@ -348,8 +369,8 @@ static CupError wait_for_parent(const char *value) {
     return CUP_OK;
 }
 
-/* Parent-side handoff. The helper executable is copied to staging before the running CUP binary
- * releases control. */
+/* Parent-side handoff. The running cup binary is copied to the canonical helper path before the
+ * parent releases control. */
 CupError cup_update_helper_prepare(void) {
     char binary[MAX_PATH_LEN];
     char helper[MAX_PATH_LEN];
@@ -470,6 +491,9 @@ CupError cup_update_helper_start(const char *token) {
         /* The child retains only the read end and immediately replaces itself with the helper. */
         char descriptor[32];
         close(pipe_fds[1]);
+        if (setsid() < 0) {
+            _exit(127);
+        }
         if (text_format(descriptor, sizeof(descriptor), "%d", pipe_fds[0]) != CUP_OK) {
             _exit(127);
         }
@@ -507,12 +531,11 @@ CupError cup_update_helper_run(const char *token, const char *wait_value) {
 
     err = acquire_helper_lock(&lock);
     if (err != CUP_OK) {
-        record_helper_failure(&journal, err, 0);
-        return err;
+        return record_helper_failure(&journal, err, 0);
     }
     err = commit_update(&journal, staging);
     if (err != CUP_OK) {
-        record_helper_failure(&journal, err, 1);
+        err = record_helper_failure(&journal, err, 1);
     }
     system_lock_release(&lock);
     return err;

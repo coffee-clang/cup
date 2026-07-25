@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises CUP asset inspection, source selection, checksum lookup and
+ * Test focus: Exercises cup asset inspection, source selection, checksum lookup and
  * pending-uninstall detection through controlled filesystem/system boundaries.
  */
 
@@ -165,7 +165,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     } else if (strcmp(path, "/marker") == 0) {
         *kind = marker_kind;
     } else {
-        TEST_FAIL_MESSAGE("unexpected CUP assets path");
+        TEST_FAIL_MESSAGE("unexpected cup assets path");
         return CUP_ERR_INVALID_INPUT;
     }
     return CUP_OK;
@@ -374,11 +374,7 @@ static void test_bad_assets(void) {
     make_assets_regular();
     helper_executable = 0;
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
-#if !defined(_WIN32)
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
-#else
-    TEST_ASSERT_EQUAL_INT(CUP_ASSET_VALID, inspection.helper);
-#endif
 
     reset_scenario();
     make_assets_regular();

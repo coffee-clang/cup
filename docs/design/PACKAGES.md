@@ -4,9 +4,9 @@ This document defines the package catalog and the artifact contract between
 `cup` and `cup-components`. Archive security is expanded in
 [SECURITY](SECURITY.md).
 
-## Ownership boundary
+## Repository boundary
 
-`cup-components` owns:
+`cup-components` provides:
 
 ```text
 building each tool
@@ -17,7 +17,7 @@ creating archives
 publishing SHA256SUMS
 ```
 
-`cup` owns:
+`cup` provides:
 
 ```text
 catalog parsing and tuple selection
@@ -76,7 +76,8 @@ Local choices are stored separately at `~/.cup/config/preferences.txt`:
 preferred.<host>.<target>.<component>=<tool>
 ```
 
-This mutable file has no official checksum because the user owns it. CUP parses
+This mutable file has no official checksum because it contains user-controlled
+preferences. cup parses
 it strictly, serializes entries deterministically and replaces it atomically.
 Selection order for an abbreviated component install is:
 
@@ -314,7 +315,7 @@ cross target        <target>-<entry>
 ```
 
 Entry-point planning rejects duplicate names, collisions between defaults and a
-wrapper named `cup`. See [STATE](STATE.md#managed-entry-points).
+wrapper named `cup`. See [STATE](STATE.md#managed-package-commands).
 
 ## Package validation
 
@@ -384,7 +385,7 @@ coordinated with an inventory of those release packages.
 
 ## Implementation and verification
 
-Package-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). The
+Package-module responsibilities are listed in [ARCHITECTURE](ARCHITECTURE.md). The
 focused and process-level checks for these contracts are listed in
 [TESTING](../development/TESTING.md).
 

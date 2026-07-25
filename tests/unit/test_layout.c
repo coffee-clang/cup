@@ -9,19 +9,19 @@
 #include "platform.h"
 #include "system.h"
 #include "unity.h"
+#include "constants.h"
+#include "test_platform.h"
 
 void setUp(void);
 void tearDown(void);
 
 #include <stdio.h>
-#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-layout-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 /* Test cases grouped by the public contract they exercise. */
 
@@ -36,7 +36,7 @@ static void test_package_paths(void) {
     char host[64];
 
     /* Root and fixed asset paths share the caller's HOME-derived .cup directory. */
-    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup", temp_dir) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
@@ -62,9 +62,9 @@ static void test_package_paths(void) {
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "/.cup/config/SHA256SUMS.%s", host) > 0);
     TEST_ASSERT_TRUE(strstr(path, expected) != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(strstr(path, "/.cup/helpers/uninstall.sh") != NULL);
+    TEST_ASSERT_TRUE(strstr(path, "/.cup/helpers/" CUP_UNINSTALL_FILENAME) != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(strstr(path, "/.cup/bin/cup") != NULL);
+    TEST_ASSERT_TRUE(strstr(path, "/.cup/bin/" CUP_BINARY_FILENAME) != NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_marker_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "/.cup/uninstall.pending") != NULL);
 
@@ -98,7 +98,7 @@ static void test_runtime_paths(void) {
     int exists;
 
     /* Runtime status advances from missing to incomplete and then ready. */
-    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_runtime_status(&status));
     TEST_ASSERT_EQUAL_INT(LAYOUT_RUNTIME_MISSING, status);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_runtime(&missing));
@@ -124,10 +124,14 @@ static void test_runtime_paths(void) {
         TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(root_path, sizeof(root_path)));
         TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(root_path, &is_private));
         TEST_ASSERT_TRUE(is_private);
+#if defined(_WIN32)
+        TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_root());
+#else
         TEST_ASSERT_EQUAL_INT(0, chmod(root_path, 0755));
         TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_runtime(&missing));
         TEST_ASSERT_EQUAL_size_t(1, missing);
         TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_root());
+#endif
         TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(root_path, &is_private));
         TEST_ASSERT_TRUE(is_private);
     }
@@ -165,7 +169,7 @@ static void test_recovery_paths(void) {
     char path[1024];
     int exists;
 
-    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
 
     TEST_ASSERT_EQUAL_INT(
@@ -197,8 +201,10 @@ static void test_recovery_paths(void) {
 /* Suite registration. */
 
 void register_layout_tests(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-layout-test"));
     RUN_TEST(test_package_paths);
     RUN_TEST(test_runtime_paths);
     RUN_TEST(test_recovery_paths);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
 }

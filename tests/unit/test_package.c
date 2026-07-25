@@ -16,15 +16,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
  * counters record the calls made by production code.
  */
 
-static char temp_dir[] = "/tmp/cup-package-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
+
+#if defined(_WIN32)
+#define TEST_PACKAGE_HOST "windows-x64"
+#define TEST_PACKAGE_COMMAND "clang.cmd"
+#define TEST_PACKAGE_ENTRY "bin/clang.cmd"
+#define TEST_PACKAGE_BODY "@echo off\r\nexit /b 0\r\n"
+#else
+#define TEST_PACKAGE_HOST "linux-x64"
+#define TEST_PACKAGE_COMMAND "clang"
+#define TEST_PACKAGE_ENTRY "bin/clang"
+#define TEST_PACKAGE_BODY "#!/bin/sh\nexit 0\n"
+#endif
 static unsigned int recovery_serial;
 static CupError install_path_result;
 static CupError components_path_result;
@@ -120,29 +130,31 @@ static void write_text(const char *path, const char *text) {
 }
 
 static void make_dir(const char *path) {
-    TEST_ASSERT_TRUE(test_mkdir(path, 0755) == 0 || access(path, F_OK) == 0);
+    TEST_ASSERT_TRUE(test_mkdir(path, 0755) == 0 || test_access_exists(path));
 }
 
 static void make_parent_chain(const char *relative) {
     char current[512];
-    char copy[512];
-    char *saveptr = NULL;
-    char *segment;
+    const char *cursor = relative;
 
-    TEST_ASSERT_TRUE(snprintf(copy, sizeof(copy), "%s", relative) > 0);
+    TEST_ASSERT_NOT_NULL(relative);
     TEST_ASSERT_TRUE(snprintf(current, sizeof(current), "%s", temp_dir) > 0);
-
-    segment = strtok_r(copy, "/", &saveptr);
-    while (segment != NULL) {
+    while (*cursor != '\0') {
+        const char *slash = strchr(cursor, '/');
+        size_t length = slash == NULL ? strlen(cursor) : (size_t)(slash - cursor);
+        char segment[128];
         char next[512];
 
-        if (*segment == '\0') {
-            continue;
-        }
+        TEST_ASSERT_TRUE(length > 0 && length < sizeof(segment));
+        memcpy(segment, cursor, length);
+        segment[length] = '\0';
         join_path(next, sizeof(next), current, segment);
         make_dir(next);
         TEST_ASSERT_TRUE(snprintf(current, sizeof(current), "%s", next) > 0);
-        segment = strtok_r(NULL, "/", &saveptr);
+        if (slash == NULL) {
+            break;
+        }
+        cursor = slash + 1;
     }
 }
 
@@ -156,13 +168,13 @@ static void make_valid_package_for_platform(const char *root,
     int written;
 
     join_path(bin_dir, sizeof(bin_dir), root, "bin");
-    join_path(tool_path, sizeof(tool_path), bin_dir, "clang");
+    join_path(tool_path, sizeof(tool_path), bin_dir, TEST_PACKAGE_COMMAND);
     join_path(package_metadata_path, sizeof(package_metadata_path), root, "info.txt");
 
     make_dir(root);
     make_dir(bin_dir);
-    write_text(tool_path, "#!/bin/sh\nexit 0\n");
-    TEST_ASSERT_EQUAL_INT(0, chmod(tool_path, 0755));
+    write_text(tool_path, TEST_PACKAGE_BODY);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_executable(tool_path, 1));
     written = snprintf(metadata,
                        sizeof(metadata),
                        "package.component=compiler\n"
@@ -170,7 +182,7 @@ static void make_valid_package_for_platform(const char *root,
                        "package.version=22.1.5\n"
                        "platform.host=%s\n"
                        "platform.target=%s\n"
-                       "entry.clang=bin/clang\n",
+                       "entry.clang=" TEST_PACKAGE_ENTRY "\n",
                        host,
                        target);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(metadata));
@@ -178,7 +190,7 @@ static void make_valid_package_for_platform(const char *root,
 }
 
 static void make_valid_package(const char *root) {
-    make_valid_package_for_platform(root, "linux-x64", "linux-x64");
+    make_valid_package_for_platform(root, TEST_PACKAGE_HOST, TEST_PACKAGE_HOST);
 }
 
 static const PackageIssue *find_issue(const PackageList *packages,
@@ -292,7 +304,12 @@ static void test_valid_package(void) {
     make_valid_package(root);
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(NULL, &identity));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(root, NULL));
@@ -306,7 +323,12 @@ static void test_invalid_package(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
 
     build_path(root, sizeof(root), "not-a-directory");
     write_text(root, "file\n");
@@ -318,8 +340,8 @@ static void test_invalid_package(void) {
 
     build_path(root, sizeof(root), "missing-entry");
     make_valid_package(root);
-    join_path(path, sizeof(path), root, "bin/clang");
-    TEST_ASSERT_EQUAL_INT(0, unlink(path));
+    join_path(path, sizeof(path), root, TEST_PACKAGE_ENTRY);
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
 
     build_path(root, sizeof(root), "metadata-mismatch");
@@ -329,9 +351,9 @@ static void test_invalid_package(void) {
                "package.component=compiler\n"
                "package.tool=clang\n"
                "package.version=21.1.5\n"
-               "platform.host=linux-x64\n"
-               "platform.target=linux-x64\n"
-               "entry.clang=bin/clang\n");
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
 
     build_path(root, sizeof(root), "no-declared-entry");
@@ -341,8 +363,8 @@ static void test_invalid_package(void) {
                "package.component=compiler\n"
                "package.tool=clang\n"
                "package.version=22.1.5\n"
-               "platform.host=linux-x64\n"
-               "platform.target=linux-x64\n");
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
 
     build_path(root, sizeof(root), "unsafe-entry");
@@ -352,15 +374,33 @@ static void test_invalid_package(void) {
                "package.component=compiler\n"
                "package.tool=clang\n"
                "package.version=22.1.5\n"
-               "platform.host=linux-x64\n"
-               "platform.target=linux-x64\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
                "entry.clang=../clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
 
     build_path(root, sizeof(root), "non-exec");
     make_valid_package(root);
-    join_path(path, sizeof(path), root, "bin/clang");
-    TEST_ASSERT_EQUAL_INT(0, chmod(path, 0644));
+    join_path(path, sizeof(path), root, TEST_PACKAGE_ENTRY);
+#if defined(_WIN32)
+    {
+        char non_command[512];
+        char metadata_path[512];
+
+        join_path(non_command, sizeof(non_command), root, "bin/clang");
+        TEST_ASSERT_EQUAL_INT(0, rename(path, non_command));
+        join_path(metadata_path, sizeof(metadata_path), root, "info.txt");
+        write_text(metadata_path,
+                   "package.component=compiler\n"
+                   "package.tool=clang\n"
+                   "package.version=22.1.5\n"
+                   "platform.host=" TEST_PACKAGE_HOST "\n"
+                   "platform.target=" TEST_PACKAGE_HOST "\n"
+                   "entry.clang=bin/clang\n");
+    }
+#else
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_executable(path, 0));
+#endif
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
 }
 
@@ -386,7 +426,12 @@ static void test_metadata_paths(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           layout_build_install_path(install_path, sizeof(install_path), &identity));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_path_exists(&identity, &value));
@@ -411,7 +456,7 @@ static void test_scan_roots(void) {
 
     write_text(components, "not a directory\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_scan(&packages));
-    TEST_ASSERT_EQUAL_INT(0, unlink(components));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(components));
 
     components_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_scan(&packages));
@@ -572,8 +617,8 @@ static void assert_scan_issue_quarantine(const PackageList *packages) {
     TEST_ASSERT_NOT_NULL(invalid_content);
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, package_quarantine(invalid_content, recovery_path, sizeof(recovery_path)));
-    TEST_ASSERT_EQUAL_INT(0, access(recovery_path, F_OK));
-    TEST_ASSERT_TRUE(access(invalid_content->path, F_OK) != 0);
+    TEST_ASSERT_TRUE(test_access_exists(recovery_path));
+    TEST_ASSERT_FALSE(test_access_exists(invalid_content->path));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(recovery_path, &exists));
     TEST_ASSERT_TRUE(exists);
@@ -639,7 +684,8 @@ static void test_registry_platform(void) {
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_dir, sizeof(temp_dir), "cup-package-test"));
     UNITY_BEGIN();
     RUN_TEST(test_scope_validation);
     RUN_TEST(test_identity_validation);

@@ -1,5 +1,5 @@
 /*
- * Performs read-only diagnosis of CUP assets, runtime layout, state, packages, transactions and
+ * Performs read-only diagnosis of cup assets, runtime layout, state, packages, transactions and
  * managed wrappers. Failed inspections are reported as incomplete rather than silently ignored.
  */
 
@@ -66,17 +66,17 @@ static void check_cup_update_result(DoctorReport *report) {
 
     err = cup_update_result_load(&result);
     if (err != CUP_OK) {
-        printf("Issue: the previous CUP update result is invalid.\n");
+        printf("Issue: the previous cup update result is invalid.\n");
         report->issue_count++;
         return;
     }
     if (result.status == CUP_UPDATE_RESULT_FAILED) {
-        printf("Issue: the previous CUP update failed with error %d at version %s.\n",
+        printf("Issue: the previous cup update failed with error %d at version %s.\n",
                result.error_code,
                result.version);
         report->issue_count++;
     } else if (result.status == CUP_UPDATE_RESULT_SUCCESS) {
-        printf("OK: the previous CUP update completed successfully at version %s.\n",
+        printf("OK: the previous cup update completed successfully at version %s.\n",
                result.version);
     }
 }
@@ -112,13 +112,13 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
 
     err = cup_assets_inspect(&inspection);
     if (err != CUP_OK) {
-        report_incomplete(report, "CUP assets");
+        report_incomplete(report, "cup assets");
         return CUP_OK;
     }
 
     if (cup_assets_has_installed_assets(&inspection)) {
         report_asset_status(report, "canonical cup executable", inspection.binary);
-        report_asset_status(report, "native CUP update helper", inspection.helper);
+        report_asset_status(report, "native cup update helper", inspection.helper);
         report_asset_status(report, "installed package catalog", inspection.catalog);
         report_asset_status(report, "installation configuration", inspection.install_policy);
         report_asset_status(report, "uninstall script", inspection.uninstall);
@@ -146,9 +146,9 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
             check_read_only_path(path, "platform checksum file", report);
         }
     } else if (cup_assets_development_is_valid(&inspection)) {
-        printf("OK: development CUP assets are available.\n");
+        printf("OK: development cup assets are available.\n");
     } else {
-        printf("Issue: neither installed nor development CUP assets "
+        printf("Issue: neither installed nor development cup assets "
                "are complete and valid.\n");
         report->issue_count++;
     }
@@ -485,8 +485,8 @@ static void check_transaction_journal(DoctorReport *report) {
     } else if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
         err = cup_update_journal_load(&cup_update_journal, &cup_update_status);
         printf(err == CUP_OK && cup_update_status == CUP_UPDATE_JOURNAL_LOADED
-                   ? "Issue: interrupted CUP update transaction detected.\n"
-                   : "Issue: CUP update journal is invalid.\n");
+                   ? "Issue: interrupted cup update transaction detected.\n"
+                   : "Issue: cup update journal is invalid.\n");
         report->issue_count++;
     }
 }

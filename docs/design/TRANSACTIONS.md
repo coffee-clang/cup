@@ -1,6 +1,6 @@
 # Transactions
 
-This document defines the current recovery protocol for package mutations, CUP
+This document defines the current recovery protocol for package mutations, cup
 updates and uninstall. The canonical state and paths are specified in
 [STATE](STATE.md).
 
@@ -98,7 +98,7 @@ identity absent from valid state
 A failure after state commit is not rolled back blindly. Cleanup failures are
 reported as commit failures and remain recoverable.
 
-## CUP update protocol
+## cup update protocol
 
 The public command is:
 
@@ -106,7 +106,7 @@ The public command is:
 cup update cup
 ```
 
-CUP update uses the same `transaction.txt`, but a distinct strict record:
+cup update uses the same `transaction.txt`, but a distinct strict record:
 
 ```ini
 format=1
@@ -131,7 +131,7 @@ POSIX   ~/.cup/helpers/cup-update-helper
 Windows %USERPROFILE%\.cup\helpers\cup-update-helper.exe
 ```
 
-Before scheduling an update, CUP refreshes that helper from the currently
+Before scheduling an update, cup refreshes that helper from the currently
 installed executable. The parent creates an inherited pipe and starts the helper
 with the journal token and the read endpoint. The helper proceeds only after it
 observes EOF/broken-pipe, which proves that every process holding the parent
@@ -150,7 +150,7 @@ writes the durable committed marker
 atomically replaces cup or cup.exe last              commit point
 clears transaction.txt
 writes cup-update-result.txt
-cleans staging
+cleans staging when possible
 ```
 
 The helper result is persisted at:
@@ -160,9 +160,11 @@ The helper result is persisted at:
 ```
 
 It records `success` or `failed`, the error code and the target version so a
-later command can report an update completed by the detached process.
+later command can report an update completed by the detached process. Once the
+journal has been cleared, inability to remove stale staging is reported as a
+warning and does not change an otherwise successful update into a failure.
 
-### CUP update recovery
+### cup update recovery
 
 `repair` distinguishes only the current `format=1` protocol:
 
@@ -177,7 +179,7 @@ later command can report an update completed by the detached process.
   copy after the parent process has exited;
 - any mixed, missing or invalid evidence remains blocked and is not guessed.
 
-There is no legacy update operation and no compatibility path for older CUP
+There is no legacy update operation and no compatibility path for older cup
 asset generations.
 
 ## Repair pipeline
@@ -188,7 +190,7 @@ transaction:
 ```text
 validate state/journal relationship
 recover one unambiguous transaction
-restore CUP assets and native update helper
+restore cup assets and native update helper
 scan current-host packages
 preserve foreign-host package trees
 quarantine only fully identified invalid current-host packages
@@ -202,7 +204,7 @@ or an invalid/missing state beside a package journal prevents package scanning,
 state reconciliation and wrapper changes.
 
 State records and package trees for a host different from the current host are
-reported and preserved. CUP does not adopt, quarantine, delete or operate on
+reported and preserved. cup does not adopt, quarantine, delete or operate on
 them in this generation.
 
 ## Interrupt lifecycle
@@ -220,8 +222,8 @@ exit.
   recovery rather than rolling back an uncertain commit;
 - an observed cancellable interrupt maps to public exit status `130`.
 
-After the CUP-update or uninstall handoff has been committed, the detached
-helper owns completion and the parent can no longer cancel it.
+After the cup-update or uninstall handoff has been committed, the detached
+helper is responsible for completion and the parent can no longer cancel it.
 
 ## Uninstall protocol and residues
 
@@ -238,8 +240,8 @@ installer removes such a residue only when all of these checks succeed:
 
 - the sibling is a real directory, not a link/reparse point;
 - it contains exactly the expected `root` child;
-- that root contains the CUP uninstall marker;
-- the expected canonical CUP executable exists inside it.
+- that root contains the cup uninstall marker;
+- the expected canonical cup executable exists inside it.
 
 A name prefix alone is never sufficient. Unrecognized lookalike directories are
 preserved and installation stops with a diagnostic.
@@ -258,7 +260,7 @@ This maps to the important error classes:
 
 ```text
 CUP_ERR_TRANSACTION  journal or evidence is invalid/ambiguous
-CUP_ERR_COMMIT       a replacement may be visible or cleanup failed after commit
+CUP_ERR_COMMIT       a replacement may be visible or durability is uncertain
 CUP_ERR_ROLLBACK     restoration did not complete
 CUP_ERR_LOCK         another process owns the installation
 CUP_ERR_INTERRUPT    cancellation observed at a safe boundary
@@ -268,9 +270,9 @@ CUP_ERR_INTERRUPT    cancellation observed at a safe boundary
 
 ```text
 package_transaction.c        package journal and state-based recovery
-cup_update_journal.c         CUP journal, result and recovery
+cup_update_journal.c         cup journal, result and recovery
 cup_update_helper.c          native detached update commit
-runtime_journal.c            journal ownership and command blocker
+runtime_journal.c            journal handling and command blocker
 interrupt.c                  process-wide native handler lifecycle
 command_doctor.c             read-only diagnosis
 command_repair.c             conservative ordered recovery

@@ -865,7 +865,7 @@ if sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for
     fail 'dependency scope lookup accepted an unknown package'
 fi
 notices_content=$(cat "$DEPENDENCY_NOTICES")
-assert_contains "$notices_content" 'CUP THIRD-PARTY NOTICES'
+assert_contains "$notices_content" 'cup third-party notices'
 assert_contains "$notices_content" 'Scope: runtime'
 assert_contains "$notices_content" 'Scope: test'
 assert_contains "$notices_content" \

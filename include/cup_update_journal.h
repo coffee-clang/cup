@@ -33,6 +33,12 @@ typedef enum {
     CUP_UPDATE_RECOVER_PRESERVE_BINARY
 } CupUpdateRecoveryMode;
 
+typedef enum {
+    CUP_UPDATE_RECOVERY_NONE,
+    CUP_UPDATE_RECOVERY_FINALIZED,
+    CUP_UPDATE_RECOVERY_ROLLED_BACK
+} CupUpdateRecoveryResult;
+
 typedef struct {
     char temporary_name[MAX_PATH_LEN];
     char token[MAX_PATH_LEN];
@@ -61,7 +67,8 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
                                              char *buffer,
                                              size_t size);
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
-                                    CupUpdateRecoveryMode mode);
+                                    CupUpdateRecoveryMode mode,
+                                    CupUpdateRecoveryResult *result);
 CupError cup_update_journal_clear(void);
 
 /* Detached helper result lifecycle and user-facing reporting. */

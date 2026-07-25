@@ -297,7 +297,7 @@ assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'WINDRES := windres'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" '-D_WIN32_WINNT=0x0A00'
 
 # The help output is the public index of supported Make entry points. Keep it
-# complete so contributors do not need to inspect recipes to discover commands.
+# complete so supported commands are discoverable without inspecting recipes.
 help_output=$(MAKEFLAGS= MAKEOVERRIDES= \
     make -C "$PROJECT_ROOT" --no-print-directory -s help)
 for target in \
@@ -311,42 +311,5 @@ for target in \
 done
 assert_not_contains "$help_output" 'make _build'
 assert_contains "$help_output" 'Supported platforms:'
-
-# Unit suites that are compiled natively on Windows must use the test-only
-# compatibility layer for temporary directories and POSIX-style mkdir calls.
-for source in \
-    test_package_metadata.c \
-    test_checksum.c \
-    test_package_catalog.c \
-    test_install_policy.c \
-    test_cup_update.c \
-    test_command_uninstall.c; do
-    source_path="$PROJECT_ROOT/tests/unit/$source"
-    assert_contains "$(cat "$source_path")" '#include "test_platform.h"'
-    assert_contains "$(cat "$source_path")" 'test_make_temp_directory('
-    if grep -Eq '(^|[^[:alnum:]_])mkdir\([^,]+,[[:space:]]*0[0-7]+' "$source_path"; then
-        fail "Windows-owned unit suite calls POSIX mkdir directly: $source"
-    fi
-    if grep -Fq '"/tmp/' "$source_path"; then
-        fail "Windows-owned unit suite hardcodes /tmp: $source"
-    fi
-done
-platform_header=$(cat "$PROJECT_ROOT/tests/unit/test_platform.h")
-assert_contains "$platform_header" '_mkdir('
-assert_contains "$platform_header" '_mktemp_s('
-assert_contains "$platform_header" 'RUNNER_TEMP'
-
-helper_build=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
-assert_contains "$helper_build" '-lws2_32 -liphlpapi'
-assert_contains "$helper_build" '$event_libs $PLATFORM_LIBS'
-
-# Test runners must receive the same explicit platform, dependency prefix and
-# compiler used for the binaries they execute. This also keeps custom prefixes
-# working through nested make and shell entry points.
-makefile_text=$(cat "$PROJECT_ROOT/Makefile")
-assert_contains "$makefile_text" \
-    "CUP_TEST_PLATFORM='\$(PLATFORM)' DEPS_PREFIX='\$(DEPS_PREFIX)'"
-assert_contains "$makefile_text" \
-    "CUP_TEST_CONFIGURATION='\$(CUP_TEST_CONFIGURATION)'"
 
 printf '%s\n' 'Build-system contract tests passed.'

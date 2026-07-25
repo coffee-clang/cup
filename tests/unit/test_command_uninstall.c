@@ -4,6 +4,7 @@
  */
 
 #include "cup_assets.h"
+#include "constants.h"
 #include "commands.h"
 #include "error.h"
 #include "layout.h"
@@ -15,7 +16,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
@@ -137,7 +137,7 @@ CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *sou
     }
     TEST_ASSERT_NOT_NULL(source);
     *source = CUP_ASSETS_SOURCE_INSTALLED;
-    return test_path(path, size, "uninstall.sh");
+    return test_path(path, size, CUP_UNINSTALL_FILENAME);
 }
 
 CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
@@ -166,7 +166,7 @@ CupError system_sync_parent_directory(const char *path) {
 CupError system_remove_file(const char *path) {
     TEST_ASSERT_NOT_NULL(path);
     remove_file_calls++;
-    return unlink(path) == 0 || access(path, F_OK) != 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
+    return test_unlink(path) == 0 || !test_access_exists(path) ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 unsigned long system_get_process_id(void) {
@@ -234,7 +234,7 @@ static void test_confirmation(void) {
     {
         char marker[1024];
         TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_marker_path(marker, sizeof(marker)));
-        TEST_ASSERT_EQUAL_INT(0, unlink(marker));
+        TEST_ASSERT_EQUAL_INT(0, test_unlink(marker));
     }
 }
 

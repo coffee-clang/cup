@@ -70,7 +70,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "  tool[@release]      Optional explicit selector.\n"
      "  profile|toolchain   Group kind followed by its name.\n"
      "Options:\n  --target <target-platform>  Select the target scope.\n"
-     "  -f, --format <format>       Select an archive format.\n"
+     "  -f, --format <format>       Select tar.xz, tar.gz or zip.\n"
      "  -h, --help                  Show this help.\n"
      "Defaults:\n  Omitted tool resolves preferred > official default; omitted release means "
      "stable.\n"
@@ -81,22 +81,21 @@ static const CommandHelp COMMAND_HELP[] = {
     {"remove",
      "remove <component> <tool>@<release> [--target <target-platform>]",
      "Remove one installed release.",
-     "Description:\n  Remove one concrete installed package and reconcile wrappers.\n"
+     "Description:\n  Remove one concrete installed package and update exposed commands.\n"
      "Arguments:\n  component       Installed component.\n  tool@release    Concrete installed "
      "selector.\n"
      "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup remove compiler clang@22.1.5\n"
-     "Effects:\n  Atomically updates state and wrappers; the selected package directory is "
-     "removed."},
+     "Effects:\n  Removes the selected package and updates defaults and exposed commands."},
     {"update",
      "update [cup|<tool>|<component>]",
      "Update cup or installed package scopes.",
      "Description:\n  Install stable releases for matching installed tool scopes.\n"
      "Arguments:\n  cup|tool|component  Optional update selector.\n"
      "Options:\n  -h, --help  Show this help.\n"
-     "Defaults:\n  Without a selector, updates installed tools only; CUP itself is not updated.\n"
+     "Defaults:\n  Without a selector, updates installed tools only; cup itself is not updated.\n"
      "Examples:\n  cup update\n  cup update clang\n  cup update compiler\n  cup update cup\n"
      "Effects:\n  Retains old releases; moves a default only when it selected an older release of "
      "the same tool."},
@@ -112,8 +111,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "only.\n"
      "Examples:\n  cup config\n  cup config set compiler gcc\n  cup config reset compiler --target "
      "linux-x64\n"
-     "Effects:\n  The view is read-only; set/reset atomically update preferences.txt for future "
-     "installs."},
+     "Effects:\n  The view is read-only; set/reset update installation preferences."},
     {"default",
      "default <component> <tool>@<release> [--target <target-platform>]",
      "Select one installed package as the default.",
@@ -124,22 +122,22 @@ static const CommandHelp COMMAND_HELP[] = {
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup default compiler clang@22.1.5\n"
-     "Effects:\n  Atomically updates state and rebuilds managed wrappers."},
+     "Effects:\n  Updates the selected default and exposed commands."},
     {"info",
      "info [<component>] [--target <target-platform>]",
-     "Show defaults and managed wrappers.",
+     "Show defaults and exposed commands.",
      "Description:\n  Show aggregate installed/default status for the current host.\n"
      "Arguments:\n  component  Optional component filter.\n"
      "Options:\n  --target <target-platform>  Restrict output to one target.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Shows every target when --target is omitted.\n"
      "Examples:\n  cup info\n  cup info compiler --target linux-x64\n"
-     "Effects:\n  Read-only; invalid defaults or wrappers produce degraded output and a nonzero "
+     "Effects:\n  Read-only; invalid defaults or exposed commands produce degraded output and a nonzero "
      "status."},
     {"inspect",
      "inspect <component> <tool>@<release> [--target <target-platform>]",
      "Inspect an installed package.",
-     "Description:\n  Validate one installed package and print immutable info.txt metadata.\n"
+     "Description:\n  Validate one installed package and print its metadata.\n"
      "Arguments:\n  component       Installed component.\n  tool@release    Concrete installed "
      "selector.\n"
      "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
@@ -150,9 +148,9 @@ static const CommandHelp COMMAND_HELP[] = {
     {"doctor",
      "doctor",
      "Diagnose cup without modifying files.",
-     "Description:\n  Check assets, state, packages, journals and wrappers.\n"
+     "Description:\n  Check the installation, state, packages and exposed commands.\n"
      "Arguments:\n  None.\nOptions:\n  -h, --help  Show this help.\n"
-     "Defaults:\n  Checks the current user's CUP installation.\n"
+     "Defaults:\n  Checks the current user's cup installation.\n"
      "Examples:\n  cup doctor\n"
      "Effects:\n  Strictly read-only; never initializes the cup runtime."},
     {"repair",
@@ -160,18 +158,18 @@ static const CommandHelp COMMAND_HELP[] = {
      "Apply deterministic repairs.",
      "Description:\n  Recover interrupted operations and rebuild deterministic managed data.\n"
      "Arguments:\n  None.\nOptions:\n  -h, --help  Show this help.\n"
-     "Defaults:\n  Repairs the current user's CUP installation.\n"
+     "Defaults:\n  Repairs the current user's cup installation.\n"
      "Examples:\n  cup repair\n"
-     "Effects:\n  May modify state, packages, journals, configuration assets and wrappers."},
+     "Effects:\n  May repair configuration, state, packages and exposed commands."},
     {"uninstall",
      "uninstall [--yes]",
      "Remove cup and all managed data.",
-     "Description:\n  Remove the canonical CUP root without changing PATH.\n"
+     "Description:\n  Remove the canonical cup root without changing PATH.\n"
      "Arguments:\n  None.\nOptions:\n  --yes  Skip the confirmation prompt.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Prompts before removal.\n"
      "Examples:\n  cup uninstall\n  cup uninstall --yes\n"
-     "Effects:\n  Starts a detached helper that removes CUP and every CUP-managed package."}};
+     "Effects:\n  Removes cup and every cup-managed package; PATH is unchanged."}};
 
 static const char *program_name(const char *name) {
     return name == NULL ? "cup" : name;

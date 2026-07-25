@@ -572,16 +572,22 @@ static CupError fetch_verified_generation(const CupUpdateFiles *files, const Cup
 }
 
 static CupError prepare_staged_executables(const CupUpdateFiles *files) {
-#if !defined(_WIN32)
-    CupError err = system_set_executable(files->staged_binary, 1);
-
-    if (err == CUP_OK) {
-        err = system_set_executable(files->staged_uninstall, 1);
+    if (files == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
-    return err;
-#else
-    (void)files;
+#if defined(_WIN32)
+    /* Windows executable semantics come from the canonical .exe destination. Internal staging
+     * names intentionally use .new and must not be misclassified as command files. */
     return CUP_OK;
+#else
+    {
+        CupError err = system_set_executable(files->staged_binary, 1);
+
+        if (err == CUP_OK && CUP_UNINSTALL_EXECUTABLE) {
+            err = system_set_executable(files->staged_uninstall, 1);
+        }
+        return err;
+    }
 #endif
 }
 

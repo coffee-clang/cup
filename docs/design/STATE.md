@@ -20,7 +20,7 @@ A fixed root provides one location for:
 
 - operating-system locking;
 - transaction and uninstall markers;
-- CUP assets verification;
+- cup assets verification;
 - package identity paths;
 - deterministic repair;
 - managed wrappers.
@@ -46,13 +46,13 @@ A fixed root provides one location for:
     uninstall.ps1         Windows
   state.txt
   transaction.txt         present only while a transaction is pending
-  cup-update-result.txt   result of the last detached CUP update
+  cup-update-result.txt   result of the last detached cup update
   cup.lock
-  uninstall.pending       present only while uninstall is pending
+  uninstall.pending       one parent_pid=<decimal> record while uninstall is pending
 ```
 
-The CUP asset installer initially creates `bin`, `config` and `helpers`,
-including the native CUP-update helper. The first operational command or
+The cup asset installer initially creates `bin`, `config` and `helpers`,
+including the native cup-update helper. The first operational command or
 `repair` creates the remaining runtime directories and state/lock files.
 
 ## Package and cache paths
@@ -132,7 +132,7 @@ only when no pending transaction makes the intended commit ambiguous.
 
 ## Foreign-host preservation
 
-A single CUP process manages only packages executable on its current host;
+A single cup process manages only packages executable on its current host;
 cross-compilation is represented by `target`, not by a foreign `host`. `doctor`
 reports foreign-host state records and package trees. `repair` preserves them
 byte-for-byte but does not adopt, quarantine, delete or select them. Operational
@@ -243,10 +243,10 @@ A process can terminate while holding a lock, causing the operating system to
 release the lock while persistent filesystem changes remain. The journal
 records what must be recovered next.
 
-## CUP assets state
+## cup assets state
 
 The package catalog, official installation policy, common checksums, platform
-checksums, uninstall helper, native CUP-update helper and canonical executable are inspected as one CUP
+checksums, uninstall helper, native cup-update helper and canonical executable are inspected as one cup
 asset generation. `SHA256SUMS.common` covers both `packages.cfg` and
 `install.cfg`; their published checksums and file protections are checked by
 `doctor`. An official `repair` restores only assets that can be replaced safely
@@ -259,8 +259,8 @@ locally mutable overlay written atomically by `cup config`, parsed strictly and
 removed when the last scoped preference is reset. It never changes installed-package
 state or the selected default version of an installed component.
 
-CUP assets metadata and installation preferences are not stored in `state.txt`.
-Package state, CUP assets integrity and local selection policy have different
+cup assets metadata and installation preferences are not stored in `state.txt`.
+Package state, cup assets integrity and local selection policy have different
 lifecycles and recovery mechanisms.
 
 ## Invalid state preservation
@@ -308,7 +308,7 @@ operation. See [TRANSACTIONS](TRANSACTIONS.md).
 
 ## Implementation and verification
 
-State-module ownership is listed in [ARCHITECTURE](ARCHITECTURE.md). Persistence,
+State-module responsibilities are listed in [ARCHITECTURE](ARCHITECTURE.md). Persistence,
 recovery and process-level verification are described in
 [TRANSACTIONS](TRANSACTIONS.md) and [TESTING](../development/TESTING.md).
 

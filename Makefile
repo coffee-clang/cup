@@ -422,7 +422,7 @@ help:
 		'  make test                    unit and native integration tests' \
 		'  make test-unit               C unit tests' \
 		'  make test-integration        native integration tests' \
-		'  make quality                 repository and workflow quality checks' \
+		'  make quality                 repository and release-script quality checks' \
 		'  make check                   dependencies, tests and quality checks' \
 		'  make test-coverage           coverage gate and reports' \
 		'  make test-sanitizers         ASan/UBSan gate' \

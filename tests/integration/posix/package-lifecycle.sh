@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Owns the public install, catalog, default, update, inspect and remove
+# Purpose: Exercises the public install, catalog, default, update, inspect and remove
 # workflow. State-file schema and malformed persistence belong to state.sh.
 set -eu
 

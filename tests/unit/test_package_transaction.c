@@ -4,6 +4,7 @@
  */
 
 #include "cup_assets.h"
+#include "constants.h"
 #include "package_selector.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -11,18 +12,15 @@
 #include "path.h"
 #include "state.h"
 #include "system.h"
+#include "text.h"
 #include "package_transaction.h"
 #include "unity.h"
 #include "test_platform.h"
 
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Scenario controls and observations. Configured results drive the boundary doubles below;
@@ -57,24 +55,7 @@ static void join_test_path(char *buffer, size_t size, const char *left, const ch
 }
 
 static void remove_tree_real(const char *path) {
-    DIR *directory = opendir(path);
-    struct dirent *entry;
-
-    if (directory == NULL) {
-        unlink(path);
-        return;
-    }
-    while ((entry = readdir(directory)) != NULL) {
-        char child[MAX_PATH_LEN];
-
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        join_test_path(child, sizeof(child), path, entry->d_name);
-        remove_tree_real(child);
-    }
-    closedir(directory);
-    rmdir(path);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(path));
 }
 
 static void make_dir(const char *path) {
@@ -110,11 +91,12 @@ static PackageIdentity package_identity(void) {
 }
 
 static void reset_scenario(void) {
-    char template_path[] = "/tmp/cup-transaction-unit-XXXXXX";
+    char template_path[CUP_TEST_TEMP_PATH_SIZE];
     char tmp[MAX_PATH_LEN];
     char bin[MAX_PATH_LEN];
 
-    TEST_ASSERT_NOT_NULL(mkdtemp(template_path));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        template_path, sizeof(template_path), "cup-transaction-unit"));
     strcpy(root, template_path);
     join_test_path(tmp, sizeof(tmp), root, "staging");
     join_test_path(bin, sizeof(bin), root, "bin");
@@ -176,11 +158,21 @@ CupError layout_ensure_package_parent(const PackageIdentity *package) {
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "bin/cup");
+    char relative[MAX_PATH_LEN];
+
+    if (text_format(relative, sizeof(relative), "bin/%s", CUP_BINARY_FILENAME) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    return path_join(buffer, size, root, relative);
 }
 
 CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "bin/uninstall.sh");
+    char relative[MAX_PATH_LEN];
+
+    if (text_format(relative, sizeof(relative), "bin/%s", CUP_UNINSTALL_FILENAME) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    return path_join(buffer, size, root, relative);
 }
 
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
@@ -208,17 +200,10 @@ CupError system_create_temp_file(
     if (written < 0 || (size_t)written >= path_size) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    descriptor = mkstemp(path);
-    if (descriptor < 0) {
-        return CUP_ERR_TEMPORARY;
-    }
-    *file = fdopen(descriptor, "w+b");
-    if (*file == NULL) {
-        close(descriptor);
-        unlink(path);
-        return CUP_ERR_TEMPORARY;
-    }
-    return CUP_OK;
+    (void)descriptor;
+    return test_create_temp_file(directory, prefix, path, path_size, file) == 0
+               ? CUP_OK
+               : CUP_ERR_TEMPORARY;
 }
 
 CupError system_sync_file(FILE *file) {
@@ -247,7 +232,7 @@ CupError system_path_exists(const char *path, int *exists) {
     if (path_exists_result != CUP_OK) {
         return path_exists_result;
     }
-    *exists = access(path, F_OK) == 0;
+    *exists = test_access_exists(path);
     return CUP_OK;
 }
 
@@ -255,7 +240,7 @@ CupError system_remove_file(const char *path) {
     if (remove_result != CUP_OK) {
         return remove_result;
     }
-    return unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+    return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 CupError system_sync_parent_directory(const char *path) {
@@ -265,18 +250,16 @@ CupError system_sync_parent_directory(const char *path) {
 }
 
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
-    struct stat status;
+    TestPlatformStat status;
 
-    if (lstat(path, &status) != 0) {
+    if (test_stat_path(path, &status) != 0) {
         *kind = errno == ENOENT ? SYSTEM_PATH_MISSING : SYSTEM_PATH_OTHER;
         return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
     }
-    if (S_ISREG(status.st_mode)) {
+    if (test_stat_is_regular(&status)) {
         *kind = SYSTEM_PATH_REGULAR_FILE;
-    } else if (S_ISDIR(status.st_mode)) {
+    } else if (test_stat_is_directory(&status)) {
         *kind = SYSTEM_PATH_DIRECTORY;
-    } else if (S_ISLNK(status.st_mode)) {
-        *kind = SYSTEM_PATH_LINK;
     } else {
         *kind = SYSTEM_PATH_OTHER;
     }
@@ -334,7 +317,7 @@ CupError package_validate(const char *base_path, const PackageIdentity *identity
     if (path_join(marker, sizeof(marker), base_path, "valid") != CUP_OK) {
         return CUP_ERR_VALIDATION;
     }
-    return access(marker, F_OK) == 0 ? CUP_OK : CUP_ERR_VALIDATION;
+    return test_access_exists(marker) ? CUP_OK : CUP_ERR_VALIDATION;
 }
 
 CupError package_selector_format_parts(char *buffer,
@@ -585,9 +568,9 @@ static void test_recover_installed(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_recover(&transaction, &state));
     TEST_ASSERT_EQUAL_INT(1, backup_calls);
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(backup, sizeof(backup), root, "install.invalid"));
-    TEST_ASSERT_TRUE(access(backup, F_OK) == 0);
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
-    TEST_ASSERT_TRUE(access(install, F_OK) == 0);
+    TEST_ASSERT_TRUE(test_access_exists(backup));
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
+    TEST_ASSERT_TRUE(test_access_exists(install));
 }
 
 static void test_recover_existing(void) {
@@ -611,8 +594,8 @@ static void test_recover_existing(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_recover(&transaction, &state));
     TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
-    TEST_ASSERT_TRUE(access(install, F_OK) == 0);
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+    TEST_ASSERT_TRUE(test_access_exists(install));
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
 static void test_recover_absent(void) {
@@ -635,8 +618,8 @@ static void test_recover_absent(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_recover(&transaction, &state));
     TEST_ASSERT_EQUAL_INT(2, remove_tree_calls);
-    TEST_ASSERT_TRUE(access(install, F_OK) != 0);
-    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+    TEST_ASSERT_TRUE(!test_access_exists(install));
+    TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
 static void test_recover_failures(void) {

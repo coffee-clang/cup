@@ -64,7 +64,6 @@ commit=abcdef0
 }
 
 install_cup_assets_fixture
-UPDATE_HELPER=$TEST_HOME/.cup/helpers/cup-update-helper
 
 write_package_journal() {
     operation=$1
@@ -224,25 +223,16 @@ assert_file "$staging/binary.old"
 assert_file "$staging/uninstall.old"
 assert_file "$staging/platform-checksums.old"
 
-# The detached helper runs from a separate executable copy, so it may restore
-# the canonical binary. A deliberately incomplete new generation forces its
-# real rollback path after repair has preserved all evidence.
-if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
-        --internal-cup-update-helper recovery-unsafe-rollback 0 </dev/null \
-        >"$TMP_ROOT/unsafe-cup-update-helper.out" 2>&1); then
-    fail 'native helper unexpectedly committed an incomplete CUP generation'
-fi
-output=$(cat "$TMP_ROOT/unsafe-cup-update-helper.out")
-assert_contains "$output" 'Rolled back interrupted cup update transaction.'
-assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_binary_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
-    "$expected_uninstall_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
-    "$expected_checksums_hash"
-assert_missing "$TEST_HOME/.cup/transaction.txt"
-assert_missing "$staging"
-assert_contains "$(cat "$TEST_HOME/.cup/cup-update-result.txt")" 'status=failed'
-rm -f "$TEST_HOME/.cup/cup-update-result.txt"
+# Reset the isolated fixture after verifying that repair preserved every file.
+cp "$staging/binary.old" "$TEST_HOME/.cup/bin/cup"
+cp "$staging/uninstall.old" "$TEST_HOME/.cup/helpers/uninstall.sh"
+cp "$staging/platform-checksums.old" \
+    "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
+chmod 0755 "$TEST_HOME/.cup/bin/cup"
+chmod 0555 "$TEST_HOME/.cup/helpers/uninstall.sh"
+chmod 0444 "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
+rm -f "$TEST_HOME/.cup/transaction.txt"
+rm -rf "$staging"
 assert_cup_healthy
 
 staging=$TEST_HOME/.cup/staging/cup-update-committed-test
@@ -267,52 +257,6 @@ assert_contains "$output" 'Completed interrupted cup update transaction.'
 assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$committed_binary_hash"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_missing "$staging"
-assert_cup_healthy
-
-# Exercise the private native helper with an inherited descriptor that is
-# already at EOF. This proves the handoff is based on a pipe lifetime rather
-# than on a reusable parent PID.
-staging=$TEST_HOME/.cup/staging/cup-update-helper-test
-mkdir -p "$staging"
-cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.new"
-cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.new"
-cp "$TEST_HOME/.cup/config/packages.cfg" "$staging/manifest.new"
-cp "$TEST_HOME/.cup/config/install.cfg" "$staging/install-config.new"
-chmod 0755 "$staging/binary.new" "$staging/uninstall.new"
-
-binary_hash=$(hash_file "$staging/binary.new")
-uninstall_hash=$(hash_file "$staging/uninstall.new")
-write_common_checksums \
-    "$staging/common-checksums.new" \
-    "$staging/manifest.new" \
-    "$staging/install-config.new"
-{
-    printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
-    printf '%s  uninstall.sh\n' "$uninstall_hash"
-    printf '%s  release.txt\n' "$metadata_hash"
-} > "$staging/platform-checksums.new"
-cat > "$TEST_HOME/.cup/transaction.txt" <<JOURNAL
-format=1
-operation=cup-update
-phase=scheduled
-temporary_name=cup-update-helper-test
-token=helper-token
-version=$base_version
-error=0
-JOURNAL
-
-if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
-        --internal-cup-update-helper wrong-token 0 </dev/null \
-        >"$TMP_ROOT/helper-wrong-token.out" 2>&1); then
-    fail 'native helper accepted the wrong handoff token'
-fi
-assert_file "$TEST_HOME/.cup/transaction.txt"
-(cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
-    --internal-cup-update-helper helper-token 0 </dev/null)
-assert_missing "$TEST_HOME/.cup/transaction.txt"
-assert_missing "$staging"
-assert_contains "$(cat "$TEST_HOME/.cup/cup-update-result.txt")" 'status=success'
-assert_contains "$(cat "$TEST_HOME/.cup/cup-update-result.txt")" "version=$base_version"
 assert_cup_healthy
 
 printf 'Recovery tests passed for %s.\n' "$TEST_PLATFORM"

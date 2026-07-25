@@ -11,6 +11,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "package_archive.h"
+#include "platform.h"
 #include "system.h"
 #include "unity.h"
 #include "test_platform.h"
@@ -24,8 +25,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #if defined(CUP_USE_OPENSSL_INIT)
 #include <openssl/ssl.h>
@@ -44,7 +43,7 @@ int OPENSSL_init_ssl(uint64_t options, const OPENSSL_INIT_SETTINGS *settings) {
  * counters record the calls made by production code.
  */
 
-static char temp_home[] = "/tmp/cup-package-cache-test-XXXXXX";
+static char temp_home[CUP_TEST_TEMP_PATH_SIZE];
 static CURLcode mock_global_result;
 static CURLcode mock_perform_result;
 static CURLcode mock_info_result;
@@ -244,7 +243,7 @@ CupError package_archive_is_valid(const char *archive_path,
                                   const char *expected_format,
                                   int *is_valid) {
     CupError result = CUP_OK;
-    int value = access(archive_path, F_OK) == 0;
+    int value = test_access_exists(archive_path);
 
     if (expected_format != NULL) {
         TEST_ASSERT_EQUAL_STRING("tar.gz", expected_format);
@@ -349,10 +348,12 @@ static PackageIdentity identity_for(const char *version) {
     memset(&identity, 0, sizeof(identity));
     TEST_ASSERT_TRUE(snprintf(identity.component, sizeof(identity.component), "compiler") > 0);
     TEST_ASSERT_TRUE(snprintf(identity.tool, sizeof(identity.tool), "clang") > 0);
-    TEST_ASSERT_TRUE(snprintf(identity.host_platform, sizeof(identity.host_platform), "linux-x64") >
-                     0);
-    TEST_ASSERT_TRUE(
-        snprintf(identity.target_platform, sizeof(identity.target_platform), "linux-x64") > 0);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, platform_get_host(identity.host_platform, sizeof(identity.host_platform)));
+    TEST_ASSERT_TRUE(snprintf(identity.target_platform,
+                              sizeof(identity.target_platform),
+                              "%s",
+                              identity.host_platform) > 0);
     TEST_ASSERT_TRUE(snprintf(identity.version, sizeof(identity.version), "%s", version) > 0);
     return identity;
 }
@@ -406,7 +407,7 @@ static void test_file_success(void) {
     reset_mocks();
     build_path(destination, sizeof(destination), "readonly.out");
     write_text(destination, "old\n");
-    TEST_ASSERT_EQUAL_INT(0, chmod(destination, 0444));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(destination, 1));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         download_file("https://example.invalid/resource", destination, DOWNLOAD_VALIDATE_NONEMPTY));
@@ -794,7 +795,7 @@ static void test_package_failures(void) {
                                               "tar.gz",
                                               PACKAGE_CACHE_REFRESH,
                                               &source));
-    TEST_ASSERT_TRUE(access(archive_path, F_OK) != 0);
+    TEST_ASSERT_FALSE(test_access_exists(archive_path));
 
     reset_mocks();
     identity = identity_for("22.1.5-test-checksum-dir");
@@ -833,16 +834,17 @@ static void test_cache_discard(void) {
 
     build_path(path, sizeof(path), "readonly-cache");
     write_text(path, "archive\n");
-    TEST_ASSERT_EQUAL_INT(0, chmod(path, 0444));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(path, 1));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_cache_discard(path));
-    TEST_ASSERT_TRUE(access(path, F_OK) != 0);
+    TEST_ASSERT_FALSE(test_access_exists(path));
 }
 
 /* Suite registration. */
 
 int main(void) {
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_home));
-    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_home, 1));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
+        temp_home, sizeof(temp_home), "cup-package-cache-test"));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_home));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
 
     UNITY_BEGIN();
