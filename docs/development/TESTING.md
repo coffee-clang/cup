@@ -158,7 +158,12 @@ make PLATFORM=<platform> test-release RELEASE_DIR=<candidate-directory>
 Release tests consume an already assembled candidate. They do not rebuild CUP.
 They verify the exact executable and common assets that are eligible for
 publication, including checksums, version identity, CLI startup and installer or
-uninstaller behavior.
+uninstaller behavior. The native POSIX and Windows suites also remove a
+repairable runtime directory, run `cup repair`, and verify that the canonical
+`cup` or `cup.exe` bytes remain unchanged and executable afterward. Unit tests
+exercise the detached update commit order and interrupted-update recovery so the
+canonical executable remains continuously available and repair cannot replace
+the process that is performing the repair.
 
 In GitHub Actions the candidate is uploaded once, downloaded onto its native
 runner and tested there. Publication consumes the same artifact bytes only after

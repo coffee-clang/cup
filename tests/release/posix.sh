@@ -81,3 +81,16 @@ case "$doctor_output" in
         ;;
 esac
 printf '%s\n' "$doctor_output" | grep -F 'Doctor found no issues.' >/dev/null
+
+# Repair may recreate mutable runtime paths, but it must never replace or remove the
+# currently installed executable on either POSIX or Windows.
+binary_hash_before=$(hash_file "$installed_cup")
+rm -rf "$test_home/.cup/staging"
+repair_output=$(
+    cd "$test_home"
+    HOME="$test_home" "$installed_cup" repair 2>&1
+)
+printf '%s\n' "$repair_output"
+test -d "$test_home/.cup/staging"
+test "$(hash_file "$installed_cup")" = "$binary_hash_before"
+HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"

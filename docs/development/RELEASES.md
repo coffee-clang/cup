@@ -235,6 +235,15 @@ assets. Platform checksum files cover the executable, uninstall helper and
 release metadata; `SHA256SUMS.common` covers the shared configuration assets.
 Development identities cannot establish an official installed generation.
 
+The detached update helper validates the complete staged generation before
+committing it. It copies every installed asset to a rollback backup, atomically
+replaces the supporting assets, writes the durable commit marker and replaces
+the canonical `cup` or `cup.exe` executable last. The canonical executable
+therefore remains present throughout the protocol on POSIX and Windows. Helper
+recovery may complete or roll back a replacement because it runs from a separate
+copy; `cup repair` never replaces its own running executable and preserves the
+journal and staging evidence when safe recovery would require doing so.
+
 ## Related documents
 
 - [BUILD](BUILD.md) — dependency compatibility and official build configuration;

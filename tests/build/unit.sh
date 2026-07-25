@@ -264,6 +264,14 @@ if [ "$PLATFORM" != windows-x64 ]; then
     compile_test test_cup_update_journal \
         "$ROOT/tests/unit/test_cup_update_journal.c" \
         "$ROOT/src/cup_update_journal.c" \
+        "$ROOT/src/checksum.c" \
+        "$ROOT/src/sha256.c" \
+        "$ROOT/src/path.c" \
+        "$ROOT/src/text.c"
+
+    compile_test test_cup_update_helper \
+        "$ROOT/tests/unit/test_cup_update_helper.c" \
+        "$ROOT/src/cup_update_helper.c" \
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c"
 

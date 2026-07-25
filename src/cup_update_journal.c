@@ -6,6 +6,7 @@
 #include "cup_update_journal.h"
 
 #include "cup_assets.h"
+#include "checksum.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
@@ -523,9 +524,58 @@ static CupError set_asset_permissions(const CupUpdateAsset *asset) {
     return CUP_OK;
 }
 
+static CupError files_are_equal(const char *left, const char *right, int *equal) {
+    char left_hash[SHA256_HEX_LENGTH + 1];
+    char right_hash[SHA256_HEX_LENGTH + 1];
+    CupError err;
+
+    if (text_is_empty(left) || text_is_empty(right) || equal == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *equal = 0;
+    err = checksum_sha256_file(left, left_hash, sizeof(left_hash));
+    if (err == CUP_OK) {
+        err = checksum_sha256_file(right, right_hash, sizeof(right_hash));
+    }
+    if (err == CUP_OK) {
+        *equal = strcmp(left_hash, right_hash) == 0;
+    }
+    return err;
+}
+
+static CupError validate_preserved_binary(const char *staging, const CupUpdateAsset *asset) {
+    char backup[MAX_PATH_LEN];
+    SystemPathKind backup_kind;
+    SystemPathKind destination_kind;
+    CupError err;
+    int equal;
+
+    err = path_join(backup, sizeof(backup), staging, asset->backup_name);
+    if (err == CUP_OK) {
+        err = system_get_path_kind(backup, &backup_kind);
+    }
+    if (err == CUP_OK) {
+        err = system_get_path_kind(asset->destination, &destination_kind);
+    }
+    if (err != CUP_OK || destination_kind != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_TRANSACTION;
+    }
+    if (backup_kind == SYSTEM_PATH_MISSING) {
+        return CUP_OK;
+    }
+    if (backup_kind != SYSTEM_PATH_REGULAR_FILE) {
+        return CUP_ERR_TRANSACTION;
+    }
+
+    err = files_are_equal(backup, asset->destination, &equal);
+    return err == CUP_OK && equal ? CUP_OK : CUP_ERR_TRANSACTION;
+}
+
 /* Recovery after helper interruption. The committed marker decides whether backups are restored or
  * cleanup is completed. */
-static CupError restore_cup_update_asset(const char *staging, const CupUpdateAsset *asset) {
+static CupError restore_cup_update_asset(const char *staging,
+                                         const CupUpdateAsset *asset,
+                                         int preserve_destination) {
     char backup[MAX_PATH_LEN];
     CupError err;
     SystemPathKind backup_kind = SYSTEM_PATH_MISSING;
@@ -551,6 +601,15 @@ static CupError restore_cup_update_asset(const char *staging, const CupUpdateAss
         (destination_kind != SYSTEM_PATH_MISSING && destination_kind != SYSTEM_PATH_REGULAR_FILE)) {
         return CUP_ERR_TRANSACTION;
     }
+    if (preserve_destination) {
+        int equal;
+
+        if (destination_kind != SYSTEM_PATH_REGULAR_FILE ||
+            files_are_equal(backup, asset->destination, &equal) != CUP_OK || !equal) {
+            return CUP_ERR_TRANSACTION;
+        }
+        return set_asset_permissions(asset);
+    }
     if (destination_kind == SYSTEM_PATH_REGULAR_FILE &&
         system_set_read_only(asset->destination, 0) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
@@ -566,7 +625,8 @@ static CupError restore_cup_update_asset(const char *staging, const CupUpdateAss
     return CUP_OK;
 }
 
-CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
+CupError cup_update_journal_recover(const CupUpdateJournal *journal,
+                                    CupUpdateRecoveryMode mode) {
     CupAssetsInspection inspection;
     CupError err;
     char staging[MAX_PATH_LEN];
@@ -580,6 +640,12 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
     SystemPathKind marker_kind = SYSTEM_PATH_MISSING;
     CupUpdateAsset assets[6];
     size_t i;
+
+    if (journal == NULL ||
+        (mode != CUP_UPDATE_RECOVER_REPLACE_BINARY &&
+         mode != CUP_UPDATE_RECOVER_PRESERVE_BINARY)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     /* Resolve canonical destinations and inspect the durable commit marker first. */
     err = cup_update_journal_get_staging_path(journal, staging, sizeof(staging));
@@ -636,9 +702,21 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal) {
         return CUP_ERR_TRANSACTION;
     }
 
+    /* Repair must never replace its own running executable. Validate that the canonical binary is
+     * already the backed-up generation before changing any supporting asset. */
+    if (mode == CUP_UPDATE_RECOVER_PRESERVE_BINARY &&
+        validate_preserved_binary(staging, &assets[0]) != CUP_OK) {
+        fprintf(stderr,
+                "Error: interrupted cup update recovery would replace the running executable. "
+                "Repair preserved cup and all transaction evidence; run the official installer "
+                "to recover safely.\n");
+        return CUP_ERR_TRANSACTION;
+    }
+
     /* Without a valid committed generation, restore every original asset and verify the result. */
     for (i = 0; i < sizeof(assets) / sizeof(assets[0]); ++i) {
-        err = restore_cup_update_asset(staging, &assets[i]);
+        err = restore_cup_update_asset(
+            staging, &assets[i], mode == CUP_UPDATE_RECOVER_PRESERVE_BINARY && i == 0);
         if (err != CUP_OK) {
             return err;
         }

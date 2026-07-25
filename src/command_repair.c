@@ -472,7 +472,7 @@ static CupError repair_binary(void) {
     char asset_name[MAX_IDENTIFIER_LEN];
     int is_regular;
     int is_executable;
-    int matches;
+    int matches = 0;
 
     if (layout_get_binary_path(binary_path, sizeof(binary_path)) != CUP_OK ||
         layout_get_platform_checksums_path(checksums_path, sizeof(checksums_path)) != CUP_OK ||
@@ -484,37 +484,36 @@ static CupError repair_binary(void) {
     if (err != CUP_OK) {
         return err;
     }
-    if (is_regular &&
-        cup_assets_verify_asset(checksums_path, asset_name, binary_path, &matches) == CUP_OK &&
-        matches) {
-        err = system_is_executable(binary_path, &is_executable);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (!is_executable) {
-            err = system_set_executable(binary_path, 1);
-            if (err == CUP_OK) {
-                printf("Restored executable permissions on canonical cup executable.\n");
+    if (is_regular) {
+        err = cup_assets_verify_asset(checksums_path, asset_name, binary_path, &matches);
+        if (err != CUP_OK || !matches) {
+            err = refresh_platform_checksums();
+            if (err != CUP_OK) {
+                return err;
             }
-            return err;
+            err = cup_assets_verify_asset(checksums_path, asset_name, binary_path, &matches);
         }
-        return CUP_OK;
     }
 
-    err = refresh_platform_checksums();
+    if (!is_regular || err != CUP_OK || !matches) {
+        fprintf(stderr,
+                "Error: the canonical cup executable is missing or does not match the official "
+                "release. Repair preserved it unchanged; run the official installer to replace "
+                "it safely.\n");
+        return err == CUP_OK ? CUP_ERR_VALIDATION : err;
+    }
+
+    err = system_is_executable(binary_path, &is_executable);
     if (err != CUP_OK) {
         return err;
     }
-
-#if defined(_WIN32)
-    fprintf(stderr,
-            "Error: the running cup executable is missing or altered. "
-            "Run the official installer to replace it safely on Windows.\n");
-    return CUP_ERR_VALIDATION;
-#else
-    printf("Restoring canonical cup executable.\n");
-    return restore_asset(binary_path, asset_name, checksums_path, REPAIR_ASSET_EXECUTABLE);
-#endif
+    if (!is_executable) {
+        err = system_set_executable(binary_path, 1);
+        if (err == CUP_OK) {
+            printf("Restored executable permissions on canonical cup executable.\n");
+        }
+    }
+    return err;
 }
 
 static CupError repair_uninstall_script(void) {
@@ -854,7 +853,8 @@ static CupError repair_pending_transaction(RepairContext *context) {
     } else {
         err = cup_update_journal_load(&context->cup_update_journal, &update_status);
         if (err == CUP_OK && update_status == CUP_UPDATE_JOURNAL_LOADED) {
-            err = cup_update_journal_recover(&context->cup_update_journal);
+            err = cup_update_journal_recover(&context->cup_update_journal,
+                                             CUP_UPDATE_RECOVER_PRESERVE_BINARY);
         } else {
             err = CUP_ERR_TRANSACTION;
         }

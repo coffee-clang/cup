@@ -414,7 +414,8 @@ static void test_recover_committed(void) {
     write_file(marker, "ok");
     write_journal("journal");
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_recover(&journal));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY));
     TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
     TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
@@ -433,10 +434,61 @@ static void test_recover_rollback(void) {
     create_destination_files();
     write_journal("journal");
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_recover(&journal));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     assert_file_text(path, "old");
     TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+}
+
+static void test_recover_preserves_running_binary(void) {
+    CupUpdateJournal journal;
+    char staging[MAX_PATH_LEN];
+    char binary[MAX_PATH_LEN];
+    char uninstall[MAX_PATH_LEN];
+
+    cup_update_journal_init(&journal);
+    strcpy(journal.temporary_name, "cup-update-preserve");
+    make_staging(journal.temporary_name, staging, sizeof(staging));
+    create_backups(staging);
+    create_destination_files();
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
+    write_file(binary, "old");
+    write_journal("journal");
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY));
+    assert_file_text(binary, "old");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
+    assert_file_text(uninstall, "old");
+    TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
+}
+
+static void test_recover_rejects_running_binary_replacement(void) {
+    CupUpdateJournal journal;
+    char staging[MAX_PATH_LEN];
+    char binary[MAX_PATH_LEN];
+    char uninstall[MAX_PATH_LEN];
+    char journal_path[MAX_PATH_LEN];
+
+    cup_update_journal_init(&journal);
+    strcpy(journal.temporary_name, "cup-update-preserve-mismatch");
+    make_staging(journal.temporary_name, staging, sizeof(staging));
+    create_backups(staging);
+    create_destination_files();
+    write_journal("journal");
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
+    assert_file_text(binary, "new");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
+    assert_file_text(uninstall, "new");
+    TEST_ASSERT_TRUE(access(staging, F_OK) == 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
+    TEST_ASSERT_TRUE(access(journal_path, F_OK) == 0);
 }
 
 /* Suite registration. */
@@ -448,5 +500,7 @@ int main(void) {
     RUN_TEST(test_persisted_result);
     RUN_TEST(test_recover_committed);
     RUN_TEST(test_recover_rollback);
+    RUN_TEST(test_recover_preserves_running_binary);
+    RUN_TEST(test_recover_rejects_running_binary_replacement);
     return UNITY_END();
 }

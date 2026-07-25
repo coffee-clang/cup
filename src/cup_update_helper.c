@@ -151,55 +151,60 @@ static CupError validate_staged_assets(const char *staging,
     return CUP_OK;
 }
 
-/* Commit protocol. Destinations are backed up before replacement and restored only while the commit
- * marker is absent. */
+/* Commit protocol. Backups are copies so every canonical destination remains present until its
+ * atomically verified replacement is committed. */
 static CupError backup_destinations(const char *staging, const HelperAsset *assets, size_t count) {
     size_t i;
 
     for (i = 0; i < count; ++i) {
         char backup[MAX_PATH_LEN];
-        SystemPathKind kind;
-        SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-        CupError err;
+        SystemPathKind destination_kind;
+        SystemPathKind backup_kind;
 
         if (build_asset_path(staging, assets[i].old_name, backup, sizeof(backup)) != CUP_OK ||
-            system_get_path_kind(assets[i].destination, &kind) != CUP_OK) {
+            system_get_path_kind(assets[i].destination, &destination_kind) != CUP_OK ||
+            system_get_path_kind(backup, &backup_kind) != CUP_OK) {
             return CUP_ERR_TRANSACTION;
         }
-        if (kind == SYSTEM_PATH_MISSING) {
+        if (destination_kind == SYSTEM_PATH_MISSING) {
             return CUP_ERR_VALIDATION;
         }
-        if (kind != SYSTEM_PATH_REGULAR_FILE ||
-            system_set_read_only(assets[i].destination, 0) != CUP_OK) {
+        if (destination_kind != SYSTEM_PATH_REGULAR_FILE ||
+            backup_kind != SYSTEM_PATH_MISSING ||
+            system_copy_file(assets[i].destination, backup) != CUP_OK) {
             return CUP_ERR_TRANSACTION;
-        }
-        err = system_move_path(assets[i].destination, backup, &commit_state);
-        if (err != CUP_OK) {
-            return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
         }
     }
     return CUP_OK;
 }
 
-static CupError install_staged_assets(const char *staging,
-                                      const HelperAsset *assets,
-                                      size_t count) {
+static CupError install_staged_asset(const char *staging, const HelperAsset *asset) {
+    char source[MAX_PATH_LEN];
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    CupError err;
+
+    if (build_asset_path(staging, asset->new_name, source, sizeof(source)) != CUP_OK ||
+        system_set_read_only(asset->destination, 0) != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
+
+    err = system_replace_file(source, asset->destination, &commit_state);
+    if (err != CUP_OK) {
+        return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
+    }
+    return set_asset_permissions(asset) == CUP_OK ? CUP_OK : CUP_ERR_COMMIT;
+}
+
+static CupError install_supporting_assets(const char *staging,
+                                          const HelperAsset *assets,
+                                          size_t count) {
     size_t i;
 
-    for (i = 0; i < count; ++i) {
-        char source[MAX_PATH_LEN];
-        SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-        CupError err;
+    for (i = 1; i < count; ++i) {
+        CupError err = install_staged_asset(staging, &assets[i]);
 
-        if (build_asset_path(staging, assets[i].new_name, source, sizeof(source)) != CUP_OK) {
-            return CUP_ERR_TRANSACTION;
-        }
-        err = system_move_path(source, assets[i].destination, &commit_state);
         if (err != CUP_OK) {
-            return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
-        }
-        if (set_asset_permissions(&assets[i]) != CUP_OK) {
-            return CUP_ERR_COMMIT;
+            return err;
         }
     }
     return CUP_OK;
@@ -221,13 +226,18 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
         err = backup_destinations(staging, assets, sizeof(assets) / sizeof(assets[0]));
     }
     if (err == CUP_OK) {
-        err = install_staged_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
+        err = install_supporting_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
     }
     if (err == CUP_OK) {
         err = build_asset_path(staging, CUP_UPDATE_COMMITTED, marker, sizeof(marker));
     }
     if (err == CUP_OK) {
         err = create_empty_marker(marker);
+    }
+    /* The executable is replaced last, after every supporting asset and the durable marker are in
+     * place. A crash therefore leaves either the old executable or a complete new generation. */
+    if (err == CUP_OK) {
+        err = install_staged_asset(staging, &assets[0]);
     }
     if (err == CUP_OK) {
         err = cup_update_journal_clear();
@@ -250,7 +260,7 @@ static void record_helper_failure(CupUpdateJournal *journal, CupError error, int
 
     if (recover &&
         cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error) == CUP_OK) {
-        if (cup_update_journal_recover(journal) != CUP_OK) {
+        if (cup_update_journal_recover(journal, CUP_UPDATE_RECOVER_REPLACE_BINARY) != CUP_OK) {
             (void)cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
         }
     } else {

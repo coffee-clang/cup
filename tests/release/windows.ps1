@@ -182,6 +182,27 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup doctor failed with exit code $LASTEXITCODE"
     }
+
+    # Repair may recreate mutable runtime paths, but it must preserve the installed
+    # executable exactly as POSIX repair preserves ~/.cup/bin/cup.
+    $binaryHashBeforeRepair = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+    $stagingDirectory = Join-Path $env:USERPROFILE ".cup\staging"
+    Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    & $installed repair
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed cup repair failed with exit code $LASTEXITCODE"
+    }
+    if (-not (Test-Path -LiteralPath $stagingDirectory -PathType Container)) {
+        throw "cup repair did not recreate the staging directory"
+    }
+    $binaryHashAfterRepair = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+    if ($binaryHashAfterRepair -ne $binaryHashBeforeRepair) {
+        throw "cup repair replaced the running executable"
+    }
+    $versionAfterRepair = & $installed --version
+    if ($LASTEXITCODE -ne 0 -or $versionAfterRepair -ne "cup $Version") {
+        throw "Installed cup was not usable after repair"
+    }
 } finally {
     foreach ($name in $originalEnvironment.Keys) {
         $value = $originalEnvironment[$name]
