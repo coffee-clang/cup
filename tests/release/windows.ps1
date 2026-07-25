@@ -204,6 +204,26 @@ try {
         throw "Installed cup was not usable after repair"
     }
 
+    # An official installation can restore its packaged uninstall asset without changing cup.exe.
+    $uninstallAsset = Join-Path $env:USERPROFILE ".cup\helpers\uninstall.ps1"
+    Remove-Item -LiteralPath $uninstallAsset -Force
+    $assetRepairOutput = & $installed repair 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed cup asset repair failed with exit code $LASTEXITCODE"
+    }
+    if (($assetRepairOutput -join "`n") -notlike "*Restoring uninstall script.*") {
+        throw "Installed cup repair did not report restoring uninstall.ps1"
+    }
+    if (-not (Test-Path -LiteralPath $uninstallAsset -PathType Leaf)) {
+        throw "Installed cup repair did not restore uninstall.ps1"
+    }
+    if (-not (Get-Item -LiteralPath $uninstallAsset).IsReadOnly) {
+        throw "Installed cup repair did not restore read-only uninstall.ps1"
+    }
+    if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
+        $binaryHashBeforeRepair) {
+        throw "Installed cup asset repair changed cup.exe"
+    }
 
     # A completion marker is accepted only for a complete installed generation. The failed
     # recovery must preserve both cup.exe and the staging evidence.

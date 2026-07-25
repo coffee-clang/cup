@@ -14,21 +14,6 @@ try {
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $statePath = Join-Path $cupRoot "state.txt"
 
-    # Repair restores a missing platform uninstall script without changing the
-    # canonical cup executable.
-    $binaryPath = Join-Path $cupRoot "bin\cup.exe"
-    $uninstallPath = Join-Path $cupRoot "helpers\uninstall.ps1"
-    $binaryHash = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash
-    Remove-Item -LiteralPath $uninstallPath -Force
-    $assetRepair = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $assetRepair "Restoring uninstall script."
-    Assert-Equals ((Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash) `
-        $binaryHash
-    Assert-PathExists $uninstallPath
-    if (-not (Get-Item -LiteralPath $uninstallPath).IsReadOnly) {
-        Fail-Test "repair did not restore read-only uninstall.ps1"
-    }
-
     $compilerRoot = New-InstalledPackageFixture -Component "compiler" -Tool "clang" `
         -Version "22.1.5" -Entries @("clang")
     $adopted = Invoke-Cup -CommandArgs @("repair")

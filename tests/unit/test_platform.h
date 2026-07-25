@@ -34,6 +34,21 @@ static inline int test_unlink(const char *path) {
     return _unlink(path);
 }
 
+/* Match system_replace_file semantics rather than the narrower Windows CRT rename(). */
+static inline int test_replace_file(const char *source, const char *destination) {
+    if (source == NULL || destination == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (MoveFileExA(source,
+                    destination,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return 0;
+    }
+    errno = EIO;
+    return -1;
+}
+
 static inline int test_rmdir(const char *path) {
     return _rmdir(path);
 }
@@ -195,6 +210,11 @@ static inline int test_mkdir(const char *path, int mode) {
 
 static inline int test_unlink(const char *path) {
     return unlink(path);
+}
+
+/* POSIX rename already provides the replacement contract required by the test doubles. */
+static inline int test_replace_file(const char *source, const char *destination) {
+    return rename(source, destination);
 }
 
 static inline int test_rmdir(const char *path) {

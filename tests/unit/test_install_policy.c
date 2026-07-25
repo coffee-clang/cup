@@ -186,7 +186,7 @@ CupError system_replace_file(const char *source,
         return CUP_ERR_INVALID_INPUT;
     }
     *state = SYSTEM_COMMIT_NOT_APPLIED;
-    if (rename(source, destination) != 0) {
+    if (test_replace_file(source, destination) != 0) {
         return CUP_ERR_FILESYSTEM;
     }
     *state = SYSTEM_COMMIT_DURABLE;

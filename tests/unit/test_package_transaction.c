@@ -213,11 +213,16 @@ CupError system_sync_file(FILE *file) {
 CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *state) {
-    *state = replace_state;
+    *state = SYSTEM_COMMIT_NOT_APPLIED;
     if (replace_result != CUP_OK) {
+        *state = replace_state;
         return replace_result;
     }
-    return rename(source, destination) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
+    if (test_replace_file(source, destination) != 0) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    *state = replace_state;
+    return CUP_OK;
 }
 
 CupError system_move_path(const char *source, const char *destination, SystemCommitState *state) {

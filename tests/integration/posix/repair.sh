@@ -11,22 +11,6 @@ test_begin repair
 prepare_command_environment
 run_cup repair >/dev/null
 
-# Repair restores a missing platform uninstall script without changing the
-# canonical cup executable.
-binary_path=$TEST_HOME/.cup/bin/cup
-uninstall_path=$TEST_HOME/.cup/helpers/uninstall.sh
-binary_hash=$(hash_file "$binary_path")
-rm -f "$uninstall_path"
-output=$(run_cup repair)
-assert_contains "$output" 'Restoring uninstall script.'
-assert_equals "$(hash_file "$binary_path")" "$binary_hash"
-assert_file "$uninstall_path"
-[ -x "$uninstall_path" ] || fail 'repair did not restore executable uninstall.sh'
-uninstall_mode=$(ls -ld "$uninstall_path" | awk '{print $1}')
-case "$uninstall_mode" in
-    *w*) fail 'repair did not restore read-only uninstall.sh' ;;
-esac
-
 state_file=$TEST_HOME/.cup/state.txt
 transaction_file=$TEST_HOME/.cup/transaction.txt
 

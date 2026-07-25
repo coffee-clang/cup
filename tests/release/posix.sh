@@ -95,6 +95,23 @@ test -d "$test_home/.cup/staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 
+# An official installation can restore its packaged uninstall asset without changing cup.
+uninstall_asset="$test_home/.cup/helpers/uninstall.sh"
+rm -f "$uninstall_asset"
+asset_repair_output=$(
+    cd "$test_home"
+    HOME="$test_home" "$installed_cup" repair 2>&1
+)
+printf '%s\n' "$asset_repair_output"
+printf '%s\n' "$asset_repair_output" | grep -F 'Restoring uninstall script.' >/dev/null
+test -f "$uninstall_asset"
+test -x "$uninstall_asset"
+uninstall_mode=$(ls -ld "$uninstall_asset" | awk '{print $1}')
+case "$uninstall_mode" in
+    *w*) fail 'release repair did not restore read-only uninstall.sh' ;;
+esac
+test "$(hash_file "$installed_cup")" = "$binary_hash_before"
+
 # A completion marker is accepted only for a complete installed generation. The failed
 # recovery must preserve both the executable and transaction evidence.
 bootstrap_staging="$test_home/.cup/.bootstrap"
