@@ -221,10 +221,11 @@ and uninstall helper against those sets; `release.txt` is consumed during
 installer and CUP-update staging rather than retained as mutable local state.
 `doctor` reports missing or altered files and permissions. An official `repair`
 can refresh checksum files, the catalog and the uninstall helper from its own
-immutable release. On POSIX it can also restore the canonical executable; on
-Windows a missing or altered running executable must be replaced by the
-official installer. A development build cannot restore official CUP assets
-assets.
+immutable release. On both POSIX and Windows it never removes or replaces the
+canonical `cup` or `cup.exe` executable used by the current installation. A
+missing or altered executable must be recovered by the official installer, or
+by the detached update helper when a valid interrupted-update journal owns the
+rollback. A development build cannot restore official CUP assets.
 
 ## CUP-update assets
 

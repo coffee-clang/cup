@@ -24,7 +24,12 @@ static char root[MAX_PATH_LEN];
 static char staging[MAX_PATH_LEN];
 static int journal_cleared;
 static int success_recorded;
+static int failure_recorded;
 static int lock_released;
+static int replace_calls;
+static int replace_fail_call;
+static int recovery_calls;
+static CupUpdateRecoveryMode recovery_mode;
 
 static CupError write_path(char *buffer, size_t size, const char *relative) {
     return path_join(buffer, size, root, relative);
@@ -130,7 +135,12 @@ void setUp(void) {
 
     journal_cleared = 0;
     success_recorded = 0;
+    failure_recorded = 0;
     lock_released = 0;
+    replace_calls = 0;
+    replace_fail_call = 0;
+    recovery_calls = 0;
+    recovery_mode = CUP_UPDATE_RECOVER_PRESERVE_BINARY;
 }
 
 void tearDown(void) {
@@ -233,6 +243,10 @@ CupError system_replace_file(const char *source,
     }
 
     *state = SYSTEM_COMMIT_NOT_APPLIED;
+    replace_calls++;
+    if (replace_fail_call != 0 && replace_calls == replace_fail_call) {
+        return CUP_ERR_FILESYSTEM;
+    }
     if (rename(source, destination) != 0) {
         return CUP_ERR_FILESYSTEM;
     }
@@ -312,9 +326,14 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
 CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
                                       CupUpdatePhase phase,
                                       int error_code) {
-    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_COMMITTING, phase);
-    TEST_ASSERT_EQUAL_INT(0, error_code);
+    if (phase == CUP_UPDATE_PHASE_COMMITTING) {
+        TEST_ASSERT_EQUAL_INT(0, error_code);
+    } else {
+        TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_FAILED, phase);
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, error_code);
+    }
     journal->phase = phase;
+    journal->error_code = error_code;
     return CUP_OK;
 }
 
@@ -325,19 +344,24 @@ CupError cup_update_journal_clear(void) {
 
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
                                     CupUpdateRecoveryMode mode) {
-    (void)journal;
-    (void)mode;
-    TEST_FAIL_MESSAGE("update recovery was not expected");
-    return CUP_ERR_TRANSACTION;
+    TEST_ASSERT_NOT_NULL(journal);
+    recovery_calls++;
+    recovery_mode = mode;
+    return CUP_OK;
 }
 
 CupError cup_update_result_write(CupUpdateResultStatus status,
                                  int error_code,
                                  const char *version) {
-    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RESULT_SUCCESS, status);
-    TEST_ASSERT_EQUAL_INT(0, error_code);
     TEST_ASSERT_EQUAL_STRING("2.0.0", version);
-    success_recorded++;
+    if (status == CUP_UPDATE_RESULT_SUCCESS) {
+        TEST_ASSERT_EQUAL_INT(0, error_code);
+        success_recorded++;
+    } else {
+        TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RESULT_FAILED, status);
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, error_code);
+        failure_recorded++;
+    }
     return CUP_OK;
 }
 
@@ -353,6 +377,8 @@ static void test_commit_keeps_executable_continuously_available(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
     TEST_ASSERT_EQUAL_INT(1, success_recorded);
+    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
+    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_released);
     TEST_ASSERT_TRUE(access(staging, F_OK) != 0);
 
@@ -361,8 +387,31 @@ static void test_commit_keeps_executable_continuously_available(void) {
     assert_supporting_assets_are_new();
 }
 
+static void test_failure_delegates_binary_rollback_to_detached_helper(void) {
+    int descriptors[2];
+    char wait_value[32];
+    char path[MAX_PATH_LEN];
+
+    replace_fail_call = 6;
+    TEST_ASSERT_EQUAL_INT(0, pipe(descriptors));
+    TEST_ASSERT_EQUAL_INT(0, close(descriptors[1]));
+    TEST_ASSERT_TRUE(snprintf(wait_value, sizeof(wait_value), "%d", descriptors[0]) > 0);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_helper_run("token", wait_value));
+    TEST_ASSERT_EQUAL_INT(0, journal_cleared);
+    TEST_ASSERT_EQUAL_INT(0, success_recorded);
+    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
+    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_REPLACE_BINARY, recovery_mode);
+    TEST_ASSERT_EQUAL_INT(1, lock_released);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
+    assert_file_text(path, "old");
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_commit_keeps_executable_continuously_available);
+    RUN_TEST(test_failure_delegates_binary_rollback_to_detached_helper);
     return UNITY_END();
 }

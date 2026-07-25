@@ -404,8 +404,10 @@ doctor  observes and reports
 repair  changes only what can be derived deterministically
 ```
 
-On Windows, a missing or altered canonical executable must be replaced by the
-official installer; a development build cannot download an official CUP assets
+On both POSIX and Windows, `repair` never removes or replaces the canonical
+`cup` or `cup.exe` executable. A missing or altered executable must be recovered
+by the official installer, or by the detached update helper when it owns a valid
+interrupted update. A development build cannot download an official CUP asset
 generation. See [TRANSACTIONS](../design/TRANSACTIONS.md#doctor-and-repair).
 
 ### `uninstall`

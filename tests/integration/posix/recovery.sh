@@ -64,6 +64,7 @@ commit=abcdef0
 }
 
 install_cup_assets_fixture
+UPDATE_HELPER=$TEST_HOME/.cup/helpers/cup-update-helper
 
 write_package_journal() {
     operation=$1
@@ -142,33 +143,106 @@ assert_missing "$conflict_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
-staging=$TEST_HOME/.cup/staging/cup-update-rollback-test
+# A crash after the marker but before binary replacement leaves the old
+# executable with partially installed support assets. Repair may roll those
+# assets back only when the executable already equals its backup.
+staging=$TEST_HOME/.cup/staging/cup-update-safe-rollback-test
 mkdir -p "$staging"
 cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
 cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
 cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
-expected_hash=$(hash_file "$staging/binary.old")
+: > "$staging/committed"
+expected_binary_hash=$(hash_file "$staging/binary.old")
+expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
+expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
 
 chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
     "$TEST_HOME/.cup/helpers/uninstall.sh"
-printf 'broken binary\n' > "$TEST_HOME/.cup/bin/cup"
 printf 'broken uninstall\n' > "$TEST_HOME/.cup/helpers/uninstall.sh"
 printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
 operation=cup-update
-phase=scheduled
-temporary_name=cup-update-rollback-test
-token=recovery-rollback
+phase=committing
+temporary_name=cup-update-safe-rollback-test
+token=recovery-safe-rollback
 version=0.0.0
 error=0
 JOURNAL
 
 output=$(run_cup repair)
 assert_contains "$output" 'Rolled back interrupted cup update transaction.'
-assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_binary_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
+    "$expected_uninstall_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
+    "$expected_checksums_hash"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_missing "$staging"
+assert_cup_healthy
+
+# If rollback would require replacing cup itself, repair must fail before
+# changing any canonical asset and retain the complete transaction evidence.
+staging=$TEST_HOME/.cup/staging/cup-update-unsafe-rollback-test
+mkdir -p "$staging"
+cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
+cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
+cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
+expected_binary_hash=$(hash_file "$staging/binary.old")
+expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
+expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
+
+chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
+    "$TEST_HOME/.cup/helpers/uninstall.sh"
+printf 'broken binary\n' > "$TEST_HOME/.cup/bin/cup"
+printf 'broken uninstall\n' > "$TEST_HOME/.cup/helpers/uninstall.sh"
+printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
+broken_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
+broken_uninstall_hash=$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")
+broken_checksums_hash=$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")
+cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
+format=1
+operation=cup-update
+phase=scheduled
+temporary_name=cup-update-unsafe-rollback-test
+token=recovery-unsafe-rollback
+version=0.0.0
+error=0
+JOURNAL
+
+run_cup_expect_failure "$TMP_ROOT/unsafe-cup-update-repair.out" repair
+output=$(cat "$TMP_ROOT/unsafe-cup-update-repair.out")
+assert_contains "$output" 'interrupted cup update recovery would replace the running executable'
+assert_contains "$output" 'interrupted operation cannot be repaired safely'
+assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$broken_binary_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
+    "$broken_uninstall_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
+    "$broken_checksums_hash"
+assert_file "$TEST_HOME/.cup/transaction.txt"
+assert_file "$staging/binary.old"
+assert_file "$staging/uninstall.old"
+assert_file "$staging/platform-checksums.old"
+
+# The detached helper runs from a separate executable copy, so it may restore
+# the canonical binary. A deliberately incomplete new generation forces its
+# real rollback path after repair has preserved all evidence.
+if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
+        --internal-cup-update-helper recovery-unsafe-rollback 0 </dev/null \
+        >"$TMP_ROOT/unsafe-cup-update-helper.out" 2>&1); then
+    fail 'native helper unexpectedly committed an incomplete CUP generation'
+fi
+output=$(cat "$TMP_ROOT/unsafe-cup-update-helper.out")
+assert_contains "$output" 'Rolled back interrupted cup update transaction.'
+assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_binary_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
+    "$expected_uninstall_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
+    "$expected_checksums_hash"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_missing "$staging"
+assert_contains "$(cat "$TEST_HOME/.cup/cup-update-result.txt")" 'status=failed'
+rm -f "$TEST_HOME/.cup/cup-update-result.txt"
 assert_cup_healthy
 
 staging=$TEST_HOME/.cup/staging/cup-update-committed-test
@@ -177,6 +251,7 @@ cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
 cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
 cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
 : > "$staging/committed"
+committed_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
 operation=cup-update
@@ -189,6 +264,7 @@ JOURNAL
 
 output=$(run_cup repair)
 assert_contains "$output" 'Completed interrupted cup update transaction.'
+assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$committed_binary_hash"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_missing "$staging"
 assert_cup_healthy
@@ -225,13 +301,13 @@ version=$base_version
 error=0
 JOURNAL
 
-if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" \
+if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
         --internal-cup-update-helper wrong-token 0 </dev/null \
         >"$TMP_ROOT/helper-wrong-token.out" 2>&1); then
     fail 'native helper accepted the wrong handoff token'
 fi
 assert_file "$TEST_HOME/.cup/transaction.txt"
-(cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" \
+(cd "$DEV_ROOT" && HOME="$TEST_HOME" "$UPDATE_HELPER" \
     --internal-cup-update-helper helper-token 0 </dev/null)
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_missing "$staging"

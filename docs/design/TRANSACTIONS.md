@@ -144,9 +144,10 @@ The helper then:
 validates token, journal phase and staging path
 waits for the exclusive lock with one bounded cross-platform policy
 changes phase to committing
-backs up the six current assets
-installs the six verified replacements
-writes the committed marker                         commit point
+copies the six current assets to rollback backups
+atomically installs the five verified supporting assets
+writes the durable committed marker
+atomically replaces cup or cup.exe last              commit point
 clears transaction.txt
 writes cup-update-result.txt
 cleans staging
@@ -165,10 +166,15 @@ later command can report an update completed by the detached process.
 
 `repair` distinguishes only the current `format=1` protocol:
 
-- without a committed marker, it restores every backup that exists and requires
-  every untouched destination to remain a regular file;
-- with a committed marker, it accepts the new generation only when the complete
+- a committed marker finalizes the new generation only when the complete
   installed asset set validates;
+- otherwise it can roll back supporting assets only when the canonical
+  executable already equals its rollback backup, including the crash window
+  after marker creation but before executable replacement;
+- it never replaces `cup` or `cup.exe`; when rollback would require that change,
+  it preserves the journal, staging tree and every canonical asset unchanged;
+- the detached helper may restore the executable because it runs from a separate
+  copy after the parent process has exited;
 - any mixed, missing or invalid evidence remains blocked and is not guessed.
 
 There is no legacy update operation and no compatibility path for older CUP

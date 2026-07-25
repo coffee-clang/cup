@@ -235,7 +235,8 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
         err = create_empty_marker(marker);
     }
     /* The executable is replaced last, after every supporting asset and the durable marker are in
-     * place. A crash therefore leaves either the old executable or a complete new generation. */
+     * place. Until that final replacement, the old executable remains present and the journal plus
+     * backups describe a deterministic rollback. */
     if (err == CUP_OK) {
         err = install_staged_asset(staging, &assets[0]);
     }
