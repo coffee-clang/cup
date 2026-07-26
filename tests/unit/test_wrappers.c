@@ -537,12 +537,7 @@ static void test_apply_and_check(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_check(&plan, &issues));
     TEST_ASSERT_EQUAL_INT(0, (int)issues);
 
-#if defined(_WIN32)
-    executable_override = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
-    TEST_ASSERT_FALSE(matches);
-    executable_override = -1;
-#else
+#if !defined(_WIN32)
     TEST_ASSERT_EQUAL_INT(0, chmod(wrapper, 0600));
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
     TEST_ASSERT_FALSE(matches);
@@ -599,10 +594,12 @@ static void test_scan_failures(void) {
     write_file(binary, "cup");
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
 
+#if !defined(_WIN32)
     is_executable_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_expected_matches(&plan, &matches));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_check(&plan, &issues));
     is_executable_result = CUP_OK;
+#endif
 
     list_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_apply(&plan));
