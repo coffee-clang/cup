@@ -577,7 +577,7 @@ CupError system_start_uninstall(const char *cup_root,
                         FALSE,
                         CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
                         NULL,
-                        NULL,
+                        temp_directory_wide,
                         &startup,
                         &process)) {
         print_windows_error("could not start uninstall process", temp_script);

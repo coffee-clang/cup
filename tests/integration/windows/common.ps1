@@ -306,7 +306,19 @@ function Remove-TestEnvironment {
     }
 
     if ($null -ne $Script:CupTestRoot -and (Test-Path -LiteralPath $Script:CupTestRoot)) {
-        Remove-Item -LiteralPath $Script:CupTestRoot -Recurse -Force
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ($true) {
+            try {
+                Remove-Item -LiteralPath $Script:CupTestRoot -Recurse -Force `
+                    -ErrorAction Stop
+                break
+            } catch {
+                if ([DateTime]::UtcNow -ge $deadline) {
+                    throw
+                }
+                Start-Sleep -Milliseconds 100
+            }
+        }
     }
 }
 

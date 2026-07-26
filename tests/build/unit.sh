@@ -93,25 +93,26 @@ compile_test() {
     name=$1
     shift
     output="$TEST_BUILD_DIR/$name"
-    coverage_flags=()
-    coverage_sources=()
+    printf '==> Compiling C unit test: %s\n' "$name"
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
         coverage_body="cup_coverage_${name}_main"
         coverage_entry="cup_coverage_${name}_entry"
-        coverage_flags+=(
-            "-Dmain=$coverage_body"
-            "-DCUP_COVERAGE_VOID_ENTRY=$coverage_body"
-            "-DCUP_COVERAGE_ENTRY=$coverage_entry"
-        )
-        coverage_sources+=("$COVERAGE_ENTRY_SOURCE")
+        "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
+            $TEST_CFLAGS \
+            "-Dmain=$coverage_body" \
+            "-DCUP_COVERAGE_VOID_ENTRY=$coverage_body" \
+            "-DCUP_COVERAGE_ENTRY=$coverage_entry" \
+            -I"$ROOT/tests/unit/fixtures" \
+            -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
+            "$@" "$COVERAGE_ENTRY_SOURCE" \
+            "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
+    else
+        "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
+            $TEST_CFLAGS \
+            -I"$ROOT/tests/unit/fixtures" \
+            -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
+            "$@" "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
     fi
-    printf '==> Compiling C unit test: %s\n' "$name"
-    "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
-        $TEST_CFLAGS "${coverage_flags[@]}" \
-        -I"$ROOT/tests/unit/fixtures" \
-        -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
-        "$@" "${coverage_sources[@]}" \
-        "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
 }
 
 # Suite registration remains explicit so the Makefile can request individual binaries.

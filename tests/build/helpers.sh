@@ -75,21 +75,21 @@ compile_helper() {
     name=$1
     source=$2
     shift 2
-    entry_flags=()
-    entry_sources=()
+    printf '==> Compiling test helper: %s\n' "$name"
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
         entry_name=${name//-/_}
         entry_name="cup_coverage_${entry_name}_main"
-        entry_flags+=(
-            "-Dmain=$entry_name"
-            "-DCUP_COVERAGE_ENTRY=$entry_name"
-        )
-        entry_sources+=("$COVERAGE_ENTRY_SOURCE")
+        "$CC" $CFLAGS \
+            "-Dmain=$entry_name" \
+            "-DCUP_COVERAGE_ENTRY=$entry_name" \
+            -I"$DEPS_PREFIX/include" \
+            "$source" "$COVERAGE_ENTRY_SOURCE" $LDFLAGS "$@" \
+            -o "$OUT/$name$EXE_SUFFIX"
+    else
+        "$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
+            "$source" $LDFLAGS "$@" \
+            -o "$OUT/$name$EXE_SUFFIX"
     fi
-    printf '==> Compiling test helper: %s\n' "$name"
-    "$CC" $CFLAGS "${entry_flags[@]}" -I"$DEPS_PREFIX/include" \
-        "$source" "${entry_sources[@]}" $LDFLAGS "$@" \
-        -o "$OUT/$name$EXE_SUFFIX"
 }
 
 if [ "$PLATFORM" != windows-x64 ]; then

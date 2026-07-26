@@ -311,7 +311,11 @@ helper_builder=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 coverage_runner=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
 assert_contains "$unit_builder" 'CUP_COVERAGE_VOID_ENTRY'
 assert_contains "$unit_builder" 'tests/helpers/coverage-entry.c'
+assert_not_contains "$unit_builder" 'coverage_flags[@]'
+assert_not_contains "$unit_builder" 'coverage_sources[@]'
 assert_contains "$helper_builder" 'tests/helpers/coverage-entry.c'
+assert_not_contains "$helper_builder" 'entry_flags[@]'
+assert_not_contains "$helper_builder" 'entry_sources[@]'
 assert_contains "$coverage_runner" \
     'LLVM coverage contains incompatible function profiles.'
 assert_not_contains "$coverage_runner" 'coverage-diagnostics.txt'

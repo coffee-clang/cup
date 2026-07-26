@@ -247,6 +247,8 @@ static void test_detached_uninstall_start(void) {
     char prefixed_root[CUP_TEST_TEMP_PATH_SIZE + 8];
     char script_text[CUP_TEST_TEMP_PATH_SIZE * 3];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 2];
+    char expected_working_directory[CUP_TEST_TEMP_PATH_SIZE];
+    DWORD temp_length;
     int written;
 
     build_path(script, sizeof(script), "uninstall-fixture.ps1");
@@ -256,9 +258,14 @@ static void test_detached_uninstall_start(void) {
                        "param([string]$CupRoot,[string]$SelfPath,[int]$ParentPid)\r\n"
                        "[IO.File]::WriteAllText($env:CUP_TEST_UNINSTALL_MARKER, "
                        "$CupRoot + [Environment]::NewLine + "
-                       "$SelfPath + [Environment]::NewLine + $ParentPid)\r\n"
+                       "$SelfPath + [Environment]::NewLine + $ParentPid + "
+                       "[Environment]::NewLine + [Environment]::CurrentDirectory)\r\n"
                        "Remove-Item -LiteralPath $SelfPath -Force\r\n");
     TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(script_text));
+    temp_length = GetTempPathA((DWORD)sizeof(expected_working_directory),
+                               expected_working_directory);
+    TEST_ASSERT_TRUE(
+        temp_length > 0 && temp_length < sizeof(expected_working_directory));
     write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", marker));
     written = snprintf(prefixed_root, sizeof(prefixed_root), "\\\\?\\%s", temp_dir);
@@ -287,6 +294,7 @@ static void test_detached_uninstall_start(void) {
         char *root = contents;
         char *self_path;
         char *parent_pid;
+        char *working_directory;
         char *separator = strstr(root, "\r\n");
         size_t separator_size = 2;
 
@@ -306,6 +314,15 @@ static void test_detached_uninstall_start(void) {
         TEST_ASSERT_NOT_NULL(separator);
         *separator = '\0';
         parent_pid = separator + separator_size;
+        separator = strstr(parent_pid, "\r\n");
+        separator_size = 2;
+        if (separator == NULL) {
+            separator = strchr(parent_pid, '\n');
+            separator_size = 1;
+        }
+        TEST_ASSERT_NOT_NULL(separator);
+        *separator = '\0';
+        working_directory = separator + separator_size;
 
         TEST_ASSERT_TRUE(path_equal(root, temp_dir));
         TEST_ASSERT_FALSE(strncmp(root, "\\\\?\\", 4) == 0);
@@ -314,6 +331,7 @@ static void test_detached_uninstall_start(void) {
         TEST_ASSERT_FALSE(strncmp(self_path, "\\\\?\\", 4) == 0);
         TEST_ASSERT_NULL(strchr(self_path, '/'));
         TEST_ASSERT_EQUAL_STRING("999999", parent_pid);
+        TEST_ASSERT_TRUE(path_equal(working_directory, expected_working_directory));
     }
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
