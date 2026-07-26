@@ -33,12 +33,14 @@ static void test_package_paths(void) {
                                 .version = "22.1.5"};
     char path[1024];
     char expected[1024];
+    char home[1024];
     char host[64];
 
-    /* Root and fixed asset paths share the caller's HOME-derived .cup directory. */
+    /* Root and fixed asset paths derive from the platform-validated home directory. */
     TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_home_dir(home, sizeof(home)));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup", temp_dir) > 0);
+    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_bin_dir(path, sizeof(path)));
