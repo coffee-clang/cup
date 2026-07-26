@@ -83,6 +83,57 @@ static int wait_for_path(const char *path) {
     return 0;
 }
 
+static int normalize_test_path(const char *path, char *buffer, size_t size) {
+    char candidate[CUP_TEST_TEMP_PATH_SIZE];
+    const char *source;
+    size_t offset = 0;
+    size_t i;
+    DWORD length;
+
+    if (path == NULL || buffer == NULL || size == 0) {
+        return 0;
+    }
+    source = path;
+    if (strncmp(source, "\\\\?\\UNC\\", 8) == 0) {
+        candidate[0] = '\\';
+        candidate[1] = '\\';
+        offset = 2;
+        source += 8;
+    } else if (strncmp(source, "\\\\?\\", 4) == 0) {
+        source += 4;
+    }
+    for (i = 0; source[i] != '\0'; ++i) {
+        if (offset + i + 1 >= sizeof(candidate)) {
+            return 0;
+        }
+        candidate[offset + i] = source[i] == '/' ? '\\' : source[i];
+    }
+    candidate[offset + i] = '\0';
+
+    length = GetFullPathNameA(candidate, (DWORD)size, buffer, NULL);
+    if (length == 0 || length >= size) {
+        return 0;
+    }
+    for (i = 0; buffer[i] != '\0'; ++i) {
+        if (buffer[i] == '/') {
+            buffer[i] = '\\';
+        }
+    }
+    while (i > 3 && buffer[i - 1] == '\\') {
+        buffer[--i] = '\0';
+    }
+    return 1;
+}
+
+static int test_paths_equal(const char *left, const char *right) {
+    char normalized_left[CUP_TEST_TEMP_PATH_SIZE];
+    char normalized_right[CUP_TEST_TEMP_PATH_SIZE];
+
+    return normalize_test_path(left, normalized_left, sizeof(normalized_left)) &&
+           normalize_test_path(right, normalized_right, sizeof(normalized_right)) &&
+           _stricmp(normalized_left, normalized_right) == 0;
+}
+
 static int create_directory_junction(const char *link_path, const char *target_path) {
     char absolute_link[CUP_TEST_TEMP_PATH_SIZE];
     char absolute_target[CUP_TEST_TEMP_PATH_SIZE];
@@ -269,8 +320,34 @@ static void test_detached_uninstall_start(void) {
                           system_start_uninstall(temp_dir, script, 999999UL));
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
-    TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "999999"));
+    {
+        char *root = contents;
+        char *self_path;
+        char *parent_pid;
+        char *separator = strstr(root, "\r\n");
+        size_t separator_size = 2;
+
+        if (separator == NULL) {
+            separator = strchr(root, '\n');
+            separator_size = 1;
+        }
+        TEST_ASSERT_NOT_NULL(separator);
+        *separator = '\0';
+        self_path = separator + separator_size;
+        separator = strstr(self_path, "\r\n");
+        separator_size = 2;
+        if (separator == NULL) {
+            separator = strchr(self_path, '\n');
+            separator_size = 1;
+        }
+        TEST_ASSERT_NOT_NULL(separator);
+        *separator = '\0';
+        parent_pid = separator + separator_size;
+
+        TEST_ASSERT_TRUE(test_paths_equal(root, temp_dir));
+        TEST_ASSERT_TRUE(self_path[0] != '\0');
+        TEST_ASSERT_EQUAL_STRING("999999", parent_pid);
+    }
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(script));
