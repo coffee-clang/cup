@@ -316,6 +316,26 @@ else
             -o "$REPORT_DIR/coverage.profdata" || generation_status=$?
     fi
     if [ "$generation_status" -eq 0 ]; then
+        diagnostic_status=0
+        printf '==> Collecting LLVM profile diagnostics...\n' >>"$coverage_log"
+        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
+            "$REPORT_TIMEOUT" "$LLVM_COV" report -dump \
+            "${llvm_common[@]}" >/dev/null \
+            2>"$REPORT_DIR/coverage-diagnostics.txt" || diagnostic_status=$?
+        if [ "$diagnostic_status" -ne 0 ]; then
+            printf 'LLVM profile diagnostics exited with status %s; report generation continues.\n' \
+                "$diagnostic_status" >>"$coverage_log"
+        fi
+        if grep -E 'hash-mismatch|mismatched data' \
+                "$REPORT_DIR/coverage-diagnostics.txt" \
+                >>"$coverage_log" 2>/dev/null; then
+            :
+        else
+            printf 'No LLVM profile mismatch diagnostic was emitted.\n' \
+                >>"$coverage_log"
+        fi
+    fi
+    if [ "$generation_status" -eq 0 ]; then
         run_llvm_capture 'Generating LLVM text report...' "$REPORT_DIR/summary.txt" \
             "$LLVM_COV" report "${llvm_common[@]}" || generation_status=$?
     fi

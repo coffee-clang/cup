@@ -203,6 +203,13 @@ retains only allowlisted operating-system DLL imports. `make check-binary`
 verifies object format, architecture and the corresponding linked-binary policy
 for each supported platform.
 
+## Release-candidate transport
+
+Official candidate tests run before publication and therefore serve the
+assembled assets from a loopback HTTP server. The runtime accepts that transport
+only when both the explicit insecure-test flag and a `127.0.0.1` or `localhost`
+base URL are present; normal downloads and every redirect remain HTTPS-only.
+
 ## Test matrix
 
 Source validation runs natively on all five supported platform identifiers.

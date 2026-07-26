@@ -28,6 +28,7 @@
 #include "version.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef unsigned int RepairAssetFlags;
@@ -72,12 +73,27 @@ static CupError download_asset(const char *asset_name, char *path, size_t path_s
 #else
     char release_url[MAX_CATALOG_URL_LEN];
     char url[MAX_CATALOG_URL_LEN];
+    const char *test_base_url = getenv("CUP_INSTALL_BASE_URL");
 
-    if (text_format(release_url,
-                    sizeof(release_url),
-                    CUP_RELEASE_VERSIONED_URL_TEMPLATE,
-                    CUP_VERSION_BASE) != CUP_OK ||
-        text_format(url, sizeof(url), "%s/%s", release_url, asset_name) != CUP_OK) {
+    if (download_insecure_loopback_is_allowed(test_base_url)) {
+        size_t length = strlen(test_base_url);
+
+        while (length > 0 && test_base_url[length - 1] == '/') {
+            length--;
+        }
+        if (length == 0 || length >= sizeof(release_url)) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(release_url, test_base_url, length);
+        release_url[length] = '\0';
+    } else if (text_format(release_url,
+                           sizeof(release_url),
+                           CUP_RELEASE_VERSIONED_URL_TEMPLATE,
+                           CUP_VERSION_BASE) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    if (text_format(url, sizeof(url), "%s/%s", release_url, asset_name) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 

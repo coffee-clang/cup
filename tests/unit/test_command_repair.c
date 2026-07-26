@@ -24,6 +24,7 @@
 #include "unity.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define MAX_STEPS 4
@@ -72,6 +73,8 @@ static int binary_verify_matches[2];
 static CupError binary_verify_results[2];
 static size_t binary_verify_calls;
 static int fetch_calls;
+static int allow_insecure_loopback;
+static char last_fetch_url[MAX_CATALOG_URL_LEN];
 static int lock_release_calls;
 static int backup_calls;
 static int recover_calls;
@@ -154,6 +157,8 @@ static void reset_scenario(void) {
     binary_verify_calls = 0;
     /* Observed side effects begin at zero for every case. */
     fetch_calls = 0;
+    allow_insecure_loopback = 0;
+    last_fetch_url[0] = '\0';
     lock_release_calls = 0;
     backup_calls = 0;
     recover_calls = 0;
@@ -221,6 +226,11 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+#if defined(_WIN32)
+    (void)_putenv_s("CUP_INSTALL_BASE_URL", "");
+#else
+    (void)unsetenv("CUP_INSTALL_BASE_URL");
+#endif
 }
 
 static PackageIdentity state_entry(const char *entry) {
@@ -776,10 +786,15 @@ CupError install_policy_load_path(InstallPolicy *config,
     return CUP_OK;
 }
 
+int download_insecure_loopback_is_allowed(const char *url) {
+    return allow_insecure_loopback && url != NULL;
+}
+
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
     (void)destination;
     (void)validation;
     fetch_calls++;
+    TEST_ASSERT_TRUE(snprintf(last_fetch_url, sizeof(last_fetch_url), "%s", url) > 0);
     if (strstr(url, "/" CUP_INSTALL_POLICY_FILENAME) != NULL) {
         return install_policy_fetch_result;
     }
@@ -1071,6 +1086,26 @@ static void test_config_repair(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 }
 
+static void test_repair_uses_explicit_loopback_candidate_base(void) {
+    prepare_installed_official_cup_assets();
+    install_policy_verify_override = 1;
+    install_policy_verify_matches[0] = 0;
+    install_policy_verify_matches[1] = 1;
+    allow_insecure_loopback = 1;
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(
+        0, _putenv_s("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080"));
+#else
+    TEST_ASSERT_EQUAL_INT(
+        0, setenv("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080", 1));
+#endif
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_TRUE(strncmp(last_fetch_url,
+                             "http://127.0.0.1:18080/",
+                             strlen("http://127.0.0.1:18080/")) == 0);
+}
+
 static void test_cup_assets_rejects(void) {
     has_installed_assets = 1;
     development_valid = 0;
@@ -1135,6 +1170,7 @@ int main(void) {
     RUN_TEST(test_asset_rollback);
     RUN_TEST(test_asset_restore);
     RUN_TEST(test_config_repair);
+    RUN_TEST(test_repair_uses_explicit_loopback_candidate_base);
     RUN_TEST(test_cup_assets_rejects);
     RUN_TEST(test_early_failures);
     RUN_TEST(test_late_failures);

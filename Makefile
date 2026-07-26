@@ -243,7 +243,10 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
     export MACOSX_DEPLOYMENT_TARGET
     PLATFORM_CPPFLAGS += -D_DARWIN_C_SOURCE
     PLATFORM_CFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET)
-    PLATFORM_LDFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET)
+    # Apple ld already ignores repeated static-library flags. Preserve their
+    # dependency-defined order and silence only the corresponding diagnostic.
+    PLATFORM_LDFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET) \
+        -Wl,-no_warn_duplicate_libraries
     CONFIG_CFLAGS_coverage := -O0 -g3 -fprofile-instr-generate -fcoverage-mapping
     CONFIG_LDFLAGS_coverage := -fprofile-instr-generate -fcoverage-mapping
 endif

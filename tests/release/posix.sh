@@ -86,10 +86,19 @@ printf '%s\n' "$doctor_output" | grep -F 'Doctor found no issues.' >/dev/null
 # currently installed executable on either POSIX or Windows.
 binary_hash_before=$(hash_file "$installed_cup")
 rm -rf "$test_home/.cup/staging"
-repair_output=$(
+if repair_output=$(
     cd "$test_home"
-    HOME="$test_home" "$installed_cup" repair 2>&1
-)
+    HOME="$test_home" \
+    CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+        "$installed_cup" repair 2>&1
+); then
+    :
+else
+    repair_status=$?
+    printf '%s\n' "$repair_output" >&2
+    fail "installed cup repair failed with exit code $repair_status"
+fi
 printf '%s\n' "$repair_output"
 test -d "$test_home/.cup/staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
@@ -98,10 +107,19 @@ HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 # An official installation can restore its packaged uninstall asset without changing cup.
 uninstall_asset="$test_home/.cup/helpers/uninstall.sh"
 rm -f "$uninstall_asset"
-asset_repair_output=$(
+if asset_repair_output=$(
     cd "$test_home"
-    HOME="$test_home" "$installed_cup" repair 2>&1
-)
+    HOME="$test_home" \
+    CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+        "$installed_cup" repair 2>&1
+); then
+    :
+else
+    repair_status=$?
+    printf '%s\n' "$asset_repair_output" >&2
+    fail "installed cup asset repair failed with exit code $repair_status"
+fi
 printf '%s\n' "$asset_repair_output"
 printf '%s\n' "$asset_repair_output" | grep -F 'Restoring uninstall script.' >/dev/null
 test -f "$uninstall_asset"

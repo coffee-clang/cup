@@ -3,6 +3,7 @@
 #include "cup_update_helper.h"
 
 #include "constants.h"
+#include "checksum.h"
 #include "cup_update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -31,6 +32,7 @@ static int success_recorded;
 static int failure_recorded;
 static int lock_released;
 static int replace_calls;
+static int copy_calls;
 static int replace_fail_call;
 static int recovery_calls;
 static CupUpdateRecoveryMode recovery_mode;
@@ -133,6 +135,7 @@ void setUp(void) {
     failure_recorded = 0;
     lock_released = 0;
     replace_calls = 0;
+    copy_calls = 0;
     replace_fail_call = 0;
     recovery_calls = 0;
     recovery_mode = CUP_UPDATE_RECOVER_PRESERVE_BINARY;
@@ -206,6 +209,36 @@ CupError system_copy_file(const char *source, const char *destination) {
 
     read_file(source, data, sizeof(data));
     write_file(destination, data);
+    copy_calls++;
+    return CUP_OK;
+}
+
+CupError system_is_regular_file(const char *path, int *is_regular) {
+    SystemPathKind kind;
+    CupError err;
+
+    if (is_regular == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_get_path_kind(path, &kind);
+    if (err != CUP_OK) {
+        return err;
+    }
+    *is_regular = kind == SYSTEM_PATH_REGULAR_FILE;
+    return CUP_OK;
+}
+
+CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
+    char data[32];
+    char value;
+
+    if (hex == NULL || size < SHA256_HEX_LENGTH + 1) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    read_file(path, data, sizeof(data));
+    value = strcmp(data, "old") == 0 ? 'a' : 'b';
+    memset(hex, value, SHA256_HEX_LENGTH);
+    hex[SHA256_HEX_LENGTH] = '\0';
     return CUP_OK;
 }
 
@@ -402,6 +435,32 @@ static void make_closed_parent_signal(char *value, size_t size) {
 #endif
 }
 
+static void test_prepare_reuses_matching_helper(void) {
+    char helper[MAX_PATH_LEN];
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_cup_update_helper_path(helper, sizeof(helper)));
+    write_file(helper, "old");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_prepare());
+    TEST_ASSERT_EQUAL_INT(0, copy_calls);
+    TEST_ASSERT_EQUAL_INT(1, executable_calls);
+    assert_file_text(helper, "old");
+}
+
+static void test_prepare_replaces_missing_or_stale_helper(void) {
+    char helper[MAX_PATH_LEN];
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_cup_update_helper_path(helper, sizeof(helper)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_prepare());
+    TEST_ASSERT_EQUAL_INT(1, copy_calls);
+    assert_file_text(helper, "old");
+
+    write_file(helper, "stale");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_prepare());
+    TEST_ASSERT_EQUAL_INT(2, copy_calls);
+    assert_file_text(helper, "old");
+}
+
 static void test_commit_keeps_executable_continuously_available(void) {
     char wait_value[32];
     char path[MAX_PATH_LEN];
@@ -490,6 +549,8 @@ static void test_failure_delegates_binary_rollback_to_detached_helper(void) {
 
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_prepare_reuses_matching_helper);
+    RUN_TEST(test_prepare_replaces_missing_or_stale_helper);
     RUN_TEST(test_commit_keeps_executable_continuously_available);
     RUN_TEST(test_cleanup_failure_does_not_turn_committed_update_into_failure);
     RUN_TEST(test_recovery_finalization_records_committed_generation_as_success);

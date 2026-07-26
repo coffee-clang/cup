@@ -188,9 +188,14 @@ try {
     $binaryHashBeforeRepair = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
     $stagingDirectory = Join-Path $env:USERPROFILE ".cup\staging"
     Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    & $installed repair
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed cup repair failed with exit code $LASTEXITCODE"
+    $repairOutput = @(& $installed repair 2>&1)
+    $repairStatus = $LASTEXITCODE
+    $repairText = $repairOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($repairText)) {
+        Write-Host $repairText
+    }
+    if ($repairStatus -ne 0) {
+        throw "Installed cup repair failed with exit code $repairStatus`n$repairText"
     }
     if (-not (Test-Path -LiteralPath $stagingDirectory -PathType Container)) {
         throw "cup repair did not recreate the staging directory"
@@ -207,11 +212,16 @@ try {
     # An official installation can restore its packaged uninstall asset without changing cup.exe.
     $uninstallAsset = Join-Path $env:USERPROFILE ".cup\helpers\uninstall.ps1"
     Remove-Item -LiteralPath $uninstallAsset -Force
-    $assetRepairOutput = & $installed repair 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed cup asset repair failed with exit code $LASTEXITCODE"
+    $assetRepairOutput = @(& $installed repair 2>&1)
+    $assetRepairStatus = $LASTEXITCODE
+    $assetRepairText = $assetRepairOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($assetRepairText)) {
+        Write-Host $assetRepairText
     }
-    if (($assetRepairOutput -join "`n") -notlike "*Restoring uninstall script.*") {
+    if ($assetRepairStatus -ne 0) {
+        throw "Installed cup asset repair failed with exit code $assetRepairStatus`n$assetRepairText"
+    }
+    if ($assetRepairText -notlike "*Restoring uninstall script.*") {
         throw "Installed cup repair did not report restoring uninstall.ps1"
     }
     if (-not (Test-Path -LiteralPath $uninstallAsset -PathType Leaf)) {

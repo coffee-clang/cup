@@ -24,7 +24,7 @@ printf '%s\n' '0.2.0' > "$repo/VERSION"
     assert_equals "$(./version.sh base)" '0.2.0'
     assert_equals "$(./version.sh current)" '0.2.0-dev+archive'
 
-    git init -q
+    git -c init.defaultBranch=main init -q
     git config user.email cup-tests@example.invalid
     git config user.name 'cup tests'
     git add VERSION version.sh

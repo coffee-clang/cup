@@ -57,6 +57,13 @@ static char mock_payload[64];
 static const char *mock_fail_url;
 static char *mock_error_buffer;
 static char mock_url[1024];
+#if LIBCURL_VERSION_NUM >= 0x075500
+static char mock_protocols[32];
+static char mock_redirect_protocols[32];
+#else
+static long mock_protocols;
+static long mock_redirect_protocols;
+#endif
 static curl_write_callback mock_write_callback;
 static void *mock_write_userdata;
 static curl_xferinfo_callback mock_progress_callback;
@@ -77,6 +84,8 @@ static size_t verify_index;
 
 /* Fixture lifecycle and local construction helpers. */
 
+static void set_test_environment(const char *name, const char *value);
+
 static void reset_mocks(void) {
     mock_global_result = CURLE_OK;
     mock_perform_result = CURLE_OK;
@@ -91,6 +100,13 @@ static void reset_mocks(void) {
     mock_fail_url = NULL;
     mock_error_buffer = NULL;
     mock_url[0] = '\0';
+#if LIBCURL_VERSION_NUM >= 0x075500
+    mock_protocols[0] = '\0';
+    mock_redirect_protocols[0] = '\0';
+#else
+    mock_protocols = 0;
+    mock_redirect_protocols = 0;
+#endif
     mock_write_callback = NULL;
     mock_write_userdata = NULL;
     mock_progress_callback = NULL;
@@ -109,6 +125,7 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
 }
 
 /*
@@ -152,6 +169,30 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
             }
             break;
         }
+#if LIBCURL_VERSION_NUM >= 0x075500
+        case CURLOPT_PROTOCOLS_STR: {
+            const char *protocols = va_arg(args, const char *);
+            if (protocols != NULL) {
+                (void)snprintf(mock_protocols, sizeof(mock_protocols), "%s", protocols);
+            }
+            break;
+        }
+        case CURLOPT_REDIR_PROTOCOLS_STR: {
+            const char *protocols = va_arg(args, const char *);
+            if (protocols != NULL) {
+                (void)snprintf(
+                    mock_redirect_protocols, sizeof(mock_redirect_protocols), "%s", protocols);
+            }
+            break;
+        }
+#else
+        case CURLOPT_PROTOCOLS:
+            mock_protocols = va_arg(args, long);
+            break;
+        case CURLOPT_REDIR_PROTOCOLS:
+            mock_redirect_protocols = va_arg(args, long);
+            break;
+#endif
         case CURLOPT_WRITEFUNCTION:
             mock_write_callback = va_arg(args, curl_write_callback);
             break;
@@ -331,6 +372,18 @@ static void write_text(const char *path, const char *text) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
+static void set_test_environment(const char *name, const char *value) {
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s(name, value == NULL ? "" : value));
+#else
+    if (value == NULL) {
+        TEST_ASSERT_EQUAL_INT(0, unsetenv(name));
+    } else {
+        TEST_ASSERT_EQUAL_INT(0, setenv(name, value, 1));
+    }
+#endif
+}
+
 static void read_text(const char *path, char *buffer, size_t size) {
     FILE *file = fopen(path, "r");
     size_t count;
@@ -381,6 +434,64 @@ static void make_cache_files(const PackageIdentity *identity,
  * Test cases exercise the real production entry point while changing only controlled boundary
  * outcomes.
  */
+
+static void test_protocol_policy(void) {
+    char destination[1024];
+
+    build_path(destination, sizeof(destination), "protocol-policy.out");
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
+    TEST_ASSERT_FALSE(
+        download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        download_file("https://example.invalid/resource",
+                      destination,
+                      DOWNLOAD_VALIDATE_NONEMPTY));
+#if LIBCURL_VERSION_NUM >= 0x075500
+    TEST_ASSERT_EQUAL_STRING("https", mock_protocols);
+    TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
+#else
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_protocols);
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
+#endif
+
+    reset_mocks();
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", "1");
+    TEST_ASSERT_TRUE(
+        download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
+    TEST_ASSERT_TRUE(download_insecure_loopback_is_allowed("http://localhost:1"));
+    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://localhost:0"));
+    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://localhost:65536"));
+    TEST_ASSERT_FALSE(
+        download_insecure_loopback_is_allowed("http://localhost:18080@evil.invalid/resource"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        download_file("http://127.0.0.1:18080/resource",
+                      destination,
+                      DOWNLOAD_VALIDATE_NONEMPTY));
+#if LIBCURL_VERSION_NUM >= 0x075500
+    TEST_ASSERT_EQUAL_STRING("http,https", mock_protocols);
+    TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
+#else
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTP | CURLPROTO_HTTPS, mock_protocols);
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
+#endif
+
+    reset_mocks();
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        download_file("http://localhost:18080@evil.invalid/resource",
+                      destination,
+                      DOWNLOAD_VALIDATE_NONEMPTY));
+#if LIBCURL_VERSION_NUM >= 0x075500
+    TEST_ASSERT_EQUAL_STRING("https", mock_protocols);
+    TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
+#else
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_protocols);
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
+#endif
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
+}
 
 static void test_file_success(void) {
     char destination[1024];
@@ -848,6 +959,7 @@ int main(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
 
     UNITY_BEGIN();
+    RUN_TEST(test_protocol_policy);
     RUN_TEST(test_file_success);
     RUN_TEST(test_file_failures);
     RUN_TEST(test_fetch_cache_refresh);

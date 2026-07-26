@@ -59,6 +59,9 @@ case "$family" in
         sudo apt-get install -y --no-install-recommends $packages
         ;;
     macos)
+        # GitHub-hosted macOS images may retain this unused third-party tap.
+        # Remove it before Homebrew commands so trust diagnostics stay relevant.
+        brew untap aws/tap >/dev/null 2>&1 || true
         case "$profile" in
             dependencies | source)
                 packages='perl pkg-config xz'

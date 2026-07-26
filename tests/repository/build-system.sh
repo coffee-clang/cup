@@ -290,6 +290,8 @@ MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
     PLATFORM=macos-x64 help >"$TMP_ROOT/macos-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-mmacosx-version-min=13.0'
+assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
+    '-Wl,-no_warn_duplicate_libraries'
 MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
     PLATFORM=windows-x64 help >"$TMP_ROOT/windows-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'CC := gcc'

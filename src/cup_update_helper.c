@@ -6,6 +6,7 @@
 #include "cup_update_helper.h"
 
 #include "constants.h"
+#include "checksum.h"
 #include "cup_update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -369,12 +370,41 @@ static CupError wait_for_parent(const char *value) {
     return CUP_OK;
 }
 
-/* Parent-side handoff. The running cup binary is copied to the canonical helper path before the
+/* Parent-side handoff. Ensure the canonical helper matches the running cup binary before the
  * parent releases control. */
+static CupError helper_matches_binary(const char *binary, const char *helper, int *matches) {
+    char binary_hash[SHA256_HEX_LENGTH + 1];
+    char helper_hash[SHA256_HEX_LENGTH + 1];
+    int helper_is_regular;
+    CupError err;
+
+    if (matches == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *matches = 0;
+
+    err = system_is_regular_file(helper, &helper_is_regular);
+    if (err != CUP_OK || !helper_is_regular) {
+        return err;
+    }
+    err = checksum_sha256_file(binary, binary_hash, sizeof(binary_hash));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = checksum_sha256_file(helper, helper_hash, sizeof(helper_hash));
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    *matches = strcmp(binary_hash, helper_hash) == 0;
+    return CUP_OK;
+}
+
 CupError cup_update_helper_prepare(void) {
     char binary[MAX_PATH_LEN];
     char helper[MAX_PATH_LEN];
     CupError err;
+    int matches;
 
     err = layout_ensure_cup_assets();
     if (err == CUP_OK) {
@@ -384,10 +414,16 @@ CupError cup_update_helper_prepare(void) {
         err = layout_get_cup_update_helper_path(helper, sizeof(helper));
     }
     if (err == CUP_OK) {
+        err = helper_matches_binary(binary, helper, &matches);
+    }
+    if (err == CUP_OK && !matches) {
         err = system_copy_file(binary, helper);
     }
     if (err == CUP_OK) {
         err = system_set_executable(helper, 1);
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not prepare the native cup update helper.\n");
     }
     return err;
 }

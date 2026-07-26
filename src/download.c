@@ -20,6 +20,7 @@
 #include <openssl/ssl.h>
 #endif
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE) && LIBCURL_VERSION_NUM < 0x074D00
@@ -115,6 +116,35 @@ static long validation_timeout(DownloadValidation validation) {
     return validation == DOWNLOAD_VALIDATE_ARCHIVE ? 7200L : 300L;
 }
 
+/* HTTP is accepted only for an explicit loopback release-test override. The parser requires a
+ * numeric port and rejects user-info forms such as localhost:80@example.invalid. */
+int download_insecure_loopback_is_allowed(const char *url) {
+    const char *allow = getenv("CUP_INSTALL_ALLOW_INSECURE");
+    const char *port;
+    unsigned long value = 0;
+
+    if (url == NULL || allow == NULL || strcmp(allow, "1") != 0) {
+        return 0;
+    }
+    if (strncmp(url, "http://127.0.0.1:", 17) == 0 ||
+        strncmp(url, "http://localhost:", 17) == 0) {
+        port = url + 17;
+    } else {
+        return 0;
+    }
+    if (*port < '0' || *port > '9') {
+        return 0;
+    }
+    while (*port >= '0' && *port <= '9') {
+        value = value * 10 + (unsigned long)(*port - '0');
+        if (value > 65535) {
+            return 0;
+        }
+        port++;
+    }
+    return value != 0 && (*port == '\0' || *port == '/');
+}
+
 static int progress_callback(void *userdata,
                              curl_off_t download_total,
                              curl_off_t downloaded,
@@ -168,10 +198,14 @@ static CURLcode configure_transfer(CURL *curl,
     SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
     SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 #if LIBCURL_VERSION_NUM >= 0x075500
-    SETOPT(curl, CURLOPT_PROTOCOLS_STR, "https");
+    SETOPT(curl,
+           CURLOPT_PROTOCOLS_STR,
+           download_insecure_loopback_is_allowed(url) ? "http,https" : "https");
     SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
 #else
-    SETOPT(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    SETOPT(curl,
+           CURLOPT_PROTOCOLS,
+           download_insecure_loopback_is_allowed(url) ? CURLPROTO_HTTP | CURLPROTO_HTTPS : CURLPROTO_HTTPS);
     SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
     SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
