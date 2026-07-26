@@ -244,6 +244,7 @@ static void test_reparse_points_are_not_followed(void) {
 static void test_detached_uninstall_start(void) {
     char script[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
+    char prefixed_root[CUP_TEST_TEMP_PATH_SIZE + 8];
     char script_text[CUP_TEST_TEMP_PATH_SIZE * 3];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 2];
     int written;
@@ -260,6 +261,17 @@ static void test_detached_uninstall_start(void) {
     TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(script_text));
     write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", marker));
+    written = snprintf(prefixed_root, sizeof(prefixed_root), "\\\\?\\%s", temp_dir);
+    TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(prefixed_root));
+    {
+        size_t i;
+
+        for (i = 4; prefixed_root[i] != '\0'; ++i) {
+            if (prefixed_root[i] == '/') {
+                prefixed_root[i] = '\\';
+            }
+        }
+    }
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_start_uninstall(NULL, script, 1));
@@ -268,7 +280,7 @@ static void test_detached_uninstall_start(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_start_uninstall(temp_dir, script, 0));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_start_uninstall(temp_dir, script, 999999UL));
+                          system_start_uninstall(prefixed_root, script, 999999UL));
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
     {
@@ -296,7 +308,11 @@ static void test_detached_uninstall_start(void) {
         parent_pid = separator + separator_size;
 
         TEST_ASSERT_TRUE(path_equal(root, temp_dir));
+        TEST_ASSERT_FALSE(strncmp(root, "\\\\?\\", 4) == 0);
+        TEST_ASSERT_NULL(strchr(root, '/'));
         TEST_ASSERT_TRUE(self_path[0] != '\0');
+        TEST_ASSERT_FALSE(strncmp(self_path, "\\\\?\\", 4) == 0);
+        TEST_ASSERT_NULL(strchr(self_path, '/'));
         TEST_ASSERT_EQUAL_STRING("999999", parent_pid);
     }
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));

@@ -117,6 +117,58 @@ static CupError utf8_to_wide_path(const char *input, wchar_t *output, size_t out
     return CUP_OK;
 }
 
+/* External process arguments use ordinary absolute paths, not Win32 device prefixes. */
+static CupError utf8_to_wide_process_path(const char *input,
+                                           wchar_t *output,
+                                           size_t output_count) {
+    wchar_t converted[MAX_PATH_LEN];
+    wchar_t absolute[MAX_PATH_LEN];
+    DWORD length;
+    size_t i;
+    size_t required;
+
+    if (utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
+        output_count == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    for (i = 0; converted[i] != L'\0'; ++i) {
+        if (converted[i] == L'/') {
+            converted[i] = L'\\';
+        }
+    }
+
+    if (wcsncmp(converted, L"\\\\.\\", 4) == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (_wcsnicmp(converted, L"\\\\?\\UNC\\", 8) == 0) {
+        required = 2 + wcslen(converted + 8) + 1;
+        if (required > MAX_PATH_LEN) {
+            return CUP_ERR_BUFFER_TOO_SMALL;
+        }
+        memmove(converted + 2,
+                converted + 8,
+                (wcslen(converted + 8) + 1) * sizeof(*converted));
+        converted[0] = L'\\';
+        converted[1] = L'\\';
+    } else if (wcsncmp(converted, L"\\\\?\\", 4) == 0) {
+        memmove(converted,
+                converted + 4,
+                (wcslen(converted + 4) + 1) * sizeof(*converted));
+    }
+
+    length = GetFullPathNameW(converted, MAX_PATH_LEN, absolute, NULL);
+    if (length == 0 || length >= MAX_PATH_LEN) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    required = wcslen(absolute) + 1;
+    if (required > output_count) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(output, absolute, required * sizeof(*output));
+    return CUP_OK;
+}
+
 static CupError wide_to_utf8(const wchar_t *input, char *output, size_t output_size) {
     int written;
 
@@ -494,8 +546,8 @@ CupError system_start_uninstall(const char *cup_root,
     }
     file = NULL;
     if (system_copy_file(uninstall_script, temp_script) != CUP_OK ||
-        utf8_to_wide_path(temp_script, temp_script_wide, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide_path(cup_root, wide_root, MAX_PATH_LEN) != CUP_OK) {
+        utf8_to_wide_process_path(temp_script, temp_script_wide, MAX_PATH_LEN) != CUP_OK ||
+        utf8_to_wide_process_path(cup_root, wide_root, MAX_PATH_LEN) != CUP_OK) {
         system_remove_file(temp_script);
         return CUP_ERR_FILESYSTEM;
     }

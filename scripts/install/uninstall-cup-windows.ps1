@@ -21,6 +21,32 @@ function Get-FileSystemItemOrNull([string]$Path) {
     return Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
 }
 
+function Get-NormalizedFullPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "path must not be empty"
+    }
+
+    $candidate = $Path.Replace('/', '\')
+    if ($candidate.StartsWith(
+        "\\?\UNC\",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        $candidate = "\\" + $candidate.Substring(8)
+    } elseif ($candidate.StartsWith(
+        "\\?\",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        $candidate = $candidate.Substring(4)
+    } elseif ($candidate.StartsWith(
+        "\\.\",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "device paths are not accepted"
+    }
+
+    return [System.IO.Path]::GetFullPath($candidate)
+}
+
 function Remove-TreeNoFollow([string]$Path) {
     $item = Get-FileSystemItemOrNull $Path
     if ($null -eq $item) { return }
@@ -53,18 +79,18 @@ try {
         -not [System.IO.Path]::IsPathRooted($env:USERPROFILE)) {
         throw "USERPROFILE must contain an absolute path"
     }
-    $userProfile = [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd([char[]]'\/')
+    $userProfile = (Get-NormalizedFullPath $env:USERPROFILE).TrimEnd([char[]]'\/')
     $profileRoot = [System.IO.Path]::GetPathRoot($userProfile).TrimEnd([char[]]'\/')
     if ($userProfile -ieq $profileRoot) {
         throw "USERPROFILE must not be a volume root"
     }
 
-    $expectedRoot = [System.IO.Path]::GetFullPath(
-        (Join-Path $userProfile ".cup")
-    ).TrimEnd('\')
-    $requestedRoot = [System.IO.Path]::GetFullPath($CupRoot).TrimEnd('\')
-    $requestedSelf = [System.IO.Path]::GetFullPath($SelfPath)
-    $runningSelf = [System.IO.Path]::GetFullPath($PSCommandPath)
+    $expectedRoot = Get-NormalizedFullPath (Join-Path $userProfile ".cup")
+    $expectedRoot = $expectedRoot.TrimEnd([char[]]'\/')
+    $requestedRoot = Get-NormalizedFullPath $CupRoot
+    $requestedRoot = $requestedRoot.TrimEnd([char[]]'\/')
+    $requestedSelf = Get-NormalizedFullPath $SelfPath
+    $runningSelf = Get-NormalizedFullPath $PSCommandPath
 
     if (-not $requestedRoot.Equals(
         $expectedRoot,

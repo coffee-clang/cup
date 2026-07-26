@@ -115,6 +115,11 @@ and do not treat `\` as a separator. Windows comparisons accept both separator
 forms, ignore ASCII case and normalize `\\?\` and `\\?\UNC\` prefixes. Code
 that compares filesystem paths uses the path abstraction rather than `strcmp`.
 
+Native Win32 filesystem calls receive UTF-16 paths with long-path prefixes when
+needed. Paths passed to external programs such as PowerShell use ordinary
+absolute Windows syntax without `\\?\`; the helper normalizes incoming
+long-path forms defensively before validating path identity.
+
 ## Permissions
 
 ### POSIX
