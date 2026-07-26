@@ -587,7 +587,6 @@ static void test_apply_failures(void) {
 static void test_scan_failures(void) {
     WrapperPlan plan = simple_plan();
     char binary[MAX_PATH_LEN];
-    int matches;
     size_t issues;
 
     join_test_path(binary, sizeof(binary), root, "bin/" TEST_BINARY_NAME);
@@ -595,9 +594,15 @@ static void test_scan_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
 
 #if !defined(_WIN32)
+    int matches;
+
     is_executable_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_expected_matches(&plan, &matches));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_check(&plan, &issues));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        wrapper_plan_check(&plan, &issues));
     is_executable_result = CUP_OK;
 #endif
 
