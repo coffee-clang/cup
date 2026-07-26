@@ -29,6 +29,12 @@ case "$PLATFORM" in
 esac
 OUT="$ROOT/build/$PLATFORM/$CONFIGURATION/tests/helpers"
 pkg_path="$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig"
+COVERAGE_ENTRY_SOURCE=
+case "$PLATFORM:$CONFIGURATION" in
+    macos-*:coverage)
+        COVERAGE_ENTRY_SOURCE="$ROOT/tests/helpers/coverage-entry.c"
+        ;;
+esac
 mkdir -p "$OUT"
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O0 -g3"
 LDFLAGS=""
@@ -65,21 +71,38 @@ case "$CONFIGURATION" in
         ;;
 esac
 
+compile_helper() {
+    name=$1
+    source=$2
+    shift 2
+    entry_flags=()
+    entry_sources=()
+    if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
+        entry_name=${name//-/_}
+        entry_name="cup_coverage_${entry_name}_main"
+        entry_flags+=(
+            "-Dmain=$entry_name"
+            "-DCUP_COVERAGE_ENTRY=$entry_name"
+        )
+        entry_sources+=("$COVERAGE_ENTRY_SOURCE")
+    fi
+    printf '==> Compiling test helper: %s\n' "$name"
+    "$CC" $CFLAGS "${entry_flags[@]}" -I"$DEPS_PREFIX/include" \
+        "$source" "${entry_sources[@]}" $LDFLAGS "$@" \
+        -o "$OUT/$name$EXE_SUFFIX"
+}
+
 if [ "$PLATFORM" != windows-x64 ]; then
-    printf '==> Compiling test helper: archive-fixture\n'
     archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
         PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
-    "$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
-        "$ROOT/tests/helpers/archive-fixture.c" $LDFLAGS $archive_libs \
-        -o "$OUT/archive-fixture$EXE_SUFFIX"
+    compile_helper archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
+        $archive_libs
 fi
 
-printf '==> Compiling test helper: network-helper\n'
 event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libevent_extra libevent_core)
-"$CC" $CFLAGS -I"$DEPS_PREFIX/include" \
-    "$ROOT/tests/helpers/network-helper.c" $LDFLAGS $event_libs $PLATFORM_LIBS \
-    -o "$OUT/network-helper$EXE_SUFFIX"
+compile_helper network-helper "$ROOT/tests/helpers/network-helper.c" \
+    $event_libs $PLATFORM_LIBS
 
 printf 'All test helpers compiled for %s (%s).\n' "$PLATFORM" "$CONFIGURATION"

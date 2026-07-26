@@ -218,6 +218,8 @@ CONFIG_CFLAGS_sanitizers := -O0 -g3 -fsanitize=address,undefined \
     -fno-omit-frame-pointer
 CONFIG_LDFLAGS_sanitizers := -fsanitize=address,undefined
 CONFIG_CFLAGS_release := -O2 -g1 -DNDEBUG
+CONFIG_CPPFLAGS_coverage :=
+COVERAGE_ENTRY_OBJ :=
 
 # Native/cross toolchain selection by public platform identifier. Explicit
 # command-line CC/WINDRES values remain available for compiler-matrix and MSYS2
@@ -249,6 +251,14 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
         -Wl,-no_warn_duplicate_libraries
     CONFIG_CFLAGS_coverage := -O0 -g3 -fprofile-instr-generate -fcoverage-mapping
     CONFIG_LDFLAGS_coverage := -fprofile-instr-generate -fcoverage-mapping
+    ifeq ($(CONFIGURATION),coverage)
+        # Linux/gcovr keeps same-named functions separate while Apple LLVM
+        # rejects different main hashes in one merged profile. Give every
+        # instrumented executable the same wrapper and a unique real entry.
+        CONFIG_CPPFLAGS_coverage += \
+            -DCUP_COVERAGE_ENTRY=cup_coverage_program_main
+        COVERAGE_ENTRY_OBJ := $(OBJ_DIR)/coverage-entry.o
+    endif
 endif
 
 ifeq ($(PLATFORM),windows-x64)
@@ -366,7 +376,8 @@ override LDLIBS := $(strip $(PROJECT_LDLIBS) $(PLATFORM_LDLIBS) \
 
 SRC := $(COMMON_SRC) $(SYSTEM_SRC)
 CA_BUNDLE_OBJ := $(OBJ_DIR)/ca_bundle.o
-OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC)) $(CA_BUNDLE_OBJ) $(RESOURCE_OBJ)
+OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC)) $(CA_BUNDLE_OBJ) \
+    $(COVERAGE_ENTRY_OBJ) $(RESOURCE_OBJ)
 DEP := $(filter %.d,$(OBJ:.o=.d))
 MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
 
@@ -557,6 +568,12 @@ $(TARGET): $(OBJ) $(BUILD_CONFIG)
 $(CA_BUNDLE_OBJ): $(CA_BUNDLE_SOURCE) $(CA_BUNDLE_HEADER) $(BUILD_CONFIG)
 	@mkdir -p "$(dir $@)"
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c "$(CA_BUNDLE_SOURCE)" -o "$@"
+
+ifneq ($(strip $(COVERAGE_ENTRY_OBJ)),)
+$(COVERAGE_ENTRY_OBJ): tests/helpers/coverage-entry.c $(BUILD_CONFIG)
+	@mkdir -p "$(dir $@)"
+	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c "$<" -o "$@"
+endif
 
 $(OBJ_DIR)/%.o: src/%.c $(BUILD_CONFIG)
 	@mkdir -p "$(dir $@)"

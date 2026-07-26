@@ -536,6 +536,10 @@ static int command_uses_interrupt(int argc, char **argv) {
 }
 
 /* Top-level command dispatch. */
+#ifdef CUP_COVERAGE_ENTRY
+#define main CUP_COVERAGE_ENTRY
+#endif
+
 int main(int argc, char *argv[]) {
     system_set_restrictive_umask();
     const char *command;
@@ -627,3 +631,7 @@ int main(int argc, char *argv[]) {
     }
     return cup_error_to_exit_status(result);
 }
+
+#ifdef CUP_COVERAGE_ENTRY
+#undef main
+#endif

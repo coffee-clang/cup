@@ -61,6 +61,12 @@ case "$TEST_CONFIGURATION" in
         ;;
 esac
 TEST_BUILD_DIR="$ROOT/build/$PLATFORM/$TEST_CONFIGURATION/tests/unit"
+COVERAGE_ENTRY_SOURCE=
+case "$PLATFORM:$TEST_CONFIGURATION" in
+    macos-*:coverage)
+        COVERAGE_ENTRY_SOURCE="$ROOT/tests/helpers/coverage-entry.c"
+        ;;
+esac
 UNITY_LIB=$(cup_test_find_static_library unity) || {
     printf 'Unity static library was not found in %s.\n' "$DEPS_PREFIX" >&2
     exit 1
@@ -87,12 +93,24 @@ compile_test() {
     name=$1
     shift
     output="$TEST_BUILD_DIR/$name"
+    coverage_flags=()
+    coverage_sources=()
+    if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
+        coverage_body="cup_coverage_${name}_main"
+        coverage_entry="cup_coverage_${name}_entry"
+        coverage_flags+=(
+            "-Dmain=$coverage_body"
+            "-DCUP_COVERAGE_VOID_ENTRY=$coverage_body"
+            "-DCUP_COVERAGE_ENTRY=$coverage_entry"
+        )
+        coverage_sources+=("$COVERAGE_ENTRY_SOURCE")
+    fi
     printf '==> Compiling C unit test: %s\n' "$name"
     "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
-        $TEST_CFLAGS \
+        $TEST_CFLAGS "${coverage_flags[@]}" \
         -I"$ROOT/tests/unit/fixtures" \
         -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
-        "$@" \
+        "$@" "${coverage_sources[@]}" \
         "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
 }
 
