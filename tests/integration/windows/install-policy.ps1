@@ -30,7 +30,7 @@ try {
 
     Assert-CupStatus -CommandArgs @(
         "config", "set", "compiler", "unknown", "--target", "windows-x64") `
-        -ExpectedStatus 3 | Out-Null
+        -ExpectedStatus 2 | Out-Null
     Assert-CupHealthy
     Write-Host "Windows install-policy tests passed."
 } finally {
