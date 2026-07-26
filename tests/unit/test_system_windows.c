@@ -4,6 +4,7 @@
  */
 
 #include "error.h"
+#include "path.h"
 #include "system.h"
 #include "unity.h"
 #include "test_platform.h"
@@ -83,57 +84,6 @@ static int wait_for_path(const char *path) {
     return 0;
 }
 
-static int normalize_test_path(const char *path, char *buffer, size_t size) {
-    char candidate[CUP_TEST_TEMP_PATH_SIZE];
-    const char *source;
-    size_t offset = 0;
-    size_t i;
-    DWORD length;
-
-    if (path == NULL || buffer == NULL || size == 0) {
-        return 0;
-    }
-    source = path;
-    if (strncmp(source, "\\\\?\\UNC\\", 8) == 0) {
-        candidate[0] = '\\';
-        candidate[1] = '\\';
-        offset = 2;
-        source += 8;
-    } else if (strncmp(source, "\\\\?\\", 4) == 0) {
-        source += 4;
-    }
-    for (i = 0; source[i] != '\0'; ++i) {
-        if (offset + i + 1 >= sizeof(candidate)) {
-            return 0;
-        }
-        candidate[offset + i] = source[i] == '/' ? '\\' : source[i];
-    }
-    candidate[offset + i] = '\0';
-
-    length = GetFullPathNameA(candidate, (DWORD)size, buffer, NULL);
-    if (length == 0 || length >= size) {
-        return 0;
-    }
-    for (i = 0; buffer[i] != '\0'; ++i) {
-        if (buffer[i] == '/') {
-            buffer[i] = '\\';
-        }
-    }
-    while (i > 3 && buffer[i - 1] == '\\') {
-        buffer[--i] = '\0';
-    }
-    return 1;
-}
-
-static int test_paths_equal(const char *left, const char *right) {
-    char normalized_left[CUP_TEST_TEMP_PATH_SIZE];
-    char normalized_right[CUP_TEST_TEMP_PATH_SIZE];
-
-    return normalize_test_path(left, normalized_left, sizeof(normalized_left)) &&
-           normalize_test_path(right, normalized_right, sizeof(normalized_right)) &&
-           _stricmp(normalized_left, normalized_right) == 0;
-}
-
 static int create_directory_junction(const char *link_path, const char *target_path) {
     char absolute_link[CUP_TEST_TEMP_PATH_SIZE];
     char absolute_target[CUP_TEST_TEMP_PATH_SIZE];
@@ -182,7 +132,8 @@ static void test_home_and_process_identity(void) {
     length = GetFullPathNameA(temp_dir, (DWORD)sizeof(expected), expected, NULL);
     TEST_ASSERT_TRUE(length > 0 && length < sizeof(expected));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_home_dir(buffer, sizeof(buffer)));
-    TEST_ASSERT_EQUAL_STRING(expected, buffer);
+    TEST_ASSERT_TRUE(path_equal(expected, buffer));
+    TEST_ASSERT_NULL(strchr(buffer, '\\'));
     TEST_ASSERT_TRUE(system_get_process_id() > 0);
 
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", ""));
@@ -344,7 +295,7 @@ static void test_detached_uninstall_start(void) {
         *separator = '\0';
         parent_pid = separator + separator_size;
 
-        TEST_ASSERT_TRUE(test_paths_equal(root, temp_dir));
+        TEST_ASSERT_TRUE(path_equal(root, temp_dir));
         TEST_ASSERT_TRUE(self_path[0] != '\0');
         TEST_ASSERT_EQUAL_STRING("999999", parent_pid);
     }

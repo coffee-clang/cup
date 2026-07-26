@@ -446,7 +446,11 @@ CupError system_get_home_dir(char *buffer, size_t size) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    return wide_to_utf8(absolute, buffer, size);
+    {
+        CupError err = wide_to_utf8(absolute, buffer, size);
+
+        return err == CUP_OK ? path_normalize(buffer) : err;
+    }
 }
 
 unsigned long system_get_process_id(void) {
@@ -478,6 +482,7 @@ CupError system_start_uninstall(const char *cup_root,
         return CUP_ERR_FILESYSTEM;
     }
     if (wide_to_utf8(temp_directory_wide, temp_directory, sizeof(temp_directory)) != CUP_OK ||
+        path_normalize(temp_directory) != CUP_OK ||
         create_temp_file_with_suffix(
             temp_directory, "cup-uninstall", ".ps1", temp_script, sizeof(temp_script), &file) !=
             CUP_OK) {

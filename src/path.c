@@ -5,18 +5,128 @@
 
 #include "path.h"
 
+#include "constants.h"
 #include "text.h"
 
 #include <ctype.h>
 #include <string.h>
 
-/* Bounded path composition that preserves one canonical forward-slash representation. */
+#if defined(_WIN32)
+static int is_path_separator(char value) {
+    return value == '/' || value == '\\';
+}
+
+static unsigned char ascii_lower(unsigned char value) {
+    return value >= 'A' && value <= 'Z' ? (unsigned char)(value + ('a' - 'A')) : value;
+}
+
+static int ascii_equal_ignore_case(char left, char right) {
+    return ascii_lower((unsigned char)left) == ascii_lower((unsigned char)right);
+}
+
+static int is_drive_root(const char *path, size_t length) {
+    return length == 3 && isalpha((unsigned char)path[0]) && path[1] == ':' && path[2] == '/';
+}
+#endif
+
+CupError path_normalize(char *path) {
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+#if defined(_WIN32)
+    {
+        size_t length = strlen(path);
+        size_t read = 0;
+        size_t write = 0;
+
+        if (length >= 8 && is_path_separator(path[0]) && is_path_separator(path[1]) &&
+            path[2] == '?' && is_path_separator(path[3]) &&
+            ascii_equal_ignore_case(path[4], 'u') && ascii_equal_ignore_case(path[5], 'n') &&
+            ascii_equal_ignore_case(path[6], 'c') && is_path_separator(path[7])) {
+            path[write++] = '/';
+            path[write++] = '/';
+            read = 8;
+        } else if (length >= 4 && is_path_separator(path[0]) && is_path_separator(path[1]) &&
+                   path[2] == '?' && is_path_separator(path[3])) {
+            read = 4;
+        } else if (length >= 4 && is_path_separator(path[0]) && is_path_separator(path[1]) &&
+                   path[2] == '.' && is_path_separator(path[3])) {
+            return CUP_ERR_INVALID_INPUT;
+        } else if (length >= 2 && is_path_separator(path[0]) && is_path_separator(path[1])) {
+            path[write++] = '/';
+            path[write++] = '/';
+            read = 2;
+        }
+
+        while (read < length) {
+            char value = path[read++];
+
+            if (is_path_separator(value)) {
+                if (write > 0 && path[write - 1] == '/') {
+                    continue;
+                }
+                value = '/';
+            }
+            path[write++] = value;
+        }
+
+        while (write > 1 && path[write - 1] == '/' && !is_drive_root(path, write) &&
+               !(write == 2 && path[0] == '/' && path[1] == '/')) {
+            write--;
+        }
+        path[write] = '\0';
+    }
+#endif
+
+    return CUP_OK;
+}
+
+int path_equal(const char *left, const char *right) {
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+
+#if defined(_WIN32)
+    {
+        char normalized_left[MAX_PATH_LEN];
+        char normalized_right[MAX_PATH_LEN];
+        const unsigned char *left_cursor;
+        const unsigned char *right_cursor;
+
+        if (text_copy(normalized_left, sizeof(normalized_left), left) != CUP_OK ||
+            text_copy(normalized_right, sizeof(normalized_right), right) != CUP_OK ||
+            path_normalize(normalized_left) != CUP_OK ||
+            path_normalize(normalized_right) != CUP_OK) {
+            return 0;
+        }
+
+        left_cursor = (const unsigned char *)normalized_left;
+        right_cursor = (const unsigned char *)normalized_right;
+        while (*left_cursor != '\0' && *right_cursor != '\0') {
+            if (ascii_lower(*left_cursor) != ascii_lower(*right_cursor)) {
+                return 0;
+            }
+            left_cursor++;
+            right_cursor++;
+        }
+        return *left_cursor == *right_cursor;
+    }
+#else
+    return strcmp(left, right) == 0;
+#endif
+}
+
+/* Bounded path composition that preserves the host's internal representation. */
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child) {
+    CupError err;
+
     if (buffer == NULL || size == 0 || text_is_empty(parent) || text_is_empty(child)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    return text_format(buffer, size, "%s/%s", parent, child);
+    err = text_format(buffer, size, "%s/%s", parent, child);
+    return err == CUP_OK ? path_normalize(buffer) : err;
 }
 
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child) {

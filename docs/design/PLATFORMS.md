@@ -103,6 +103,18 @@ Using wide APIs avoids making the internal path model depend on the active ANSI
 code page. The generated PE manifest declares `longPathAware`; native tests use
 paths beyond `MAX_PATH` rather than treating larger C buffers as sufficient.
 
+## Internal path representation
+
+The portable core uses `/` as its path separator on every host. Windows paths
+received from native APIs are normalized when they enter the core; conversion
+to UTF-16, `\` separators and long-path prefixes happens only at the native API
+boundary. This prevents mixed paths such as `C:\Users\name/.cup/components`.
+
+Path identity follows host semantics. POSIX comparisons remain case-sensitive
+and do not treat `\` as a separator. Windows comparisons accept both separator
+forms, ignore ASCII case and normalize `\\?\` and `\\?\UNC\` prefixes. Code
+that compares filesystem paths uses the path abstraction rather than `strcmp`.
+
 ## Permissions
 
 ### POSIX

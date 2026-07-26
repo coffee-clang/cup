@@ -34,6 +34,24 @@ function Assert-Contains {
     }
 }
 
+function Assert-ContainsPathText {
+    param(
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Expected
+    )
+
+    $normalizedText = $Text.Replace('\', '/')
+    $normalizedExpected = $Expected.Replace('\', '/')
+    if (-not $normalizedText.Contains($normalizedExpected)) {
+        Fail-Test (
+            "expected output to contain path text: $Expected`n" +
+            "Actual output:`n$Text")
+    }
+}
+
 function Assert-NotContains {
     param(
         [AllowEmptyString()]

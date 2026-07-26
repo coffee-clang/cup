@@ -39,7 +39,7 @@ try {
     $malformedRoot = Join-Path $cupRoot "components\unknown-component"
     New-Item -ItemType Directory -Force -Path $invalidPackage, $malformedRoot | Out-Null
     $quarantine = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $quarantine "Quarantined invalid package '$invalidPackage'"
+    Assert-ContainsPathText $quarantine "Quarantined invalid package '$invalidPackage'"
     Assert-Contains $quarantine "unknown component"
     Assert-PathMissing $invalidPackage
     $preserved = Get-ChildItem (Join-Path $cupRoot "recovery") -Directory -Recurse `

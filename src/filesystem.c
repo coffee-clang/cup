@@ -7,6 +7,7 @@
 
 #include "constants.h"
 #include "interrupt.h"
+#include "path.h"
 #include "system.h"
 #include "text.h"
 
@@ -61,7 +62,7 @@ static CupError count_child(const char *path, SystemPathKind path_kind, void *us
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (!text_is_empty(context->excluded_path) && strcmp(path, context->excluded_path) == 0) {
+    if (!text_is_empty(context->excluded_path) && path_equal(path, context->excluded_path)) {
         return CUP_OK;
     }
 
@@ -112,7 +113,7 @@ static CupError clear_directory_entry(const char *path, SystemPathKind path_kind
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (!text_is_empty(context->preserved_path) && strcmp(path, context->preserved_path) == 0) {
+    if (!text_is_empty(context->preserved_path) && path_equal(path, context->preserved_path)) {
         return CUP_OK;
     }
 

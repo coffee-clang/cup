@@ -433,6 +433,47 @@ static void test_relative_paths(void) {
     TEST_ASSERT_FALSE(path_is_safe_relative(long_segment));
 }
 
+static void test_path_normalization(void) {
+    char path[128];
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(NULL));
+    path[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
+    TEST_ASSERT_FALSE(path_equal(NULL, "/tmp"));
+    TEST_ASSERT_FALSE(path_equal("/tmp", NULL));
+
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, text_copy(path, sizeof(path), "C:\\Users\\Test\\.cup\\components\\"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(path));
+    TEST_ASSERT_EQUAL_STRING("C:/Users/Test/.cup/components", path);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, text_copy(path, sizeof(path), "\\\\?\\C:\\Users\\Test\\.cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(path));
+    TEST_ASSERT_EQUAL_STRING("C:/Users/Test/.cup", path);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, text_copy(path, sizeof(path), "\\\\?\\UNC\\server\\share\\cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(path));
+    TEST_ASSERT_EQUAL_STRING("//server/share/cup", path);
+
+    TEST_ASSERT_TRUE(path_equal("C:/Users/Test/.cup", "c:\\users\\test\\.cup\\"));
+    TEST_ASSERT_TRUE(path_equal("//server/share/cup", "\\\\?\\UNC\\SERVER\\share\\cup"));
+    TEST_ASSERT_FALSE(path_equal("C:/Users/Test/.cup", "C:/Users/Test/other"));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(path, sizeof(path), "C:\\Users\\Test", ".cup"));
+    TEST_ASSERT_EQUAL_STRING("C:/Users/Test/.cup", path);
+#else
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(path, sizeof(path), "/tmp/cup\\name"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(path));
+    TEST_ASSERT_EQUAL_STRING("/tmp/cup\\name", path);
+    TEST_ASSERT_TRUE(path_equal("/tmp/cup", "/tmp/cup"));
+    TEST_ASSERT_FALSE(path_equal("/tmp/cup", "/TMP/CUP"));
+    TEST_ASSERT_FALSE(path_equal("/tmp/cup/name", "/tmp/cup\\name"));
+#endif
+}
+
 static void test_path_building(void) {
     char path[64];
 
@@ -480,6 +521,7 @@ int main(void) {
     RUN_TEST(test_selector_guards);
     RUN_TEST(test_path_segments);
     RUN_TEST(test_relative_paths);
+    RUN_TEST(test_path_normalization);
     RUN_TEST(test_path_building);
     return UNITY_END();
 }

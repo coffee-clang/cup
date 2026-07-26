@@ -35,6 +35,19 @@ static void write_text(const char *path, const char *text) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
+#if defined(_WIN32)
+static void change_path_separators(char *path) {
+    while (*path != '\0') {
+        if (*path == '/') {
+            *path = '\\';
+        } else if (*path == '\\') {
+            *path = '/';
+        }
+        path++;
+    }
+}
+#endif
+
 /* Test cases grouped by the public contract they exercise. */
 
 static void test_tree_lifecycle(void) {
@@ -102,6 +115,9 @@ static void test_remove_symlink_tree(void) {
 static void test_count_and_clear(void) {
     char root[1024];
     char keep[1024];
+#if defined(_WIN32)
+    char equivalent_keep[1024];
+#endif
     char remove_file[1024];
     char remove_dir[1024];
     char nested[1024];
@@ -121,10 +137,20 @@ static void test_count_and_clear(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_count_children(root, NULL, &count));
     TEST_ASSERT_EQUAL_size_t(3, count);
+#if defined(_WIN32)
+    TEST_ASSERT_TRUE(snprintf(equivalent_keep, sizeof(equivalent_keep), "%s", keep) > 0);
+    change_path_separators(equivalent_keep);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_count_children(root, equivalent_keep, &count));
+#else
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_count_children(root, keep, &count));
+#endif
     TEST_ASSERT_EQUAL_size_t(2, count);
 
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_clear_directory(root, equivalent_keep));
+#else
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_clear_directory(root, keep));
+#endif
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(keep, &exists));
     TEST_ASSERT_TRUE(exists);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(remove_file, &exists));

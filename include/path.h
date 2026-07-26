@@ -10,7 +10,13 @@
 
 #include "error.h"
 
-/* Join a parent and child path with the canonical '/' accepted on all hosts. */
+/* Normalize a path to the internal representation used by the current host. */
+CupError path_normalize(char *path);
+
+/* Compare paths using host filesystem separator and case semantics. */
+int path_equal(const char *left, const char *right);
+
+/* Join a parent and child path using the internal representation. */
 CupError path_join(char *buffer, size_t size, const char *parent, const char *child);
 
 /* Join only after validating child as a safe relative path. */
