@@ -668,6 +668,10 @@ function Assert-PrivateDirectory([string]$Path) {
         [System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)).Value)
 
     $acl = Get-Acl -LiteralPath $Path
+    $requiredInheritance =
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $requiredRights = [System.Security.AccessControl.FileSystemRights]::FullControl
     if (-not $acl.AreAccessRulesProtected) {
         Fail "cup root ACL inherits permissions from its parent: $Path"
     }
@@ -676,11 +680,16 @@ function Assert-PrivateDirectory([string]$Path) {
     if ($ownerSid.Value -cne $identity.User.Value) {
         Fail "cup root is not owned by the current user: $Path"
     }
+    if (@($acl.Access).Count -ne 3) {
+        Fail "cup root does not have the expected private ACL: $Path"
+    }
     foreach ($rule in $acl.Access) {
         $sid = $rule.IdentityReference.Translate(
             [System.Security.Principal.SecurityIdentifier])
         if ($rule.IsInherited -or
             $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            ($rule.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance -or
+            ($rule.FileSystemRights -band $requiredRights) -ne $requiredRights -or
             -not $allowed.Contains($sid.Value)) {
             Fail "cup root has an unsafe ACL entry: $Path"
         }

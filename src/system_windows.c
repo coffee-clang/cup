@@ -357,7 +357,7 @@ static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descript
     }
     written = _snwprintf(sddl,
                          sizeof(sddl) / sizeof(sddl[0]),
-                         L"O:%lsD:P(A;;FA;;;%ls)(A;;FA;;;SY)(A;;FA;;;BA)",
+                         L"O:%lsD:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
                          sid_text,
                          sid_text);
     LocalFree(sid_text);
@@ -731,9 +731,13 @@ CupError system_directory_is_private(const char *path, int *is_private) {
         }
         if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
             ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)header;
+            DWORD required_inheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
             PSID sid = (PSID)&ace->SidStart;
 
-            if (ace->Mask != 0 && !sid_is_private_principal(sid, user->User.Sid)) {
+            /* Private root permissions must propagate to every managed descendant. */
+            if (ace->Mask != 0 &&
+                (!sid_is_private_principal(sid, user->User.Sid) ||
+                 (header->AceFlags & required_inheritance) != required_inheritance)) {
                 *is_private = 0;
                 break;
             }
@@ -794,7 +798,11 @@ CupError system_make_private_directory(const char *path) {
     LocalFree(descriptor);
 
     err = system_directory_is_private(path, &is_private);
-    return err == CUP_OK && is_private ? CUP_OK : CUP_ERR_FILESYSTEM;
+    if (err != CUP_OK || !is_private) {
+        fprintf(stderr, "Error: could not verify private directory '%s'.\n", path);
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
 }
 
 CupError system_remove_directory(const char *path) {

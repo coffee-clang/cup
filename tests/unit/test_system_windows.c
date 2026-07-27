@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <aclapi.h>
 
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char original_profile[CUP_TEST_TEMP_PATH_SIZE];
@@ -68,6 +69,48 @@ static CupError reject_entry(const char *path, SystemPathKind kind, void *userda
 
 static int always_cancel(void) {
     return 1;
+}
+
+static void assert_private_acl_is_inheritable(const char *path) {
+    wchar_t wide_path[CUP_TEST_TEMP_PATH_SIZE];
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    PACL dacl = NULL;
+    DWORD status;
+    DWORD i;
+    size_t allowed_count = 0;
+
+    TEST_ASSERT_TRUE(MultiByteToWideChar(CP_UTF8,
+                                         MB_ERR_INVALID_CHARS,
+                                         path,
+                                         -1,
+                                         wide_path,
+                                         CUP_TEST_TEMP_PATH_SIZE) > 0);
+    status = GetNamedSecurityInfoW(wide_path,
+                                   SE_FILE_OBJECT,
+                                   DACL_SECURITY_INFORMATION,
+                                   NULL,
+                                   NULL,
+                                   &dacl,
+                                   NULL,
+                                   &descriptor);
+    TEST_ASSERT_EQUAL_UINT32(ERROR_SUCCESS, status);
+    TEST_ASSERT_NOT_NULL(dacl);
+
+    for (i = 0; i < dacl->AceCount; ++i) {
+        ACE_HEADER *header = NULL;
+
+        TEST_ASSERT_TRUE(GetAce(dacl, i, (void **)&header));
+        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+            continue;
+        }
+        TEST_ASSERT_EQUAL_HEX8(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                               header->AceFlags &
+                                   (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE));
+        allowed_count++;
+    }
+
+    TEST_ASSERT_EQUAL_size_t(3, allowed_count);
+    LocalFree(descriptor);
 }
 
 static int wait_for_path(const char *path) {
@@ -448,7 +491,9 @@ static void test_private_directory_tree_removal_and_locks(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_directory_is_private(private_directory, &is_private));
     TEST_ASSERT_TRUE(is_private);
-
+    assert_private_acl_is_inheritable(private_directory);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_private_directory(private_directory));
+    assert_private_acl_is_inheritable(private_directory);
     build_path(tree, sizeof(tree), "tree");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(tree));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, system_remove_tree(tree, always_cancel));
