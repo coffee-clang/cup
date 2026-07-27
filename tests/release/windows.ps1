@@ -13,6 +13,52 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$projectRoot = (Get-Location).Path
+$ReleaseDir = (Resolve-Path -LiteralPath $ReleaseDir).Path
+$originalLocation = $projectRoot
+
+# Run child PowerShell scripts without turning expected native stderr into a terminating error.
+function Invoke-PowerShellScript {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory
+    )
+
+    $id = [Guid]::NewGuid().ToString('N')
+    $stdoutPath = Join-Path $env:RUNNER_TEMP "cup-powershell-$PID-$id.stdout"
+    $stderrPath = Join-Path $env:RUNNER_TEMP "cup-powershell-$PID-$id.stderr"
+
+    try {
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+        $process = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList $arguments `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -WorkingDirectory $WorkingDirectory `
+            -NoNewWindow `
+            -Wait `
+            -PassThru
+
+        $output = @()
+        if (Test-Path -LiteralPath $stdoutPath) {
+            $output += @(Get-Content -LiteralPath $stdoutPath)
+        }
+        if (Test-Path -LiteralPath $stderrPath) {
+            $output += @(Get-Content -LiteralPath $stderrPath)
+        }
+
+        return [PSCustomObject]@{
+            ExitCode = $process.ExitCode
+            Output = $output
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Verify that each checksum file names exactly the expected immutable assets.
 function Get-NextTestVersion {
     param(
@@ -147,10 +193,11 @@ function Test-InstallerMetadataFailure {
         $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/$fixtureName"
         $env:CUP_INSTALL_NO_PATH_PROMPT = '1'
 
-        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File (Join-Path $ReleaseDir 'install.ps1') 2>&1)
-        $status = $LASTEXITCODE
-        $text = $output -join [Environment]::NewLine
+        $result = Invoke-PowerShellScript `
+            -ScriptPath (Join-Path $ReleaseDir 'install.ps1') `
+            -WorkingDirectory $profile
+        $status = $result.ExitCode
+        $text = $result.Output -join [Environment]::NewLine
         if ($status -eq 0) {
             throw "Metadata diagnostic case unexpectedly succeeded: $Name"
         }
@@ -203,13 +250,13 @@ if ($actual -ne "cup $Version") {
 
 # Serve the candidate locally and smoke-test the generated installer in a fresh profile.
 $port = 0
-$root = (Resolve-Path $ReleaseDir).Path
+$root = $ReleaseDir
 if ($env:CUP_TEST_CONFIGURATION) {
     $configuration = $env:CUP_TEST_CONFIGURATION
 } else {
     $configuration = "development"
 }
-$helper = Join-Path (Get-Location) "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
+$helper = Join-Path $projectRoot "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
 if (-not (Test-Path -LiteralPath $helper)) {
     throw "HTTP test helper is not built: $helper"
 }
@@ -287,11 +334,19 @@ try {
     $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port"
     $env:CUP_INSTALL_NO_PATH_PROMPT = "1"
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File (Join-Path $ReleaseDir "install.ps1")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows installer failed with exit code $LASTEXITCODE"
+    $installResult = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $testProfile
+    $installText = $installResult.Output -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($installText)) {
+        Write-Host $installText
     }
+    if ($installResult.ExitCode -ne 0) {
+        throw "Windows installer failed with exit code $($installResult.ExitCode)`n$installText"
+    }
+
+    # Exercise the installed release from outside the source checkout, matching the POSIX test.
+    Set-Location -LiteralPath $testProfile
     $installed = Join-Path $env:USERPROFILE ".cup\bin\cup.exe"
     if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
         throw "Windows installer did not create $installed"
@@ -308,9 +363,21 @@ try {
     if ($installedHash -ne $candidateHash) {
         throw "Installed cup does not match the tested release candidate"
     }
-    & $installed doctor
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed cup doctor failed with exit code $LASTEXITCODE"
+    $doctorOutput = @(& $installed doctor 2>&1)
+    $doctorStatus = $LASTEXITCODE
+    $doctorText = $doctorOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($doctorText)) {
+        Write-Host $doctorText
+    }
+    if ($doctorStatus -ne 0) {
+        throw "Installed cup doctor failed with exit code $doctorStatus`n$doctorText"
+    }
+    if ($doctorText -like "*development cup assets*" -or
+        $doctorText -like "*development catalog*") {
+        throw "Official Windows installation unexpectedly used development cup assets"
+    }
+    if ($doctorText -notlike "*Doctor found no issues.*") {
+        throw "Installed cup doctor did not report a healthy release installation"
     }
 
     # Repair may recreate mutable runtime paths, but it must preserve the installed
@@ -374,12 +441,13 @@ try {
     New-Item -ItemType Directory -Path $bootstrapStaging | Out-Null
     New-Item -ItemType File -Path $committedMarker | Out-Null
     Move-Item -LiteralPath $updateHelper -Destination $savedUpdateHelper
-    $incompleteOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File (Join-Path $ReleaseDir "install.ps1") 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $incompleteResult = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $testProfile
+    if ($incompleteResult.ExitCode -eq 0) {
         throw "Incomplete committed Windows bootstrap staging unexpectedly succeeded"
     }
-    if (($incompleteOutput -join "`n") -notlike
+    if (($incompleteResult.Output -join "`n") -notlike
         "*completed bootstrap staging does not match a complete installed generation*") {
         throw "Incomplete committed Windows bootstrap failure was not explained"
     }
@@ -393,10 +461,15 @@ try {
     Move-Item -LiteralPath $savedUpdateHelper -Destination $updateHelper
 
     # Reinstall the same tested candidate, complete cleanup and keep the executable valid.
-    powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File (Join-Path $ReleaseDir "install.ps1")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows reinstall failed with exit code $LASTEXITCODE"
+    $reinstallResult = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $testProfile
+    $reinstallText = $reinstallResult.Output -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($reinstallText)) {
+        Write-Host $reinstallText
+    }
+    if ($reinstallResult.ExitCode -ne 0) {
+        throw "Windows reinstall failed with exit code $($reinstallResult.ExitCode)`n$reinstallText"
     }
     if (Test-Path -LiteralPath $bootstrapStaging) {
         throw "Windows reinstall did not remove completed bootstrap staging"
@@ -415,7 +488,7 @@ try {
     $nextVersion = Get-NextTestVersion -CurrentVersion $Version
     $updateRoot = Join-Path $ReleaseDir "update-fixture"
     $versionRoot = Join-Path $updateRoot $nextVersion
-    $patchHelper = Join-Path (Get-Location) `
+    $patchHelper = Join-Path $projectRoot `
         "build\windows-x64\$configuration\tests\helpers\binary-patch.exe"
     if (-not (Test-Path -LiteralPath $patchHelper -PathType Leaf)) {
         throw "Binary patch helper is not built: $patchHelper"
@@ -499,9 +572,18 @@ try {
     if ($LASTEXITCODE -ne 0 -or $updatedInstalledVersion -ne "cup $nextVersion") {
         throw "installed cup was not usable after update"
     }
-    & $installed doctor
-    if ($LASTEXITCODE -ne 0) {
-        throw "updated cup doctor failed with exit code $LASTEXITCODE"
+    $updatedDoctorOutput = @(& $installed doctor 2>&1)
+    $updatedDoctorStatus = $LASTEXITCODE
+    $updatedDoctorText = $updatedDoctorOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($updatedDoctorText)) {
+        Write-Host $updatedDoctorText
+    }
+    if ($updatedDoctorStatus -ne 0) {
+        throw "updated cup doctor failed with exit code $updatedDoctorStatus`n$updatedDoctorText"
+    }
+    if ($updatedDoctorText -like "*development cup assets*" -or
+        $updatedDoctorText -like "*development catalog*") {
+        throw "Updated Windows release unexpectedly used development cup assets"
     }
     $staleUpdate = @(Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE ".cup\staging") `
         -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "cup-update-*" })
@@ -538,6 +620,7 @@ try {
         throw "Release uninstall left staging behind: $($residues[0].FullName)"
     }
 } finally {
+    Set-Location -LiteralPath $originalLocation
     foreach ($name in $originalEnvironment.Keys) {
         $value = $originalEnvironment[$name]
         if ($null -eq $value) {

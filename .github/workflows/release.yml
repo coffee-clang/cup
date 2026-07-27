@@ -311,12 +311,11 @@ jobs:
         shell: powershell
         env:
           CUP_TEST_CONFIGURATION: release
-        run: >-
-          powershell.exe -NoProfile -ExecutionPolicy Bypass
-          -File tests/release/windows.ps1
-          -ReleaseDir release
-          -Version '${{ needs.metadata.outputs.version }}'
-          -SourceSha '${{ needs.metadata.outputs.sha }}'
+        run: |
+          & .\tests\release\windows.ps1 `
+            -ReleaseDir release `
+            -Version '${{ needs.metadata.outputs.version }}' `
+            -SourceSha '${{ needs.metadata.outputs.sha }}'
 
   publish:
     name: Publish verified release
