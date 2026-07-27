@@ -3,7 +3,8 @@
  * replacement assets and delegates the post-exit commit to the platform helper.
  */
 
-#include "commands.h"
+#include "cup_update.h"
+
 #include "download.h"
 
 #include "cup_assets.h"
@@ -222,7 +223,7 @@ static CupError verify_downloaded_asset(const char *checksums,
     CupError err;
     int matches;
 
-    err = cup_assets_verify_asset(checksums, asset_name, path, &matches);
+    err = checksum_verify_file(checksums, asset_name, path, &matches);
     if (err != CUP_OK) {
         return err;
     }
@@ -237,10 +238,45 @@ static CupError build_staging_path(const char *staging, const char *name, char *
     return path_join(path, size, staging, name);
 }
 
+static CupError copy_test_release_base(char *base, size_t size) {
+    const char *value = getenv("CUP_INSTALL_BASE_URL");
+    size_t length;
+
+    if (!download_insecure_loopback_is_allowed(value)) {
+        return CUP_ERR_NOT_AVAILABLE;
+    }
+
+    length = strlen(value);
+    while (length > 0 && value[length - 1] == '/') {
+        length--;
+    }
+    if (length == 0 || length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    memcpy(base, value, length);
+    base[length] = '\0';
+    return CUP_OK;
+}
+
+static CupError build_latest_asset_url(char *url, size_t size, const char *asset) {
+    char base[MAX_CATALOG_URL_LEN];
+
+    if (copy_test_release_base(base, sizeof(base)) == CUP_OK) {
+        return text_format(url, size, "%s/%s", base, asset);
+    }
+    return text_format(url, size, "%s/%s", CUP_RELEASE_LATEST_URL, asset);
+}
+
 static CupError build_release_asset_url(char *url,
                                         size_t size,
                                         const char *version,
                                         const char *asset) {
+    char base[MAX_CATALOG_URL_LEN];
+
+    if (copy_test_release_base(base, sizeof(base)) == CUP_OK) {
+        return text_format(url, size, "%s/%s/%s", base, version, asset);
+    }
     return text_format(url, size, CUP_RELEASE_VERSIONED_URL_TEMPLATE "/%s", version, asset);
 }
 
@@ -374,8 +410,7 @@ static CupError discover_latest_release(const CupUpdateFiles *files,
     }
     *update_available = 0;
 
-    err = text_format(
-        url, sizeof(url), "%s/%s", CUP_RELEASE_LATEST_URL, CUP_RELEASE_METADATA_FILENAME);
+    err = build_latest_asset_url(url, sizeof(url), CUP_RELEASE_METADATA_FILENAME);
     if (err != CUP_OK) {
         return err;
     }
@@ -592,7 +627,7 @@ static CupError prepare_staged_executables(const CupUpdateFiles *files) {
 }
 
 /* Public command used by `cup update cup` and by global update. */
-CupError command_update_cup(void) {
+CupError cup_update_start(void) {
     CommandContext context = {0};
     CupUpdateFiles files;
     CupUpdateUrls urls;
@@ -682,7 +717,7 @@ done:
         CupError cleanup_err = CUP_OK;
 
         if (transaction_started) {
-            cleanup_err = cup_update_journal_clear();
+            cleanup_err = runtime_journal_clear();
         }
         if (cleanup_err == CUP_OK) {
             cleanup_err = filesystem_remove_tree(files.staging);
@@ -698,7 +733,7 @@ done:
 
 #else
 
-CupError command_update_cup(void) {
+CupError cup_update_start(void) {
     fprintf(stderr,
             "Error: 'cup update cup' is available only from an official cup "
             "release; this build is '%s'.\n",

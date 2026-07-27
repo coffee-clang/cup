@@ -52,7 +52,6 @@ CupError state_add_installed(CupState *state, const PackageIdentity *identity);
 CupError state_remove_installed(CupState *state, const PackageIdentity *identity);
 
 /* Active lookup and one-identity-per-scope mutation. */
-int state_find_active(const CupState *state, const PackageScope *scope);
 const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope);
 CupError state_set_active(CupState *state, const PackageIdentity *identity);
 CupError state_clear_active(CupState *state, const PackageScope *scope);

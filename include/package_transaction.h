@@ -38,7 +38,6 @@ CupError package_transaction_get_staging_path(const PackageTransaction *transact
                                               char *buffer,
                                               size_t size);
 CupError package_transaction_recover(const PackageTransaction *transaction, CupState *state);
-CupError package_transaction_clear(void);
 
 /* Stable diagnostic name for one package operation. */
 const char *package_operation_name(PackageOperation operation);

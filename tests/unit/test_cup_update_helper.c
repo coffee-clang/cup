@@ -335,6 +335,18 @@ void system_lock_release(SystemLock *lock) {
     lock_released++;
 }
 
+CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only) {
+    CupError err = CUP_OK;
+
+    if (executable) {
+        err = system_set_executable(path, 1);
+    }
+    if (err == CUP_OK && read_only) {
+        err = system_set_read_only(path, 1);
+    }
+    return err;
+}
+
 CupError filesystem_remove_tree(const char *path) {
     if (cleanup_result != CUP_OK) {
         return cleanup_result;
@@ -378,7 +390,7 @@ CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
     return CUP_OK;
 }
 
-CupError cup_update_journal_clear(void) {
+CupError runtime_journal_clear(void) {
     journal_cleared++;
     if (journal_clear_failures_remaining > 0) {
         journal_clear_failures_remaining--;

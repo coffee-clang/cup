@@ -2,7 +2,7 @@
 #define CUP_WRAPPERS_H
 
 /*
- * Immutable managed-launcher plans derived from valid active packages. Planning is separate from
+ * Immutable managed-launcher plans derived from valid default packages. Planning is separate from
  * filesystem application so doctor diagnoses the same state that repair applies.
  */
 
@@ -29,10 +29,10 @@ typedef struct {
 void wrapper_plan_init(WrapperPlan *plan);
 void wrapper_plan_free(WrapperPlan *plan);
 
-/* Rebuild a plan with the exact launcher set represented by all active packages. */
+/* Rebuild a plan with the exact launcher set represented by all default packages. */
 CupError wrapper_plan_build(WrapperPlan *plan, const CupState *state);
 
-/* Rebuild a plan with launchers from one already selected active package. */
+/* Rebuild a plan with launchers from one already selected default package. */
 CupError wrapper_plan_build_active(WrapperPlan *plan, const PackageIdentity *active_identity);
 
 /* Apply one validated plan and remove managed launchers absent from it. */

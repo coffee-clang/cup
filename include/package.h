@@ -76,8 +76,18 @@ int package_scope_equals(const PackageScope *left, const PackageScope *right);
 /* Copy the scope represented by one concrete identity. */
 CupError package_identity_get_scope(const PackageIdentity *identity, PackageScope *scope);
 
-/* Compare complete concrete identities. */
+/* Compare complete concrete identities for equality or deterministic display order. */
 int package_identity_equals(const PackageIdentity *left, const PackageIdentity *right);
+int package_identity_compare(const PackageIdentity *left, const PackageIdentity *right);
+
+/* Match one identity against an exact host and optional target/component filters. */
+int package_identity_matches(const PackageIdentity *identity,
+                             const char *host_platform,
+                             const char *target_platform,
+                             const char *component);
+
+/* Sort concrete identities by host, target, component, tool and version. */
+void package_identity_sort(PackageIdentity *items, size_t count);
 
 /* Validate an already initialized concrete identity. */
 CupError package_identity_validate(const PackageIdentity *identity);

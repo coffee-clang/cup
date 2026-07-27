@@ -139,19 +139,19 @@ start_https_server() {
     wait_for_tls "$port" "$directory/ca.pem"
 }
 
-write_manifest() {
+write_package_catalog() {
     local port=$1
     local package_path='{version}-{host_platform}-{target_platform}'
     local package_name='clang-{version}-{host_platform}-{target_platform}.{format}'
     local release_url="https://localhost:$port/$package_path"
-    cat >"$SOURCE/config/packages.cfg" <<MANIFEST
+    cat >"$SOURCE/config/packages.cfg" <<PACKAGE_CATALOG
 compiler.clang.$PLATFORM.$PLATFORM.stable_version=99.0.0
 compiler.clang.$PLATFORM.$PLATFORM.available_versions=99.0.0
 compiler.clang.$PLATFORM.$PLATFORM.default_format=tar.gz
 compiler.clang.$PLATFORM.$PLATFORM.formats=tar.gz
 compiler.clang.$PLATFORM.$PLATFORM.url_template=$release_url/$package_name
 compiler.clang.$PLATFORM.$PLATFORM.checksum_url_template=$release_url/SHA256SUMS
-MANIFEST
+PACKAGE_CATALOG
 }
 
 run_cup_without_proxy() {
@@ -206,7 +206,7 @@ start_https_server "$TRUSTED" "$trusted_port" "$WORK/trusted-server.log"
 start_https_server "$UNTRUSTED" "$untrusted_port" "$WORK/untrusted-server.log"
 
 printf '==> Building a static Linux test release with an isolated CA bundle...\n'
-write_manifest "$trusted_port"
+write_package_catalog "$trusted_port"
 make -C "$SOURCE" -j"$JOBS" PLATFORM="$PLATFORM" \
     DEPS_PREFIX="$DEPS_PREFIX" release >/dev/null
 make -C "$SOURCE" PLATFORM="$PLATFORM" DEPS_PREFIX="$DEPS_PREFIX" \
@@ -217,7 +217,7 @@ CUP="$SOURCE/build/$PLATFORM/release/bin/cup"
 [ -x "$CUP" ] || fail "release executable was not produced: $CUP"
 
 printf '==> Rejecting a server outside the embedded trust bundle...\n'
-write_manifest "$untrusted_port"
+write_package_catalog "$untrusted_port"
 mkdir -p "$WORK/home-untrusted"
 if (
     cd "$SOURCE"
@@ -232,7 +232,7 @@ grep -Eiq 'certificate|SSL|TLS' "$WORK/untrusted.out" || {
 }
 
 printf '==> Downloading and extracting through direct HTTPS and DNS...\n'
-write_manifest "$trusted_port"
+write_package_catalog "$trusted_port"
 mkdir -p "$WORK/home-direct"
 (
     cd "$SOURCE"

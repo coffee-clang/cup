@@ -1,7 +1,6 @@
 /*
- * Runs the ordered deterministic reconciliation pipeline: transaction recovery, cup asset
- * restoration, package scanning, state rebuilding, quarantine, cleanup and selector-point
- * repair.
+ * Reconciles interrupted operations, CUP assets, packages, state and wrappers
+ * in a deterministic order.
  */
 
 #include "commands.h"
@@ -105,18 +104,6 @@ static CupError download_asset(const char *asset_name, char *path, size_t path_s
 #endif
 }
 
-static CupError apply_asset_permissions(const char *path, RepairAssetFlags flags) {
-    if ((flags & REPAIR_ASSET_EXECUTABLE) != 0 && system_set_executable(path, 1) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if ((flags & REPAIR_ASSET_READ_ONLY) != 0 && system_set_read_only(path, 1) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    return CUP_OK;
-}
-
 static CupError restore_asset_backup(const char *backup_path, const char *destination) {
     SystemCommitState restore_state = SYSTEM_COMMIT_NOT_APPLIED;
     CupError err;
@@ -189,17 +176,20 @@ static CupError restore_asset(const char *destination,
         return err;
     }
 
-    err = cup_assets_verify_asset(checksum_path, asset_name, staged_path, &matches);
+    err = checksum_verify_file(checksum_path, asset_name, staged_path, &matches);
     if (err != CUP_OK || !matches) {
         system_remove_file(staged_path);
         fprintf(stderr, "Error: checksum verification failed for '%s'.\n", asset_name);
         return CUP_ERR_VALIDATION;
     }
 
-    err = apply_asset_permissions(staged_path, flags);
+    err = filesystem_apply_required_permissions(
+        staged_path,
+        (flags & REPAIR_ASSET_EXECUTABLE) != 0,
+        (flags & REPAIR_ASSET_READ_ONLY) != 0);
     if (err != CUP_OK) {
         system_remove_file(staged_path);
-        return err;
+        return CUP_ERR_FILESYSTEM;
     }
 
     err = commit_asset(staged_path, destination, "file");
@@ -360,7 +350,7 @@ static CupError repair_package_catalog(void) {
         return err;
     }
     if (is_regular &&
-        cup_assets_verify_asset(
+        checksum_verify_file(
             checksums_path, CUP_PACKAGES_FILENAME, package_catalog_path, &matches) == CUP_OK &&
         matches) {
         package_catalog_init(&catalog);
@@ -387,7 +377,7 @@ static CupError repair_package_catalog(void) {
     if (err != CUP_OK) {
         return err;
     }
-    err = cup_assets_verify_asset(checksums_path, CUP_PACKAGES_FILENAME, staged_path, &matches);
+    err = checksum_verify_file(checksums_path, CUP_PACKAGES_FILENAME, staged_path, &matches);
     if (err != CUP_OK || !matches) {
         system_remove_file(staged_path);
         return CUP_ERR_VALIDATION;
@@ -431,7 +421,7 @@ static CupError repair_install_policy(void) {
         return err;
     }
     if (is_regular &&
-        cup_assets_verify_asset(
+        checksum_verify_file(
             checksums_path, CUP_INSTALL_POLICY_FILENAME, config_path, &matches) == CUP_OK &&
         matches) {
         install_policy_init(&config);
@@ -458,7 +448,7 @@ static CupError repair_install_policy(void) {
         return err;
     }
     err =
-        cup_assets_verify_asset(checksums_path, CUP_INSTALL_POLICY_FILENAME, staged_path, &matches);
+        checksum_verify_file(checksums_path, CUP_INSTALL_POLICY_FILENAME, staged_path, &matches);
     if (err != CUP_OK || !matches) {
         system_remove_file(staged_path);
         return CUP_ERR_VALIDATION;
@@ -501,13 +491,13 @@ static CupError repair_binary(void) {
         return err;
     }
     if (is_regular) {
-        err = cup_assets_verify_asset(checksums_path, asset_name, binary_path, &matches);
+        err = checksum_verify_file(checksums_path, asset_name, binary_path, &matches);
         if (err != CUP_OK || !matches) {
             err = refresh_platform_checksums();
             if (err != CUP_OK) {
                 return err;
             }
-            err = cup_assets_verify_asset(checksums_path, asset_name, binary_path, &matches);
+            err = checksum_verify_file(checksums_path, asset_name, binary_path, &matches);
         }
     }
 
@@ -550,7 +540,7 @@ static CupError repair_uninstall_script(void) {
         return err;
     }
     if (!is_regular ||
-        cup_assets_verify_asset(checksums_path, CUP_UNINSTALL_FILENAME, script_path, &matches) !=
+        checksum_verify_file(checksums_path, CUP_UNINSTALL_FILENAME, script_path, &matches) !=
             CUP_OK ||
         !matches) {
         err = refresh_platform_checksums();
@@ -1021,24 +1011,6 @@ static CupError repair_save_state(const RepairContext *context) {
     return CUP_OK;
 }
 
-static CupError reject_pending_uninstall(void) {
-    CupError err;
-    int pending;
-
-    err = cup_assets_uninstall_is_pending(&pending);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (!pending) {
-        return CUP_OK;
-    }
-
-    fprintf(stderr,
-            "Error: cup uninstall is in progress or did not finish. "
-            "Run the installer again if the marker is stale.\n");
-    return CUP_ERR_LOCK;
-}
-
 static CupError repair_cleanup_staging(const RepairContext *context) {
     char staging_dir[MAX_PATH_LEN];
     char transaction_path[MAX_PATH_LEN];
@@ -1088,7 +1060,7 @@ CupError command_repair(void) {
         return err;
     }
 
-    err = reject_pending_uninstall();
+    err = cup_assets_require_no_pending_uninstall();
     if (err == CUP_OK) {
         err = layout_ensure_runtime();
     }

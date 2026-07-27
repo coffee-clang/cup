@@ -188,6 +188,8 @@ static int compare_preferences(const void *left_value, const void *right_value) 
     return result;
 }
 
+static CupError reset_preferences_file(void);
+
 CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences) {
     ToolPreference sorted[MAX_INSTALL_DEFAULTS];
     char directory[MAX_PATH_LEN];
@@ -202,7 +204,7 @@ CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreference
         return CUP_ERR_VALIDATION;
     }
     if (preferences->count == 0) {
-        return tool_preferences_reset_all();
+        return reset_preferences_file();
     }
     memcpy(sorted, preferences->items, preferences->count * sizeof(preferences->items[0]));
     qsort(sorted, preferences->count, sizeof(sorted[0]), compare_preferences);
@@ -262,7 +264,7 @@ write_failed:
     return err;
 }
 
-CupError tool_preferences_reset_all(void) {
+static CupError reset_preferences_file(void) {
     char path[MAX_PATH_LEN];
     CupError err;
     int exists;

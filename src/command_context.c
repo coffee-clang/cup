@@ -52,24 +52,6 @@ static CupError validate_cup_assets(void) {
     return CUP_ERR_VALIDATION;
 }
 
-static CupError reject_pending_uninstall(void) {
-    CupError err;
-    int pending;
-
-    err = cup_assets_uninstall_is_pending(&pending);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (!pending) {
-        return CUP_OK;
-    }
-
-    fprintf(stderr,
-            "Error: cup uninstall is in progress or did not finish. "
-            "Run the installer again if the marker is stale.\n");
-    return CUP_ERR_LOCK;
-}
-
 /* Mutable runtime initialization. Directory creation and asset validation happen only after the
  * caller has selected a mutating context. */
 static CupError initialize_runtime(void) {
@@ -115,7 +97,7 @@ static CupError acquire_runtime_lock(CommandContext *context, SystemLockMode mod
 static CupError recheck_locked_runtime(CommandContext *context, LayoutRuntimeStatus *status) {
     CupError err;
 
-    err = reject_pending_uninstall();
+    err = cup_assets_require_no_pending_uninstall();
     if (err == CUP_OK) {
         err = layout_get_runtime_status(status);
     }
@@ -144,7 +126,7 @@ CupError command_context_begin(CommandContext *context,
     package_catalog_init(&context->catalog);
 
     /* Resolve and validate the pre-lock view without creating runtime state. */
-    err = reject_pending_uninstall();
+    err = cup_assets_require_no_pending_uninstall();
     if (err == CUP_OK) {
         err = resolve_platforms(context, target_override);
     }
@@ -212,7 +194,7 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
 
     err = resolve_platforms(context, target_override);
     if (err == CUP_OK) {
-        err = reject_pending_uninstall();
+        err = cup_assets_require_no_pending_uninstall();
     }
     if (err == CUP_OK) {
         err = layout_get_runtime_status(&runtime_status);

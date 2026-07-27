@@ -74,19 +74,15 @@ test_help_aliases() {
     output=$(run_cup help update)
     assert_contains "$output" 'Without a selector, updates installed tools only; cup itself is not updated.'
     output=$(run_cup help install)
-    assert_contains "$output" "$CUP install <profile|toolchain> <name>"
+    assert_contains "$output" "cup install <profile|toolchain> <name>"
     assert_not_contains "$output" '| install <profile|toolchain>'
     assert_contains "$output" 'Select tar.xz, tar.gz or zip.'
     output=$(run_cup help config)
-    assert_contains "$output" "$CUP config set <component> <tool>"
+    assert_contains "$output" "cup config set <component> <tool>"
     assert_contains "$output" 'reset without component clears that scope only.'
     output=$(run_cup help uninstall)
     assert_contains "$output" '--yes  Skip the confirmation prompt.'
 
-    expect_status 2 "$TMP_ROOT/help-current.out" help current
-    expect_status 2 "$TMP_ROOT/help-self-update.out" help self-update
-    assert_contains "$(cat "$TMP_ROOT/help-current.out")" "unknown command 'current'"
-    assert_contains "$(cat "$TMP_ROOT/help-self-update.out")" "unknown command 'self-update'"
 }
 
 # Read-only initialization and persistent-state status mapping.

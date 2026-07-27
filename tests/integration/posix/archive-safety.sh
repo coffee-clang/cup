@@ -14,8 +14,8 @@ rm -f /tmp/cup-absolute-escape.txt
 install_supported_format() {
     version=$1
     format=$2
-    package_catalog_add_version compiler clang "$TEST_PLATFORM" "$version"
-    package_catalog_set_format compiler clang "$TEST_PLATFORM" "$format"
+    package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions "$version" prepend
+    package_catalog_edit compiler clang "$TEST_PLATFORM" default_format "$format" replace
     make_package_format compiler clang "$version" "$TEST_PLATFORM" "$format" clang
     run_cup install compiler "clang@$version" >/dev/null
     assert_contains "$(run_cup list compiler)" "compiler:clang@$version"
@@ -50,8 +50,8 @@ create_mismatched_archive() {
     version=$1
     declared_format=$2
     actual_format=$3
-    package_catalog_add_version compiler clang "$TEST_PLATFORM" "$version"
-    package_catalog_set_format compiler clang "$TEST_PLATFORM" "$declared_format"
+    package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions "$version" prepend
+    package_catalog_edit compiler clang "$TEST_PLATFORM" default_format "$declared_format" replace
     make_package_format compiler clang "$version" "$TEST_PLATFORM" "$actual_format" clang
 
     package_name=clang-$version-$TEST_PLATFORM-$TEST_PLATFORM
@@ -65,8 +65,8 @@ create_mismatched_archive() {
 
 create_plain_tar_disguised_as_gzip() {
     version=$1
-    package_catalog_add_version compiler clang "$TEST_PLATFORM" "$version"
-    package_catalog_set_format compiler clang "$TEST_PLATFORM" tar.gz
+    package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions "$version" prepend
+    package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz replace
 
     package_name=clang-$version-$TEST_PLATFORM-$TEST_PLATFORM
     package_root=$TMP_ROOT/packages/$package_name
@@ -103,7 +103,7 @@ assert_contains "$(cat "$TMP_ROOT/archive-plain-tar.out")" \
     "failed to download"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" 'compiler:clang@98.1.2'
 
-package_catalog_set_format compiler clang "$TEST_PLATFORM" tar.gz
+package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz replace
 
 create_unsafe_archive() {
     version=$1
@@ -130,7 +130,7 @@ for case in traversal absolute symlink symlink-parent duplicate case-collision \
         file-directory reserved unicode special hardlink-forward root-file; do
     version="99.0.$index"
     index=$((index + 1))
-    package_catalog_add_version compiler clang "$TEST_PLATFORM" "$version"
+    package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions "$version" prepend
     create_unsafe_archive "$version" "$case"
     run_cup_expect_failure "$TMP_ROOT/archive-$case.out" \
         install compiler "clang@$version"

@@ -178,6 +178,7 @@ COMMON_SRC := \
     src/runtime_journal.c \
     src/cup_update_helper.c \
     src/text.c \
+    src/system.c \
     src/registry.c \
     src/download.c \
     src/package_cache.c \

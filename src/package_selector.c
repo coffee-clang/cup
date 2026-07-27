@@ -12,7 +12,7 @@
 #include <string.h>
 
 /* Parse symbolic or concrete tool selectors without consulting the catalog. */
-CupError package_selector_init(PackageSelector *selector, const char *tool, const char *release) {
+static CupError selector_init(PackageSelector *selector, const char *tool, const char *release) {
     if (selector == NULL || text_is_empty(tool) || text_is_empty(release)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -46,19 +46,7 @@ CupError package_selector_parse(PackageSelector *selector, const char *text) {
         return err;
     }
 
-    return package_selector_init(selector, tool, release);
-}
-
-CupError package_selector_format(const PackageSelector *selector, char *buffer, size_t size) {
-    if (selector == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    return package_selector_format_parts(buffer, size, selector->tool, selector->release);
-}
-
-int package_selector_is_symbolic(const PackageSelector *selector) {
-    return selector != NULL && package_release_is_stable(selector->release);
+    return selector_init(selector, tool, release);
 }
 
 /* Build and split canonical <tool>@<release> strings used at CLI and persistence boundaries. */

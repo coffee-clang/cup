@@ -18,6 +18,9 @@ typedef enum {
 /* Detect the owner of transaction.txt without interpreting owner-specific fields. */
 CupError runtime_journal_detect(RuntimeJournalKind *kind);
 
+/* Remove transaction.txt and durably persist its absence. */
+CupError runtime_journal_clear(void);
+
 /* Reject operational commands while any valid or invalid journal is present. */
 CupError runtime_journal_require_none(void);
 

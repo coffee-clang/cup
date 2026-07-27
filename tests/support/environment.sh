@@ -252,3 +252,16 @@ cup_test_find_llvm_tool() {
     return 1
 }
 
+
+# Run one command with captured output and print the log only on failure.
+cup_test_run_logged() {
+    _cup_test_label=$1
+    _cup_test_log=$2
+    shift 2
+
+    printf '==> %s\n' "$_cup_test_label"
+    if ! "$@" >"$_cup_test_log" 2>&1; then
+        cat "$_cup_test_log" >&2
+        return 1
+    fi
+}

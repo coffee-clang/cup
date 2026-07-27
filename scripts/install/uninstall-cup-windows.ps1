@@ -1,6 +1,6 @@
 # Purpose: Detached Windows helper that removes the canonical cup root after
 # the parent process exits.
-# Inputs: canonical root, copied helper path and parent process id.
+# Inputs: canonical root, copied helper path, parent identity and inherited handles.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -11,7 +11,15 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidateRange(1, [int]::MaxValue)]
-    [int]$ParentPid
+    [int]$ParentPid,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1, [UInt64]::MaxValue)]
+    [UInt64]$ParentHandle,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1, [UInt64]::MaxValue)]
+    [UInt64]$ReadyHandle
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,10 +136,34 @@ try {
         throw "uninstall marker does not match the parent process"
     }
 
+    $readySafeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new(
+        [IntPtr]::new([Int64]$ReadyHandle),
+        $true
+    )
+    $readyStream = [System.IO.FileStream]::new(
+        $readySafeHandle,
+        [System.IO.FileAccess]::Write
+    )
     try {
-        Wait-Process -Id $ParentPid
-    } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
-        # The parent already exited before the helper started waiting.
+        $readyStream.WriteByte([byte][char]'R')
+        $readyStream.Flush()
+    } finally {
+        $readyStream.Dispose()
+    }
+
+    $parentSafeHandle = [Microsoft.Win32.SafeHandles.SafeWaitHandle]::new(
+        [IntPtr]::new([Int64]$ParentHandle),
+        $true
+    )
+    $parentWait = [System.Threading.EventWaitHandle]::new(
+        $false,
+        [System.Threading.EventResetMode]::AutoReset
+    )
+    $parentWait.SafeWaitHandle = $parentSafeHandle
+    try {
+        $null = $parentWait.WaitOne()
+    } finally {
+        $parentWait.Dispose()
     }
 
     if (Test-Path -LiteralPath $requestedRoot) {

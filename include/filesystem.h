@@ -16,6 +16,9 @@ CupError filesystem_ensure_directory(const char *path);
 /* Remove one path tree without following symbolic links. */
 CupError filesystem_remove_tree(const char *path);
 
+/* Enforce required executable and read-only permissions on one regular file. */
+CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only);
+
 /* Count direct children, optionally excluding one exact child path. */
 CupError filesystem_count_children(const char *path, const char *excluded_path, size_t *count);
 

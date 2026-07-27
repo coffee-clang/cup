@@ -102,20 +102,9 @@ if [ "$PLATFORM" = windows-x64 ]; then
 fi
 cup_test_require_dependencies
 
-run_logged() {
-    local label=$1
-    local log_file=$2
-    shift 2
-    printf '==> %s\n' "$label"
-    if ! "$@" >"$log_file" 2>&1; then
-        cat "$log_file" >&2
-        return 1
-    fi
-}
-
 clean_log=$(mktemp "${TMPDIR:-/tmp}/cup-coverage-clean.XXXXXX")
 trap 'rm -f "$clean_log"' EXIT HUP INT TERM
-run_logged 'Cleaning previous build outputs...' "$clean_log" make -C "$ROOT" clean
+cup_test_run_logged 'Cleaning previous build outputs...' "$clean_log" make -C "$ROOT" clean
 mkdir -p "$REPORT_DIR"
 rm -rf "$REPORT_DIR"/*
 cp "$clean_log" "$REPORT_DIR/clean.log"
@@ -137,9 +126,9 @@ cp "$clean_log" "$REPORT_DIR/clean.log"
     printf 'report_timeout_seconds=%s\n' "$REPORT_TIMEOUT"
 } >"$REPORT_DIR/environment.txt"
 
-run_logged "Building the $COVERAGE_BACKEND coverage executable..." "$REPORT_DIR/build.log" \
+cup_test_run_logged "Building the $COVERAGE_BACKEND coverage executable..." "$REPORT_DIR/build.log" \
     make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" coverage -j2
-run_logged 'Compiling instrumented unit tests and helpers...' "$REPORT_DIR/test-build.log" \
+cup_test_run_logged 'Compiling instrumented unit tests and helpers...' "$REPORT_DIR/test-build.log" \
     make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" \
         CUP_TEST_CONFIGURATION=coverage test-unit-build test-helpers
 
@@ -150,7 +139,7 @@ if [ "$COVERAGE_BACKEND" = llvm ]; then
     export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m-%p.profraw"
 fi
 
-run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \
+cup_test_run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \
     "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$UNIT_TIMEOUT" \
         env CUP_TEST_CONFIGURATION=coverage CUP_TEST_PLATFORM="$PLATFORM" \
         "$ROOT/tests/runners/unit.sh"
@@ -158,12 +147,12 @@ run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \
 if [ "$PLATFORM" = windows-x64 ]; then
     windows_runner=$(cygpath -w "$ROOT/tests/integration/windows/run.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
-    run_logged 'Running instrumented Windows integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged 'Running instrumented Windows integration tests...' "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
         -CupPath "$windows_binary"
 else
-    run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=coverage CUP_TEST_PLATFORM="$PLATFORM" \
             CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \
@@ -203,6 +192,24 @@ generation_status=0
 threshold_status=0
 html_status=0
 
+coverage_reports_complete() {
+    case "$COVERAGE_BACKEND" in
+        gcov)
+            [ -s "$REPORT_DIR/coverage.json" ] &&
+            [ -s "$REPORT_DIR/coverage.xml" ] &&
+            [ -s "$REPORT_DIR/coverage-summary.json" ] &&
+            [ -s "$REPORT_DIR/summary.txt" ]
+            ;;
+        llvm)
+            [ -s "$REPORT_DIR/coverage.profdata" ] &&
+            [ -s "$REPORT_DIR/coverage.json" ] &&
+            [ -s "$REPORT_DIR/coverage-summary.json" ] &&
+            [ -s "$REPORT_DIR/coverage.lcov" ] &&
+            [ -s "$REPORT_DIR/summary.txt" ]
+            ;;
+    esac && grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
+}
+
 if [ "$COVERAGE_BACKEND" = gcov ]; then
     coverage_log=$REPORT_DIR/gcovr.log
     common_args=(
@@ -233,15 +240,7 @@ if [ "$COVERAGE_BACKEND" = gcov ]; then
         (cd "$ROOT" && run_gcovr 1) >>"$coverage_log" 2>&1 || generation_status=$?
     fi
 
-    reports_complete() {
-        [ -s "$REPORT_DIR/coverage.json" ] &&
-        [ -s "$REPORT_DIR/coverage.xml" ] &&
-        [ -s "$REPORT_DIR/coverage-summary.json" ] &&
-        [ -s "$REPORT_DIR/summary.txt" ] &&
-        grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
-    }
-
-    if reports_complete && [ "$generation_status" -eq 0 ]; then
+    if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
         printf '==> Validating coverage thresholds from the saved tracefile...\n' >>"$coverage_log"
         (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
             gcovr --root "$ROOT" --merge-mode-functions separate \
@@ -252,7 +251,7 @@ if [ "$COVERAGE_BACKEND" = gcov ]; then
             >>"$coverage_log" 2>&1 || threshold_status=$?
     fi
 
-    if reports_complete; then
+    if coverage_reports_complete; then
         printf '==> Rendering HTML coverage report...\n'
         (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$HTML_TIMEOUT" \
             gcovr --root "$ROOT" --merge-mode-functions separate \
@@ -333,16 +332,7 @@ else
             "$LLVM_COV" export -format=lcov "${llvm_common[@]}" || generation_status=$?
     fi
 
-    reports_complete() {
-        [ -s "$REPORT_DIR/coverage.profdata" ] &&
-        [ -s "$REPORT_DIR/coverage.json" ] &&
-        [ -s "$REPORT_DIR/coverage-summary.json" ] &&
-        [ -s "$REPORT_DIR/coverage.lcov" ] &&
-        [ -s "$REPORT_DIR/summary.txt" ] &&
-        grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
-    }
-
-    if reports_complete && [ "$generation_status" -eq 0 ]; then
+    if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
         metrics=$(awk '
             $1 == "TOTAL" {
                 gsub(/%/, "", $7)
@@ -390,7 +380,7 @@ EOF
         generation_status=1
     fi
 
-    if reports_complete; then
+    if coverage_reports_complete; then
         printf '==> Rendering LLVM HTML coverage report...\n'
         mkdir -p "$REPORT_DIR/html"
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$HTML_TIMEOUT" \

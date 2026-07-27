@@ -16,6 +16,7 @@
 #include "text.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Package scope and identity. */
@@ -84,6 +85,53 @@ int package_identity_equals(const PackageIdentity *left, const PackageIdentity *
            strcmp(left->host_platform, right->host_platform) == 0 &&
            strcmp(left->target_platform, right->target_platform) == 0 &&
            strcmp(left->version, right->version) == 0;
+}
+
+int package_identity_compare(const PackageIdentity *left, const PackageIdentity *right) {
+    int result;
+
+    if (left == NULL || right == NULL) {
+        return left == right ? 0 : (left == NULL ? -1 : 1);
+    }
+
+    result = strcmp(left->host_platform, right->host_platform);
+    if (result == 0) {
+        result = strcmp(left->target_platform, right->target_platform);
+    }
+    if (result == 0) {
+        result = strcmp(left->component, right->component);
+    }
+    if (result == 0) {
+        result = strcmp(left->tool, right->tool);
+    }
+    if (result == 0) {
+        result = strcmp(left->version, right->version);
+    }
+    return result;
+}
+
+int package_identity_matches(const PackageIdentity *identity,
+                             const char *host_platform,
+                             const char *target_platform,
+                             const char *component) {
+    if (identity == NULL || text_is_empty(host_platform)) {
+        return 0;
+    }
+
+    return strcmp(identity->host_platform, host_platform) == 0 &&
+           (target_platform == NULL ||
+            strcmp(identity->target_platform, target_platform) == 0) &&
+           (component == NULL || strcmp(identity->component, component) == 0);
+}
+
+static int compare_identity_values(const void *left, const void *right) {
+    return package_identity_compare(left, right);
+}
+
+void package_identity_sort(PackageIdentity *items, size_t count) {
+    if (items != NULL && count > 1) {
+        qsort(items, count, sizeof(items[0]), compare_identity_values);
+    }
 }
 
 CupError package_identity_validate(const PackageIdentity *identity) {

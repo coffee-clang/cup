@@ -1,4 +1,5 @@
-# Purpose: Exercises Windows process-lock contention and coherent concurrent installation.
+# Purpose: Exercises a synchronized overlapping Windows install and verifies
+# that an active transaction blocks a second mutation without corrupting state.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -53,32 +54,136 @@ function Complete-CupCapture {
     }
 }
 
+$server = $null
+$captureA = $null
+$originalAllowInsecure = Get-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE `
+    -ErrorAction SilentlyContinue
+
 try {
     Initialize-TestEnvironment -Name "concurrency" -ExecutablePath $CupExecutablePath
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" `
         -Entries @("clang", "clang++")
 
+    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
+        "development"
+    } else {
+        $env:CUP_TEST_CONFIGURATION
+    }
+    $helper = Join-Path $Script:CupTestProjectRoot `
+        "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
+    Assert-PathExists $helper
+
+    $port = 0
+    $serverRoot = Join-Path $Script:CupTestRoot "http-root"
+    $ready = Join-Path $Script:CupTestRoot "http-ready"
+    $serverLog = Join-Path $Script:CupTestRoot "http-server.log"
+    New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
+
+    $cacheDir = Join-Path $Script:CupTestHome `
+        ".cup\cache\compiler\clang\windows-x64\windows-x64\22.1.5"
+    $archiveName = "clang-22.1.5-windows-x64-windows-x64.zip"
+    Move-Item -LiteralPath (Join-Path $cacheDir $archiveName) `
+        -Destination (Join-Path $serverRoot $archiveName)
+    $checksumRoot = Join-Path $serverRoot "22.1.5\windows-x64\windows-x64"
+    New-Item -ItemType Directory -Force -Path $checksumRoot | Out-Null
+    Move-Item -LiteralPath (Join-Path $cacheDir "SHA256SUMS") `
+        -Destination (Join-Path $checksumRoot "SHA256SUMS")
+    Remove-Item -LiteralPath (Join-Path $Script:CupTestHome ".cup\cache\compiler\clang") `
+        -Recurse -Force
+
+    $serverArguments = @(
+        "http-server", "--root", $serverRoot, "--port", "$port",
+        "--ready-file", $ready, "--delay-ms", "3000"
+    )
+    $server = Start-Process -FilePath $helper -ArgumentList $serverArguments `
+        -RedirectStandardOutput $serverLog -RedirectStandardError "$serverLog.err" `
+        -PassThru -WindowStyle Hidden
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $ready) -and
+           [DateTime]::UtcNow -lt $deadline) {
+        if ($server.HasExited) {
+            $details = Get-Content -LiteralPath "$serverLog.err" -Raw `
+                -ErrorAction SilentlyContinue
+            Fail-Test "concurrency package server exited before becoming ready: $details"
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not (Test-Path -LiteralPath $ready)) {
+        Fail-Test "concurrency package server did not become ready"
+    }
+
+    $portText = (Get-Content -LiteralPath $ready -Raw).Trim()
+    $parsedPort = 0
+    if (-not [int]::TryParse($portText, [ref]$parsedPort) -or
+        $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+        Fail-Test "concurrency package server reported invalid port: $portText"
+    }
+    $port = $parsedPort
+
+    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
+    $catalogOriginal = @(Get-Content -LiteralPath $catalog)
+    $key = "compiler.clang.windows-x64.windows-x64"
+    $base = "http://127.0.0.1:$port"
+    $changed = 0
+    $updated = foreach ($line in Get-Content -LiteralPath $catalog) {
+        if ($line.StartsWith("$key.url_template=", [StringComparison]::Ordinal)) {
+            $changed++
+            "$key.url_template=$base/clang-{version}-{host_platform}-{target_platform}.{format}"
+        } elseif ($line.StartsWith("$key.checksum_url_template=", [StringComparison]::Ordinal)) {
+            $changed++
+            "$key.checksum_url_template=$base/{version}/{host_platform}/{target_platform}/SHA256SUMS"
+        } else {
+            $line
+        }
+    }
+    if ($changed -ne 2) {
+        Fail-Test "could not configure the concurrency package server"
+    }
+    Write-Utf8NoBom -Path $catalog -Lines $updated
+
+    $env:CUP_INSTALL_ALLOW_INSECURE = "1"
     $captureA = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
+    $transaction = Join-Path $Script:CupTestHome ".cup\transaction.txt"
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $transaction) -and
+           [DateTime]::UtcNow -lt $deadline) {
+        if ($captureA.Process.HasExited) {
+            $early = Complete-CupCapture -Capture $captureA
+            $captureA = $null
+            Fail-Test ("first install exited before publishing its transaction journal`n" +
+                "[$($early.ExitCode)] $($early.Output)")
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not (Test-Path -LiteralPath $transaction)) {
+        Fail-Test "first install did not publish its transaction journal"
+    }
+
     $captureB = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
-    $resultA = Complete-CupCapture -Capture $captureA
     $resultB = Complete-CupCapture -Capture $captureB
-
-    $successCount = @(@($resultA, $resultB) | Where-Object { $_.ExitCode -eq 0 }).Count
-    if ($successCount -ne 1) {
-        Fail-Test ("expected exactly one concurrent install to succeed`n" +
-            "A [$($resultA.ExitCode)]: $($resultA.Output)`n" +
-            "B [$($resultB.ExitCode)]: $($resultB.Output)")
-    }
-    $failed = if ($resultA.ExitCode -ne 0) { $resultA.Output } else { $resultB.Output }
-    if (-not ($failed.Contains("already installed") -or
-              $failed.Contains("another cup operation is currently running") -or
-              $failed.Contains("interrupted package transaction must be repaired first"))) {
-        Fail-Test "concurrent loser did not report a lock or installation conflict: $failed"
+    if ($resultB.ExitCode -eq 0) {
+        Fail-Test ("overlapping install was not blocked while the first transaction was active`n" +
+            "[$($resultB.ExitCode)] $($resultB.Output)")
     }
 
+    $resultA = Complete-CupCapture -Capture $captureA
+    $captureA = $null
+    if ($resultA.ExitCode -ne 0) {
+        Fail-Test ("first synchronized install failed`n" +
+            "[$($resultA.ExitCode)] $($resultA.Output)")
+    }
+    Assert-Contains $resultA.Output "Installed compiler clang@22.1.5"
+    if (-not ($resultB.Output.Contains("another cup operation is currently running") -or
+              $resultB.Output.Contains("a package transaction is active or requires recovery"))) {
+        Fail-Test "overlapping install did not report the active operation or transaction: $($resultB.Output)"
+    }
+    Assert-NotContains $resultB.Output "already installed"
+
+    Write-Utf8NoBom -Path $catalog -Lines $catalogOriginal
     Assert-CupHealthy
-    Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\transaction.txt")
+    Assert-PathMissing $transaction
     $stagingItems = @(Get-ChildItem (Join-Path $Script:CupTestHome ".cup\staging") `
         -Force -ErrorAction SilentlyContinue)
     if ($stagingItems.Count -ne 0) {
@@ -91,5 +196,24 @@ try {
 
     Write-Host "Windows concurrency tests passed."
 } finally {
+    if ($null -ne $captureA) {
+        try {
+            if (-not $captureA.Process.HasExited) { $captureA.Process.Kill() }
+            $captureA.Process.WaitForExit()
+        } catch { }
+        try { $captureA.Process.Dispose() } catch { }
+    }
+    if ($null -ne $server) {
+        try {
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
+            $server.WaitForExit()
+        } catch { }
+        $server.Dispose()
+    }
+    if ($null -eq $originalAllowInsecure) {
+        Remove-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
+    } else {
+        $env:CUP_INSTALL_ALLOW_INSECURE = $originalAllowInsecure.Value
+    }
     Remove-TestEnvironment
 }

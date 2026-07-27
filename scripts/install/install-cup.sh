@@ -198,7 +198,18 @@ validate_release_metadata() {
     metadata="$1"
     expected_version="${2:-}"
     expected_commit="${3:-}"
-    awk -F= -v expected_version="$expected_version" -v expected_commit="$expected_commit" '
+
+    [ -f "$metadata" ] || fail "release metadata file is missing: $metadata"
+    [ -r "$metadata" ] || fail "release metadata file is not readable: $metadata"
+
+    diagnostic="$(awk -v expected_version="$expected_version" \
+        -v expected_commit="$expected_commit" '
+        function set_error(code, detail) {
+            if (error_code == "") {
+                error_code=code
+                error_detail=detail
+            }
+        }
         function valid_part(value) {
             return value ~ /^(0|[1-9][0-9]*)$/ &&
                 length(value) <= 6 && (value + 0) <= 999999
@@ -212,29 +223,98 @@ validate_release_metadata() {
             return value ~ /^[0-9a-f]{7,40}$/
         }
         {
-            sub(/\r$/, "", $0)
-            if (NF != 2 || $1 == "" || $2 == "") invalid=1
-            if ($1 == "format") {
-                if (seen_format++ || $2 != "1") invalid=1
-            } else if ($1 == "version") {
-                version=$2
-                if (seen_version++ || !valid_version($2)) invalid=1
-            } else if ($1 == "commit") {
-                commit=$2
-                if (seen_commit++ || !valid_commit($2)) invalid=1
+            line=$0
+            sub(/\r$/, "", line)
+            separator=index(line, "=")
+            if (separator <= 1 || separator == length(line) ||
+                    index(substr(line, separator + 1), "=") != 0) {
+                set_error("malformed-line", NR)
+                next
+            }
+
+            key=substr(line, 1, separator - 1)
+            value=substr(line, separator + 1)
+            if (key == "format") {
+                if (seen_format) set_error("duplicate-field", "format")
+                else { seen_format=1; format=value }
+            } else if (key == "version") {
+                if (seen_version) set_error("duplicate-field", "version")
+                else { seen_version=1; version=value }
+            } else if (key == "commit") {
+                if (seen_commit) set_error("duplicate-field", "commit")
+                else { seen_commit=1; commit=value }
             } else {
-                invalid=1
+                set_error("unexpected-field", NR)
             }
         }
         END {
-            if (expected_version != "" && version != expected_version) invalid=1
-            if (expected_commit != "" && commit != expected_commit) invalid=1
-            if (NR != 3 || seen_format != 1 || seen_version != 1 ||
-                seen_commit != 1 || invalid) exit 1
-        }
-    ' "$metadata" || fail "invalid release metadata: $metadata"
-}
+            if (error_code == "" && !seen_format)
+                set_error("missing-field", "format")
+            if (error_code == "" && !seen_version)
+                set_error("missing-field", "version")
+            if (error_code == "" && !seen_commit)
+                set_error("missing-field", "commit")
+            if (error_code == "" && NR != 3)
+                set_error("line-count", NR)
+            if (error_code == "" && format != "1")
+                set_error("unsupported-format", format)
+            if (error_code == "" && !valid_version(version))
+                set_error("invalid-version", version)
+            if (error_code == "" && !valid_commit(commit))
+                set_error("invalid-commit", commit)
+            if (error_code == "" && expected_version != "" &&
+                    version != expected_version)
+                set_error("version-mismatch", version)
+            if (error_code == "" && expected_commit != "" &&
+                    commit != expected_commit)
+                set_error("commit-mismatch", commit)
 
+            if (error_code == "") print "ok:"
+            else print error_code ":" error_detail
+        }
+    ' "$metadata")"
+
+    diagnostic_code=${diagnostic%%:*}
+    diagnostic_detail=${diagnostic#*:}
+    case "$diagnostic_code" in
+        ok)
+            return 0
+            ;;
+        malformed-line)
+            fail "release metadata line $diagnostic_detail must contain exactly one non-empty 'key=value' assignment: $metadata"
+            ;;
+        unexpected-field)
+            fail "release metadata contains an unexpected field at line $diagnostic_detail: $metadata"
+            ;;
+        duplicate-field)
+            fail "release metadata field '$diagnostic_detail' is duplicated: $metadata"
+            ;;
+        missing-field)
+            fail "release metadata is missing required field '$diagnostic_detail': $metadata"
+            ;;
+        line-count)
+            fail "release metadata must contain exactly 3 lines; found $diagnostic_detail: $metadata"
+            ;;
+        unsupported-format)
+            fail "release metadata format is unsupported; expected '1': $metadata"
+            ;;
+        invalid-version)
+            fail "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH': $metadata"
+            ;;
+        invalid-commit)
+            fail "release metadata commit is invalid; expected 7 to 40 lowercase hexadecimal characters: $metadata"
+            ;;
+        version-mismatch)
+            fail "release metadata version mismatch: expected '$expected_version', received '$diagnostic_detail': $metadata"
+            ;;
+        commit-mismatch)
+            fail "release metadata commit mismatch: expected '$expected_commit', received '$diagnostic_detail': $metadata"
+            ;;
+        *)
+            fail "release metadata validation failed for an unknown reason: $metadata"
+            ;;
+    esac
+}
 verify_named_checksum() {
     directory="$1"
     checksum_file="$2"
@@ -523,7 +603,7 @@ recover_staging() {
 
     info "Recovering an interrupted cup bootstrap installation."
     recovery_failed=0
-    rollback_asset manifest "$PACKAGES_CFG" "$staging" || recovery_failed=1
+    rollback_asset catalog "$PACKAGES_CFG" "$staging" || recovery_failed=1
     rollback_asset install-config "$INSTALL_CONFIG" "$staging" || recovery_failed=1
     rollback_asset common-checksums "$COMMON_CHECKSUMS" "$staging" || recovery_failed=1
     rollback_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging" || recovery_failed=1
@@ -656,7 +736,7 @@ backup_bootstrap_assets() (
     staging=$1
     cup_bin=$2
 
-    backup_asset manifest "$PACKAGES_CFG" "$staging"
+    backup_asset catalog "$PACKAGES_CFG" "$staging"
     backup_asset install-config "$INSTALL_CONFIG" "$staging"
     backup_asset common-checksums "$COMMON_CHECKSUMS" "$staging"
     backup_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging"
@@ -672,7 +752,7 @@ commit_bootstrap_assets() (
     platform=$4
     uninstall_asset=$5
 
-    commit_asset manifest "$staging/packages.cfg" "$PACKAGES_CFG" "$staging"
+    commit_asset catalog "$staging/packages.cfg" "$PACKAGES_CFG" "$staging"
     commit_asset install-config "$staging/install.cfg" "$INSTALL_CONFIG" "$staging"
     commit_asset common-checksums \
         "$staging/SHA256SUMS.common" "$COMMON_CHECKSUMS" "$staging"
@@ -717,7 +797,7 @@ install_assets() {
     rollback() {
         if [ "$committed" -eq 0 ] && [ -d "$staging" ]; then
             recovery_failed=0
-            rollback_asset manifest "$PACKAGES_CFG" "$staging" || recovery_failed=1
+            rollback_asset catalog "$PACKAGES_CFG" "$staging" || recovery_failed=1
             rollback_asset install-config "$INSTALL_CONFIG" "$staging" || recovery_failed=1
             rollback_asset common-checksums "$COMMON_CHECKSUMS" "$staging" || recovery_failed=1
             rollback_asset platform-checksums "$PLATFORM_CHECKSUMS" "$staging" || recovery_failed=1

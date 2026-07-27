@@ -1,5 +1,5 @@
 /*
- * Builds immutable managed-wrapper plans from validated active packages and applies or diagnoses
+ * Builds immutable managed-wrapper plans from validated default packages and applies or diagnoses
  * the exact wrapper set under the canonical bin directory.
  */
 

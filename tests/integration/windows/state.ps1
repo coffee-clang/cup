@@ -8,7 +8,12 @@ param(
 
 try {
     Initialize-TestEnvironment -Name "state" -ExecutablePath $CupExecutablePath
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version "21.1.5"
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value "21.1.5" `
+        -Mode "Prepend"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
     New-TestPackage -Component "compiler" -Tool "clang" -Version "21.1.5" -Entries @("clang")

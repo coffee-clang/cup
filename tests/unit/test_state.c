@@ -353,10 +353,9 @@ static void test_mutator_guards(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_add_installed(&state, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(NULL, &valid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(&state, &invalid));
-    TEST_ASSERT_EQUAL_INT(-1, state_find_active(NULL, &valid_scope));
-    TEST_ASSERT_EQUAL_INT(-1, state_find_active(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(-1, state_find_active(&state, &invalid_scope));
     TEST_ASSERT_NULL(state_get_active(NULL, &valid_scope));
+    TEST_ASSERT_NULL(state_get_active(&state, NULL));
+    TEST_ASSERT_NULL(state_get_active(&state, &invalid_scope));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_active(NULL, &valid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_active(&state, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_active(NULL, &valid_scope));

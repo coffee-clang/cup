@@ -10,8 +10,10 @@ accepted by the installed version.
 cup <command> [arguments] [options]
 ```
 
-Command names, component names, tool names, releases, platforms and archive
-formats are case-sensitive and use lowercase canonical values.
+Command names are case-sensitive and use their documented lowercase spelling.
+Component, tool, profile, toolchain, symbolic release, platform and archive-format
+inputs are normalized from ASCII case and are displayed and persisted in their
+canonical lowercase form. Concrete version identifiers remain case-sensitive.
 
 Common selectors use:
 

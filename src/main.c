@@ -132,7 +132,8 @@ static const CommandHelp COMMAND_HELP[] = {
      "this help.\n"
      "Defaults:\n  Shows every target when --target is omitted.\n"
      "Examples:\n  cup info\n  cup info compiler --target linux-x64\n"
-     "Effects:\n  Read-only; invalid defaults or exposed commands produce degraded output and a nonzero "
+     "Effects:\n  Read-only; invalid defaults or exposed commands produce degraded output and "
+     "a nonzero "
      "status."},
     {"inspect",
      "inspect <component> <tool>@<release> [--target <target-platform>]",
@@ -171,10 +172,6 @@ static const CommandHelp COMMAND_HELP[] = {
      "Examples:\n  cup uninstall\n  cup uninstall --yes\n"
      "Effects:\n  Removes cup and every cup-managed package; PATH is unchanged."}};
 
-static const char *program_name(const char *name) {
-    return name == NULL ? "cup" : name;
-}
-
 static CupError normalize_selector(const char *input, char *output, size_t output_size) {
     char tool[MAX_IDENTIFIER_LEN];
     char release[MAX_IDENTIFIER_LEN];
@@ -204,30 +201,30 @@ static const CommandHelp *find_help(const char *name) {
     return NULL;
 }
 
-static void print_command_usage(FILE *stream, const char *program, const CommandHelp *help) {
+static void print_command_usage(FILE *stream, const CommandHelp *help) {
     const char *usage = help->usage;
     const char *separator;
 
     while ((separator = strstr(usage, " | ")) != NULL) {
-        fprintf(stream, "  %s ", program_name(program));
+        fprintf(stream, "  cup ");
         fwrite(usage, 1, (size_t)(separator - usage), stream);
         fputc('\n', stream);
         usage = separator + 3;
     }
-    fprintf(stream, "  %s %s\n", program_name(program), usage);
+    fprintf(stream, "  cup %s\n", usage);
 }
 
-static void print_usage(FILE *stream, const char *program) {
+static void print_usage(FILE *stream) {
     size_t i;
-    fprintf(stream, "Usage:\n  %s --version\n", program_name(program));
+    fprintf(stream, "Usage:\n  cup --version\n");
     for (i = 0; i < sizeof(COMMAND_HELP) / sizeof(COMMAND_HELP[0]); ++i) {
-        print_command_usage(stream, program, &COMMAND_HELP[i]);
+        print_command_usage(stream, &COMMAND_HELP[i]);
     }
 }
 
-static void print_help(const char *program) {
+static void print_help(void) {
     size_t i;
-    print_usage(stdout, program);
+    print_usage(stdout);
     fprintf(stdout, "\nCommands:\n");
     for (i = 0; i < sizeof(COMMAND_HELP) / sizeof(COMMAND_HELP[0]); ++i) {
         fprintf(stdout, "  %-12s %s\n", COMMAND_HELP[i].name, COMMAND_HELP[i].summary);
@@ -235,27 +232,21 @@ static void print_help(const char *program) {
     fprintf(stdout,
             "\nPackage selector:\n  <tool>@<release>\n"
             "\nExamples:\n"
-            "  %s search compiler\n"
-            "  %s install compiler gcc@stable\n"
-            "  %s update compiler\n"
-            "  %s default compiler gcc@stable\n"
-            "  %s info\n"
-            "  %s inspect compiler gcc@stable\n",
-            program_name(program),
-            program_name(program),
-            program_name(program),
-            program_name(program),
-            program_name(program),
-            program_name(program));
+            "  cup search compiler\n"
+            "  cup install compiler gcc@stable\n"
+            "  cup update compiler\n"
+            "  cup default compiler gcc@stable\n"
+            "  cup info\n"
+            "  cup inspect compiler gcc@stable\n");
 }
 
-static int print_detailed_help(const char *program, const char *command) {
+static int print_detailed_help(const char *command) {
     const CommandHelp *help = find_help(command);
     if (help == NULL) {
         return 0;
     }
     fprintf(stdout, "Usage:\n");
-    print_command_usage(stdout, program, help);
+    print_command_usage(stdout, help);
     fprintf(stdout, "\n%s\n", help->details);
     return 1;
 }
@@ -271,24 +262,22 @@ static int argtable_is_complete(void *const *table, size_t count) {
     return 1;
 }
 
-static CupError report_parse_error(const char *program,
-                                   const char *command,
+static CupError report_parse_error(const char *command,
                                    struct arg_end *end,
                                    int errors) {
     const CommandHelp *help = find_help(command);
     if (errors > 0) {
-        arg_print_errors(stderr, end, program_name(program));
+        arg_print_errors(stderr, end, "cup");
     }
     if (help != NULL) {
         fprintf(stderr, "Usage:\n");
-        print_command_usage(stderr, program, help);
+        print_command_usage(stderr, help);
     }
     return CUP_ERR_INVALID_INPUT;
 }
 
 /* Command-specific Argtable3 schemas. */
-static CupError parse_optional_component(const char *program,
-                                         const char *command,
+static CupError parse_optional_component(const char *command,
                                          int argc,
                                          char **argv,
                                          CupError (*handler)(const char *, const char *)) {
@@ -307,7 +296,7 @@ static CupError parse_optional_component(const char *program,
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, command, end, errors);
+        result = report_parse_error(command, end, errors);
     } else if (component->count != 0) {
         char normalized_component[MAX_IDENTIFIER_LEN];
 
@@ -323,8 +312,7 @@ static CupError parse_optional_component(const char *program,
     return result;
 }
 
-static CupError parse_component_entry(const char *program,
-                                      const char *command,
+static CupError parse_component_entry(const char *command,
                                       int argc,
                                       char **argv,
                                       CupError (*handler)(const char *,
@@ -346,7 +334,7 @@ static CupError parse_component_entry(const char *program,
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, command, end, errors);
+        result = report_parse_error(command, end, errors);
     } else {
         char normalized_component[MAX_IDENTIFIER_LEN];
         char normalized_selector[MAX_SELECTOR_LEN];
@@ -366,7 +354,7 @@ static CupError parse_component_entry(const char *program,
     return result;
 }
 
-static CupError parse_install(const char *program, int argc, char **argv) {
+static CupError parse_install(int argc, char **argv) {
     struct arg_str *selector = arg_str1(NULL, NULL, "<component|profile|toolchain>", NULL);
     struct arg_str *value = arg_str0(NULL, NULL, "[tool[@release]|name]", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
@@ -384,9 +372,9 @@ static CupError parse_install(const char *program, int argc, char **argv) {
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, "install", end, errors);
+        result = report_parse_error("install", end, errors);
     } else {
-        result = command_install_request(selector->sval[0],
+        result = command_install(selector->sval[0],
                                          value->count ? value->sval[0] : NULL,
                                          target->count ? target->sval[0] : NULL,
                                          format->count ? format->sval[0] : NULL);
@@ -395,7 +383,7 @@ static CupError parse_install(const char *program, int argc, char **argv) {
     return result;
 }
 
-static CupError parse_update(const char *program, int argc, char **argv) {
+static CupError parse_update(int argc, char **argv) {
     struct arg_str *selector = arg_str0(NULL, NULL, "[cup|tool|component]", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {selector, end};
@@ -410,7 +398,7 @@ static CupError parse_update(const char *program, int argc, char **argv) {
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, "update", end, errors);
+        result = report_parse_error("update", end, errors);
     } else {
         result = command_update(selector->count ? selector->sval[0] : NULL);
     }
@@ -418,7 +406,7 @@ static CupError parse_update(const char *program, int argc, char **argv) {
     return result;
 }
 
-static CupError parse_config(const char *program, int argc, char **argv) {
+static CupError parse_config(int argc, char **argv) {
     struct arg_str *action = arg_str0(NULL, NULL, "[set|reset]", NULL);
     struct arg_str *name = arg_str0(NULL, NULL, "[component]", NULL);
     struct arg_str *value = arg_str0(NULL, NULL, "[tool]", NULL);
@@ -436,7 +424,7 @@ static CupError parse_config(const char *program, int argc, char **argv) {
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, "config", end, errors);
+        result = report_parse_error("config", end, errors);
     } else {
         result = command_config(action->count ? action->sval[0] : NULL,
                                 name->count ? name->sval[0] : NULL,
@@ -448,7 +436,7 @@ static CupError parse_config(const char *program, int argc, char **argv) {
 }
 
 static CupError parse_no_arguments(
-    const char *program, const char *command, int argc, char **argv, CupError (*handler)(void)) {
+    const char *command, int argc, char **argv, CupError (*handler)(void)) {
     struct arg_end *end = arg_end(4);
     void *table[] = {end};
     int errors;
@@ -462,7 +450,7 @@ static CupError parse_no_arguments(
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, command, end, errors);
+        result = report_parse_error(command, end, errors);
     } else {
         result = handler();
     }
@@ -470,7 +458,7 @@ static CupError parse_no_arguments(
     return result;
 }
 
-static CupError parse_uninstall(const char *program, int argc, char **argv) {
+static CupError parse_uninstall(int argc, char **argv) {
     struct arg_lit *yes = arg_lit0(NULL, "yes", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {yes, end};
@@ -484,7 +472,7 @@ static CupError parse_uninstall(const char *program, int argc, char **argv) {
     }
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, "uninstall", end, errors);
+        result = report_parse_error("uninstall", end, errors);
     } else {
         result = command_uninstall(yes->count != 0);
     }
@@ -492,7 +480,7 @@ static CupError parse_uninstall(const char *program, int argc, char **argv) {
     return result;
 }
 
-static CupError parse_help(const char *program, int argc, char **argv) {
+static CupError parse_help(int argc, char **argv) {
     struct arg_str *command = arg_str0(NULL, NULL, "[command]", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {command, end};
@@ -507,10 +495,10 @@ static CupError parse_help(const char *program, int argc, char **argv) {
 
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
-        result = report_parse_error(program, "help", end, errors);
+        result = report_parse_error("help", end, errors);
     } else if (command->count == 0) {
-        print_help(program);
-    } else if (!print_detailed_help(program, command->sval[0])) {
+        print_help();
+    } else if (!print_detailed_help(command->sval[0])) {
         fprintf(stderr, "Error: unknown command '%s'.\n", command->sval[0]);
         result = CUP_ERR_INVALID_INPUT;
     }
@@ -552,11 +540,11 @@ int main(int argc, char *argv[]) {
         return cup_error_to_exit_status(cup_update_helper_run(argv[2], argv[3]));
     }
     if (argc < 2) {
-        print_usage(stderr, argv[0]);
+        print_usage(stderr);
         return CUP_STATUS_USAGE;
     }
     if (argc == 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-        print_help(argv[0]);
+        print_help();
         return CUP_STATUS_SUCCESS;
     }
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -568,7 +556,7 @@ int main(int argc, char *argv[]) {
     help = find_help(command);
     if (argc == 3 && help != NULL &&
         (strcmp(argv[2], "-h") == 0 || strcmp(argv[2], "--help") == 0)) {
-        print_detailed_help(argv[0], command);
+        print_detailed_help(command);
         return CUP_STATUS_SUCCESS;
     }
 
@@ -595,34 +583,34 @@ int main(int argc, char *argv[]) {
 
     /* Public dispatch remains explicit so each parser keeps its typed command contract. */
     if (strcmp(command, "help") == 0) {
-        result = parse_help(argv[0], argc, argv);
+        result = parse_help(argc, argv);
     } else if (strcmp(command, "search") == 0) {
-        result = parse_optional_component(argv[0], command, argc, argv, command_search);
+        result = parse_optional_component(command, argc, argv, command_search);
     } else if (strcmp(command, "list") == 0) {
-        result = parse_optional_component(argv[0], command, argc, argv, command_list);
+        result = parse_optional_component(command, argc, argv, command_list);
     } else if (strcmp(command, "install") == 0) {
-        result = parse_install(argv[0], argc, argv);
+        result = parse_install(argc, argv);
     } else if (strcmp(command, "remove") == 0) {
-        result = parse_component_entry(argv[0], command, argc, argv, command_remove);
+        result = parse_component_entry(command, argc, argv, command_remove);
     } else if (strcmp(command, "update") == 0) {
-        result = parse_update(argv[0], argc, argv);
+        result = parse_update(argc, argv);
     } else if (strcmp(command, "config") == 0) {
-        result = parse_config(argv[0], argc, argv);
+        result = parse_config(argc, argv);
     } else if (strcmp(command, "default") == 0) {
-        result = parse_component_entry(argv[0], command, argc, argv, command_default);
+        result = parse_component_entry(command, argc, argv, command_default);
     } else if (strcmp(command, "info") == 0) {
-        result = parse_optional_component(argv[0], command, argc, argv, command_info);
+        result = parse_optional_component(command, argc, argv, command_info);
     } else if (strcmp(command, "inspect") == 0) {
-        result = parse_component_entry(argv[0], command, argc, argv, command_inspect);
+        result = parse_component_entry(command, argc, argv, command_inspect);
     } else if (strcmp(command, "doctor") == 0) {
-        result = parse_no_arguments(argv[0], command, argc, argv, command_doctor);
+        result = parse_no_arguments(command, argc, argv, command_doctor);
     } else if (strcmp(command, "repair") == 0) {
-        result = parse_no_arguments(argv[0], command, argc, argv, command_repair);
+        result = parse_no_arguments(command, argc, argv, command_repair);
     } else if (strcmp(command, "uninstall") == 0) {
-        result = parse_uninstall(argv[0], argc, argv);
+        result = parse_uninstall(argc, argv);
     } else {
         fprintf(stderr, "Error: unknown command '%s'.\n", command);
-        print_usage(stderr, argv[0]);
+        print_usage(stderr);
         result = CUP_ERR_INVALID_INPUT;
     }
 

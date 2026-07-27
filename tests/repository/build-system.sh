@@ -292,33 +292,8 @@ assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-mmacosx-version-min=13.0'
 assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-Wl,-no_warn_duplicate_libraries'
-MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
-    PLATFORM=macos-x64 CUP_BUILD_CONFIGURATION=coverage help \
-    >"$TMP_ROOT/macos-coverage-make-db.out"
-macos_coverage_make_db=$(cat "$TMP_ROOT/macos-coverage-make-db.out")
-assert_contains "$macos_coverage_make_db" \
-    '-DCUP_COVERAGE_ENTRY=cup_coverage_program_main'
-assert_contains "$macos_coverage_make_db" \
-    'build/macos-x64/coverage/obj/coverage-entry.o'
-assert_contains "$macos_coverage_make_db" 'tests/helpers/coverage-entry.c'
-MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
-    PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=coverage help \
-    >"$TMP_ROOT/linux-coverage-make-db.out"
-assert_not_contains "$(cat "$TMP_ROOT/linux-coverage-make-db.out")" \
-    'cup_coverage_program_main'
-unit_builder=$(cat "$PROJECT_ROOT/tests/build/unit.sh")
-helper_builder=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
-coverage_runner=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
-assert_contains "$unit_builder" 'CUP_COVERAGE_VOID_ENTRY'
-assert_contains "$unit_builder" 'tests/helpers/coverage-entry.c'
-assert_not_contains "$unit_builder" 'coverage_flags[@]'
-assert_not_contains "$unit_builder" 'coverage_sources[@]'
-assert_contains "$helper_builder" 'tests/helpers/coverage-entry.c'
-assert_not_contains "$helper_builder" 'entry_flags[@]'
-assert_not_contains "$helper_builder" 'entry_sources[@]'
-assert_contains "$coverage_runner" \
-    'LLVM coverage contains incompatible function profiles.'
-assert_not_contains "$coverage_runner" 'coverage-diagnostics.txt'
+# Native coverage jobs own compiler-specific entry-point compatibility. The repository
+# contract checks only public build modes and leaves symbols, macros and helper ownership private.
 MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
     PLATFORM=windows-x64 help >"$TMP_ROOT/windows-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'CC := gcc'

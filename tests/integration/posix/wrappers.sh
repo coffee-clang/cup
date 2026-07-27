@@ -22,8 +22,8 @@ assert_equals "$(run_native_wrapper lldb)" \
     "lldb-22.1.5-$TEST_PLATFORM:lldb"
 
 printf 'altered\n' > "$(native_wrapper_path clang)"
-run_cup_expect_failure "$TMP_ROOT/current-altered.out" info
-assert_contains "$(cat "$TMP_ROOT/current-altered.out")" 'status: invalid'
+run_cup_expect_failure "$TMP_ROOT/info-altered.out" info
+assert_contains "$(cat "$TMP_ROOT/info-altered.out")" 'status: invalid'
 run_cup_expect_failure "$TMP_ROOT/doctor-altered.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-altered.out")" 'wrapper'
 run_cup repair >/dev/null

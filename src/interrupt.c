@@ -95,10 +95,6 @@ void interrupt_disable(void) {
     g_interrupted = 0;
 }
 
-void interrupt_clear(void) {
-    g_interrupted = 0;
-}
-
 int interrupt_requested(void) {
     return g_interrupted != 0;
 }

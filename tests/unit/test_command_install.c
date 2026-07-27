@@ -379,7 +379,7 @@ CupError package_install(const char *component,
 
 static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          command_install_request("COMPILER", "Clang@Release-X", NULL, NULL));
+                          command_install("COMPILER", "Clang@Release-X", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(0, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
@@ -390,7 +390,7 @@ static void test_direct_selection(void) {
 }
 
 static void test_abbreviated_install(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("compiler", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(1, preferences_load_calls);
@@ -399,7 +399,7 @@ static void test_abbreviated_install(void) {
 }
 
 static void test_profile_preferences(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("PROFILE", "STANDARD", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("PROFILE", "STANDARD", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(2, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(1, preferences_load_calls);
@@ -409,7 +409,7 @@ static void test_profile_preferences(void) {
 }
 
 static void test_explicit_toolchain(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("TOOLCHAIN", "LLVM", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("TOOLCHAIN", "LLVM", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
@@ -421,7 +421,7 @@ static void test_explicit_toolchain(void) {
 
 static void test_toolchain_no_prefs(void) {
     preferences_load_result = CUP_ERR_VALIDATION;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("toolchain", "llvm", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("toolchain", "llvm", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(3, install_calls);
@@ -429,7 +429,7 @@ static void test_toolchain_no_prefs(void) {
 
 static void test_group_prevalidation(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install_request("toolchain", "gnu", NULL, NULL));
+                          command_install("toolchain", "gnu", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
@@ -437,7 +437,7 @@ static void test_group_prevalidation(void) {
 }
 
 static void test_direct_stable(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("compiler", "GCC", "linux-arm64", "zip"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", "GCC", "linux-arm64", "zip"));
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("zip", installed_formats[0]);
@@ -445,106 +445,106 @@ static void test_direct_stable(void) {
 
 static void test_invalid_groups(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install_request("profile", NULL, NULL, NULL));
+                          command_install("profile", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install_request("profile", "missing", NULL, NULL));
+                          command_install("profile", "missing", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install_request("toolchain", NULL, NULL, NULL));
+                          command_install("toolchain", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install_request("toolchain", "missing", NULL, NULL));
+                          command_install("toolchain", "missing", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_UNSUPPORTED_COMPONENT,
-                          command_install_request("unknown", NULL, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_install_request(NULL, NULL, NULL, NULL));
+                          command_install("unknown", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_install(NULL, NULL, NULL, NULL));
 }
 
 static void test_plan_load_failures(void) {
     context_begin_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_install_request("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_install("compiler", "gcc", NULL, NULL));
 
     context_begin_result = CUP_OK;
     state_load_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          command_install_request("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc", NULL, NULL));
 
     state_load_result = CUP_OK;
     package_catalog_load_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install_request("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
 
     package_catalog_load_result = CUP_OK;
     config_load_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          command_install_request("compiler", NULL, NULL, NULL));
+                          command_install("compiler", NULL, NULL, NULL));
 
     config_load_result = CUP_OK;
     preferences_load_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          command_install_request("compiler", NULL, NULL, NULL));
+                          command_install("compiler", NULL, NULL, NULL));
 }
 
 static void test_plan_failures(void) {
     resolver_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          command_install_request("compiler", NULL, NULL, NULL));
+                          command_install("compiler", NULL, NULL, NULL));
 
     resolver_result = CUP_OK;
     resolve_result = CUP_ERR_NOT_AVAILABLE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install_request("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc", NULL, NULL));
 
     resolve_result = CUP_OK;
     package_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install_request("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
 
     package_result = CUP_OK;
     version_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install_request("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc", NULL, NULL));
 
     version_available = 1;
     format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install_request("compiler", "gcc", NULL, "zip"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, "zip"));
 
     format_result = CUP_OK;
     format_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install_request("compiler", "gcc", NULL, "zip"));
+                          command_install("compiler", "gcc", NULL, "zip"));
 
     format_available = 1;
     default_format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install_request("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
 }
 
 static void test_invalid_existing(void) {
     strcpy(already_installed_entry, "gcc@1.0.0");
     installed_valid_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          command_install_request("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, install_calls);
 }
 
 static void test_group_execution(void) {
     strcpy(already_installed_entry, "gcc@1.0.0");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("profile", "standard", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("linker", installed_components[0]);
 
     setUp();
     install_fail_call = 1;
     install_fail_result = CUP_ERR_ALREADY_INSTALLED;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install_request("profile", "standard", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(2, install_calls);
 
     setUp();
     install_fail_call = 2;
     install_fail_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_install_request("profile", "standard", NULL, NULL));
+                          command_install("profile", "standard", NULL, NULL));
 
     setUp();
     install_fail_call = 1;
     install_fail_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          command_install_request("profile", "standard", NULL, NULL));
+                          command_install("profile", "standard", NULL, NULL));
 }
 
 /* Suite registration. */

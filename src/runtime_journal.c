@@ -6,6 +6,7 @@
 #include "runtime_journal.h"
 
 #include "layout.h"
+#include "system.h"
 #include "text.h"
 
 #include <errno.h>
@@ -80,6 +81,23 @@ CupError runtime_journal_detect(RuntimeJournalKind *kind) {
     return CUP_OK;
 }
 
+CupError runtime_journal_clear(void) {
+    char path[MAX_PATH_LEN];
+    int exists;
+
+    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
+        system_path_exists(path, &exists) != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
+    if (!exists) {
+        return CUP_OK;
+    }
+    if (system_remove_file(path) != CUP_OK || system_sync_parent_directory(path) != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
+    return CUP_OK;
+}
+
 CupError runtime_journal_require_none(void) {
     RuntimeJournalKind kind;
     CupError err = runtime_journal_detect(&kind);
@@ -96,6 +114,7 @@ CupError runtime_journal_require_none(void) {
     fprintf(stderr,
             kind == RUNTIME_JOURNAL_CUP_UPDATE
                 ? "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n"
-                : "Error: an interrupted package transaction must be repaired first.\n");
+                : "Error: a package transaction is active or requires recovery; "
+                  "retry shortly or run 'cup repair'.\n");
     return CUP_ERR_TRANSACTION;
 }

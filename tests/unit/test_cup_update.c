@@ -8,6 +8,7 @@
 #include "checksum.h"
 #include "command_context.h"
 #include "commands.h"
+#include "cup_update.h"
 #include "constants.h"
 #include "error.h"
 #include "filesystem.h"
@@ -229,7 +230,7 @@ CupError cup_assets_platform_checksums_name(char *name, size_t size) {
     return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
 }
 
-CupError cup_assets_verify_asset(const char *checksum_path,
+CupError checksum_verify_file(const char *checksum_path,
                                  const char *asset_name,
                                  const char *asset_path,
                                  int *matches) {
@@ -357,6 +358,11 @@ CupError cup_update_helper_start(const char *token) {
     return helper_result;
 }
 
+int download_insecure_loopback_is_allowed(const char *url) {
+    (void)url;
+    return 0;
+}
+
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
     (void)validation;
     fetch_calls++;
@@ -455,7 +461,7 @@ CupError cup_update_journal_begin(const char *temporary_path,
     return transaction_begin_result;
 }
 
-CupError cup_update_journal_clear(void) {
+CupError runtime_journal_clear(void) {
     transaction_clear_calls++;
     return transaction_clear_result;
 }
@@ -473,20 +479,20 @@ CupError filesystem_remove_tree(const char *path) {
 
 static void test_installed_preflight(void) {
     installed_generation_valid = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, cup_assets_inspect_calls);
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
     TEST_ASSERT_EQUAL_INT(0, setup_calls);
 
     reset_scenario();
     cup_assets_inspect_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, cup_assets_inspect_calls);
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
 }
 
 static void test_update_success(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
     TEST_ASSERT_EQUAL_INT(8, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, helper_prepare_calls);
     TEST_ASSERT_EQUAL_INT(1, transaction_begin_calls);
@@ -504,7 +510,7 @@ static void test_update_success(void) {
 static void test_noop_versions(void) {
     strcpy(remote_version, "1.2.3");
     strcpy(versioned_version, "1.2.3");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, fetch_calls);
     TEST_ASSERT_EQUAL_INT(0, transaction_begin_calls);
     TEST_ASSERT_EQUAL_INT(0, helper_calls);
@@ -513,92 +519,92 @@ static void test_noop_versions(void) {
     reset_scenario();
     strcpy(remote_version, "1.2.2");
     strcpy(versioned_version, "1.2.2");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
 static void test_bad_latest_metadata(void) {
     strcpy(remote_version, "01.2.4");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     strcpy(remote_commit, "INVALID");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
 static void test_versioned_checksums(void) {
     strcpy(versioned_commit, "abcdef2");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(4, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     checksum_schema_valid = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(4, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     checksum_matches = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(4, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
 static void test_update_fetch_fail(void) {
     context_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, cup_update_start());
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
 
     reset_scenario();
     transaction_check_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
 
     reset_scenario();
     fail_fetch_call = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     fail_fetch_call = 5;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
 static void test_update_commit_fail(void) {
     helper_prepare_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
     TEST_ASSERT_EQUAL_INT(0, transaction_begin_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     transaction_begin_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     transaction_begin_result = CUP_ERR_COMMIT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     helper_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     reset_scenario();
     helper_result = CUP_ERR_FILESYSTEM;
     transaction_clear_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
 }
@@ -606,12 +612,12 @@ static void test_update_commit_fail(void) {
 static void test_version_order(void) {
     strcpy(remote_version, "2.0.0");
     strcpy(versioned_version, "2.0.0");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
 
     reset_scenario();
     strcpy(remote_version, "1.3.0");
     strcpy(versioned_version, "1.3.0");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
 }
 
 static void test_metadata_shapes(void) {
@@ -621,26 +627,26 @@ static void test_metadata_shapes(void) {
     for (i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i) {
         reset_scenario();
         strcpy(remote_version, versions[i]);
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     }
 
     for (i = 1; i <= 5; ++i) {
         reset_scenario();
         latest_metadata_mode = (int)i;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     }
 
     reset_scenario();
     strcpy(remote_commit, "abcdef");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
 
     reset_scenario();
     strcpy(remote_commit, "ABCDEF1");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
 
     reset_scenario();
     versioned_metadata_mode = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
 }
 
 static void test_setup_failures(void) {
@@ -649,7 +655,7 @@ static void test_setup_failures(void) {
     for (step = 1; step <= 12; ++step) {
         reset_scenario();
         fail_setup_call = step;
-        TEST_ASSERT_NOT_EQUAL(CUP_OK, command_update_cup());
+        TEST_ASSERT_NOT_EQUAL(CUP_OK, cup_update_start());
         TEST_ASSERT_EQUAL_INT(0, fetch_calls);
     }
 }
@@ -660,30 +666,30 @@ static void test_stage_failures(void) {
     for (call = 2; call <= 8; ++call) {
         reset_scenario();
         fail_fetch_call = call;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_update_cup());
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, cup_update_start());
         TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
     }
 
     reset_scenario();
     fail_verify_call = 1;
     verify_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
 
     reset_scenario();
     fail_verify_call = 2;
     verify_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
 
 #if !defined(_WIN32)
     reset_scenario();
     fail_executable_call = 1;
     executable_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
 
     reset_scenario();
     fail_executable_call = 2;
     executable_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_update_cup());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_update_start());
 #endif
 }
 

@@ -46,7 +46,7 @@ typedef struct {
 
 /* Request normalization. CLI forms are reduced to one component/selector representation before
  * policy resolution begins. */
-static CupError normalize_entry(const char *input, char *selector, size_t size) {
+static CupError normalize_install_selection(const char *input, char *selector, size_t size) {
     char tool[MAX_IDENTIFIER_LEN];
     char release[MAX_IDENTIFIER_LEN];
     const char *separator;
@@ -82,7 +82,7 @@ static CupError normalize_entry(const char *input, char *selector, size_t size) 
     return package_selector_format_parts(selector, size, tool, release);
 }
 
-static CupError plan_add(InstallPlan *plan, const char *component, const char *selector) {
+static CupError install_plan_add(InstallPlan *plan, const char *component, const char *selector) {
     InstallPlanItem *item;
 
     if (plan == NULL || text_is_empty(component) || text_is_empty(selector) ||
@@ -98,18 +98,18 @@ static CupError plan_add(InstallPlan *plan, const char *component, const char *s
     return CUP_OK;
 }
 
-static CupError add_component_selection(InstallPlan *plan,
-                                        const InstallPolicy *config,
-                                        const ToolPreferences *preferences,
-                                        const char *host_platform,
-                                        const char *target_platform,
-                                        const char *component,
-                                        const char *explicit_entry) {
+static CupError install_plan_add_component(InstallPlan *plan,
+                                           const InstallPolicy *config,
+                                           const ToolPreferences *preferences,
+                                           const char *host_platform,
+                                           const char *target_platform,
+                                           const char *component,
+                                           const char *explicit_entry) {
     char selector[MAX_SELECTOR_LEN];
     CupError err;
 
     if (!text_is_empty(explicit_entry)) {
-        err = normalize_entry(explicit_entry, selector, sizeof(selector));
+        err = normalize_install_selection(explicit_entry, selector, sizeof(selector));
     } else {
         char tool[MAX_IDENTIFIER_LEN];
         ToolPreferenceSource source;
@@ -126,18 +126,18 @@ static CupError add_component_selection(InstallPlan *plan,
             err = package_selector_format_parts(selector, sizeof(selector), tool, "stable");
         }
     }
-    return err == CUP_OK ? plan_add(plan, component, selector) : err;
+    return err == CUP_OK ? install_plan_add(plan, component, selector) : err;
 }
 
 /* Plan construction. Profiles and toolchains expand into a bounded list before any package is
  * downloaded. */
-static CupError build_plan(InstallPlan *plan,
-                           const InstallPolicy *config,
-                           const ToolPreferences *preferences,
-                           const char *host_platform,
-                           const char *target_platform,
-                           const char *selector_input,
-                           const char *value_input) {
+static CupError install_plan_build(InstallPlan *plan,
+                                   const InstallPolicy *config,
+                                   const ToolPreferences *preferences,
+                                   const char *host_platform,
+                                   const char *target_platform,
+                                   const char *selector_input,
+                                   const char *value_input) {
     char selection[MAX_IDENTIFIER_LEN];
     char value[MAX_SELECTOR_LEN] = "";
     CupError err;
@@ -156,13 +156,13 @@ static CupError build_plan(InstallPlan *plan,
         if (text_copy(plan->description, sizeof(plan->description), selection) != CUP_OK) {
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
-        return add_component_selection(plan,
-                                       config,
-                                       preferences,
-                                       host_platform,
-                                       target_platform,
-                                       selection,
-                                       text_is_empty(value) ? NULL : value);
+        return install_plan_add_component(plan,
+                                          config,
+                                          preferences,
+                                          host_platform,
+                                          target_platform,
+                                          selection,
+                                          text_is_empty(value) ? NULL : value);
     }
 
     /* Profiles expand components and therefore apply scoped user preferences. */
@@ -187,7 +187,7 @@ static CupError build_plan(InstallPlan *plan,
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
         for (i = 0; i < profile->item_count; ++i) {
-            err = add_component_selection(
+            err = install_plan_add_component(
                 plan, config, preferences, host_platform, target_platform, profile->items[i], NULL);
             if (err != CUP_OK) {
                 return err;
@@ -227,7 +227,7 @@ static CupError build_plan(InstallPlan *plan,
                     tool_selector, sizeof(tool_selector), toolchain->items[i], "stable");
             }
             if (err == CUP_OK) {
-                err = plan_add(plan, component, tool_selector);
+                err = install_plan_add(plan, component, tool_selector);
             }
             if (err != CUP_OK) {
                 return err;
@@ -242,11 +242,11 @@ static CupError build_plan(InstallPlan *plan,
 
 /* Full preflight. Every catalog selection and installed-package condition is validated before the
  * first side effect. */
-static CupError select_plan_item_format(InstallPlanItem *item,
-                                        const PackageRequest *request,
-                                        const CommandContext *context,
-                                        const char *format_override,
-                                        int *available) {
+static CupError install_plan_resolve_format(InstallPlanItem *item,
+                                            const PackageRequest *request,
+                                            const CommandContext *context,
+                                            const char *format_override,
+                                            int *available) {
     CupError err;
 
     *available = 1;
@@ -273,8 +273,8 @@ static CupError select_plan_item_format(InstallPlanItem *item,
                                               context->target_platform);
 }
 
-static CupError check_installed_plan_item(InstallPlanItem *item,
-                                          const CommandContext *context) {
+static CupError install_plan_check_installed(InstallPlanItem *item,
+                                             const CommandContext *context) {
     PackageIdentity identity;
     CupError err;
 
@@ -303,10 +303,10 @@ static CupError check_installed_plan_item(InstallPlanItem *item,
     return err;
 }
 
-static CupError validate_plan_item(InstallPlanItem *item,
-                                   const CommandContext *context,
-                                   const char *format_override,
-                                   int *unavailable) {
+static CupError install_plan_validate_item(InstallPlanItem *item,
+                                             const CommandContext *context,
+                                             const char *format_override,
+                                             int *unavailable) {
     PackageRequest request;
     CupError err;
     int package_available;
@@ -361,7 +361,7 @@ static CupError validate_plan_item(InstallPlanItem *item,
         return CUP_OK;
     }
 
-    err = select_plan_item_format(
+    err = install_plan_resolve_format(
         item, &request, context, format_override, &format_available);
     if (err != CUP_OK) {
         return err;
@@ -378,10 +378,10 @@ static CupError validate_plan_item(InstallPlanItem *item,
                   request.resolved_selector) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
-    return check_installed_plan_item(item, context);
+    return install_plan_check_installed(item, context);
 }
 
-static void print_unavailable_plan(const InstallPlan *plan, const CommandContext *context) {
+static void install_plan_print_unavailable(const InstallPlan *plan, const CommandContext *context) {
     size_t i;
 
     fprintf(stderr,
@@ -402,9 +402,9 @@ static void print_unavailable_plan(const InstallPlan *plan, const CommandContext
     fprintf(stderr, "No packages were installed.\n");
 }
 
-static CupError validate_plan(InstallPlan *plan,
-                              CommandContext *context,
-                              const char *format_override) {
+static CupError install_plan_validate(InstallPlan *plan,
+                                       CommandContext *context,
+                                       const char *format_override) {
     CupError err;
     size_t i;
     size_t unavailable_count = 0;
@@ -412,7 +412,7 @@ static CupError validate_plan(InstallPlan *plan,
     for (i = 0; i < plan->count; ++i) {
         int unavailable;
 
-        err = validate_plan_item(&plan->items[i], context, format_override, &unavailable);
+        err = install_plan_validate_item(&plan->items[i], context, format_override, &unavailable);
         if (err != CUP_OK) {
             return err;
         }
@@ -420,25 +420,17 @@ static CupError validate_plan(InstallPlan *plan,
     }
 
     if (unavailable_count != 0) {
-        print_unavailable_plan(plan, context);
+        install_plan_print_unavailable(plan, context);
         return CUP_ERR_NOT_AVAILABLE;
     }
     return CUP_OK;
 }
 
-/* Public command entry points. Execution delegates each validated item to the reusable package
- * installation transaction. */
-CupError command_install(const char *component,
-                         const char *selector,
+/* Public request planning delegates validated package selections to package_install(). */
+CupError command_install(const char *selector,
+                         const char *value,
                          const char *target_override,
                          const char *format_override) {
-    return package_install(component, selector, target_override, format_override);
-}
-
-CupError command_install_request(const char *selector,
-                                 const char *value,
-                                 const char *target_override,
-                                 const char *format_override) {
     CommandContext context = {0};
     InstallPolicy config;
     ToolPreferences preferences;
@@ -487,16 +479,16 @@ CupError command_install_request(const char *selector,
         err = tool_preferences_load(&config, &preferences);
     }
     if (err == CUP_OK) {
-        err = build_plan(&plan,
-                         &config,
-                         &preferences,
-                         context.host_platform,
-                         context.target_platform,
-                         selector,
-                         value);
+        err = install_plan_build(&plan,
+                                 &config,
+                                 &preferences,
+                                 context.host_platform,
+                                 context.target_platform,
+                                 selector,
+                                 value);
     }
     if (err == CUP_OK) {
-        err = validate_plan(
+        err = install_plan_validate(
             &plan, &context, text_is_empty(normalized_format) ? NULL : normalized_format);
     }
     /* Release the shared preflight context before package transactions acquire exclusive locks. */

@@ -6,7 +6,6 @@
 
 #include "command_context.h"
 #include "package_selector.h"
-#include "wrappers.h"
 #include "package_metadata.h"
 #include "layout.h"
 #include "package_catalog.h"
@@ -45,36 +44,19 @@ static int catalog_matches(const PackageCatalogEntry *package,
            (target == NULL || strcmp(package->target_platform, target) == 0);
 }
 
-static int component_seen_before(const PackageCatalog *catalog,
-                                 size_t index,
-                                 const char *component,
-                                 const char *host,
-                                 const char *target) {
+static int catalog_entry_seen_before(const PackageCatalog *catalog,
+                                     size_t index,
+                                     const char *component,
+                                     const char *tool,
+                                     const char *host,
+                                     const char *target) {
     size_t i;
 
     for (i = 0; i < index; ++i) {
         const PackageCatalogEntry *package = &catalog->packages[i];
 
-        if (catalog_matches(package, NULL, host, target) &&
-            strcmp(package->component, component) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int tool_seen_before(const PackageCatalog *catalog,
-                            size_t index,
-                            const char *component,
-                            const char *tool,
-                            const char *host,
-                            const char *target) {
-    size_t i;
-
-    for (i = 0; i < index; ++i) {
-        const PackageCatalogEntry *package = &catalog->packages[i];
-
-        if (catalog_matches(package, component, host, target) && strcmp(package->tool, tool) == 0) {
+        if (catalog_matches(package, component, host, target) &&
+            (tool == NULL || strcmp(package->tool, tool) == 0)) {
             return 1;
         }
     }
@@ -95,7 +77,8 @@ static int print_catalog_tools(const PackageCatalog *catalog,
         size_t j;
 
         if (!catalog_matches(package, component, host, target) ||
-            tool_seen_before(catalog, i, package->component, package->tool, host, target)) {
+            catalog_entry_seen_before(
+                catalog, i, package->component, package->tool, host, target)) {
             continue;
         }
 
@@ -152,7 +135,8 @@ static void print_package_catalog(const PackageCatalog *catalog,
             const PackageCatalogEntry *package = &catalog->packages[i];
 
             if (!catalog_matches(package, NULL, host, target) ||
-                component_seen_before(catalog, i, package->component, host, target)) {
+                catalog_entry_seen_before(
+                catalog, i, package->component, NULL, host, target)) {
                 continue;
             }
 

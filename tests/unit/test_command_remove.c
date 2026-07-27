@@ -318,7 +318,7 @@ CupError filesystem_remove_tree(const char *path) {
     return remove_tree_result;
 }
 
-CupError package_transaction_clear(void) {
+CupError runtime_journal_clear(void) {
     transaction_clear_calls++;
     return transaction_clear_result;
 }

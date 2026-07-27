@@ -97,7 +97,7 @@ run_cup help >/dev/null
 run_cup --version >/dev/null
 run_cup_expect_failure "$TMP_ROOT/pending-package-list.out" list
 assert_contains "$(cat "$TMP_ROOT/pending-package-list.out")" \
-    'interrupted package transaction must be repaired first'
+    'a package transaction is active or requires recovery'
 run_cup_expect_failure "$TMP_ROOT/pending-package-doctor.out" doctor
 assert_contains "$(cat "$TMP_ROOT/pending-package-doctor.out")" \
     'interrupted install transaction detected'

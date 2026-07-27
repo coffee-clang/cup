@@ -221,32 +221,74 @@ function Assert-ReleaseMetadata(
     [string]$ExpectedVersion = "",
     [string]$ExpectedCommit = ""
 ) {
-    $lines = @(Get-Content -LiteralPath $Path)
-    if ($lines.Count -ne 3) {
-        Fail "invalid release metadata: $Path"
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Fail "release metadata file is missing: $Path"
+    }
+
+    try {
+        $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
+    } catch {
+        Fail "release metadata file is not readable: $Path"
     }
 
     $values = @{}
-    foreach ($line in $lines) {
-        if ($line -notmatch '^([^=]+)=(.+)$' -or $values.ContainsKey($Matches[1])) {
-            Fail "invalid release metadata: $Path"
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        $lineNumber = $index + 1
+        $line = $lines[$index]
+        $separator = $line.IndexOf('=')
+        if ($separator -le 0 -or $separator -eq ($line.Length - 1) -or
+            $line.IndexOf('=', $separator + 1) -ge 0) {
+            Fail (
+                "release metadata line $lineNumber must contain exactly one " +
+                "non-empty 'key=value' assignment: $Path"
+            )
         }
-        $values[$Matches[1]] = $Matches[2]
+
+        $key = $line.Substring(0, $separator)
+        $value = $line.Substring($separator + 1)
+        if ($key -cnotin @('format', 'version', 'commit')) {
+            Fail "release metadata contains an unexpected field at line ${lineNumber}: $Path"
+        }
+        if ($values.ContainsKey($key)) {
+            Fail "release metadata field '$key' is duplicated: $Path"
+        }
+        $values[$key] = $value
     }
 
-    if ($values.Count -ne 3 -or $values['format'] -cne '1' -or
-        $values['version'] -notmatch '^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$' -or
-        $values['commit'] -notmatch '^[0-9a-f]{7,40}$') {
-        Fail "invalid release metadata: $Path"
+    foreach ($required in @('format', 'version', 'commit')) {
+        if (-not $values.ContainsKey($required)) {
+            Fail "release metadata is missing required field '$required': $Path"
+        }
+    }
+    if ($lines.Count -ne 3) {
+        Fail "release metadata must contain exactly 3 lines; found $($lines.Count): $Path"
+    }
+    if ($values['format'] -cne '1') {
+        Fail "release metadata format is unsupported; expected '1': $Path"
+    }
+    if ($values['version'] -notmatch
+        '^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$') {
+        Fail "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH': $Path"
+    }
+    if ($values['commit'] -notmatch '^[0-9a-f]{7,40}$') {
+        Fail (
+            "release metadata commit is invalid; expected 7 to 40 lowercase " +
+            "hexadecimal characters: $Path"
+        )
     }
     if ($ExpectedVersion -ne "" -and $values['version'] -cne $ExpectedVersion) {
-        Fail "release metadata version does not match this installer: $Path"
+        Fail (
+            "release metadata version mismatch: expected '$ExpectedVersion', " +
+            "received '$($values['version'])': $Path"
+        )
     }
     if ($ExpectedCommit -ne "" -and $values['commit'] -cne $ExpectedCommit) {
-        Fail "release metadata commit does not match this installer: $Path"
+        Fail (
+            "release metadata commit mismatch: expected '$ExpectedCommit', " +
+            "received '$($values['commit'])': $Path"
+        )
     }
 }
-
 # Optional user PATH integration.
 function Test-CupBinInUserPath {
     $path = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -383,7 +425,7 @@ function Set-BootstrapPermissions([bool]$RequireAssets = $false) {
 function Get-Assets {
     return @(
         @{
-            Key = "manifest"
+            Key = "catalog"
             Source = Join-Path $Staging "packages.cfg"
             Destination = $PackagesCfg
         },

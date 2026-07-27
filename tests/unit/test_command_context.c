@@ -143,6 +143,16 @@ CupError cup_assets_uninstall_is_pending(int *pending) {
     return pending_result;
 }
 
+CupError cup_assets_require_no_pending_uninstall(void) {
+    int pending;
+    CupError err = cup_assets_uninstall_is_pending(&pending);
+
+    if (err != CUP_OK) {
+        return err;
+    }
+    return pending ? CUP_ERR_LOCK : CUP_OK;
+}
+
 CupError platform_get_host(char *buffer, size_t size) {
     if (host_result != CUP_OK) {
         return host_result;

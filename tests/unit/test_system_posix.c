@@ -546,7 +546,9 @@ static void test_uninstall_helper(void) {
     TEST_ASSERT_TRUE(snprintf(script_text,
                               sizeof(script_text),
                               "#!/bin/sh\n"
-                              "printf '%%s\\n%%s\\n%%s\\n' \"$1\" \"$2\" \"$3\" > '%s'\n"
+                              "printf '%%s\\n%%s\\n%%s\\n%%s\\n' "
+                              "\"$1\" \"$2\" \"$3\" \"$4\" > '%s'\n"
+                              "printf 'R' >&3\n"
                               "rm -f \"$2\"\n",
                               marker) > 0);
     write_text(script, script_text);
@@ -556,11 +558,21 @@ static void test_uninstall_helper(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(temp_dir, NULL, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(temp_dir, script, 0));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_start_uninstall(temp_dir, script, 999999UL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, system_start_uninstall(temp_dir, script, system_get_process_id()));
     TEST_ASSERT_TRUE(wait_for_path(marker, 1));
     read_text(marker, contents, sizeof(contents));
     TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "999999"));
+    {
+        char process_id[32];
+
+        TEST_ASSERT_TRUE(snprintf(process_id,
+                                  sizeof(process_id),
+                                  "%lu",
+                                  system_get_process_id()) > 0);
+        TEST_ASSERT_NOT_NULL(strstr(contents, process_id));
+    }
+    TEST_ASSERT_NOT_NULL(strstr(contents, "\n3\n"));
 }
 
 /* Suite registration. */

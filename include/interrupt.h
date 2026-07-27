@@ -15,7 +15,6 @@ CupError interrupt_enable(void);
 void interrupt_disable(void);
 
 /* Clear an observed request at a known command boundary. */
-void interrupt_clear(void);
 
 /* Return nonzero after SIGINT/SIGTERM or a supported console event. */
 int interrupt_requested(void);

@@ -5,6 +5,7 @@
 
 #include "package_catalog.h"
 
+#include "download.h"
 #include "layout.h"
 #include "path.h"
 #include "package_archive.h"
@@ -30,7 +31,7 @@
 #define REQUIRED_FIELDS \
     (FIELD_STABLE_VERSION | FIELD_AVAILABLE_VERSIONS | FIELD_DEFAULT_FORMAT | FIELD_FORMATS | \
      FIELD_URL_TEMPLATE | FIELD_CHECKSUM_URL)
-#define DEVELOPMENT_MANIFEST_PATH "config/packages.cfg"
+#define DEVELOPMENT_CATALOG_PATH "config/packages.cfg"
 
 /* Catalog lifetime and tuple assembly. A package becomes visible only after every required
  * field is present. */
@@ -157,19 +158,19 @@ typedef struct {
     size_t capacity;
 } CatalogField;
 
-#define MANIFEST_FIELD(name_value, bit_value, member) \
+#define CATALOG_FIELD(name_value, bit_value, member) \
     {name_value, \
      bit_value, \
      offsetof(PackageCatalogEntry, member), \
      sizeof(((PackageCatalogEntry *)0)->member)}
 
 static const CatalogField PACKAGE_FIELDS[] = {
-    MANIFEST_FIELD("stable_version", FIELD_STABLE_VERSION, stable_version),
-    MANIFEST_FIELD("available_versions", FIELD_AVAILABLE_VERSIONS, available_versions),
-    MANIFEST_FIELD("default_format", FIELD_DEFAULT_FORMAT, default_format),
-    MANIFEST_FIELD("formats", FIELD_FORMATS, formats),
-    MANIFEST_FIELD("url_template", FIELD_URL_TEMPLATE, url_template),
-    MANIFEST_FIELD("checksum_url_template", FIELD_CHECKSUM_URL, checksum_url_template)};
+    CATALOG_FIELD("stable_version", FIELD_STABLE_VERSION, stable_version),
+    CATALOG_FIELD("available_versions", FIELD_AVAILABLE_VERSIONS, available_versions),
+    CATALOG_FIELD("default_format", FIELD_DEFAULT_FORMAT, default_format),
+    CATALOG_FIELD("formats", FIELD_FORMATS, formats),
+    CATALOG_FIELD("url_template", FIELD_URL_TEMPLATE, url_template),
+    CATALOG_FIELD("checksum_url_template", FIELD_CHECKSUM_URL, checksum_url_template)};
 
 /* Assign one validated key/value record without exposing a partially assembled package. */
 static const CatalogField *find_catalog_field(const char *name) {
@@ -348,7 +349,8 @@ static CupError validate_url_template(const char *url,
     const char *cursor;
     unsigned seen = 0;
 
-    if (strncmp(url, "https://", 8) != 0) {
+    if (strncmp(url, "https://", 8) != 0 &&
+        !download_insecure_loopback_is_allowed(url)) {
         fprintf(stderr, "Error: catalog URL templates must use HTTPS.\n");
         return CUP_ERR_CATALOG;
     }
@@ -581,7 +583,7 @@ CupError package_catalog_load_installed(PackageCatalog *catalog) {
 
 CupError package_catalog_load_development(PackageCatalog *catalog) {
     return package_catalog_load_path(
-        catalog, DEVELOPMENT_MANIFEST_PATH, PACKAGE_CATALOG_SOURCE_DEVELOPMENT);
+        catalog, DEVELOPMENT_CATALOG_PATH, PACKAGE_CATALOG_SOURCE_DEVELOPMENT);
 }
 
 CupError package_catalog_load(PackageCatalog *catalog) {
@@ -606,7 +608,7 @@ CupError package_catalog_load(PackageCatalog *catalog) {
         return package_catalog_load_path(catalog, installed, PACKAGE_CATALOG_SOURCE_INSTALLED);
     }
 
-    err = system_path_exists(DEVELOPMENT_MANIFEST_PATH, &exists);
+    err = system_path_exists(DEVELOPMENT_CATALOG_PATH, &exists);
     if (err != CUP_OK) {
         return err;
     }
@@ -618,7 +620,7 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     fprintf(stderr,
             "Error: package catalog not found at '%s' or './%s'.\n",
             installed,
-            DEVELOPMENT_MANIFEST_PATH);
+            DEVELOPMENT_CATALOG_PATH);
     return CUP_ERR_CATALOG;
 }
 
@@ -654,13 +656,35 @@ static const PackageCatalogEntry *require_package(const PackageCatalog *catalog,
     return package;
 }
 
-CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
-                                        char *buffer,
-                                        size_t size,
-                                        const char *component,
-                                        const char *tool,
-                                        const char *host,
-                                        const char *target) {
+typedef enum {
+    CATALOG_VALUE_STABLE_VERSION,
+    CATALOG_VALUE_DEFAULT_FORMAT,
+    CATALOG_VALUE_AVAILABLE_VERSIONS,
+    CATALOG_VALUE_FORMATS
+} CatalogValue;
+
+static const char *catalog_value(const PackageCatalogEntry *package, CatalogValue value) {
+    switch (value) {
+        case CATALOG_VALUE_STABLE_VERSION:
+            return package->stable_version;
+        case CATALOG_VALUE_DEFAULT_FORMAT:
+            return package->default_format;
+        case CATALOG_VALUE_AVAILABLE_VERSIONS:
+            return package->available_versions;
+        case CATALOG_VALUE_FORMATS:
+            return package->formats;
+    }
+    return NULL;
+}
+
+static CupError copy_catalog_value(const PackageCatalog *catalog,
+                                   char *buffer,
+                                   size_t size,
+                                   const char *component,
+                                   const char *tool,
+                                   const char *host,
+                                   const char *target,
+                                   CatalogValue value) {
     const PackageCatalogEntry *package;
 
     if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
@@ -669,11 +693,49 @@ CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
     }
 
     package = require_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
+    return package == NULL ? CUP_ERR_CATALOG
+                           : text_copy(buffer, size, catalog_value(package, value));
+}
+
+static CupError catalog_value_contains(const PackageCatalog *catalog,
+                                       const char *component,
+                                       const char *tool,
+                                       const char *host,
+                                       const char *target,
+                                       const char *expected,
+                                       CatalogValue value,
+                                       int *contains) {
+    const PackageCatalogEntry *package;
+
+    if (contains == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *contains = 0;
+    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) ||
+        text_is_empty(host) || text_is_empty(target) || text_is_empty(expected)) {
+        return CUP_ERR_INVALID_INPUT;
     }
 
-    return text_copy(buffer, size, package->stable_version);
+    package = find_package(catalog, component, tool, host, target);
+    return package == NULL ? CUP_ERR_CATALOG
+                           : validate_value_list(catalog_value(package, value), expected, contains);
+}
+
+CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
+                                        char *buffer,
+                                        size_t size,
+                                        const char *component,
+                                        const char *tool,
+                                        const char *host,
+                                        const char *target) {
+    return copy_catalog_value(catalog,
+                              buffer,
+                              size,
+                              component,
+                              tool,
+                              host,
+                              target,
+                              CATALOG_VALUE_STABLE_VERSION);
 }
 
 CupError package_catalog_is_stable(const PackageCatalog *catalog,
@@ -729,23 +791,14 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
                                      const char *target,
                                      const char *version,
                                      int *is_available) {
-    const PackageCatalogEntry *package;
-
-    if (is_available == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_available = 0;
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
-        text_is_empty(target) || text_is_empty(version)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = find_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-
-    return validate_value_list(package->available_versions, version, is_available);
+    return catalog_value_contains(catalog,
+                                  component,
+                                  tool,
+                                  host,
+                                  target,
+                                  version,
+                                  CATALOG_VALUE_AVAILABLE_VERSIONS,
+                                  is_available);
 }
 
 CupError package_catalog_get_default_format(const PackageCatalog *catalog,
@@ -755,19 +808,14 @@ CupError package_catalog_get_default_format(const PackageCatalog *catalog,
                                             const char *tool,
                                             const char *host,
                                             const char *target) {
-    const PackageCatalogEntry *package;
-
-    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
-        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = require_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-
-    return text_copy(buffer, size, package->default_format);
+    return copy_catalog_value(catalog,
+                              buffer,
+                              size,
+                              component,
+                              tool,
+                              host,
+                              target,
+                              CATALOG_VALUE_DEFAULT_FORMAT);
 }
 
 CupError package_catalog_has_format(const PackageCatalog *catalog,
@@ -777,23 +825,14 @@ CupError package_catalog_has_format(const PackageCatalog *catalog,
                                     const char *target,
                                     const char *format,
                                     int *is_supported) {
-    const PackageCatalogEntry *package;
-
-    if (is_supported == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_supported = 0;
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
-        text_is_empty(target) || text_is_empty(format)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = find_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-
-    return validate_value_list(package->formats, format, is_supported);
+    return catalog_value_contains(catalog,
+                                  component,
+                                  tool,
+                                  host,
+                                  target,
+                                  format,
+                                  CATALOG_VALUE_FORMATS,
+                                  is_supported);
 }
 
 /* Expand only known template placeholders after the selected package tuple is concrete. */
@@ -877,10 +916,40 @@ static CupError expand_package_url(const char *template_value,
     }
 
     if (strchr(buffer, '{') != NULL || strchr(buffer, '}') != NULL ||
-        strncmp(buffer, "https://", 8) != 0) {
+        (strncmp(buffer, "https://", 8) != 0 &&
+         !download_insecure_loopback_is_allowed(buffer))) {
         return CUP_ERR_CATALOG;
     }
     return CUP_OK;
+}
+
+static CupError build_package_url(const PackageCatalog *catalog,
+                                  char *buffer,
+                                  size_t size,
+                                  const char *component,
+                                  const char *tool,
+                                  const char *host,
+                                  const char *target,
+                                  const char *version,
+                                  const char *format,
+                                  int checksum) {
+    const PackageCatalogEntry *package;
+    const char *template_value;
+
+    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
+        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target) ||
+        text_is_empty(version) || (!checksum && text_is_empty(format))) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    package = require_package(catalog, component, tool, host, target);
+    if (package == NULL) {
+        return CUP_ERR_CATALOG;
+    }
+
+    template_value = checksum ? package->checksum_url_template : package->url_template;
+    return expand_package_url(
+        template_value, buffer, size, tool, host, target, version, checksum ? "" : format);
 }
 
 CupError package_catalog_build_url(const PackageCatalog *catalog,
@@ -892,20 +961,8 @@ CupError package_catalog_build_url(const PackageCatalog *catalog,
                                    const char *target,
                                    const char *version,
                                    const char *format) {
-    const PackageCatalogEntry *package;
-
-    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
-        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target) ||
-        text_is_empty(version) || text_is_empty(format)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = require_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-    return expand_package_url(
-        package->url_template, buffer, size, tool, host, target, version, format);
+    return build_package_url(
+        catalog, buffer, size, component, tool, host, target, version, format, 0);
 }
 
 CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
@@ -916,18 +973,6 @@ CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
                                             const char *host,
                                             const char *target,
                                             const char *version) {
-    const PackageCatalogEntry *package;
-
-    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
-        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target) ||
-        text_is_empty(version)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = require_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-    return expand_package_url(
-        package->checksum_url_template, buffer, size, tool, host, target, version, "");
+    return build_package_url(
+        catalog, buffer, size, component, tool, host, target, version, NULL, 1);
 }

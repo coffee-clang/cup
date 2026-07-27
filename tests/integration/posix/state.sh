@@ -8,7 +8,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin state
 prepare_command_environment
-package_catalog_add_version compiler clang "$TEST_PLATFORM" 21.1.5
+package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions 21.1.5 prepend
 run_cup repair >/dev/null
 
 make_package compiler clang 21.1.5 "$TEST_PLATFORM" clang

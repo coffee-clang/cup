@@ -14,6 +14,31 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 # Verify that each checksum file names exactly the expected immutable assets.
+function Get-NextTestVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CurrentVersion
+    )
+
+    if ($CurrentVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+        throw "Invalid release version for update fixture: $CurrentVersion"
+    }
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    $patch = [int]$Matches[3]
+    $candidates = @(
+        "$major.$minor.$($patch + 1)",
+        "$major.$($minor + 1).0",
+        "$($major + 1).0.0"
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate.Length -eq $CurrentVersion.Length) {
+            return $candidate
+        }
+    }
+    throw "Could not create a same-length update version from $CurrentVersion"
+}
+
 function Assert-ChecksumFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -66,6 +91,85 @@ function Assert-ChecksumFile {
     }
 }
 
+function Test-InstallerMetadataFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Lines,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedMessage
+    )
+
+    $fixtureName = "metadata-$Name"
+    $fixture = Join-Path $root $fixtureName
+    $profile = Join-Path $env:RUNNER_TEMP "cup-installer-$fixtureName-$PID"
+    $saved = @{}
+    foreach ($variable in @(
+        'USERPROFILE',
+        'CUP_INSTALL_ALLOW_INSECURE',
+        'CUP_INSTALL_BASE_URL',
+        'CUP_INSTALL_NO_PATH_PROMPT'
+    )) {
+        $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        $saved[$variable] = if ($null -eq $item) { $null } else { $item.Value }
+    }
+
+    try {
+        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $fixture | Out-Null
+        New-Item -ItemType Directory -Path $profile | Out-Null
+
+        foreach ($asset in @(
+            'cup-windows-x64.exe',
+            'packages.cfg',
+            'install.cfg',
+            'uninstall.ps1',
+            'SHA256SUMS.common'
+        )) {
+            Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $fixture
+        }
+        Set-Content -LiteralPath (Join-Path $fixture 'release.txt') `
+            -Value $Lines -Encoding Ascii
+
+        $platformNames = @('cup-windows-x64.exe', 'uninstall.ps1', 'release.txt')
+        $checksumLines = foreach ($asset in $platformNames) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $asset) `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $asset"
+        }
+        Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.windows-x64') `
+            -Value $checksumLines -Encoding Ascii
+
+        $env:USERPROFILE = $profile
+        $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+        $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/$fixtureName"
+        $env:CUP_INSTALL_NO_PATH_PROMPT = '1'
+
+        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $ReleaseDir 'install.ps1') 2>&1)
+        $status = $LASTEXITCODE
+        $text = $output -join [Environment]::NewLine
+        if ($status -eq 0) {
+            throw "Metadata diagnostic case unexpectedly succeeded: $Name"
+        }
+        if ($text -notlike "*$ExpectedMessage*") {
+            throw "Metadata diagnostic case '$Name' was not explained:`n$text"
+        }
+    } finally {
+        foreach ($variable in $saved.Keys) {
+            if ($null -eq $saved[$variable]) {
+                Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -LiteralPath "Env:$variable" -Value $saved[$variable]
+            }
+        }
+        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Validate the candidate checksums, metadata and native executable.
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
@@ -98,7 +202,7 @@ if ($actual -ne "cup $Version") {
 }
 
 # Serve the candidate locally and smoke-test the generated installer in a fresh profile.
-$port = 18080 + (Get-Random -Maximum 1000)
+$port = 0
 $root = (Resolve-Path $ReleaseDir).Path
 if ($env:CUP_TEST_CONFIGURATION) {
     $configuration = $env:CUP_TEST_CONFIGURATION
@@ -135,6 +239,13 @@ try {
             if (-not (Test-Path -LiteralPath $ready)) {
                 throw "not ready"
             }
+            $portText = (Get-Content -LiteralPath $ready -Raw).Trim()
+            $parsedPort = 0
+            if (-not [int]::TryParse($portText, [ref]$parsedPort) -or
+                $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+                throw "invalid server port"
+            }
+            $port = $parsedPort
             Invoke-WebRequest -UseBasicParsing `
                 -Uri "http://127.0.0.1:$port/release.txt" | Out-Null
             $serverReady = $true
@@ -146,6 +257,25 @@ try {
     if (-not $serverReady) {
         throw "HTTP test helper did not become ready"
     }
+
+    Test-InstallerMetadataFailure -Name 'invalid-version' -Lines @(
+        'format=1',
+        'version=0.2',
+        "commit=$SourceSha"
+    ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
+    Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
+        'format=1',
+        'version=0.2.1',
+        "commit=$SourceSha"
+    ) -ExpectedMessage "release metadata version mismatch: expected '$Version', received '0.2.1'"
+    Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
+        'format=1',
+        "version=$Version",
+        'commit=fedcba9876543210fedcba9876543210fedcba98'
+    ) -ExpectedMessage (
+        "release metadata commit mismatch: expected '$SourceSha', received " +
+        "'fedcba9876543210fedcba9876543210fedcba98'"
+    )
 
     if (Test-Path -LiteralPath $testProfile) {
         Remove-Item -LiteralPath $testProfile -Recurse -Force
@@ -280,6 +410,105 @@ try {
         throw "Installed cup was not usable after reinstall"
     }
 
+    # A local immutable release fixture exercises the complete detached update path. The binary
+    # patcher changes only same-length embedded version strings, preserving the tested executable.
+    $nextVersion = Get-NextTestVersion -CurrentVersion $Version
+    $updateRoot = Join-Path $ReleaseDir "update-fixture"
+    $versionRoot = Join-Path $updateRoot $nextVersion
+    $patchHelper = Join-Path (Get-Location) `
+        "build\windows-x64\$configuration\tests\helpers\binary-patch.exe"
+    if (-not (Test-Path -LiteralPath $patchHelper -PathType Leaf)) {
+        throw "Binary patch helper is not built: $patchHelper"
+    }
+    Remove-Item -LiteralPath $updateRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
+
+    foreach ($asset in @("packages.cfg", "install.cfg", "install.sh", "install.ps1", "uninstall.ps1")) {
+        Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $versionRoot
+    }
+    $updatedBinary = Join-Path $versionRoot "cup-windows-x64.exe"
+    & $patchHelper $binary $updatedBinary $Version $nextVersion | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Binary patch helper failed with exit code $LASTEXITCODE"
+    }
+
+    $updatedMetadata = @(
+        "format=1",
+        "version=$nextVersion",
+        "commit=$SourceSha"
+    )
+    Set-Content -LiteralPath (Join-Path $versionRoot "release.txt") `
+        -Value $updatedMetadata -Encoding ascii
+    Copy-Item -LiteralPath (Join-Path $versionRoot "release.txt") `
+        -Destination (Join-Path $updateRoot "release.txt")
+
+    $commonLines = foreach ($asset in @("packages.cfg", "install.cfg", "install.sh", "install.ps1")) {
+        $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash  $asset"
+    }
+    Set-Content -LiteralPath (Join-Path $versionRoot "SHA256SUMS.common") `
+        -Value $commonLines -Encoding ascii
+    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "uninstall.ps1", "release.txt")) {
+        $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash  $asset"
+    }
+    Set-Content -LiteralPath (Join-Path $versionRoot "SHA256SUMS.windows-x64") `
+        -Value $platformLines -Encoding ascii
+
+    $updatedVersionOutput = & $updatedBinary --version
+    if ($LASTEXITCODE -ne 0 -or $updatedVersionOutput -ne "cup $nextVersion") {
+        throw "Patched update executable did not expose version $nextVersion"
+    }
+
+    $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/update-fixture"
+    $updateOutput = @(& $installed update cup 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "cup update cup failed with exit code $LASTEXITCODE`n$($updateOutput -join "`n")"
+    }
+    $updateText = $updateOutput -join "`n"
+    if ($updateText -notlike "*Verified update from cup $Version to $nextVersion scheduled.*") {
+        throw "cup update cup did not report the scheduled version transition`n$updateText"
+    }
+
+    $updateResult = Join-Path $env:USERPROFILE ".cup\cup-update-result.txt"
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline -and
+        -not (Test-Path -LiteralPath $updateResult -PathType Leaf)) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $updateResult -PathType Leaf)) {
+        throw "cup update helper did not publish a result"
+    }
+    $resultText = Get-Content -LiteralPath $updateResult -Raw
+    foreach ($expected in @("status=success", "error=0", "version=$nextVersion")) {
+        if ($resultText -notmatch "(?m)^$([regex]::Escape($expected))`r?$" ) {
+            throw "cup update result is missing '$expected'`n$resultText"
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".cup\transaction.txt")) {
+        throw "successful cup update left a transaction journal"
+    }
+    $installedUpdatedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+    $fixtureUpdatedHash = (Get-FileHash -LiteralPath $updatedBinary -Algorithm SHA256).Hash
+    if ($installedUpdatedHash -ne $fixtureUpdatedHash) {
+        throw "installed cup does not match the verified update executable"
+    }
+    $updatedInstalledVersion = & $installed --version
+    if ($LASTEXITCODE -ne 0 -or $updatedInstalledVersion -ne "cup $nextVersion") {
+        throw "installed cup was not usable after update"
+    }
+    & $installed doctor
+    if ($LASTEXITCODE -ne 0) {
+        throw "updated cup doctor failed with exit code $LASTEXITCODE"
+    }
+    $staleUpdate = @(Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE ".cup\staging") `
+        -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "cup-update-*" })
+    if ($staleUpdate.Count -ne 0) {
+        throw "successful cup update left staging behind: $($staleUpdate[0].FullName)"
+    }
+
     # The assembled candidate performs its detached uninstall smoke test.
     $uninstallOutput = & $installed uninstall --yes 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -291,7 +520,13 @@ try {
     }
     $cupRoot = Join-Path $env:USERPROFILE ".cup"
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
-    while ((Test-Path -LiteralPath $cupRoot) -and [DateTime]::UtcNow -lt $deadline) {
+    $residues = @()
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $residues = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force `
+            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+        if (-not (Test-Path -LiteralPath $cupRoot) -and $residues.Count -eq 0) {
+            break
+        }
         Start-Sleep -Milliseconds 100
     }
     if (Test-Path -LiteralPath $cupRoot) {

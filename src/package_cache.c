@@ -19,33 +19,19 @@
 static CupError build_checksum_cache_path(const char *archive_path,
                                           char *checksum_path,
                                           size_t size) {
-    const char *slash = strrchr(archive_path, '/');
-    size_t directory_length;
     char directory[MAX_PATH_LEN];
+    CupError err;
 
-    if (slash == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    directory_length = (size_t)(slash - archive_path);
-    if (directory_length == 0 || directory_length >= sizeof(directory)) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(directory, archive_path, directory_length);
-    directory[directory_length] = '\0';
-    return path_join(checksum_path, size, directory, "SHA256SUMS");
+    err = path_parent(directory, sizeof(directory), archive_path);
+    return err == CUP_OK ? path_join(checksum_path, size, directory, "SHA256SUMS") : err;
 }
 
 /* Package cache and checksum validation. */
-static const char *archive_filename(const char *path) {
-    const char *slash = strrchr(path, '/');
-    return slash == NULL ? path : slash + 1;
-}
-
 static CupError checksum_has_archive_entry(const char *checksum_path, const char *archive_path) {
     char expected[SHA256_HEX_LENGTH + 1];
 
     return checksum_find_expected(
-        checksum_path, archive_filename(archive_path), expected, sizeof(expected));
+        checksum_path, path_last_segment(archive_path), expected, sizeof(expected));
 }
 
 static CupError verify_cached_archive(const char *checksum_path,
@@ -62,7 +48,7 @@ static CupError verify_cached_archive(const char *checksum_path,
         return err;
     }
     err = checksum_verify_file(
-        checksum_path, archive_filename(archive_path), archive_path, &checksum_matches);
+        checksum_path, path_last_segment(archive_path), archive_path, &checksum_matches);
     if (err != CUP_OK) {
         return err;
     }
@@ -116,7 +102,7 @@ static CupError prepare_checksum_metadata(const char *checksum_url,
         fprintf(stderr,
                 "Error: package checksum metadata has no unique entry "
                 "for '%s'.\n",
-                archive_filename(archive_path));
+                path_last_segment(archive_path));
         return CUP_ERR_VALIDATION;
     }
     return CUP_OK;

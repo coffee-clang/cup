@@ -12,14 +12,10 @@
 CupError command_list(const char *component, const char *target_override);
 
 /* Install one concrete or stable-resolved package. */
-CupError command_install_request(const char *selector,
+CupError command_install(const char *selector,
                                  const char *value,
                                  const char *target_override,
                                  const char *format_override);
-CupError command_install(const char *component,
-                         const char *selector,
-                         const char *target_override,
-                         const char *format_override);
 
 /* Remove one installed package and reconcile its default and launchers. */
 CupError command_remove(const char *component, const char *selector, const char *target_override);
@@ -34,9 +30,6 @@ CupError command_inspect(const char *component, const char *selector, const char
 
 /* Update selected installed scopes; cup is updated only by selecting cup. */
 CupError command_update(const char *selector);
-
-/* Update the immutable cup release generation through a deferred commit. */
-CupError command_update_cup(void);
 
 /* Show or modify install-selection preferences. */
 CupError command_config(const char *action,

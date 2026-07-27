@@ -70,6 +70,8 @@ static int identity_matches_scope(const PackageIdentity *identity, const Package
            strcmp(identity->target_platform, scope->target_platform) == 0;
 }
 
+static int find_default_index(const CupState *state, const PackageScope *scope);
+
 static CupError identity_scope(const PackageIdentity *identity, PackageScope *scope) {
     CupError err;
 
@@ -272,7 +274,7 @@ static CupError parse_state_line(CupState *state, char *line) {
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
-    if (state_find_active(state, &scope) != -1) {
+    if (find_default_index(state, &scope) != -1) {
         fprintf(stderr,
                 "Error: duplicate default for component '%s', host '%s', target '%s'.\n",
                 component,
@@ -553,8 +555,8 @@ CupError state_remove_installed(CupState *state, const PackageIdentity *identity
     return CUP_OK;
 }
 
-/* One active/default identity is allowed for each component, host and target scope. */
-int state_find_active(const CupState *state, const PackageScope *scope) {
+/* One default identity is allowed for each component, host and target scope. */
+static int find_default_index(const CupState *state, const PackageScope *scope) {
     PackageScope validated;
     size_t i;
 
@@ -574,7 +576,7 @@ int state_find_active(const CupState *state, const PackageScope *scope) {
 }
 
 const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope) {
-    int index = state_find_active(state, scope);
+    int index = find_default_index(state, scope);
 
     return index == -1 ? NULL : &state->active[index];
 }
@@ -593,7 +595,7 @@ CupError state_set_active(CupState *state, const PackageIdentity *identity) {
         return err;
     }
 
-    index = state_find_active(state, &scope);
+    index = find_default_index(state, &scope);
     if (index != -1) {
         state->active[index] = *identity;
         return CUP_OK;
@@ -614,7 +616,7 @@ CupError state_clear_active(CupState *state, const PackageScope *scope) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    index = state_find_active(state, scope);
+    index = find_default_index(state, scope);
     if (index == -1) {
         return CUP_OK;
     }

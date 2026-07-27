@@ -11,9 +11,11 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
+#include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
 
+#include "windows_utf.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,30 +102,6 @@ static CupError initialize_assets(HelperAsset *assets, size_t count) {
     return CUP_OK;
 }
 
-static CupError set_asset_permissions(const HelperAsset *asset) {
-    CupError err;
-
-    if (asset->executable) {
-        err = system_set_executable(asset->destination, 1);
-        if (err != CUP_OK) {
-            fprintf(stderr,
-                    "Error: could not apply executable policy to cup update asset '%s'.\n",
-                    asset->destination);
-            return err;
-        }
-    }
-    if (asset->read_only) {
-        err = system_set_read_only(asset->destination, 1);
-        if (err != CUP_OK) {
-            fprintf(stderr,
-                    "Error: could not apply read-only policy to cup update asset '%s'.\n",
-                    asset->destination);
-            return err;
-        }
-    }
-    return CUP_OK;
-}
-
 static CupError create_empty_marker(const char *path) {
     FILE *file = NULL;
     CupError err = system_create_file_exclusive(path, &file);
@@ -199,7 +177,15 @@ static CupError install_staged_asset(const char *staging, const HelperAsset *ass
     if (err != CUP_OK) {
         return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
     }
-    return set_asset_permissions(asset) == CUP_OK ? CUP_OK : CUP_ERR_COMMIT;
+    err = filesystem_apply_required_permissions(
+        asset->destination, asset->executable, asset->read_only);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: could not apply permissions to CUP update asset '%s'.\n",
+                asset->destination);
+        return CUP_ERR_COMMIT;
+    }
+    return CUP_OK;
 }
 
 static CupError install_supporting_assets(const char *staging,
@@ -248,7 +234,7 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
         err = install_staged_asset(staging, &assets[0]);
     }
     if (err == CUP_OK) {
-        err = cup_update_journal_clear();
+        err = runtime_journal_clear();
     }
     if (err == CUP_OK) {
         (void)cup_update_result_write(CUP_UPDATE_RESULT_SUCCESS, 0, journal->version);
@@ -428,19 +414,6 @@ CupError cup_update_helper_prepare(void) {
     return err;
 }
 
-#if defined(_WIN32)
-static CupError utf8_to_wide(const char *input, wchar_t *output, size_t output_count) {
-    int written;
-
-    if (text_is_empty(input) || output == NULL || output_count == 0 || output_count > INT_MAX) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    written =
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1, output, (int)output_count);
-    return written == 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
-}
-#endif
-
 CupError cup_update_helper_start(const char *token) {
     char helper[MAX_PATH_LEN];
 
@@ -466,8 +439,8 @@ CupError cup_update_helper_start(const char *token) {
     security.bInheritHandle = TRUE;
     if (!CreatePipe(&read_handle, &write_handle, &security, 0) ||
         !SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, 0) ||
-        utf8_to_wide(helper, wide_helper, MAX_PATH_LEN) != CUP_OK ||
-        utf8_to_wide(token, wide_token, MAX_PATH_LEN) != CUP_OK) {
+        windows_utf8_to_wide(helper, wide_helper, MAX_PATH_LEN) != CUP_OK ||
+        windows_utf8_to_wide(token, wide_token, MAX_PATH_LEN) != CUP_OK) {
         if (read_handle != NULL) {
             CloseHandle(read_handle);
         }

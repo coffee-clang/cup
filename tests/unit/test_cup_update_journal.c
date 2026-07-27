@@ -5,6 +5,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
+#include "runtime_journal.h"
 #include "system.h"
 #include "unity.h"
 #include "test_platform.h"
@@ -238,6 +239,18 @@ CupError system_set_read_only(const char *path, int read_only) {
     return permission_result;
 }
 
+CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only) {
+    CupError err = CUP_OK;
+
+    if (executable) {
+        err = system_set_executable(path, 1);
+    }
+    if (err == CUP_OK && read_only) {
+        err = system_set_read_only(path, 1);
+    }
+    return err;
+}
+
 CupError filesystem_remove_tree(const char *path) {
     remove_tree_calls++;
     if (remove_tree_result != CUP_OK) {
@@ -346,7 +359,7 @@ static void test_model_and_begin(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
                           cup_update_journal_begin(staging, "token-2", "1.2.4"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_MISSING, status);
 

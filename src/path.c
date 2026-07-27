@@ -141,6 +141,38 @@ CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, 
     return path_join(buffer, size, parent, child);
 }
 
+CupError path_parent(char *buffer, size_t size, const char *path) {
+    char *separator;
+
+    if (text_is_empty(path) || buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (text_copy(buffer, size, path) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    if (path_normalize(buffer) != CUP_OK) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    separator = strrchr(buffer, '/');
+    if (separator == NULL) {
+        return text_copy(buffer, size, ".");
+    }
+
+#if defined(_WIN32)
+    if (separator == buffer + 2 && buffer[1] == ':') {
+        separator[1] = '\0';
+        return CUP_OK;
+    }
+#endif
+    if (separator == buffer) {
+        separator[1] = '\0';
+    } else {
+        *separator = '\0';
+    }
+    return CUP_OK;
+}
+
 const char *path_last_segment(const char *path) {
     const char *slash;
     const char *backslash;

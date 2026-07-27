@@ -198,7 +198,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         cleanup_failed = 1;
     }
 
-    if (package_transaction_clear() != CUP_OK) {
+    if (runtime_journal_clear() != CUP_OK) {
         fprintf(stderr,
                 "Warning: package removal committed, but transaction cleanup "
                 "failed. Run 'cup repair'.\n");
@@ -231,7 +231,7 @@ static CupError rollback_removal(RemoveOperation *operation) {
     }
 
     if (operation->journal_started) {
-        err = package_transaction_clear();
+        err = runtime_journal_clear();
         if (err != CUP_OK) {
             return CUP_ERR_ROLLBACK;
         }

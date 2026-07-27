@@ -22,6 +22,9 @@ CupError path_join(char *buffer, size_t size, const char *parent, const char *ch
 /* Join only after validating child as a safe relative path. */
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child);
 
+/* Copy the parent directory in CUP's normalized path representation. */
+CupError path_parent(char *buffer, size_t size, const char *path);
+
 /* Return a pointer to the final path segment without modifying the input. */
 const char *path_last_segment(const char *path);
 

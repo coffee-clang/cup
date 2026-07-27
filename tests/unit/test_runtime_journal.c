@@ -1,9 +1,11 @@
 /* Exercises classification of the shared physical runtime journal. */
 
 #include "runtime_journal.h"
+#include "system.h"
 #include "unity.h"
 #include "test_platform.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +48,22 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "%s", journal_path), size);
 }
 
+CupError system_path_exists(const char *path, int *exists) {
+    if (path == NULL || exists == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *exists = test_access_exists(path);
+    return CUP_OK;
+}
+
+CupError system_remove_file(const char *path) {
+    return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
+}
+
+CupError system_sync_parent_directory(const char *path) {
+    return path == NULL ? CUP_ERR_INVALID_INPUT : CUP_OK;
+}
+
 static void write_journal(const char *contents) {
     FILE *file = fopen(journal_path, "w");
     TEST_ASSERT_NOT_NULL(file);
@@ -74,6 +92,11 @@ static void test_detects_owners(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
     TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_CUP_UPDATE, kind);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_require_none());
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_MISSING, kind);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
 }
 
 static void test_rejects_invalid(void) {

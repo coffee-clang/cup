@@ -1,12 +1,13 @@
 #!/bin/sh
 
 # Purpose: Detached POSIX helper that removes the canonical cup root after the parent process exits.
-# Inputs: canonical root, copied helper path and parent process id.
+# Inputs: canonical root, copied helper path, parent process id and inherited signal descriptor.
 set -u
 
 CUP_ROOT="${1:-}"
 SELF_PATH="${2:-}"
 PARENT_PID="${3:-}"
+PARENT_SIGNAL_FD="${4:-}"
 EXPECTED_ROOT="${HOME:-}/.cup"
 
 fail() {
@@ -28,6 +29,7 @@ case "$PARENT_PID" in
         ;;
 esac
 [ "$PARENT_PID" -gt 0 ] || fail "invalid parent process id"
+[ "$PARENT_SIGNAL_FD" = 3 ] || fail "invalid parent lifetime signal"
 [ -n "$SELF_PATH" ] && [ "$SELF_PATH" = "$0" ] ||
     fail "self path does not match the running uninstall helper"
 [ -f "$SELF_PATH" ] && [ ! -L "$SELF_PATH" ] ||
@@ -46,10 +48,14 @@ marker_line=$(cat "$UNINSTALL_MARKER" 2>/dev/null) ||
 [ "$(wc -l < "$UNINSTALL_MARKER" | tr -d '[:space:]')" -eq 1 ] ||
     fail "uninstall marker is invalid"
 
-# The installed process must release its executable and root before detachment.
-while kill -0 "$PARENT_PID" 2>/dev/null; do
-    sleep 1
+# Descriptor 3 is inherited only by this helper. Acknowledge the validated handoff, then wait for
+# EOF, which proves that the exact parent CUP process released all process-owned handles. The PID
+# remains an identity check in the persistent marker.
+printf 'R' >&3 || fail "could not acknowledge uninstall handoff"
+while IFS= read -r parent_message <&3; do
+    :
 done
+exec 3<&-
 
 # Rename is the uninstall commit point; recursive deletion happens afterward.
 if [ -e "$CUP_ROOT" ] || [ -L "$CUP_ROOT" ]; then

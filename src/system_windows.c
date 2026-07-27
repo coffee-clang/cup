@@ -9,6 +9,7 @@
 #include "path.h"
 #include "text.h"
 
+#include "windows_utf.h"
 #include <ctype.h>
 #include <windows.h>
 #include <sddl.h>
@@ -24,46 +25,6 @@
 #include <wctype.h>
 
 /* UTF-8 boundary conversion and native error reporting. */
-static CupError get_parent_path(const char *path, char *parent, size_t size) {
-    char *forward_slash;
-    char *backslash;
-    char *separator;
-
-    if (text_is_empty(path) || parent == NULL || size == 0 ||
-        text_copy(parent, size, path) != CUP_OK) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    forward_slash = strrchr(parent, '/');
-    backslash = strrchr(parent, '\\');
-    separator = forward_slash;
-    if (separator == NULL || (backslash != NULL && backslash > separator)) {
-        separator = backslash;
-    }
-    if (separator == NULL) {
-        return text_format(parent, size, ".");
-    }
-    if (separator == parent ||
-        (separator == parent + 2 && parent[1] == ':' &&
-         (parent[2] == '/' || parent[2] == '\\'))) {
-        separator[1] = '\0';
-    } else {
-        *separator = '\0';
-    }
-    return CUP_OK;
-}
-
-static CupError utf8_to_wide(const char *input, wchar_t *output, size_t output_count) {
-    int written;
-
-    if (text_is_empty(input) || output == NULL || output_count == 0 || output_count > INT_MAX) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    written =
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1, output, (int)output_count);
-    return written == 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
-}
 
 static CupError utf8_to_wide_path(const char *input, wchar_t *output, size_t output_count) {
     wchar_t converted[MAX_PATH_LEN];
@@ -72,7 +33,7 @@ static CupError utf8_to_wide_path(const char *input, wchar_t *output, size_t out
     size_t i;
     size_t required;
 
-    if (utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
+    if (windows_utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
         output_count == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -127,7 +88,7 @@ static CupError utf8_to_wide_process_path(const char *input,
     size_t i;
     size_t required;
 
-    if (utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
+    if (windows_utf8_to_wide(input, converted, MAX_PATH_LEN) != CUP_OK || output == NULL ||
         output_count == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -519,12 +480,27 @@ CupError system_start_uninstall(const char *cup_root,
     char temp_directory[MAX_PATH_LEN];
     char temp_script[MAX_PATH_LEN];
     FILE *file = NULL;
-    STARTUPINFOW startup;
+    STARTUPINFOEXW startup;
     PROCESS_INFORMATION process;
+    SECURITY_ATTRIBUTES pipe_security;
+    HANDLE parent_handle = NULL;
+    HANDLE ready_read = NULL;
+    HANDLE ready_write = NULL;
+    HANDLE inherited_handles[2];
+    SIZE_T attribute_size = 0;
     DWORD length;
+    DWORD process_error = ERROR_SUCCESS;
+    DWORD acknowledgement_size = 0;
+    char acknowledgement = '\0';
+    int attributes_initialized = 0;
     int written;
+    CupError err = CUP_ERR_FILESYSTEM;
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) || parent_pid == 0) {
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
+        parent_pid != system_get_process_id()) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -552,42 +528,133 @@ CupError system_start_uninstall(const char *cup_root,
         return CUP_ERR_FILESYSTEM;
     }
 
+    if (!DuplicateHandle(GetCurrentProcess(),
+                         GetCurrentProcess(),
+                         GetCurrentProcess(),
+                         &parent_handle,
+                         SYNCHRONIZE,
+                         TRUE,
+                         0)) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
+
+    ZeroMemory(&pipe_security, sizeof(pipe_security));
+    pipe_security.nLength = sizeof(pipe_security);
+    pipe_security.bInheritHandle = TRUE;
+    if (!CreatePipe(&ready_read, &ready_write, &pipe_security, 0) ||
+        !SetHandleInformation(ready_read, HANDLE_FLAG_INHERIT, 0)) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
+
     written = _snwprintf(wide_command,
                          sizeof(wide_command) / sizeof(wide_command[0]),
                          L"powershell.exe -NoProfile -ExecutionPolicy Bypass "
                          L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\" "
-                         L"-ParentPid %lu",
+                         L"-ParentPid %lu -ParentHandle %llu -ReadyHandle %llu",
                          temp_script_wide,
                          wide_root,
                          temp_script_wide,
-                         parent_pid);
+                         parent_pid,
+                         (unsigned long long)(uintptr_t)parent_handle,
+                         (unsigned long long)(uintptr_t)ready_write);
     if (written < 0 || (size_t)written >= sizeof(wide_command) / sizeof(wide_command[0])) {
-        system_remove_file(temp_script);
-        return CUP_ERR_BUFFER_TOO_SMALL;
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto cleanup;
     }
 
-    ZeroMemory(&startup, sizeof(startup));
-    startup.cb = sizeof(startup);
-    ZeroMemory(&process, sizeof(process));
+    startup.StartupInfo.cb = sizeof(startup);
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+    if (attribute_size == 0) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
+    startup.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attribute_size);
+    if (startup.lpAttributeList == NULL) {
+        process_error = ERROR_NOT_ENOUGH_MEMORY;
+        goto cleanup;
+    }
+    if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attribute_size)) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
+    attributes_initialized = 1;
+    inherited_handles[0] = parent_handle;
+    inherited_handles[1] = ready_write;
+    if (!UpdateProcThreadAttribute(startup.lpAttributeList,
+                                   0,
+                                   PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                   inherited_handles,
+                                   sizeof(inherited_handles),
+                                   NULL,
+                                   NULL)) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
 
     if (!CreateProcessW(NULL,
                         wide_command,
                         NULL,
                         NULL,
-                        FALSE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                        TRUE,
+                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT,
                         NULL,
                         temp_directory_wide,
-                        &startup,
+                        &startup.StartupInfo,
                         &process)) {
-        print_windows_error("could not start uninstall process", temp_script);
-        system_remove_file(temp_script);
-        return CUP_ERR_FILESYSTEM;
+        process_error = GetLastError();
+        goto cleanup;
     }
 
     CloseHandle(process.hThread);
+    process.hThread = NULL;
+    CloseHandle(ready_write);
+    ready_write = NULL;
+    if (!ReadFile(ready_read, &acknowledgement, 1, &acknowledgement_size, NULL)) {
+        process_error = GetLastError();
+        goto cleanup;
+    }
+    if (acknowledgement_size != 1 || acknowledgement != 'R') {
+        process_error = ERROR_INVALID_DATA;
+        goto cleanup;
+    }
+
     CloseHandle(process.hProcess);
-    return CUP_OK;
+    process.hProcess = NULL;
+    err = CUP_OK;
+
+cleanup:
+    if (process.hThread != NULL) {
+        CloseHandle(process.hThread);
+    }
+    if (process.hProcess != NULL) {
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hProcess);
+    }
+    if (ready_read != NULL) {
+        CloseHandle(ready_read);
+    }
+    if (ready_write != NULL) {
+        CloseHandle(ready_write);
+    }
+    if (parent_handle != NULL) {
+        CloseHandle(parent_handle);
+    }
+    if (attributes_initialized) {
+        DeleteProcThreadAttributeList(startup.lpAttributeList);
+    }
+    if (startup.lpAttributeList != NULL) {
+        HeapFree(GetProcessHeap(), 0, startup.lpAttributeList);
+    }
+    if (err != CUP_OK) {
+        if (process_error != ERROR_SUCCESS) {
+            SetLastError(process_error);
+            print_windows_error("could not start uninstall process", temp_script);
+        }
+        system_remove_file(temp_script);
+    }
+    return err;
 }
 
 /* Wide-API creation, copy, replacement and recursive mutation with reparse-point checks. */
@@ -842,7 +909,7 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
         source_info != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_FILESYSTEM;
     }
-    if (get_parent_path(destination_path, parent, sizeof(parent)) != CUP_OK ||
+    if (path_parent(parent, sizeof(parent), destination_path) != CUP_OK ||
         system_create_temp_file(parent, "copy", temporary, sizeof(temporary), &temporary_file) !=
             CUP_OK) {
         return CUP_ERR_FILESYSTEM;
@@ -1018,53 +1085,6 @@ CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
     return CUP_OK;
 }
 
-CupError system_path_exists(const char *path, int *exists) {
-    SystemPathKind info;
-    CupError err;
-
-    if (exists == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *exists = 0;
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *exists = info != SYSTEM_PATH_MISSING;
-    return CUP_OK;
-}
-
-CupError system_is_directory(const char *path, int *is_directory) {
-    SystemPathKind info;
-    CupError err;
-
-    if (is_directory == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_directory = 0;
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *is_directory = info == SYSTEM_PATH_DIRECTORY;
-    return CUP_OK;
-}
-
-CupError system_is_regular_file(const char *path, int *is_regular_file) {
-    SystemPathKind info;
-    CupError err;
-
-    if (is_regular_file == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_regular_file = 0;
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *is_regular_file = info == SYSTEM_PATH_REGULAR_FILE;
-    return CUP_OK;
-}
 
 CupError system_file_size(const char *path, long long *file_size) {
     wchar_t wide_path[MAX_PATH_LEN];
@@ -1273,37 +1293,6 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
     return FindClose(handle) ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
-typedef struct {
-    SystemDirectoryCallback callback;
-    void *userdata;
-} WalkContext;
-
-static CupError walk_directory_entry(const char *path, SystemPathKind path_kind, void *userdata) {
-    WalkContext *context = userdata;
-    CupError err;
-
-    if (context == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (path_kind == SYSTEM_PATH_DIRECTORY) {
-        err = system_walk_directory(path, context->callback, context->userdata);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-    return context->callback(path, path_kind, context->userdata);
-}
-
-CupError system_walk_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
-    WalkContext context;
-
-    if (callback == NULL || text_is_empty(path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    context.callback = callback;
-    context.userdata = userdata;
-    return system_list_directory(path, walk_directory_entry, &context);
-}
 
 /* Nonblocking file locks backed by a process-owned Windows handle. */
 typedef struct {

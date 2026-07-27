@@ -59,43 +59,37 @@ const InstallDefault *install_policy_find_default(const InstallPolicy *policy,
     return index < 0 ? NULL : &policy->defaults[index];
 }
 
-static InstallNamedList *find_named_list_mutable(InstallNamedList *lists,
-                                                 size_t count,
-                                                 const char *name) {
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        if (strcmp(lists[i].name, name) == 0) {
-            return &lists[i];
-        }
-    }
-    return NULL;
-}
-
-static const InstallNamedList *find_named_list(const InstallNamedList *lists,
-                                               size_t count,
-                                               const char *name) {
+static int named_list_index(const InstallNamedList *lists, size_t count, const char *name) {
     size_t i;
 
     if (lists == NULL || text_is_empty(name)) {
-        return NULL;
+        return -1;
     }
     for (i = 0; i < count; ++i) {
         if (strcmp(lists[i].name, name) == 0) {
-            return &lists[i];
+            return (int)i;
         }
     }
-    return NULL;
+    return -1;
 }
 
 const InstallNamedList *install_policy_find_profile(const InstallPolicy *policy, const char *name) {
-    return policy == NULL ? NULL : find_named_list(policy->profiles, policy->profile_count, name);
+    if (policy != NULL) {
+        int index = named_list_index(policy->profiles, policy->profile_count, name);
+
+        return index < 0 ? NULL : &policy->profiles[index];
+    }
+    return NULL;
 }
 
 const InstallNamedList *install_policy_find_toolchain(const InstallPolicy *policy,
                                                       const char *name) {
-    return policy == NULL ? NULL
-                          : find_named_list(policy->toolchains, policy->toolchain_count, name);
+    if (policy != NULL) {
+        int index = named_list_index(policy->toolchains, policy->toolchain_count, name);
+
+        return index < 0 ? NULL : &policy->toolchains[index];
+    }
+    return NULL;
 }
 
 /* Physical install.cfg parsing. The parser accepts one canonical spelling and rejects duplicate or
@@ -226,7 +220,7 @@ static CupError parse_named_list(InstallPolicy *policy,
         count = &policy->toolchain_count;
         capacity = MAX_INSTALL_TOOLCHAINS;
     }
-    if (find_named_list_mutable(lists, *count, name) != NULL || *count >= capacity) {
+    if (named_list_index(lists, *count, name) >= 0 || *count >= capacity) {
         return CUP_ERR_INVALID_INPUT;
     }
 

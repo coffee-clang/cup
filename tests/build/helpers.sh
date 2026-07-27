@@ -104,5 +104,6 @@ event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     pkg-config --static --libs libevent_extra libevent_core)
 compile_helper network-helper "$ROOT/tests/helpers/network-helper.c" \
     $event_libs $PLATFORM_LIBS
+compile_helper binary-patch "$ROOT/tests/helpers/binary-patch.c"
 
 printf 'All test helpers compiled for %s (%s).\n' "$PLATFORM" "$CONFIGURATION"

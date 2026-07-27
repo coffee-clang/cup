@@ -295,6 +295,16 @@ CupError cup_assets_uninstall_is_pending(int *pending) {
     return CUP_OK;
 }
 
+CupError cup_assets_require_no_pending_uninstall(void) {
+    int pending;
+    CupError err = cup_assets_uninstall_is_pending(&pending);
+
+    if (err != CUP_OK) {
+        return err;
+    }
+    return pending ? CUP_ERR_LOCK : CUP_OK;
+}
+
 CupError layout_ensure_runtime(void) {
     return runtime_result;
 }
@@ -721,7 +731,19 @@ CupError system_set_executable(const char *path, int executable) {
     return CUP_OK;
 }
 
-CupError cup_assets_verify_asset(const char *checksum_path,
+CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only) {
+    CupError err = CUP_OK;
+
+    if (executable) {
+        err = system_set_executable(path, 1);
+    }
+    if (err == CUP_OK && read_only) {
+        err = system_set_read_only(path, 1);
+    }
+    return err;
+}
+
+CupError checksum_verify_file(const char *checksum_path,
                                  const char *asset_name,
                                  const char *asset_path,
                                  int *matches) {

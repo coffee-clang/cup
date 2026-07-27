@@ -131,12 +131,14 @@ compile_test test_archive_faults \
 compile_test test_package_transaction \
     "$ROOT/tests/unit/test_package_transaction.c" \
     "$ROOT/src/package_transaction.c" \
+    "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
 compile_test test_cup_update_journal \
     "$ROOT/tests/unit/test_cup_update_journal.c" \
     "$ROOT/src/cup_update_journal.c" \
+    "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/checksum.c" \
     "$ROOT/src/sha256.c" \
     "$ROOT/src/path.c" \
@@ -162,6 +164,15 @@ compile_test test_command_repair \
 compile_test test_exit_status \
     "$ROOT/tests/unit/test_exit_status.c" \
     "$ROOT/src/exit_status.c"
+
+compile_test test_text \
+    "$ROOT/tests/unit/test_text.c" \
+    "$ROOT/src/text.c"
+
+compile_test test_path \
+    "$ROOT/tests/unit/test_path.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 compile_test test_package_selector \
     "$ROOT/tests/unit/test_package_selector.c" \
@@ -272,6 +283,7 @@ compile_test test_package \
     "$ROOT/src/registry.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
+    "$ROOT/src/system.c" \
     "$PACKAGE_SYSTEM_SOURCE" \
     $PACKAGE_SYSTEM_LIBS
 
@@ -281,6 +293,7 @@ compile_test test_package_cache \
     "$ROOT/src/package_cache.c" \
     "$ROOT/src/layout.c" \
     "$ROOT/src/filesystem.c" \
+    "$ROOT/src/system.c" \
     "$PACKAGE_SYSTEM_SOURCE" \
     "$ROOT/src/platform.c" \
     "$ROOT/src/path.c" \
@@ -292,6 +305,7 @@ compile_test test_package_archive \
     "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/package_archive.c" \
     "$ROOT/src/interrupt.c" \
+    "$ROOT/src/system.c" \
     "$PACKAGE_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
@@ -306,6 +320,7 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/tests/unit/test_layout.c" \
         "$ROOT/src/layout.c" \
         "$ROOT/src/filesystem.c" \
+        "$ROOT/src/system.c" \
         "$ROOT/src/system_posix.c" \
         "$ROOT/src/interrupt.c" \
         "$ROOT/src/platform.c" \
@@ -322,6 +337,7 @@ if [ "$PLATFORM" != windows-x64 ]; then
 else
     compile_test test_system_windows \
         "$ROOT/tests/unit/test_system_windows.c" \
+        "$ROOT/src/system.c" \
         "$ROOT/src/system_windows.c" \
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c" \
@@ -333,6 +349,7 @@ else
         "$ROOT/tests/unit/test_layout.c" \
         "$ROOT/src/layout.c" \
         "$ROOT/src/filesystem.c" \
+        "$ROOT/src/system.c" \
         "$ROOT/src/system_windows.c" \
         "$ROOT/src/interrupt.c" \
         "$ROOT/src/platform.c" \
@@ -362,6 +379,7 @@ esac
 compile_test test_state \
     "$ROOT/tests/unit/test_state.c" \
     "$ROOT/src/state.c" \
+    "$ROOT/src/system.c" \
     "$STATE_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \

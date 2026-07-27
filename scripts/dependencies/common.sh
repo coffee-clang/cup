@@ -1,4 +1,4 @@
-# Purpose: Shared dependency preparation, manifest, download and prefix helpers.
+# Purpose: Shared dependency preparation, metadata, download and prefix helpers.
 # This library is sourced by build-posix.sh, build-windows.sh and verify.sh and
 # is intentionally not executable.
 

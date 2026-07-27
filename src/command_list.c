@@ -1,5 +1,5 @@
 /*
- * Lists installed packages with deterministic scope and active annotations.
+ * Lists installed packages with deterministic scope and default annotations.
  */
 
 #include "commands.h"
@@ -12,40 +12,9 @@
 #include "package_selector.h"
 #include "registry.h"
 #include "state.h"
-#include "wrappers.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-/* Stable ordering keeps output independent of state-file insertion history. */
-static int compare_identity(const void *left_value, const void *right_value) {
-    const PackageIdentity *left = left_value;
-    const PackageIdentity *right = right_value;
-    int result;
-
-    result = strcmp(left->target_platform, right->target_platform);
-    if (result == 0) {
-        result = strcmp(left->component, right->component);
-    }
-    if (result == 0) {
-        result = strcmp(left->tool, right->tool);
-    }
-    if (result == 0) {
-        result = strcmp(left->version, right->version);
-    }
-    return result;
-}
-
-static int package_matches_scope(const PackageIdentity *package,
-                                 const CommandContext *context,
-                                 const char *component,
-                                 const char *target_override) {
-    return strcmp(package->host_platform, context->host_platform) == 0 &&
-           (target_override == NULL ||
-            strcmp(package->target_platform, context->target_platform) == 0) &&
-           (component == NULL || strcmp(package->component, component) == 0);
-}
 
 static void print_list_heading(const CommandContext *context,
                                const char *component,
@@ -208,11 +177,14 @@ CupError command_list(const char *component, const char *target_override) {
     for (i = 0; i < context.state.installed_count; ++i) {
         const PackageIdentity *candidate = &context.state.installed[i];
 
-        if (package_matches_scope(candidate, &context, component, target_override)) {
+        if (package_identity_matches(candidate,
+                                     context.host_platform,
+                                     target_override == NULL ? NULL : context.target_platform,
+                                     component)) {
             entries[entry_count++] = *candidate;
         }
     }
-    qsort(entries, entry_count, sizeof(entries[0]), compare_identity);
+    package_identity_sort(entries, entry_count);
 
     if (entry_count == 0) {
         print_empty_list(&context, component, target_override);

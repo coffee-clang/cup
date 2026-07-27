@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Purpose: Runs ASan/UBSan on every supported native platform, with leak
-# leak detection enabled only where the runtime supports it.
+# detection enabled only where the runtime supports it.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -102,26 +102,15 @@ fi
     printf 'suite_timeout_seconds=%s\n' "$SUITE_TIMEOUT"
 } >"$REPORT_DIR/environment.txt"
 
-run_logged() {
-    label=$1
-    log_file=$2
-    shift 2
-    printf '==> %s\n' "$label"
-    if ! "$@" >"$log_file" 2>&1; then
-        cat "$log_file" >&2
-        return 1
-    fi
-}
-
-run_logged 'Building the sanitizer executable...' "$REPORT_DIR/build.log" \
+cup_test_run_logged 'Building the sanitizer executable...' "$REPORT_DIR/build.log" \
     make -C "$ROOT" "${MAKE_PLATFORM_ARGS[@]}" sanitizers -j2
-run_logged 'Compiling sanitizer unit tests and helpers...' "$REPORT_DIR/test-build.log" \
+cup_test_run_logged 'Compiling sanitizer unit tests and helpers...' "$REPORT_DIR/test-build.log" \
     make -C "$ROOT" "${MAKE_PLATFORM_ARGS[@]}" \
         CUP_TEST_CONFIGURATION=sanitizers test-unit-build test-helpers
 
 export CUP_TEST_BINARY="$ROOT/build/$PLATFORM/sanitizers/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
-run_logged 'Running sanitizer unit tests...' "$REPORT_DIR/unit.log" \
+cup_test_run_logged 'Running sanitizer unit tests...' "$REPORT_DIR/unit.log" \
     "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$UNIT_TIMEOUT" \
         env CUP_TEST_CONFIGURATION=sanitizers CUP_TEST_PLATFORM="$PLATFORM" \
             "$ROOT/tests/runners/unit.sh"
@@ -129,12 +118,12 @@ run_logged 'Running sanitizer unit tests...' "$REPORT_DIR/unit.log" \
 if [ "$PLATFORM" = windows-x64 ]; then
     windows_runner=$(cygpath -w "$ROOT/tests/integration/windows/run.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
-    run_logged 'Running sanitizer Windows integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged 'Running sanitizer Windows integration tests...' "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
             -CupPath "$windows_binary"
 else
-    run_logged 'Running sanitizer POSIX integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged 'Running sanitizer POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=sanitizers CUP_TEST_PLATFORM="$PLATFORM" \
             CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \

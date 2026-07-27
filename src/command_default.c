@@ -1,5 +1,5 @@
 /*
- * Selects one validated installed package as the active default of its scope.
+ * Selects one validated installed package as the default of its scope.
  */
 
 #include "commands.h"

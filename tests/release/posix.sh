@@ -5,6 +5,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT/scripts/release/common.sh"
+. "$ROOT/tests/support/uninstall.sh"
 
 : "${PLATFORM:?PLATFORM is required}"
 : "${VERSION:?VERSION is required}"
@@ -22,7 +23,30 @@ test "$(wc -l < "$release_dir/release.txt" | tr -d '[:space:]')" = 3
 chmod +x "$release_dir/cup-$PLATFORM" "$release_dir/install.sh"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
 
-port=$((18080 + ($$ % 1000)))
+next_test_version() {
+    old=$1
+    old_ifs=$IFS
+    IFS=.
+    set -- $old
+    IFS=$old_ifs
+    [ "$#" -eq 3 ] || fail "invalid release version for update fixture: $old"
+    major=$1
+    minor=$2
+    patch=$3
+
+    candidate="$major.$minor.$((patch + 1))"
+    if [ "${#candidate}" -ne "${#old}" ]; then
+        candidate="$major.$((minor + 1)).0"
+    fi
+    if [ "${#candidate}" -ne "${#old}" ]; then
+        candidate="$((major + 1)).0.0"
+    fi
+    [ "${#candidate}" -eq "${#old}" ] ||
+        fail "could not create a same-length update version from $old"
+    printf '%s\n' "$candidate"
+}
+
+port=0
 helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
 temporary_root=${RUNNER_TEMP:-/tmp}
 ready="$temporary_root/cup-http-ready.$$"
@@ -47,18 +71,22 @@ rm -f "$ready"
 server_pid=$!
 
 attempt=0
-while [ "$attempt" -lt 50 ]; do
-    if [ -f "$ready" ] &&
-        curl -fsS "http://127.0.0.1:$port/release.txt" >/dev/null; then
-        break
-    fi
+while [ "$attempt" -lt 50 ] && [ ! -f "$ready" ]; do
     attempt=$((attempt + 1))
     sleep 0.2
 done
-if [ "$attempt" -ge 50 ]; then
+if [ ! -f "$ready" ]; then
     cat "$server_log" >&2 || true
     fail 'local release test server did not become ready'
 fi
+port=$(cat "$ready")
+case "$port" in
+    ''|*[!0-9]*) fail "local release server reported invalid port: $port" ;;
+esac
+curl -fsS "http://127.0.0.1:$port/release.txt" >/dev/null || {
+    cat "$server_log" >&2 || true
+    fail 'local release test server did not serve release metadata'
+}
 
 mkdir -p "$test_home"
 HOME="$test_home" \
@@ -160,18 +188,79 @@ test ! -e "$bootstrap_staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 
+# A local immutable release fixture exercises the complete detached update path. The binary
+# patcher changes only same-length embedded version strings, so the served executable remains the
+# tested candidate with a distinct observable version.
+next_version=$(next_test_version "$VERSION")
+update_root="$release_dir/update-fixture"
+version_root="$update_root/$next_version"
+patch_helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/binary-patch"
+rm -rf "$update_root"
+mkdir -p "$version_root"
+[ -x "$patch_helper" ] || fail "binary patch helper is not built: $patch_helper"
+
+cp "$release_dir/packages.cfg" "$version_root/packages.cfg"
+cp "$release_dir/install.cfg" "$version_root/install.cfg"
+cp "$release_dir/install.sh" "$version_root/install.sh"
+cp "$release_dir/install.ps1" "$version_root/install.ps1"
+cp "$release_dir/uninstall.sh" "$version_root/uninstall.sh"
+"$patch_helper" "$release_dir/cup-$PLATFORM" "$version_root/cup-$PLATFORM"     "$VERSION" "$next_version" >/dev/null
+chmod +x "$version_root/cup-$PLATFORM" "$version_root/uninstall.sh"
+{
+    printf 'format=1\n'
+    printf 'version=%s\n' "$next_version"
+    printf 'commit=%s\n' "$SHA"
+} > "$version_root/release.txt"
+cp "$version_root/release.txt" "$update_root/release.txt"
+(
+    cd "$version_root"
+    : > SHA256SUMS.common
+    for asset in packages.cfg install.cfg install.sh install.ps1; do
+        printf '%s  %s\n' "$(hash_file "$asset")" "$asset" >> SHA256SUMS.common
+    done
+    : > "SHA256SUMS.$PLATFORM"
+    for asset in "cup-$PLATFORM" uninstall.sh release.txt; do
+        printf '%s  %s\n' "$(hash_file "$asset")" "$asset" >> "SHA256SUMS.$PLATFORM"
+    done
+)
+
+test "$("$version_root/cup-$PLATFORM" --version)" = "cup $next_version"
+update_output=$(
+    cd "$test_home"
+    HOME="$test_home"     CUP_INSTALL_ALLOW_INSECURE=1     CUP_INSTALL_BASE_URL="http://127.0.0.1:$port/update-fixture"         "$installed_cup" update cup 2>&1
+)
+printf '%s\n' "$update_output"
+printf '%s\n' "$update_output" | grep -F     "Verified update from cup $VERSION to $next_version scheduled." >/dev/null
+
+update_result="$test_home/.cup/cup-update-result.txt"
+attempt=0
+while [ "$attempt" -lt 200 ] && [ ! -f "$update_result" ]; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+[ -f "$update_result" ] || fail 'cup update helper did not publish a result'
+grep -Fx 'status=success' "$update_result" >/dev/null
+grep -Fx 'error=0' "$update_result" >/dev/null
+grep -Fx "version=$next_version" "$update_result" >/dev/null
+test ! -e "$test_home/.cup/transaction.txt"
+test "$(hash_file "$installed_cup")" = "$(hash_file "$version_root/cup-$PLATFORM")"
+HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $next_version"
+updated_doctor=$(HOME="$test_home" "$installed_cup" doctor 2>&1)
+printf '%s\n' "$updated_doctor"
+printf '%s\n' "$updated_doctor" | grep -F 'Doctor found no issues.' >/dev/null
+if find "$test_home/.cup/staging" -mindepth 1 -name 'cup-update-*' -print -quit |
+    grep . >/dev/null; then
+    fail 'successful cup update left update staging behind'
+fi
+
 # The assembled release performs its detached uninstall smoke test.
 uninstall_output=$(HOME="$test_home" "$installed_cup" uninstall --yes 2>&1)
 printf '%s\n' "$uninstall_output"
 printf '%s\n' "$uninstall_output" | grep -F \
     'Uninstall started. The PATH entry was not removed.' >/dev/null
-attempt=0
-while [ "$attempt" -lt 200 ] && [ -e "$test_home/.cup" ]; do
-    attempt=$((attempt + 1))
-    sleep 0.1
-done
-[ ! -e "$test_home/.cup" ] || fail 'release uninstall did not remove the cup root'
-for residue in "$test_home"/.cup-uninstall.*; do
-    [ ! -e "$residue" ] && [ ! -L "$residue" ] ||
-        fail "release uninstall left staging behind: $residue"
-done
+if ! cup_test_wait_for_uninstall "$test_home/.cup" "$test_home"; then
+    residue=$(cup_test_uninstall_residue "$test_home")
+    [ ! -e "$test_home/.cup" ] && [ ! -L "$test_home/.cup" ] ||
+        fail 'release uninstall did not remove the cup root'
+    fail "release uninstall left staging behind: $residue"
+fi

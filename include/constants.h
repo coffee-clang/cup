@@ -4,7 +4,7 @@
 /* Central capacities, transfer/archive limits, and canonical cup asset filenames. */
 
 /*
- * In-memory state capacity. One active package can exist for each component, host,
+ * In-memory state capacity. One default package can exist for each component, host,
  * and target scope.
  */
 #define MAX_INSTALLED 128
@@ -75,13 +75,13 @@
 #define CUP_UPDATE_BINARY_NEW "binary.new"
 #define CUP_UPDATE_UNINSTALL_NEW "uninstall.new"
 #define CUP_UPDATE_PLATFORM_CHECKSUMS_NEW "platform-checksums.new"
-#define CUP_UPDATE_PACKAGES_NEW "manifest.new"
+#define CUP_UPDATE_PACKAGES_NEW "package-catalog.new"
 #define CUP_UPDATE_INSTALL_POLICY_NEW "install-config.new"
 #define CUP_UPDATE_COMMON_CHECKSUMS_NEW "common-checksums.new"
 #define CUP_UPDATE_BINARY_OLD "binary.old"
 #define CUP_UPDATE_UNINSTALL_OLD "uninstall.old"
 #define CUP_UPDATE_PLATFORM_CHECKSUMS_OLD "platform-checksums.old"
-#define CUP_UPDATE_PACKAGES_OLD "manifest.old"
+#define CUP_UPDATE_PACKAGES_OLD "package-catalog.old"
 #define CUP_UPDATE_INSTALL_POLICY_OLD "install-config.old"
 #define CUP_UPDATE_COMMON_CHECKSUMS_OLD "common-checksums.old"
 #define CUP_UPDATE_COMMITTED "committed"

@@ -46,6 +46,7 @@ typedef struct {
     const char *ready_file;
     unsigned short port;
     long delay_ms;
+    int has_port;
 } HttpOptions;
 
 typedef struct ProxyState ProxyState;
@@ -96,17 +97,23 @@ static int parse_long(const char *text, long minimum, long maximum, long *value)
     return 1;
 }
 
-static int parse_port(const char *text, unsigned short *port) {
+static int parse_port_range(const char *text,
+                            long minimum,
+                            unsigned short *port) {
     long value;
 
-    if (!parse_long(text, 1, 65535, &value)) {
+    if (!parse_long(text, minimum, 65535, &value)) {
         return 0;
     }
     *port = (unsigned short)value;
     return 1;
 }
 
-static int write_ready_file(const char *path) {
+static int parse_port(const char *text, unsigned short *port) {
+    return parse_port_range(text, 1, port);
+}
+
+static int write_ready_file(const char *path, unsigned short port) {
     FILE *file;
     int write_ok;
     int close_ok;
@@ -118,7 +125,7 @@ static int write_ready_file(const char *path) {
     if (file == NULL) {
         return 0;
     }
-    write_ok = fputs("ready\n", file) >= 0;
+    write_ok = fprintf(file, "%u\n", (unsigned)port) > 0;
     close_ok = fclose(file) == 0;
     return write_ok && close_ok;
 }
@@ -167,9 +174,10 @@ static int parse_http_options(int argc, char **argv, HttpOptions *options) {
         if (strcmp(argv[index], "--root") == 0 && index + 1 < argc) {
             options->root = argv[++index];
         } else if (strcmp(argv[index], "--port") == 0 && index + 1 < argc) {
-            if (!parse_port(argv[++index], &options->port)) {
+            if (!parse_port_range(argv[++index], 0, &options->port)) {
                 return 0;
             }
+            options->has_port = 1;
         } else if (strcmp(argv[index], "--ready-file") == 0 && index + 1 < argc) {
             options->ready_file = argv[++index];
         } else if (strcmp(argv[index], "--delay-ms") == 0 && index + 1 < argc) {
@@ -180,7 +188,7 @@ static int parse_http_options(int argc, char **argv, HttpOptions *options) {
             return 0;
         }
     }
-    return options->root != NULL && options->port != 0;
+    return options->root != NULL && options->has_port;
 }
 
 static int safe_request_path(const char *path) {
@@ -290,10 +298,24 @@ static void serve_http_request(struct evhttp_request *request, void *context) {
     evbuffer_free(body);
 }
 
+static int bound_socket_port(evutil_socket_t socket, unsigned short *port) {
+    struct sockaddr_in address;
+    ev_socklen_t length = (ev_socklen_t)sizeof(address);
+
+    memset(&address, 0, sizeof(address));
+    if (port == NULL || getsockname(socket, (struct sockaddr *)&address, &length) != 0 ||
+        address.sin_family != AF_INET) {
+        return 0;
+    }
+    *port = ntohs(address.sin_port);
+    return *port != 0;
+}
+
 static int run_http_server(int argc, char **argv) {
     HttpOptions options;
     struct event_base *base = NULL;
     struct evhttp *http = NULL;
+    struct evhttp_bound_socket *bound_socket = NULL;
 #if !defined(_WIN32)
     struct event *interrupt_event = NULL;
     struct event *terminate_event = NULL;
@@ -313,7 +335,9 @@ static int run_http_server(int argc, char **argv) {
         goto cleanup;
     }
     evhttp_set_gencb(http, serve_http_request, &options);
-    if (evhttp_bind_socket(http, "127.0.0.1", options.port) != 0) {
+    bound_socket = evhttp_bind_socket_with_handle(http, "127.0.0.1", options.port);
+    if (bound_socket == NULL ||
+        !bound_socket_port(evhttp_bound_socket_get_fd(bound_socket), &options.port)) {
         fprintf(stderr, "bind/listen failed on port %u\n", (unsigned)options.port);
         goto cleanup;
     }
@@ -325,7 +349,7 @@ static int run_http_server(int argc, char **argv) {
         goto cleanup;
     }
 #endif
-    if (!write_ready_file(options.ready_file)) {
+    if (!write_ready_file(options.ready_file, options.port)) {
         fprintf(stderr, "failed to create ready file\n");
         goto cleanup;
     }

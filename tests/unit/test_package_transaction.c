@@ -10,6 +10,7 @@
 #include "layout.h"
 #include "package.h"
 #include "path.h"
+#include "runtime_journal.h"
 #include "state.h"
 #include "system.h"
 #include "text.h"
@@ -412,7 +413,7 @@ static void test_begin_valid(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
                           package_transaction_begin(PACKAGE_OPERATION_REMOVE, &package, staging));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           path_join(staging, sizeof(staging), root, "staging/remove-pkg-123"));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
@@ -420,7 +421,7 @@ static void test_begin_valid(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_load(&transaction, &status));
     TEST_ASSERT_EQUAL_INT(PACKAGE_OPERATION_REMOVE, transaction.operation);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
 
     write_journal("format=1\n"
                   "operation=update\n"
@@ -537,15 +538,15 @@ static void test_tmp_and_clear(void) {
                           package_transaction_get_staging_path(&transaction, path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "staging/install-pkg-4") != NULL);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal, sizeof(journal)));
     write_file(journal, "journal");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_clear());
     TEST_ASSERT_EQUAL_INT(1, clear_calls);
 
     write_file(journal, "journal");
     sync_parent_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_clear());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_clear());
 }
 
 static void test_recover_installed(void) {

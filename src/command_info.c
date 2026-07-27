@@ -1,5 +1,5 @@
 /*
- * Shows effective active package information for one or all components.
+ * Shows effective defaults and their managed commands for one or all components.
  */
 
 #include "commands.h"
@@ -17,102 +17,75 @@
 #include "wrappers.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-/* Stable ordering keeps output independent of state-file insertion history. */
-static int compare_identity(const void *left_value, const void *right_value) {
-    const PackageIdentity *left = left_value;
-    const PackageIdentity *right = right_value;
-    int result;
-
-    result = strcmp(left->target_platform, right->target_platform);
-    if (result == 0) {
-        result = strcmp(left->component, right->component);
-    }
-    if (result == 0) {
-        result = strcmp(left->tool, right->tool);
-    }
-    if (result == 0) {
-        result = strcmp(left->version, right->version);
-    }
-    return result;
-}
-
-static int identity_matches_view(const PackageIdentity *identity,
-                                 const CommandContext *context,
-                                 const char *component,
-                                 const char *target_override) {
-    return strcmp(identity->host_platform, context->host_platform) == 0 &&
-           (target_override == NULL ||
-            strcmp(identity->target_platform, context->target_platform) == 0) &&
-           (component == NULL || strcmp(identity->component, component) == 0);
-}
-
 /* Snapshot matching defaults before rendering so state insertion order cannot affect output. */
-static size_t collect_current_entries(const CommandContext *context,
-                                      const char *component,
-                                      const char *target_override,
-                                      PackageIdentity *entries) {
+static size_t collect_info_entries(const CommandContext *context,
+                                   const char *component,
+                                   const char *target_override,
+                                   PackageIdentity *entries) {
     size_t count = 0;
     size_t i;
 
     for (i = 0; i < context->state.active_count; ++i) {
         const PackageIdentity *candidate = &context->state.active[i];
 
-        if (identity_matches_view(candidate, context, component, target_override)) {
+        if (package_identity_matches(candidate,
+                                     context->host_platform,
+                                     target_override == NULL ? NULL : context->target_platform,
+                                     component)) {
             entries[count++] = *candidate;
         }
     }
-    qsort(entries, count, sizeof(entries[0]), compare_identity);
+    package_identity_sort(entries, count);
     return count;
 }
 
-static void print_current_heading(const CommandContext *context,
-                                  const char *component,
-                                  const char *target_override) {
+static void print_info_heading(const CommandContext *context,
+                               const char *component,
+                               const char *target_override) {
     if (component != NULL && target_override != NULL) {
-        printf("Current default for component '%s', host '%s', target '%s':\n",
+        printf("Default for component '%s', host '%s', target '%s':\n",
                component,
                context->host_platform,
                context->target_platform);
     } else if (component != NULL) {
-        printf("Current defaults for component '%s' on host '%s':\n",
+        printf("Defaults for component '%s' on host '%s':\n",
                component,
                context->host_platform);
     } else if (target_override != NULL) {
-        printf("Current defaults for host '%s', target '%s':\n",
+        printf("Defaults for host '%s', target '%s':\n",
                context->host_platform,
                context->target_platform);
     } else {
-        printf("Current defaults for host '%s':\n", context->host_platform);
+        printf("Defaults for host '%s':\n", context->host_platform);
     }
 }
 
-static void print_empty_current_view(const CommandContext *context,
-                                     const char *component,
-                                     const char *target_override) {
+static void print_empty_info(const CommandContext *context,
+                             const char *component,
+                             const char *target_override) {
     if (component != NULL && target_override != NULL) {
-        printf("No current default for component '%s' on host '%s', target '%s'.\n",
+        printf("No default for component '%s' on host '%s', target '%s'.\n",
                component,
                context->host_platform,
                context->target_platform);
     } else if (component != NULL) {
-        printf("No current defaults for component '%s' on host '%s'.\n",
+        printf("No defaults for component '%s' on host '%s'.\n",
                component,
                context->host_platform);
     } else if (target_override != NULL) {
-        printf("No current defaults for host '%s', target '%s'.\n",
+        printf("No defaults for host '%s', target '%s'.\n",
                context->host_platform,
                context->target_platform);
     } else {
-        printf("No current defaults for host '%s'.\n", context->host_platform);
+        printf("No defaults for host '%s'.\n", context->host_platform);
     }
 }
 
-/* Validate one active identity and render the wrappers derived from that exact package. */
-static CupError print_current_entry(const CommandContext *context,
-                                    const PackageIdentity *identity) {
+/* Validate one default identity and render the wrappers derived from that exact package. */
+static CupError print_info_entry(const CommandContext *context,
+                                 const PackageIdentity *identity) {
     WrapperPlan wrappers;
     CupError err;
     char selector[MAX_SELECTOR_LEN];
@@ -165,21 +138,21 @@ static CupError print_current_entry(const CommandContext *context,
             printf("%s%s", i == 0 ? "" : ", ", wrappers.items[i].name);
         }
     }
-    printf("\n  status: active\n");
+    printf("\n  status: default\n");
 
     wrapper_plan_free(&wrappers);
     return CUP_OK;
 }
 
-static int print_current_entries(const CommandContext *context,
-                                 const PackageIdentity *entries,
-                                 size_t entry_count) {
+static int print_info_entries(const CommandContext *context,
+                              const PackageIdentity *entries,
+                              size_t entry_count) {
     int invalid = 0;
     size_t i;
 
     for (i = 0; i < entry_count; ++i) {
         const PackageIdentity *entry = &entries[i];
-        CupError err = print_current_entry(context, entry);
+        CupError err = print_info_entry(context, entry);
 
         if (err != CUP_OK) {
             char selector[MAX_SELECTOR_LEN] = "(invalid identity)";
@@ -224,15 +197,15 @@ CupError command_info(const char *component, const char *target_override) {
     }
     command_context_try_catalog(&context);
 
-    entry_count = collect_current_entries(&context, component, target_override, entries);
+    entry_count = collect_info_entries(&context, component, target_override, entries);
     if (entry_count == 0) {
-        print_empty_current_view(&context, component, target_override);
+        print_empty_info(&context, component, target_override);
         err = CUP_OK;
         goto done;
     }
 
-    print_current_heading(&context, component, target_override);
-    invalid = print_current_entries(&context, entries, entry_count);
+    print_info_heading(&context, component, target_override);
+    invalid = print_info_entries(&context, entries, entry_count);
     err = invalid ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
 
 done:

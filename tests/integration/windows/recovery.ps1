@@ -111,7 +111,7 @@ try {
     Invoke-Cup -CommandArgs @("help") | Out-Null
     Invoke-Cup -CommandArgs @("--version") | Out-Null
     $blocked = Invoke-Cup -CommandArgs @("list") -ExpectFailure
-    Assert-Contains $blocked "interrupted package transaction must be repaired first"
+    Assert-Contains $blocked "a package transaction is active or requires recovery"
     $diagnosis = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
     Assert-Contains $diagnosis "interrupted install transaction detected"
 

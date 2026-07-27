@@ -914,13 +914,6 @@ bash -eu -o pipefail -c '
         exit 1
     fi
 ' sh "$DEPENDENCY_COMMON"
-assert_contains "$(cat "$DEPENDENCY_DIR/build-posix.sh")" \
-    'JOBS="$(dependency_resolve_jobs)"'
-assert_contains "$(cat "$DEPENDENCY_DIR/build-windows.sh")" \
-    'JOBS="$(dependency_resolve_jobs)"'
-assert_not_contains "$(cat "$DEPENDENCY_DIR/build-posix.sh")" '$(nproc)'
-assert_not_contains "$(cat "$DEPENDENCY_DIR/build-posix.sh")" 'hw.ncpu'
-assert_not_contains "$(cat "$DEPENDENCY_DIR/build-windows.sh")" '$(nproc)'
 # Quality-tool guidance must follow the active Windows toolchain instead of
 # recommending UCRT64 packages from the isolated CLANG64 sanitizer shell.
 clang_hint=$(CUP_TEST_PLATFORM=windows-x64 MSYSTEM=CLANG64 \

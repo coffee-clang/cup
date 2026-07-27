@@ -33,7 +33,6 @@ typedef enum {
 void tool_preferences_init(ToolPreferences *preferences);
 CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *preferences);
 CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences);
-CupError tool_preferences_reset_all(void);
 
 /* Mutate one scope in memory; callers persist only after all validation succeeds. */
 CupError tool_preferences_set(ToolPreferences *preferences,

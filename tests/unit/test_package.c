@@ -254,6 +254,7 @@ static void test_identity_validation(void) {
     {
         PackageIdentity same;
         PackageIdentity different;
+        PackageIdentity different_host;
         PackageScope scope;
 
         TEST_ASSERT_EQUAL_INT(
@@ -263,12 +264,59 @@ static void test_identity_validation(void) {
             CUP_OK,
             package_identity_init(
                 &different, "compiler", "clang", "linux-x64", "linux-x64", "22.1.6"));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_init(&different_host,
+                                  "compiler",
+                                  "clang",
+                                  "windows-x64",
+                                  "linux-x64",
+                                  "22.1.5"));
         TEST_ASSERT_TRUE(package_identity_equals(&identity, &same));
         TEST_ASSERT_FALSE(package_identity_equals(&identity, &different));
         TEST_ASSERT_FALSE(package_identity_equals(NULL, &same));
         TEST_ASSERT_EQUAL_INT(CUP_OK, package_identity_get_scope(&identity, &scope));
         TEST_ASSERT_EQUAL_STRING("compiler", scope.component);
         TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_get_scope(NULL, &scope));
+        TEST_ASSERT_EQUAL_INT(0, package_identity_compare(&identity, &same));
+        TEST_ASSERT_TRUE(package_identity_compare(&identity, &different) < 0);
+        TEST_ASSERT_TRUE(package_identity_compare(&identity, &different_host) < 0);
+        TEST_ASSERT_FALSE(package_identity_equals(&identity, &different_host));
+        TEST_ASSERT_TRUE(package_identity_compare(NULL, &same) < 0);
+        TEST_ASSERT_TRUE(package_identity_matches(
+            &identity, "linux-x64", "linux-x64", "compiler"));
+        TEST_ASSERT_TRUE(package_identity_matches(&identity, "linux-x64", NULL, NULL));
+        TEST_ASSERT_FALSE(package_identity_matches(
+            &identity, "windows-x64", "linux-x64", "compiler"));
+        TEST_ASSERT_FALSE(package_identity_matches(NULL, "linux-x64", NULL, NULL));
+    }
+
+    {
+        PackageIdentity items[4];
+
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_init(
+                &items[0], "debugger", "gdb", "linux-x64", "linux-x64", "16.3"));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_init(
+                &items[1], "compiler", "clang", "linux-x64", "windows-x64", "22.1.5"));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_init(
+                &items[2], "compiler", "clang", "windows-x64", "linux-x64", "22.1.5"));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_init(
+                &items[3], "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+        package_identity_sort(items, 4);
+        TEST_ASSERT_EQUAL_STRING("linux-x64", items[0].host_platform);
+        TEST_ASSERT_EQUAL_STRING("compiler", items[0].component);
+        TEST_ASSERT_EQUAL_STRING("debugger", items[1].component);
+        TEST_ASSERT_EQUAL_STRING("windows-x64", items[2].target_platform);
+        TEST_ASSERT_EQUAL_STRING("windows-x64", items[3].host_platform);
+        package_identity_sort(NULL, 4);
     }
 
     TEST_ASSERT_EQUAL_INT(

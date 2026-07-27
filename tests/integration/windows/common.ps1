@@ -105,7 +105,16 @@ function New-IsolatedTestRoot {
         [string]$Name
     )
 
-    $base = Join-Path $Script:CupTestProjectRoot "build\windows-x64\dynamic\tests"
+    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
+        "development"
+    } else {
+        $env:CUP_TEST_CONFIGURATION
+    }
+    if ($configuration -notin @("development", "debug", "coverage", "sanitizers", "release")) {
+        Fail-Test "unsupported CUP_TEST_CONFIGURATION: $configuration"
+    }
+    $relativeBase = "build\windows-x64\{0}\tests" -f $configuration
+    $base = Join-Path $Script:CupTestProjectRoot $relativeBase
     New-Item -ItemType Directory -Force -Path $base | Out-Null
 
     $root = Join-Path $base ("cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
@@ -378,7 +387,7 @@ function Assert-CupStatus {
 }
 
 # Catalog and package fixtures used by command-level suites.
-function Add-ManifestVersion {
+function Set-PackageCatalogField {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Component,
@@ -387,47 +396,28 @@ function Add-ManifestVersion {
         [string]$Tool,
 
         [Parameter(Mandatory = $true)]
-        [string]$Version
+        [string]$Field,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("Prepend", "Replace")]
+        [string]$Mode
     )
 
     $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $key = "$Component.$Tool.windows-x64.windows-x64.available_versions="
+    $key = "$Component.$Tool.windows-x64.windows-x64.$Field="
     $content = Get-Content -LiteralPath $catalog
     $found = $false
     $updated = foreach ($line in $content) {
         if ($line.StartsWith($key, [System.StringComparison]::Ordinal)) {
             $found = $true
-            $key + $Version + "," + $line.Substring($key.Length)
-        } else {
-            $line
-        }
-    }
-    if (-not $found) {
-        Fail-Test "catalog entry not found: $key"
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $updated
-}
-
-function Set-ManifestFormat {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Component,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Tool,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Format
-    )
-
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $key = "$Component.$Tool.windows-x64.windows-x64.default_format="
-    $content = Get-Content -LiteralPath $catalog
-    $found = $false
-    $updated = foreach ($line in $content) {
-        if ($line.StartsWith($key, [System.StringComparison]::Ordinal)) {
-            $found = $true
-            $key + $Format
+            if ($Mode -eq "Prepend") {
+                $key + $Value + "," + $line.Substring($key.Length)
+            } else {
+                $key + $Value
+            }
         } else {
             $line
         }

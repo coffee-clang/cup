@@ -595,7 +595,7 @@ CupError state_save(const CupState *state) {
     return save_result;
 }
 
-CupError package_transaction_clear(void) {
+CupError runtime_journal_clear(void) {
     int index = clear_calls++;
     TEST_ASSERT_TRUE(index < MAX_STEPS);
     return clear_results[index];

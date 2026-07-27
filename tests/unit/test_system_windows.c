@@ -245,27 +245,38 @@ static void test_detached_uninstall_start(void) {
     char script[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
     char prefixed_root[CUP_TEST_TEMP_PATH_SIZE + 8];
-    char script_text[CUP_TEST_TEMP_PATH_SIZE * 3];
+    char script_text[CUP_TEST_TEMP_PATH_SIZE * 4];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 2];
     char expected_working_directory[CUP_TEST_TEMP_PATH_SIZE];
+    char expected_parent_pid[32];
+    unsigned long parent_pid = system_get_process_id();
     DWORD temp_length;
     int written;
 
     build_path(script, sizeof(script), "uninstall-fixture.ps1");
     build_path(marker, sizeof(marker), "uninstall-started.txt");
-    written = snprintf(script_text,
-                       sizeof(script_text),
-                       "param([string]$CupRoot,[string]$SelfPath,[int]$ParentPid)\r\n"
-                       "[IO.File]::WriteAllText($env:CUP_TEST_UNINSTALL_MARKER, "
-                       "$CupRoot + [Environment]::NewLine + "
-                       "$SelfPath + [Environment]::NewLine + $ParentPid + "
-                       "[Environment]::NewLine + [Environment]::CurrentDirectory)\r\n"
-                       "Remove-Item -LiteralPath $SelfPath -Force\r\n");
+    written = snprintf(
+        script_text,
+        sizeof(script_text),
+        "param([string]$CupRoot,[string]$SelfPath,[int]$ParentPid,"
+        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle)\r\n"
+        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
+        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
+        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
+        "[IO.File]::WriteAllText($env:CUP_TEST_UNINSTALL_MARKER, "
+        "$CupRoot + [Environment]::NewLine + $SelfPath + [Environment]::NewLine + "
+        "$ParentPid + [Environment]::NewLine + $ParentHandle + [Environment]::NewLine + "
+        "[Environment]::CurrentDirectory)\r\n"
+        "$ready.WriteByte([byte][char]'R'); $ready.Flush(); $ready.Dispose()\r\n"
+        "Remove-Item -LiteralPath $SelfPath -Force\r\n");
     TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(script_text));
     temp_length = GetTempPathA((DWORD)sizeof(expected_working_directory),
                                expected_working_directory);
-    TEST_ASSERT_TRUE(
-        temp_length > 0 && temp_length < sizeof(expected_working_directory));
+    TEST_ASSERT_TRUE(temp_length > 0 && temp_length < sizeof(expected_working_directory));
+    TEST_ASSERT_TRUE(snprintf(expected_parent_pid,
+                              sizeof(expected_parent_pid),
+                              "%lu",
+                              parent_pid) > 0);
     write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", marker));
     written = snprintf(prefixed_root, sizeof(prefixed_root), "\\\\?\\%s", temp_dir);
@@ -280,20 +291,21 @@ static void test_detached_uninstall_start(void) {
         }
     }
 
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(NULL, script, parent_pid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(NULL, script, 1));
+                          system_start_uninstall(temp_dir, NULL, parent_pid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(temp_dir, script, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(temp_dir, NULL, 1));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(temp_dir, script, 0));
+                          system_start_uninstall(temp_dir, script, parent_pid + 1));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_start_uninstall(prefixed_root, script, 999999UL));
+                          system_start_uninstall(prefixed_root, script, parent_pid));
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
     {
         char *root = contents;
         char *self_path;
-        char *parent_pid;
+        char *parent_pid_text;
+        char *parent_handle_text;
         char *working_directory;
         char *separator = strstr(root, "\r\n");
         size_t separator_size = 2;
@@ -313,11 +325,20 @@ static void test_detached_uninstall_start(void) {
         }
         TEST_ASSERT_NOT_NULL(separator);
         *separator = '\0';
-        parent_pid = separator + separator_size;
-        separator = strstr(parent_pid, "\r\n");
+        parent_pid_text = separator + separator_size;
+        separator = strstr(parent_pid_text, "\r\n");
         separator_size = 2;
         if (separator == NULL) {
-            separator = strchr(parent_pid, '\n');
+            separator = strchr(parent_pid_text, '\n');
+            separator_size = 1;
+        }
+        TEST_ASSERT_NOT_NULL(separator);
+        *separator = '\0';
+        parent_handle_text = separator + separator_size;
+        separator = strstr(parent_handle_text, "\r\n");
+        separator_size = 2;
+        if (separator == NULL) {
+            separator = strchr(parent_handle_text, '\n');
             separator_size = 1;
         }
         TEST_ASSERT_NOT_NULL(separator);
@@ -330,7 +351,8 @@ static void test_detached_uninstall_start(void) {
         TEST_ASSERT_TRUE(self_path[0] != '\0');
         TEST_ASSERT_FALSE(strncmp(self_path, "\\\\?\\", 4) == 0);
         TEST_ASSERT_NULL(strchr(self_path, '/'));
-        TEST_ASSERT_EQUAL_STRING("999999", parent_pid);
+        TEST_ASSERT_EQUAL_STRING(expected_parent_pid, parent_pid_text);
+        TEST_ASSERT_TRUE(parent_handle_text[0] != '\0');
         TEST_ASSERT_TRUE(path_equal(working_directory, expected_working_directory));
     }
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));

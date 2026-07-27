@@ -10,6 +10,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
+#include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
 
@@ -330,22 +331,6 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
     return path_join(buffer, size, staging_dir, journal->temporary_name);
 }
 
-CupError cup_update_journal_clear(void) {
-    char path[MAX_PATH_LEN];
-    int exists;
-
-    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
-        system_path_exists(path, &exists) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    if (!exists) {
-        return CUP_OK;
-    }
-    if (system_remove_file(path) != CUP_OK || system_sync_parent_directory(path) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    return CUP_OK;
-}
 
 /* Persistent result file. The detached helper reports success or failure without relying on an
  * inherited terminal. */
@@ -506,30 +491,6 @@ CupError cup_update_result_report(void) {
 }
 
 /* cup update recovery. */
-static CupError set_asset_permissions(const CupUpdateAsset *asset) {
-    CupError err;
-
-    if (asset->executable) {
-        err = system_set_executable(asset->destination, 1);
-        if (err != CUP_OK) {
-            fprintf(stderr,
-                    "Error: could not restore executable policy for cup update asset '%s'.\n",
-                    asset->destination);
-            return CUP_ERR_TRANSACTION;
-        }
-    }
-    if (asset->read_only) {
-        err = system_set_read_only(asset->destination, 1);
-        if (err != CUP_OK) {
-            fprintf(stderr,
-                    "Error: could not restore read-only policy for cup update asset '%s'.\n",
-                    asset->destination);
-            return CUP_ERR_TRANSACTION;
-        }
-    }
-    return CUP_OK;
-}
-
 static CupError files_are_equal(const char *left, const char *right, int *equal) {
     char left_hash[SHA256_HEX_LENGTH + 1];
     char right_hash[SHA256_HEX_LENGTH + 1];
@@ -614,7 +575,15 @@ static CupError restore_cup_update_asset(const char *staging,
             files_are_equal(backup, asset->destination, &equal) != CUP_OK || !equal) {
             return CUP_ERR_TRANSACTION;
         }
-        return set_asset_permissions(asset);
+        err = filesystem_apply_required_permissions(
+            asset->destination, asset->executable, asset->read_only);
+        if (err != CUP_OK) {
+            fprintf(stderr,
+                    "Error: could not restore permissions for CUP update asset '%s'.\n",
+                    asset->destination);
+            return CUP_ERR_TRANSACTION;
+        }
+        return CUP_OK;
     }
     if (destination_kind == SYSTEM_PATH_REGULAR_FILE &&
         system_set_read_only(asset->destination, 0) != CUP_OK) {
@@ -625,7 +594,12 @@ static CupError restore_cup_update_asset(const char *staging,
     if (err != CUP_OK) {
         return state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_ROLLBACK : CUP_ERR_COMMIT;
     }
-    if (set_asset_permissions(asset) != CUP_OK) {
+    err = filesystem_apply_required_permissions(
+        asset->destination, asset->executable, asset->read_only);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: could not restore permissions for CUP update asset '%s'.\n",
+                asset->destination);
         return CUP_ERR_COMMIT;
     }
     return CUP_OK;
@@ -700,7 +674,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
     if (marker_kind == SYSTEM_PATH_REGULAR_FILE) {
         err = cup_assets_inspect(&inspection);
         if (err == CUP_OK && cup_assets_installed_is_valid(&inspection)) {
-            err = cup_update_journal_clear();
+            err = runtime_journal_clear();
             if (err != CUP_OK) {
                 return err;
             }
@@ -748,7 +722,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
         return CUP_ERR_TRANSACTION;
     }
 
-    err = cup_update_journal_clear();
+    err = runtime_journal_clear();
     if (err != CUP_OK) {
         return err;
     }

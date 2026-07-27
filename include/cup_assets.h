@@ -50,17 +50,12 @@ int cup_assets_development_is_valid(const CupAssetsInspection *inspection);
 /* Select a validated uninstall helper, preferring the installed asset. */
 CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *source);
 
-/* Report whether a detached uninstall has marked the canonical root pending. */
+/* Report or reject a detached uninstall that still owns the canonical root. */
 CupError cup_assets_uninstall_is_pending(int *pending);
+CupError cup_assets_require_no_pending_uninstall(void);
 
 /* Build platform-dependent names used by checksum files and installers. */
 CupError cup_assets_binary_asset_name(char *name, size_t size);
 CupError cup_assets_platform_checksums_name(char *name, size_t size);
-
-/* Verify one named asset against one already selected checksum file. */
-CupError cup_assets_verify_asset(const char *checksum_path,
-                                 const char *asset_name,
-                                 const char *asset_path,
-                                 int *matches);
 
 #endif /* CUP_CUP_ASSETS_H */

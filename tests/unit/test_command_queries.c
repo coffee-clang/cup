@@ -340,6 +340,43 @@ int package_identity_equals(const PackageIdentity *left, const PackageIdentity *
            strcmp(left->version, right->version) == 0;
 }
 
+int package_identity_compare(const PackageIdentity *left, const PackageIdentity *right) {
+    int result;
+
+    if (left == NULL || right == NULL) {
+        return left == right ? 0 : (left == NULL ? -1 : 1);
+    }
+    result = strcmp(left->target_platform, right->target_platform);
+    if (result == 0) {
+        result = strcmp(left->component, right->component);
+    }
+    if (result == 0) {
+        result = strcmp(left->tool, right->tool);
+    }
+    return result == 0 ? strcmp(left->version, right->version) : result;
+}
+
+int package_identity_matches(const PackageIdentity *identity,
+                             const char *host_platform,
+                             const char *target_platform,
+                             const char *component) {
+    return identity != NULL && host_platform != NULL && host_platform[0] != '\0' &&
+           strcmp(identity->host_platform, host_platform) == 0 &&
+           (target_platform == NULL ||
+            strcmp(identity->target_platform, target_platform) == 0) &&
+           (component == NULL || strcmp(identity->component, component) == 0);
+}
+
+static int compare_identity_values(const void *left, const void *right) {
+    return package_identity_compare(left, right);
+}
+
+void package_identity_sort(PackageIdentity *items, size_t count) {
+    if (items != NULL && count > 1) {
+        qsort(items, count, sizeof(items[0]), compare_identity_values);
+    }
+}
+
 CupError package_catalog_is_stable(const PackageCatalog *catalog,
                                    const char *component,
                                    const char *tool,
@@ -566,7 +603,7 @@ static CupError run_list_full(void) {
     return command_list(NULL, NULL);
 }
 
-static CupError run_current(void) {
+static CupError run_info_all(void) {
     return command_info(NULL, NULL);
 }
 
@@ -687,7 +724,7 @@ static void test_default_flow(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_SAVE, command_default("compiler", "clang@1.0", NULL));
 }
 
-static void test_current_states(void) {
+static void test_info_states(void) {
     CupError result;
     char *output;
 
@@ -697,16 +734,16 @@ static void test_current_states(void) {
     add_active("compiler", "linux-x64", "linux-x64", "clang@2.0");
     add_catalog_entry("compiler", "clang", "linux-x64", "linux-x64", "2.0", "2.0");
     try_catalog = 1;
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@2.0 (stable)"));
     TEST_ASSERT_NOT_NULL(strstr(output, "clang, clang++"));
-    TEST_ASSERT_NOT_NULL(strstr(output, "status: active"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "status: default"));
     free(output);
 
     reset_scenario();
     add_active("compiler", "linux-x64", "linux-x64", "broken");
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "status: invalid"));
     free(output);
@@ -714,7 +751,7 @@ static void test_current_states(void) {
     reset_scenario();
     plan_matches = 0;
     add_active("compiler", "linux-x64", "linux-x64", "clang@1.0");
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, result);
     free(output);
 }
@@ -805,13 +842,13 @@ static void test_metadata_variants(void) {
 
     output = capture_result(run_info_empty, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "No current default"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "No default"));
     free(output);
 
     reset_scenario();
     plan_count = 0;
     add_active("compiler", "linux-x64", "linux-x64", "clang@1.0");
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "commands: (none)"));
     free(output);
@@ -819,14 +856,14 @@ static void test_metadata_variants(void) {
     reset_scenario();
     add_active("compiler", "linux-x64", "linux-x64", "clang@1.0");
     plan_active_result = CUP_ERR_FILESYSTEM;
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, result);
     free(output);
 
     reset_scenario();
     add_active("compiler", "linux-x64", "linux-x64", "clang@1.0");
     plan_match_result = CUP_ERR_FILESYSTEM;
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, result);
     free(output);
 
@@ -972,36 +1009,36 @@ static void test_metadata_filters(void) {
     add_active("debugger", "linux-x64", "linux-x64", "gdb@1.0");
     output = capture_result(run_info_component, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "No current defaults for component"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "No defaults for component"));
     free(output);
 
     reset_scenario();
     add_active("compiler", "linux-x64", "windows-x64", "clang@1.0");
     output = capture_result(run_info_empty, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "Current default for component"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "Default for component"));
     free(output);
 
     reset_scenario();
     output = capture_result(run_info_component, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "No current defaults for component"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "No defaults for component"));
     free(output);
 
     output = capture_result(run_info_target, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "No current defaults for host"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "No defaults for host"));
     free(output);
 
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "No current defaults for host"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "No defaults for host"));
     free(output);
 
     reset_scenario();
     valid_installed_result = CUP_ERR_NOT_INSTALLED;
     add_active("compiler", "linux-x64", "linux-x64", "clang@1.0");
-    output = capture_result(run_current, &result);
+    output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, result);
     free(output);
 }
@@ -1028,7 +1065,7 @@ int main(void) {
     RUN_TEST(test_list_empty);
     RUN_TEST(test_list_entries);
     RUN_TEST(test_default_flow);
-    RUN_TEST(test_current_states);
+    RUN_TEST(test_info_states);
     RUN_TEST(test_search_catalog);
     RUN_TEST(test_inspect_output);
     RUN_TEST(test_state_failures);

@@ -212,7 +212,8 @@ detached process helpers
 commit-state reporting
 ```
 
-`system_posix.c` and `system_windows.c` implement that contract natively. Higher
+`system.c` implements platform-neutral queries and traversal, while `system_posix.c` and
+`system_windows.c` implement the native backend. Higher
 modules do not branch on shell behavior or call external `tar`, `unzip` or
 PowerShell for ordinary runtime operations.
 
@@ -314,8 +315,8 @@ package_archive.c / package_extract.c
 ### Foundation
 
 ```text
-system_posix.c / system_windows.c
-  policy-neutral native operating-system primitives
+system.c / system_posix.c / system_windows.c
+  shared filesystem queries and policy-neutral native operating-system primitives
 
 cup_update_helper.c
   platform-specific detached replacement of cup assets
@@ -336,8 +337,8 @@ shorten a file would instead expose state and increase coupling.
 
 The larger modules are intentionally cohesive:
 
-- `system_posix.c` and `system_windows.c` each implement the complete native
-  side of `system.h`;
+- `system.c` owns shared path queries and recursive traversal, while
+  `system_posix.c` and `system_windows.c` own only native primitives;
 - `package_install.c` contains the reusable transactional installation operation;
 - `command_repair.c` contains one ordered reconciliation process and its private context;
 - the small `command_search.c`, `command_list.c`, `command_default.c`,

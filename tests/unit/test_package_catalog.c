@@ -50,6 +50,11 @@ void tearDown(void) {
  * state above.
  */
 
+int download_insecure_loopback_is_allowed(const char *url) {
+    (void)url;
+    return 0;
+}
+
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     if (layout_error != CUP_OK) {
         return layout_error;
@@ -696,31 +701,6 @@ static void test_load_failures(void) {
     package_catalog_free(&catalog);
 }
 
-static void test_registry_catalog(void) {
-    size_t component_index;
-
-    TEST_ASSERT_EQUAL_size_t(7, registry_component_count());
-    TEST_ASSERT_NULL(registry_component_at(registry_component_count()));
-    TEST_ASSERT_EQUAL_size_t(0, registry_tool_count("unknown"));
-    TEST_ASSERT_NULL(registry_tool_at("unknown", 0));
-    TEST_ASSERT_NULL(registry_tool_at("compiler", 8));
-
-    for (component_index = 0; component_index < registry_component_count(); ++component_index) {
-        const char *component = registry_component_at(component_index);
-        size_t tool_count = registry_tool_count(component);
-        size_t tool_index;
-
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_TRUE(tool_count > 0);
-        for (tool_index = 0; tool_index < tool_count; ++tool_index) {
-            const char *tool = registry_tool_at(component, tool_index);
-            TEST_ASSERT_NOT_NULL(tool);
-            TEST_ASSERT_EQUAL_INT(CUP_OK, registry_validate_tool(component, tool));
-        }
-        TEST_ASSERT_NULL(registry_tool_at(component, tool_count));
-    }
-}
-
 /* Suite registration. */
 
 int main(void) {
@@ -735,6 +715,5 @@ int main(void) {
     RUN_TEST(test_template_errors);
     RUN_TEST(test_query_errors);
     RUN_TEST(test_load_failures);
-    RUN_TEST(test_registry_catalog);
     return UNITY_END();
 }

@@ -6,6 +6,7 @@
 #include "commands.h"
 
 #include "command_context.h"
+#include "cup_update.h"
 #include "package_selector.h"
 #include "package_install.h"
 #include "registry.h"
@@ -28,7 +29,7 @@ typedef struct {
     size_t count;
 } UpdatePlan;
 
-static int plan_find(const UpdatePlan *plan,
+static int update_plan_find(const UpdatePlan *plan,
                      const char *component,
                      const char *tool,
                      const char *target) {
@@ -43,7 +44,7 @@ static int plan_find(const UpdatePlan *plan,
     return -1;
 }
 
-static CupError plan_add(UpdatePlan *plan,
+static CupError update_plan_add(UpdatePlan *plan,
                          const CommandContext *context,
                          const PackageIdentity *installed) {
     UpdatePlanItem candidate = {0};
@@ -54,7 +55,8 @@ static CupError plan_add(UpdatePlan *plan,
     if (package_identity_validate(installed) != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
-    if (plan_find(plan, installed->component, installed->tool, installed->target_platform) >= 0) {
+    if (update_plan_find(
+            plan, installed->component, installed->tool, installed->target_platform) >= 0) {
         return CUP_OK;
     }
     if (plan->count >= MAX_INSTALLED) {
@@ -92,7 +94,7 @@ static CupError plan_add(UpdatePlan *plan,
 }
 
 /* Initial read-only scan of installed scopes. */
-static CupError build_update_plan(const char *name, UpdatePlan *plan) {
+static CupError update_plan_build(const char *name, UpdatePlan *plan) {
     CommandContext context = {0};
     CupError err;
     char requested_component[MAX_IDENTIFIER_LEN] = "";
@@ -142,7 +144,7 @@ static CupError build_update_plan(const char *name, UpdatePlan *plan) {
             continue;
         }
 
-        err = plan_add(plan, &context, installed);
+        err = update_plan_add(plan, &context, installed);
         if (err != CUP_OK) {
             goto done;
         }
@@ -170,11 +172,11 @@ CupError command_update(const char *selector) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
     if (strcmp(name, "cup") == 0) {
-        return command_update_cup();
+        return cup_update_start();
     }
 
     label = text_is_empty(name) ? "all installed tools" : name;
-    err = build_update_plan(text_is_empty(name) ? NULL : name, &plan);
+    err = update_plan_build(text_is_empty(name) ? NULL : name, &plan);
     if (err != CUP_OK) {
         return err;
     }

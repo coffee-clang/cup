@@ -17,17 +17,8 @@ typedef struct {
     char release[MAX_IDENTIFIER_LEN];
 } PackageSelector;
 
-/* Validate and initialize one package selector. */
-CupError package_selector_init(PackageSelector *selector, const char *tool, const char *release);
-
 /* Parse and validate a canonical '<tool>@<release>' selector. */
 CupError package_selector_parse(PackageSelector *selector, const char *text);
-
-/* Format a previously validated selector. */
-CupError package_selector_format(const PackageSelector *selector, char *buffer, size_t size);
-
-/* Return whether the selector uses a symbolic release. */
-int package_selector_is_symbolic(const PackageSelector *selector);
 
 /* Return whether a release uses the exact symbolic 'stable' name. */
 int package_release_is_stable(const char *release);

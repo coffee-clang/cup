@@ -16,8 +16,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,28 +32,6 @@
 #endif
 
 /* Descriptor-level helpers shared by no-follow path operations. */
-static CupError get_parent_path(const char *path, char *parent, size_t size) {
-    char *slash;
-
-    if (text_is_empty(path) || parent == NULL || size == 0 ||
-        text_copy(parent, size, path) != CUP_OK) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    slash = strrchr(parent, '/');
-    if (slash == NULL) {
-        return text_format(parent, size, ".");
-    }
-
-    if (slash == parent) {
-        slash[1] = '\0';
-    } else {
-        *slash = '\0';
-    }
-
-    return CUP_OK;
-}
-
 static CupError sync_directory(const char *path) {
     int fd;
     int sync_errno;
@@ -85,8 +65,8 @@ static CupError sync_rename_directories(const char *source, const char *destinat
     CupError destination_err;
     CupError source_err = CUP_OK;
 
-    if (get_parent_path(source, source_parent, sizeof(source_parent)) != CUP_OK ||
-        get_parent_path(destination, destination_parent, sizeof(destination_parent)) != CUP_OK) {
+    if (path_parent(source_parent, sizeof(source_parent), source) != CUP_OK ||
+        path_parent(destination_parent, sizeof(destination_parent), destination) != CUP_OK) {
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -154,6 +134,13 @@ unsigned long system_get_process_id(void) {
     return (unsigned long)getpid();
 }
 
+/*
+ * One socket endpoint remains owned by the current CUP process. The helper acknowledges its
+ * validated startup through the same connection and then treats EOF as the exact parent lifetime
+ * boundary.
+ */
+static int uninstall_parent_socket = -1;
+
 CupError system_start_uninstall(const char *cup_root,
                                 const char *uninstall_script,
                                 unsigned long parent_pid) {
@@ -161,9 +148,13 @@ CupError system_start_uninstall(const char *cup_root,
     char tmp_script[MAX_PATH_LEN];
     FILE *file = NULL;
     pid_t pid;
+    int parent_socket[2] = {-1, -1};
     char parent_pid_text[32];
+    char acknowledgement;
+    ssize_t acknowledgement_size;
 
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) || parent_pid == 0 ||
+    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
+        parent_pid != system_get_process_id() ||
         text_format(parent_pid_text, sizeof(parent_pid_text), "%lu", parent_pid) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -191,20 +182,72 @@ CupError system_start_uninstall(const char *cup_root,
         return err;
     }
 
+    if (uninstall_parent_socket >= 0 ||
+        socketpair(AF_UNIX, SOCK_STREAM, 0, parent_socket) != 0) {
+        system_remove_file(tmp_script);
+        return uninstall_parent_socket >= 0 ? CUP_ERR_TRANSACTION : CUP_ERR_FILESYSTEM;
+    }
+    if (fcntl(parent_socket[0], F_SETFD, FD_CLOEXEC) != 0) {
+        close(parent_socket[0]);
+        close(parent_socket[1]);
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+
     pid = fork();
     if (pid < 0) {
+        close(parent_socket[0]);
+        close(parent_socket[1]);
         system_remove_file(tmp_script);
         return CUP_ERR_FILESYSTEM;
     }
 
     if (pid == 0) {
-        if (setsid() < 0) {
+        int null_fd;
+
+        close(parent_socket[0]);
+        if ((parent_socket[1] != 3 && dup2(parent_socket[1], 3) < 0) ||
+            (parent_socket[1] != 3 && close(parent_socket[1]) != 0) || setsid() < 0) {
             _exit(127);
         }
-        execl("/bin/sh", "sh", tmp_script, cup_root, tmp_script, parent_pid_text, (char *)NULL);
+
+        null_fd = open("/dev/null", O_RDWR);
+        if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 ||
+            dup2(null_fd, STDOUT_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
+            _exit(127);
+        }
+        if (null_fd > STDERR_FILENO && null_fd != 3) {
+            close(null_fd);
+        }
+
+        execl("/bin/sh",
+              "sh",
+              tmp_script,
+              cup_root,
+              tmp_script,
+              parent_pid_text,
+              "3",
+              (char *)NULL);
         _exit(127);
     }
 
+    close(parent_socket[1]);
+    do {
+        acknowledgement_size = read(parent_socket[0], &acknowledgement, 1);
+    } while (acknowledgement_size < 0 && errno == EINTR);
+
+    if (acknowledgement_size != 1 || acknowledgement != 'R') {
+        int wait_status;
+
+        close(parent_socket[0]);
+        do {
+            wait_status = waitpid(pid, NULL, 0);
+        } while (wait_status < 0 && errno == EINTR);
+        system_remove_file(tmp_script);
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    uninstall_parent_socket = parent_socket[0];
     return CUP_OK;
 }
 
@@ -540,7 +583,7 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
         return CUP_ERR_FILESYSTEM;
     }
 
-    if (get_parent_path(destination_path, parent, sizeof(parent)) != CUP_OK ||
+    if (path_parent(parent, sizeof(parent), destination_path) != CUP_OK ||
         system_create_temp_file(parent, "copy", temporary, sizeof(temporary), &destination) !=
             CUP_OK) {
         fclose(source);
@@ -601,7 +644,7 @@ CupError system_sync_file(FILE *file) {
 CupError system_sync_parent_directory(const char *path) {
     char parent[MAX_PATH_LEN];
 
-    if (get_parent_path(path, parent, sizeof(parent)) != CUP_OK) {
+    if (path_parent(parent, sizeof(parent), path) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     return sync_directory(parent);
@@ -730,56 +773,6 @@ CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
     return CUP_OK;
 }
 
-CupError system_path_exists(const char *path, int *exists) {
-    SystemPathKind info;
-    CupError err;
-
-    if (exists == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *exists = 0;
-
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *exists = info != SYSTEM_PATH_MISSING;
-    return CUP_OK;
-}
-
-CupError system_is_directory(const char *path, int *is_directory) {
-    SystemPathKind info;
-    CupError err;
-
-    if (is_directory == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_directory = 0;
-
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *is_directory = info == SYSTEM_PATH_DIRECTORY;
-    return CUP_OK;
-}
-
-CupError system_is_regular_file(const char *path, int *is_regular_file) {
-    SystemPathKind info;
-    CupError err;
-
-    if (is_regular_file == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_regular_file = 0;
-
-    err = system_get_path_kind(path, &info);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *is_regular_file = info == SYSTEM_PATH_REGULAR_FILE;
-    return CUP_OK;
-}
 
 CupError system_file_size(const char *path, long long *file_size) {
     struct stat info;
@@ -946,38 +939,6 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
     return CUP_OK;
 }
 
-typedef struct {
-    SystemDirectoryCallback callback;
-    void *userdata;
-} WalkContext;
-
-static CupError walk_directory_entry(const char *path, SystemPathKind path_kind, void *userdata) {
-    WalkContext *context = userdata;
-    CupError err;
-
-    if (context == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (path_kind == SYSTEM_PATH_DIRECTORY) {
-        err = system_walk_directory(path, context->callback, context->userdata);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-    return context->callback(path, path_kind, context->userdata);
-}
-
-CupError system_walk_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
-    WalkContext context;
-
-    if (callback == NULL || text_is_empty(path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    context.callback = callback;
-    context.userdata = userdata;
-    return system_list_directory(path, walk_directory_entry, &context);
-}
 
 /* Nonblocking advisory locks released automatically when the process exits. */
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {

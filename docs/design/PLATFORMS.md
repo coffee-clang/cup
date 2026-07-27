@@ -168,9 +168,13 @@ operation remains recoverable rather than being reported as a normal success.
 
 ### Uninstall
 
-POSIX copies and starts a shell helper. Windows copies and starts a PowerShell
-helper. Both receive the canonical root and parent process identifier, wait for
-the parent, atomically detach the root and delete the detached tree.
+POSIX copies and starts a shell helper. A private inherited socket confirms that
+the helper validated its inputs; EOF then identifies the exact lifetime of the
+parent process. Windows uses the equivalent two-boundary protocol with an
+inherited readiness pipe and an inherited waitable process handle. The PID is
+retained only as marker identity, so neither helper can attach to a reused PID.
+After the parent exits, the helper atomically detaches the root and deletes the
+detached tree.
 
 ### cup update
 

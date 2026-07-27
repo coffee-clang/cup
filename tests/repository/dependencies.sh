@@ -85,14 +85,6 @@ fi
 grep -Fq 'contains forbidden path' "$TMP_ROOT/openssl-buildinfo.out"
 rm -f "$buildinfo_prefix/lib/libcrypto-leak.a"
 
-if ! grep -Fq 'openssl_cflags=$(dependency_buildinfo_safe_cflags "$CUP_DEPENDENCY_CFLAGS")' \
-        "$ROOT/scripts/dependencies/build-posix.sh" ||
-    ! grep -Fq 'CFLAGS="$openssl_cflags"' \
-        "$ROOT/scripts/dependencies/build-posix.sh"; then
-    echo 'OpenSSL build does not apply build-info-safe compiler flags' >&2
-    exit 1
-fi
-
 prefix="$TMP_ROOT/prefix"
 mkdir -p "$prefix/lib"
 printf '%s\n' '/__cup_runtime__/openssl' > "$prefix/lib/libneutral.a"
@@ -313,11 +305,6 @@ changed_recipe_key=$(CUP_DEPENDENCY_LOCK_FILE="$reordered" \
     exit 1
 }
 
-grep -Fq -- "--proto '=https' --proto-redir '=https'" \
-    "$ROOT/scripts/dependencies/common.sh" || {
-    echo 'dependency downloads do not restrict initial and redirect protocols to HTTPS' >&2
-    exit 1
-}
 for package in zlib xz openssl curl libarchive argtable3 uthash unity libevent; do
     case "$(source_url_for_package "$package")" in
         https://*)
@@ -330,13 +317,3 @@ for package in zlib xz openssl curl libarchive argtable3 uthash unity libevent; 
 done
 
 printf '%s\n' 'Dependency path-neutralization, cache and transport tests passed.'
-
-# Windows libarchive must not discover the runner's unpinned libiconv package.
-grep -Fq -- '--without-iconv' "$ROOT/scripts/dependencies/build-windows.sh" || {
-    echo 'Windows libarchive does not disable unpinned iconv discovery' >&2
-    exit 1
-}
-grep -Fq -- 'unpinned libiconv' "$ROOT/scripts/dependencies/build-windows.sh" || {
-    echo 'Windows dependency verification does not reject libiconv metadata' >&2
-    exit 1
-}

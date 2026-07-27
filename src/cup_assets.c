@@ -117,7 +117,7 @@ static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
         return CUP_OK;
     }
 
-    err = cup_assets_verify_asset(paths->platform_checksums,
+    err = checksum_verify_file(paths->platform_checksums,
                                   paths->binary_asset,
                                   paths->binary,
                                   &valid);
@@ -172,7 +172,7 @@ static CupError inspect_catalog_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-    err = cup_assets_verify_asset(paths->common_checksums,
+    err = checksum_verify_file(paths->common_checksums,
                                   CUP_PACKAGES_FILENAME,
                                   paths->package_catalog,
                                   &valid);
@@ -204,7 +204,7 @@ static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-    err = cup_assets_verify_asset(paths->common_checksums,
+    err = checksum_verify_file(paths->common_checksums,
                                   CUP_INSTALL_POLICY_FILENAME,
                                   paths->install_policy,
                                   &valid);
@@ -242,7 +242,7 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
         return CUP_OK;
     }
 
-    err = cup_assets_verify_asset(paths->platform_checksums,
+    err = checksum_verify_file(paths->platform_checksums,
                                   CUP_UNINSTALL_FILENAME,
                                   paths->uninstall,
                                   &valid);
@@ -431,6 +431,20 @@ CupError cup_assets_uninstall_is_pending(int *pending) {
     return CUP_OK;
 }
 
+CupError cup_assets_require_no_pending_uninstall(void) {
+    int pending;
+    CupError err = cup_assets_uninstall_is_pending(&pending);
+
+    if (err != CUP_OK || !pending) {
+        return err;
+    }
+
+    fprintf(stderr,
+            "Error: cup uninstall is in progress or did not finish. "
+            "Run the installer again if the marker is stale.\n");
+    return CUP_ERR_LOCK;
+}
+
 CupError cup_assets_binary_asset_name(char *name, size_t size) {
     char host[MAX_PLATFORM_LEN];
     CupError err;
@@ -453,11 +467,4 @@ CupError cup_assets_platform_checksums_name(char *name, size_t size) {
         return err;
     }
     return text_format(name, size, "SHA256SUMS.%s", host);
-}
-
-CupError cup_assets_verify_asset(const char *checksum_path,
-                                 const char *asset_name,
-                                 const char *asset_path,
-                                 int *matches) {
-    return checksum_verify_file(checksum_path, asset_name, asset_path, matches);
 }

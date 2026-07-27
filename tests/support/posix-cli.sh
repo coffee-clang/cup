@@ -53,30 +53,38 @@ assert_cup_healthy() (
 )
 
 
-package_catalog_add_version() {
+package_catalog_edit() {
     component=$1
     tool=$2
     target=$3
-    version=$4
-    manifest=$DEV_ROOT/config/packages.cfg
-    key="$component.$tool.$TEST_PLATFORM.$target.available_versions"
-    temporary=$manifest.tmp
+    field=$4
+    value=$5
+    mode=$6
+    catalog=$DEV_ROOT/config/packages.cfg
+    key="$component.$tool.$TEST_PLATFORM.$target.$field"
+    temporary=$catalog.tmp
 
-    awk -v key="$key" -v version="$version" '
+    awk -v key="$key" -v value="$value" -v mode="$mode" '
         BEGIN { found = 0 }
         index($0, key "=") == 1 {
-            value = substr($0, length(key) + 2)
-            print key "=" version "," value
+            old = substr($0, length(key) + 2)
+            if (mode == "prepend") {
+                print key "=" value "," old
+            } else if (mode == "replace") {
+                print key "=" value
+            } else {
+                exit 3
+            }
             found = 1
             next
         }
         { print }
         END { if (!found) exit 2 }
-    ' "$manifest" > "$temporary" || {
+    ' "$catalog" >"$temporary" || {
         rm -f "$temporary"
-        fail "manifest entry not found: $key"
+        fail "catalog entry could not be updated: $key"
     }
-    mv "$temporary" "$manifest"
+    mv "$temporary" "$catalog"
 }
 
 
@@ -103,30 +111,7 @@ EOF_PACKAGE_CATALOG
 }
 
 
-package_catalog_set_format() {
-    component=$1
-    tool=$2
-    target=$3
-    format=$4
-    catalog=$DEV_ROOT/config/packages.cfg
-    key="$component.$tool.$TEST_PLATFORM.$target.default_format"
-    temporary=$catalog.tmp
 
-    awk -v key="$key" -v format="$format" '
-        BEGIN { found = 0 }
-        index($0, key "=") == 1 {
-            print key "=" format
-            found = 1
-            next
-        }
-        { print }
-        END { if (!found) exit 2 }
-    ' "$catalog" > "$temporary" || {
-        rm -f "$temporary"
-        fail "catalog entry not found: $key"
-    }
-    mv "$temporary" "$catalog"
-}
 
 make_package() {
     component=$1

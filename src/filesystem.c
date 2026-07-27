@@ -48,6 +48,22 @@ CupError filesystem_remove_tree(const char *path) {
     return system_remove_tree(path, interrupt_requested);
 }
 
+CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only) {
+    CupError err;
+
+    if (text_is_empty(path) || (executable != 0 && executable != 1) ||
+        (read_only != 0 && read_only != 1)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (executable) {
+        err = system_set_executable(path, 1);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+    return read_only ? system_set_read_only(path, 1) : CUP_OK;
+}
+
 /* Nonrecursive directory inspection used by doctor and cleanup. */
 typedef struct {
     const char *excluded_path;

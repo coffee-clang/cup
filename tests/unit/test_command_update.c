@@ -5,6 +5,7 @@
 
 #include "command_context.h"
 #include "commands.h"
+#include "cup_update.h"
 #include "package_selector.h"
 #include "package_install.h"
 #include "state.h"
@@ -208,7 +209,7 @@ CupError package_install_update_scope(const char *component,
     return scope_results[index];
 }
 
-CupError command_update_cup(void) {
+CupError cup_update_start(void) {
     cup_update_calls++;
     return cup_update_result;
 }

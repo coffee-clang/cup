@@ -142,7 +142,12 @@ try {
     Assert-Equals $ownerSid $currentSid
 
     $longVersion = "30.0.1"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $longVersion
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $longVersion `
+        -Mode "Prepend"
     $segments = 1..18 | ForEach-Object { "segment$($_.ToString('00'))abcdef" }
     $relativeLongPath = "share\" + (($segments -join '\') + "\payload.txt")
     $zipLongPath = "clang-$longVersion-windows-x64-windows-x64/" + $relativeLongPath.Replace('\', '/')
@@ -165,7 +170,12 @@ try {
     }
 
     $fallbackVersion = "30.0.2"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $fallbackVersion
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $fallbackVersion `
+        -Mode "Prepend"
     New-TestPackage -Component "compiler" -Tool "clang" -Version $fallbackVersion -Entries @("clang")
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@$fallbackVersion") | Out-Null
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@$fallbackVersion") | Out-Null
@@ -187,7 +197,12 @@ try {
     Assert-PathMissing $junction
 
     $caseVersion = "30.1.1"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $caseVersion
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $caseVersion `
+        -Mode "Prepend"
     $casePackage = "clang-$caseVersion-windows-x64-windows-x64"
     $caseFixture = New-CustomZipPackage -Version $caseVersion -ExtraEntries @{
         "$casePackage/bin/CLANG.cmd" = "collision`n"
@@ -198,7 +213,12 @@ try {
     [void](Assert-InstallRejected $caseVersion)
 
     $traversalVersion = "30.1.2"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $traversalVersion
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $traversalVersion `
+        -Mode "Prepend"
     $traversalPackage = "clang-$traversalVersion-windows-x64-windows-x64"
     [void](New-CustomZipPackage -Version $traversalVersion -ExtraEntries @{
         "$traversalPackage/../escape.txt" = "escape`n"
@@ -228,8 +248,13 @@ try {
     Write-Utf8NoBom -Path $catalog -Lines $updatedCatalog
 
     $mismatchVersion = "30.1.3"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $mismatchVersion
-    Set-ManifestFormat -Component "compiler" -Tool "clang" -Format "tar.gz"
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $mismatchVersion `
+        -Mode "Prepend"
+    Set-PackageCatalogField -Component "compiler" -Tool "clang" -Field "default_format" -Value "tar.gz" -Mode "Replace"
     $mismatchFixture = New-CustomZipPackage -Version $mismatchVersion -ExtraEntries @{}
     $mismatchArchive = Join-Path (Split-Path -Parent $mismatchFixture.Archive) `
         "$($mismatchFixture.PackageName).tar.gz"
@@ -240,9 +265,14 @@ try {
     $mismatchOutput = Assert-InstallRejected $mismatchVersion
     Assert-Contains $mismatchOutput "failed to download"
 
-    Set-ManifestFormat -Component "compiler" -Tool "clang" -Format "zip"
+    Set-PackageCatalogField -Component "compiler" -Tool "clang" -Field "default_format" -Value "zip" -Mode "Replace"
     $invalidVersion = "30.1.4"
-    Add-ManifestVersion -Component "compiler" -Tool "clang" -Version $invalidVersion
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $invalidVersion `
+        -Mode "Prepend"
     $invalidPackage = "clang-$invalidVersion-windows-x64-windows-x64"
     $invalidCache = Join-Path $cupRoot "cache\compiler\clang\windows-x64\windows-x64\$invalidVersion"
     New-Item -ItemType Directory -Force -Path $invalidCache | Out-Null

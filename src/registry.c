@@ -33,7 +33,7 @@ static const SupportedComponent SUPPORTED_COMPONENTS[] = {
     {"analyzer", {"valgrind", NULL}},
 };
 
-/* Case-insensitive lookup normalizes user input to the canonical compiled spelling. */
+/* Lookups expect canonical lowercase identifiers from the CLI and state parsers. */
 static const SupportedComponent *find_supported_component(const char *component) {
     size_t count;
     size_t i;
@@ -104,28 +104,6 @@ size_t registry_component_count(void) {
 
 const char *registry_component_at(size_t index) {
     return index < registry_component_count() ? SUPPORTED_COMPONENTS[index].component : NULL;
-}
-
-size_t registry_tool_count(const char *component) {
-    const SupportedComponent *supported = find_supported_component(component);
-    size_t count = 0;
-
-    if (supported == NULL) {
-        return 0;
-    }
-    while (count < MAX_TOOLS_PER_COMPONENT && supported->tools[count] != NULL) {
-        count++;
-    }
-    return count;
-}
-
-const char *registry_tool_at(const char *component, size_t index) {
-    const SupportedComponent *supported = find_supported_component(component);
-
-    if (supported == NULL || index >= MAX_TOOLS_PER_COMPONENT) {
-        return NULL;
-    }
-    return supported->tools[index];
 }
 
 CupError registry_find_tool_component(const char *tool, char *component, size_t component_size) {

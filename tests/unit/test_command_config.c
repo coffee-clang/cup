@@ -246,7 +246,7 @@ static void test_reset_scope(void) {
 }
 
 static void test_invalid_args(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("preset", "llvm", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("unknown-action", "compiler", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("set", "compiler", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           command_config("reset", "compiler", "extra", NULL));

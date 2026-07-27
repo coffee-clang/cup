@@ -205,7 +205,9 @@ static CURLcode configure_transfer(CURL *curl,
 #else
     SETOPT(curl,
            CURLOPT_PROTOCOLS,
-           download_insecure_loopback_is_allowed(url) ? CURLPROTO_HTTP | CURLPROTO_HTTPS : CURLPROTO_HTTPS);
+           download_insecure_loopback_is_allowed(url)
+               ? CURLPROTO_HTTP | CURLPROTO_HTTPS
+               : CURLPROTO_HTTPS);
     SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
     SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
@@ -218,27 +220,6 @@ cleanup:
 }
 
 /* Atomic destination preparation. */
-static CupError get_parent_path(const char *path, char *parent, size_t size) {
-    char *slash;
-
-    if (text_copy(parent, size, path) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-
-    slash = strrchr(parent, '/');
-    if (slash == NULL) {
-        return text_format(parent, size, ".");
-    }
-
-    if (slash == parent) {
-        slash[1] = '\0';
-    } else {
-        *slash = '\0';
-    }
-
-    return CUP_OK;
-}
-
 static CupError remove_temporary_download(const char *path, CupError original_error) {
     return system_remove_file(path) == CUP_OK ? original_error : CUP_ERR_TEMPORARY;
 }
@@ -407,7 +388,7 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
     }
 
     /* Create the transfer beside the destination so the final replace stays on one filesystem. */
-    err = get_parent_path(destination, parent, sizeof(parent));
+    err = path_parent(parent, sizeof(parent), destination);
     if (err != CUP_OK) {
         return err;
     }

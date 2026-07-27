@@ -1,6 +1,6 @@
 /*
  * Implements one package installation scope, including cache validation, staged extraction,
- * transaction persistence, state commit and selector-point reconciliation. The same scoped
+ * transaction persistence, state commit and managed-wrapper reconciliation. The same scoped
  * operation is reused by stable updates.
  */
 
@@ -251,14 +251,13 @@ static CupError prepare_install(InstallOperation *operation,
             return CUP_OK;
         }
 
-        fprintf(stderr,
-                "Error: package '%s:%s@%s' is already installed for host '%s', "
-                "target '%s'.\n",
-                operation->package.component,
-                operation->package.tool,
-                operation->package.version,
-                operation->package.host_platform,
-                operation->package.target_platform);
+        printf("Package '%s:%s@%s' is already installed for host '%s', "
+               "target '%s'; no changes were made.\n",
+               operation->package.component,
+               operation->package.tool,
+               operation->package.version,
+               operation->package.host_platform,
+               operation->package.target_platform);
         return err;
     }
     if (err != CUP_OK) {
@@ -453,7 +452,7 @@ static CupError extract_install_package(InstallOperation *operation) {
     return layout_ensure_package_parent(&operation->package);
 }
 
-/* Candidate state and selector-point planning. */
+/* Build the candidate state and its complete managed-wrapper plan before commit. */
 static CupError prepare_active_change(InstallOperation *operation,
                                       CupState *candidate,
                                       int package_is_new) {
@@ -579,7 +578,7 @@ static CupError commit_install(InstallOperation *operation) {
         return err;
     }
 
-    err = package_transaction_clear();
+    err = runtime_journal_clear();
     if (err != CUP_OK) {
         fprintf(stderr,
                 "Warning: installation committed, but transaction cleanup failed. "
@@ -621,7 +620,7 @@ static CupError rollback_install(InstallOperation *operation) {
     operation->staging_created = 0;
 
     if (operation->journal_started) {
-        err = package_transaction_clear();
+        err = runtime_journal_clear();
         if (err != CUP_OK) {
             return CUP_ERR_ROLLBACK;
         }
@@ -641,7 +640,7 @@ static void print_install_result(const InstallOperation *operation) {
 }
 
 /* Shared one-scope execution used by install and update. */
-static CupError run_install(InstallOperation *operation,
+static CupError execute_install(InstallOperation *operation,
                             const char *component,
                             const char *selector,
                             const char *target_override,
@@ -686,7 +685,7 @@ done:
     return err;
 }
 
-/* Public command wrappers. */
+/* Package installation entry points. */
 CupError package_install(const char *component,
                          const char *selector,
                          const char *target_override,
@@ -695,7 +694,7 @@ CupError package_install(const char *component,
     CupError err;
 
     wrapper_plan_init(&operation.wrappers);
-    err = run_install(&operation,
+    err = execute_install(&operation,
                       component,
                       selector,
                       target_override,
@@ -732,7 +731,7 @@ CupError package_install_update_scope(const char *component,
     }
 
     wrapper_plan_init(&operation.wrappers);
-    err = run_install(&operation,
+    err = execute_install(&operation,
                       component,
                       selector,
                       target_override,

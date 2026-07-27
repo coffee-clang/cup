@@ -15,7 +15,6 @@
 
 void setUp(void) {
     interrupt_disable();
-    interrupt_clear();
 }
 
 void tearDown(void) {
@@ -32,10 +31,11 @@ static void test_lifecycle(void) {
     TEST_ASSERT_EQUAL_INT(0, raise(SIGINT));
     TEST_ASSERT_TRUE(interrupt_requested());
 #endif
-    interrupt_clear();
-    TEST_ASSERT_FALSE(interrupt_requested());
     interrupt_disable();
     TEST_ASSERT_FALSE(interrupt_requested());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, interrupt_enable());
+    TEST_ASSERT_FALSE(interrupt_requested());
+    interrupt_disable();
 }
 
 #if !defined(_WIN32)

@@ -69,7 +69,6 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
                                     CupUpdateRecoveryMode mode,
                                     CupUpdateRecoveryResult *result);
-CupError cup_update_journal_clear(void);
 
 /* Detached helper result lifecycle and user-facing reporting. */
 void cup_update_result_init(CupUpdateResult *result);

@@ -9,6 +9,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
+#include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
 
@@ -136,7 +137,7 @@ static CupError save_package_journal(const PackageTransaction *transaction) {
     return CUP_ERR_COMMIT;
 }
 
-static CupError begin_package_transaction(PackageOperation operation,
+CupError package_transaction_begin(PackageOperation operation,
                                           const PackageIdentity *package,
                                           const char *temporary_path) {
     PackageTransaction transaction;
@@ -177,11 +178,6 @@ static CupError begin_package_transaction(PackageOperation operation,
     return save_package_journal(&transaction);
 }
 
-CupError package_transaction_begin(PackageOperation operation,
-                                   const PackageIdentity *package,
-                                   const char *temporary_path) {
-    return begin_package_transaction(operation, package, temporary_path);
-}
 
 static CupError set_package_transaction_field(PackageTransaction *transaction,
                                               const char *key,
@@ -344,23 +340,6 @@ CupError package_transaction_get_staging_path(const PackageTransaction *transact
     return path_join(buffer, size, tmp_dir, transaction->temporary_name);
 }
 
-CupError package_transaction_clear(void) {
-    char path[MAX_PATH_LEN];
-    int exists;
-
-    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
-        system_path_exists(path, &exists) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    if (!exists) {
-        return CUP_OK;
-    }
-
-    if (system_remove_file(path) != CUP_OK || system_sync_parent_directory(path) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    return CUP_OK;
-}
 
 /* Reconcile canonical and staged package paths only when valid state determines one
  * unambiguous result. */
@@ -513,7 +492,7 @@ CupError package_transaction_recover(const PackageTransaction *transaction, CupS
         return err;
     }
 
-    err = package_transaction_clear();
+    err = runtime_journal_clear();
     if (err == CUP_OK) {
         printf("Recovered interrupted %s transaction for %s@%s.\n",
                package_operation_name(transaction->operation),

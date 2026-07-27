@@ -163,6 +163,35 @@ static void test_count_and_clear(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, filesystem_clear_directory(keep, NULL));
 }
 
+static void test_file_policy(void) {
+    char path[1024];
+    int executable;
+    int read_only;
+
+#if defined(_WIN32)
+    build_path(path, sizeof(path), "policy.cmd");
+#else
+    build_path(path, sizeof(path), "policy");
+#endif
+    write_text(path, "policy");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_apply_required_permissions(path, 1, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_executable(path, &executable));
+    TEST_ASSERT_TRUE(executable);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_read_only(path, &read_only));
+    TEST_ASSERT_TRUE(read_only);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          filesystem_apply_required_permissions(NULL, 0, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          filesystem_apply_required_permissions(path, 2, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          filesystem_apply_required_permissions(path, 0, -1));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(path, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(path));
+}
+
 static void test_invalid_backup(void) {
     char path[1024];
     char first_candidate[1024];
@@ -207,6 +236,7 @@ void register_filesystem_tests(void) {
     RUN_TEST(test_remove_symlink_tree);
 #endif
     RUN_TEST(test_count_and_clear);
+    RUN_TEST(test_file_policy);
     RUN_TEST(test_invalid_backup);
     TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
 }

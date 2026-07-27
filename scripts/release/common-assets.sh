@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-# Purpose: Builds common candidate metadata, manifest, installers, uninstall helpers and checksums.
+# Purpose: Builds common candidate metadata, package catalog, installers, uninstall helpers and checksums.
 # Outputs are staged below dist/common for Actions artifact upload.
 set -eu
 
