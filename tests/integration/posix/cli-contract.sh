@@ -4,7 +4,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin cli-contract
 prepare_command_environment
@@ -72,7 +72,8 @@ test_help_aliases() {
     done
 
     output=$(run_cup help update)
-    assert_contains "$output" 'Without a selector, updates installed tools only; cup itself is not updated.'
+    assert_contains "$output" \
+        'Without a selector, updates installed tools only; cup itself is not updated.'
     output=$(run_cup help install)
     assert_contains "$output" "cup install <profile|toolchain> <name>"
     assert_not_contains "$output" '| install <profile|toolchain>'

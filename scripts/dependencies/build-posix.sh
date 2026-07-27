@@ -237,6 +237,7 @@ build_curl() {
         --disable-shared \
         --enable-static \
         --with-openssl="$PREFIX" \
+        --enable-ares="$PREFIX" \
         --with-zlib="$PREFIX" \
         --without-ca-bundle \
         --without-ca-path \
@@ -307,6 +308,7 @@ build_libarchive() {
 # Final prefix and static metadata verification.
 verify() {
     local pkg_dirs
+    local cares_flags
     local curl_flags
     local archive_flags
     local event_flags
@@ -319,6 +321,10 @@ verify() {
         exit 1
     fi
 
+    cares_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
+        PKG_CONFIG_LIBDIR="$pkg_dirs" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        dependency_pkg_config --static --libs libcares)"
     curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
     archive_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
         PKG_CONFIG_LIBDIR="$pkg_dirs" \
@@ -328,12 +334,13 @@ verify() {
         PKG_CONFIG_LIBDIR="$pkg_dirs" \
         PKG_CONFIG_SYSROOT_DIR="" \
         dependency_pkg_config --static --libs libevent_extra libevent_core)"
-    if [ -z "$curl_flags" ] || [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
+    if [ -z "$cares_flags" ] || [ -z "$curl_flags" ] || \
+        [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
         echo "Error: generated static link metadata is empty." >&2
         exit 1
     fi
     if [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
-        case "$curl_flags $archive_flags $event_flags" in
+        case "$cares_flags $curl_flags $archive_flags $event_flags" in
             *"$CUP_DEPS_STAGE_ROOT"*)
                 echo "Error: generated link metadata contains the staging path." >&2
                 exit 1
@@ -346,6 +353,7 @@ verify() {
         exit 1
     fi
 
+    printf '%s\n' "$cares_flags"
     printf '%s\n' "$curl_flags"
     printf '%s\n' "$archive_flags"
     printf '%s\n' "$event_flags"
@@ -391,6 +399,7 @@ main() {
     build_zlib
     build_xz
     build_openssl
+    build_cares_static "$SRC_DIR" "$BUILD_DIR" "$CC" "$AR" "$RANLIB"
     build_curl
     build_libarchive
     build_libevent_static "$SRC_DIR" "$BUILD_DIR" \

@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$CupExecutablePath
 )
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 function Start-CupCapture {
     param([string[]]$Arguments)
@@ -133,7 +133,9 @@ try {
             "$key.url_template=$base/clang-{version}-{host_platform}-{target_platform}.{format}"
         } elseif ($line.StartsWith("$key.checksum_url_template=", [StringComparison]::Ordinal)) {
             $changed++
-            "$key.checksum_url_template=$base/{version}/{host_platform}/{target_platform}/SHA256SUMS"
+            (
+                "$key.checksum_url_template=$base/{version}/" +
+                "{host_platform}/{target_platform}/SHA256SUMS")
         } else {
             $line
         }
@@ -177,7 +179,9 @@ try {
     Assert-Contains $resultA.Output "Installed compiler clang@22.1.5"
     if (-not ($resultB.Output.Contains("another cup operation is currently running") -or
               $resultB.Output.Contains("a package transaction is active or requires recovery"))) {
-        Fail-Test "overlapping install did not report the active operation or transaction: $($resultB.Output)"
+        Fail-Test (
+            "overlapping install did not report the active operation or " +
+            "transaction: $($resultB.Output)")
     }
     Assert-NotContains $resultB.Output "already installed"
 

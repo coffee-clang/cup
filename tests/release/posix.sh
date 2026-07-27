@@ -5,15 +5,17 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$ROOT/scripts/release/common.sh"
-. "$ROOT/tests/support/uninstall.sh"
+. "$ROOT/tests/support/posix/uninstall.sh"
 
 : "${PLATFORM:?PLATFORM is required}"
 : "${VERSION:?VERSION is required}"
 SHA=${SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 release_dir=${1:-release}
 
-verify_checksum_file_exact "$release_dir" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
-verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" "cup-$PLATFORM" uninstall.sh release.txt
+verify_checksum_file_exact "$release_dir" SHA256SUMS.common \
+    packages.cfg install.cfg install.sh install.ps1
+verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" \
+    "cup-$PLATFORM" uninstall.sh release.txt
 
 test "$(sed -n 's/^format=//p' "$release_dir/release.txt")" = 1
 test "$(sed -n 's/^version=//p' "$release_dir/release.txt")" = "$VERSION"
@@ -194,7 +196,8 @@ HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 next_version=$(next_test_version "$VERSION")
 update_root="$release_dir/update-fixture"
 version_root="$update_root/$next_version"
-patch_helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/binary-patch"
+configuration=${CUP_TEST_CONFIGURATION:-development}
+patch_helper="$ROOT/build/$PLATFORM/$configuration/tests/helpers/binary-patch"
 rm -rf "$update_root"
 mkdir -p "$version_root"
 [ -x "$patch_helper" ] || fail "binary patch helper is not built: $patch_helper"
@@ -204,7 +207,8 @@ cp "$release_dir/install.cfg" "$version_root/install.cfg"
 cp "$release_dir/install.sh" "$version_root/install.sh"
 cp "$release_dir/install.ps1" "$version_root/install.ps1"
 cp "$release_dir/uninstall.sh" "$version_root/uninstall.sh"
-"$patch_helper" "$release_dir/cup-$PLATFORM" "$version_root/cup-$PLATFORM"     "$VERSION" "$next_version" >/dev/null
+"$patch_helper" "$release_dir/cup-$PLATFORM" \
+    "$version_root/cup-$PLATFORM" "$VERSION" "$next_version" >/dev/null
 chmod +x "$version_root/cup-$PLATFORM" "$version_root/uninstall.sh"
 {
     printf 'format=1\n'
@@ -227,10 +231,15 @@ cp "$version_root/release.txt" "$update_root/release.txt"
 test "$("$version_root/cup-$PLATFORM" --version)" = "cup $next_version"
 update_output=$(
     cd "$test_home"
-    HOME="$test_home"     CUP_INSTALL_ALLOW_INSECURE=1     CUP_INSTALL_BASE_URL="http://127.0.0.1:$port/update-fixture"         "$installed_cup" update cup 2>&1
+    HOME="$test_home" \
+        CUP_INSTALL_ALLOW_INSECURE=1 \
+        CUP_INSTALL_BASE_URL="http://127.0.0.1:$port/update-fixture" \
+        "$installed_cup" update cup 2>&1
 )
 printf '%s\n' "$update_output"
-printf '%s\n' "$update_output" | grep -F     "Verified update from cup $VERSION to $next_version scheduled." >/dev/null
+printf '%s\n' "$update_output" | \
+    grep -F "Verified update from cup $VERSION to $next_version scheduled." \
+        >/dev/null
 
 update_result="$test_home/.cup/cup-update-result.txt"
 attempt=0

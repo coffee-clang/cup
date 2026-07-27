@@ -179,7 +179,8 @@ detached tree.
 ### cup update
 
 The platform layer generates or starts a helper capable of waiting for the
-running binary, reacquiring the lock and replacing the complete canonical cup asset generation.
+running binary, reacquiring the lock and replacing the complete canonical
+cup asset generation.
 The portable C layer has already selected and verified those assets.
 
 See [TRANSACTIONS](TRANSACTIONS.md).
@@ -226,10 +227,9 @@ macOS and Windows run ASan/UBSan without leak detection. Windows uses an
 isolated CLANG64 dependency graph.
 Linux source, integration and release builds use GCC, with a secondary
 Linux x64 Clang application/unit pass. Windows release and coverage builds
-remain UCRT64/GCC. Linux x64 additionally runs a local network-portability smoke
-test that runs the static executable through
-DNS, embedded-CA HTTPS validation, direct and proxied package downloads,
-checksum verification and extraction. Native platform suites remain separate
+remain UCRT64/GCC. Linux x64 additionally runs a static-runtime portability
+test that verifies the release binary policy, embedded-CA HTTPS validation and
+direct and proxied package downloads. Native platform suites remain separate
 requirements because their system-specific branches cannot be represented by a
 single aggregate report.
 

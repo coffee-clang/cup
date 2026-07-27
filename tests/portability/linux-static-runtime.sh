@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# Purpose: Exercises the standalone Linux executable through the network path
-# CUP actually uses: DNS, HTTPS certificate validation, proxy tunnelling,
-# checksum verification, package download, extraction and wrapper creation.
+# Purpose: Validates Linux-specific static runtime properties through
+# embedded-CA HTTPS and proxy fixtures.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -11,7 +10,7 @@ DEPS_PREFIX="${DEPS_PREFIX:-$HOME/deps/$PLATFORM/install}"
 JOBS="${CUP_TEST_JOBS:-4}"
 
 fail() {
-    printf 'Linux portability test: %s\n' "$*" >&2
+    printf 'Linux static runtime test: %s\n' "$*" >&2
     exit 1
 }
 
@@ -36,7 +35,7 @@ for tool in cc curl make openssl sha256sum tar; do
 done
 "$ROOT/scripts/dependencies/verify.sh" "$PLATFORM" "$DEPS_PREFIX" >/dev/null
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/cup-linux-portability.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/cup-linux-static-runtime.XXXXXX")"
 SOURCE="$WORK/source"
 SERVER_ROOT="$WORK/server"
 PACKAGE_ROOT="$WORK/package"
@@ -165,7 +164,7 @@ run_cup_without_proxy() {
 mkdir -p "$SOURCE" "$SERVER_ROOT" "$PACKAGE_ROOT"
 (
     cd "$ROOT"
-    tar --exclude='./.git' --exclude='./build' -cf - .
+    tar --exclude='./.git' --exclude='./.vscode' --exclude='./build' -cf - .
 ) | tar -xf - -C "$SOURCE"
 
 generate_ca_and_server "$TRUSTED" 'CUP portability trusted CA'
@@ -231,7 +230,7 @@ grep -Eiq 'certificate|SSL|TLS' "$WORK/untrusted.out" || {
     fail 'the untrusted-server failure did not report TLS validation'
 }
 
-printf '==> Downloading and extracting through direct HTTPS and DNS...\n'
+printf '==> Exercising the static runtime through direct HTTPS...\n'
 write_package_catalog "$trusted_port"
 mkdir -p "$WORK/home-direct"
 (
@@ -239,16 +238,8 @@ mkdir -p "$WORK/home-direct"
     run_cup_without_proxy "$WORK/home-direct" \
         "$CUP" install compiler clang@stable
 ) >"$WORK/direct.out" 2>&1
-[ "$(HOME="$WORK/home-direct" "$WORK/home-direct/.cup/bin/clang")" = portable-clang ] ||
-    fail 'the directly downloaded package wrapper did not execute'
-(
-    cd "$SOURCE"
-    run_cup_without_proxy "$WORK/home-direct" "$CUP" doctor
-) >"$WORK/direct-doctor.out" 2>&1
-grep -F 'Doctor found no issues.' "$WORK/direct-doctor.out" >/dev/null ||
-    fail 'doctor rejected the directly installed package'
 
-printf '==> Downloading and extracting through an HTTP CONNECT proxy...\n'
+printf '==> Exercising the static runtime through an HTTP CONNECT proxy...\n'
 proxy_helper="$SOURCE/build/$PLATFORM/release/tests/helpers/network-helper"
 [ -x "$proxy_helper" ] || fail "proxy helper was not built: $proxy_helper"
 "$proxy_helper" connect-proxy "$proxy_port" "$PROXY_LOG" \
@@ -264,16 +255,12 @@ mkdir -p "$WORK/home-proxy"
         HOME="$WORK/home-proxy" \
         "$CUP" install compiler clang@stable
 ) >"$WORK/proxy.out" 2>&1
-[ "$(HOME="$WORK/home-proxy" "$WORK/home-proxy/.cup/bin/clang")" = portable-clang ] ||
-    fail 'the proxied package wrapper did not execute'
 connect_count=$(grep -Fc "CONNECT localhost:$trusted_port" "$PROXY_LOG" || true)
 [ "$connect_count" -ge 2 ] ||
     fail "expected checksum and package downloads through the proxy, got $connect_count"
 
 printf '%s\n' \
-    'Linux portability test passed:' \
+    'Linux static runtime test passed:' \
     '  unknown CA rejected' \
-    '  localhost DNS and HTTPS accepted with the embedded test CA' \
-    '  checksum and package downloaded directly' \
-    '  checksum and package downloaded through an HTTP CONNECT proxy' \
-    '  archive extracted, wrapper executed and doctor passed'
+    '  embedded test CA accepted through direct HTTPS' \
+    '  HTTPS downloads traversed the HTTP CONNECT proxy'

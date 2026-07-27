@@ -233,7 +233,7 @@ second_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
     exit 1
 }
 case "$first_key" in
-    cup-deps-linux-x64-gcc-r1-[0-9a-f]*) ;;
+    cup-deps-linux-x64-gcc-r2-[0-9a-f]*) ;;
     *)
         echo "unexpected dependency cache key: $first_key" >&2
         exit 1
@@ -274,19 +274,25 @@ fi
 grep -Fq 'must not contain whitespace' "$TMP_ROOT/lock-whitespace.out"
 
 sed 's|^zlib.version=.*|zlib.version=../escape|' "$reordered" > "$lock_copy"
-if CUP_DEPENDENCY_LOCK_FILE="$lock_copy"         CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy"         "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key         >"$TMP_ROOT/lock-version.out" 2>&1; then
+if CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
+        >"$TMP_ROOT/lock-version.out" 2>&1; then
     echo 'dependency lock accepted an unsafe version' >&2
     exit 1
 fi
 grep -Fq 'invalid ZLIB.version' "$TMP_ROOT/lock-version.out"
 
 printf '1\n2\n' > "$recipe_copy"
-if CUP_DEPENDENCY_LOCK_FILE="$reordered"         CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy"         "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key         >"$TMP_ROOT/recipe-lines.out" 2>&1; then
+if CUP_DEPENDENCY_LOCK_FILE="$reordered" \
+    CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
+        >"$TMP_ROOT/recipe-lines.out" 2>&1; then
     echo 'dependency recipe accepted multiple lines' >&2
     exit 1
 fi
 grep -Fq 'one positive integer' "$TMP_ROOT/recipe-lines.out"
-printf '1\n' > "$recipe_copy"
+printf '2\n' > "$recipe_copy"
 
 sed 's/^zlib.version=.*/zlib.version=9.9.9/' "$reordered" > "$lock_copy"
 changed_lock_key=$(CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
@@ -296,7 +302,7 @@ changed_lock_key=$(CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
     echo 'dependency source version did not invalidate the cache key' >&2
     exit 1
 }
-printf '%s\n' 2 > "$recipe_copy"
+printf '%s\n' 3 > "$recipe_copy"
 changed_recipe_key=$(CUP_DEPENDENCY_LOCK_FILE="$reordered" \
     CUP_DEPENDENCY_RECIPE_FILE="$recipe_copy" \
     "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
@@ -305,7 +311,7 @@ changed_recipe_key=$(CUP_DEPENDENCY_LOCK_FILE="$reordered" \
     exit 1
 }
 
-for package in zlib xz openssl curl libarchive argtable3 uthash unity libevent; do
+for package in zlib xz openssl cares curl libarchive argtable3 uthash unity libevent; do
     case "$(source_url_for_package "$package")" in
         https://*)
             ;;

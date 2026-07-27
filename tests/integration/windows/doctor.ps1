@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$CupExecutablePath
 )
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 try {
     Initialize-TestEnvironment -Name "doctor" -ExecutablePath $CupExecutablePath
@@ -45,7 +45,9 @@ try {
     Assert-Contains $issues "installed state record 'linter:clang-tidy@22.1.5' has no valid package"
     Assert-Contains $issues "package metadata for 'compiler:clang@99.0.0' is not read-only"
     Assert-Contains $issues "installed package 'compiler:clang@99.0.0' is not listed"
-    Assert-Contains $issues "valid package 'lldb@22.1.5' exists in components but is absent from state.txt"
+    Assert-Contains $issues (
+        "valid package 'lldb@22.1.5' exists in components but is absent " +
+        "from state.txt")
     Assert-ContainsPathText $issues "package path '$invalidPackage' is invalid"
     Assert-Contains $issues "staging directory contains 1 leftover item(s)"
     Assert-Contains $issues "Run 'cup repair' after reviewing them."

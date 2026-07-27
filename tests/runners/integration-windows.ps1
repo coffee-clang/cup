@@ -1,4 +1,4 @@
-# Purpose: Orders all native Windows integration suites for make and CI.
+# Purpose: Runs every native Windows integration suite in a stable order.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -18,23 +18,20 @@ $resolvedCup = (Resolve-Path -LiteralPath $CupPath).Path
 if ([string]::IsNullOrWhiteSpace($resolvedCup)) {
     throw "failed to resolve cup executable path"
 }
+
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$suiteRoot = Join-Path $projectRoot "tests\integration\windows"
 $env:CUP_TEST_CONFIGURATION = $Configuration
-$suites = @(
-    "cli-contract.ps1",
-    "package-catalog.ps1",
-    "package-lifecycle.ps1",
-    "install-policy.ps1",
-    "state.ps1",
-    "wrappers.ps1",
-    "filesystem-archives.ps1",
-    "recovery.ps1",
-    "repair.ps1",
-    "doctor.ps1",
-    "concurrency.ps1",
-    "uninstall.ps1"
-)
-foreach ($suite in $suites) {
-    Write-Host "==> Running Windows $suite"
-    & (Join-Path $PSScriptRoot $suite) -CupExecutablePath $resolvedCup
+
+$suites = @(Get-ChildItem -LiteralPath $suiteRoot -Filter '*.ps1' -File |
+    Sort-Object -Property Name)
+if ($suites.Count -eq 0) {
+    throw "no Windows integration suites were found"
 }
+foreach ($suite in $suites) {
+    $label = $suite.BaseName.Replace('-', ' ')
+    Write-Host "==> Testing $label..."
+    & $suite.FullName -CupExecutablePath $resolvedCup
+}
+
 Write-Host "All native Windows cup tests passed."

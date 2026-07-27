@@ -13,11 +13,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$projectRoot = (Get-Location).Path
+$originalLocation = (Get-Location).Path
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ReleaseDir = (Resolve-Path -LiteralPath $ReleaseDir).Path
-$originalLocation = $projectRoot
 
-# Run child PowerShell scripts without turning expected native stderr into a terminating error.
+# Run child PowerShell scripts while preserving expected stderr and exit status.
 function Invoke-PowerShellScript {
     param(
         [Parameter(Mandatory = $true)]
@@ -27,9 +27,15 @@ function Invoke-PowerShellScript {
     )
 
     $id = [Guid]::NewGuid().ToString('N')
-    $stdoutPath = Join-Path $env:RUNNER_TEMP "cup-powershell-$PID-$id.stdout"
-    $stderrPath = Join-Path $env:RUNNER_TEMP "cup-powershell-$PID-$id.stderr"
+    $temporaryDirectory = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        [System.IO.Path]::GetTempPath()
+    } else {
+        $env:RUNNER_TEMP
+    }
+    $stdoutPath = Join-Path $temporaryDirectory "cup-powershell-$PID-$id.stdout"
+    $stderrPath = Join-Path $temporaryDirectory "cup-powershell-$PID-$id.stderr"
 
+    $process = $null
     try {
         $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
         $process = Start-Process -FilePath 'powershell.exe' `
@@ -54,6 +60,9 @@ function Invoke-PowerShellScript {
             Output = $output
         }
     } finally {
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
         Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
@@ -310,11 +319,15 @@ try {
         'version=0.2',
         "commit=$SourceSha"
     ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
+    $mismatchedVersion = if ($Version -eq '0.0.0') { '0.0.1' } else { '0.0.0' }
     Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
         'format=1',
-        'version=0.2.1',
+        "version=$mismatchedVersion",
         "commit=$SourceSha"
-    ) -ExpectedMessage "release metadata version mismatch: expected '$Version', received '0.2.1'"
+    ) -ExpectedMessage (
+        "release metadata version mismatch: expected '$Version', " +
+        "received '$mismatchedVersion'"
+    )
     Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
         'format=1',
         "version=$Version",
@@ -416,7 +429,9 @@ try {
         Write-Host $assetRepairText
     }
     if ($assetRepairStatus -ne 0) {
-        throw "Installed cup asset repair failed with exit code $assetRepairStatus`n$assetRepairText"
+        throw (
+            "Installed cup asset repair failed with exit code " +
+            "$assetRepairStatus`n$assetRepairText")
     }
     if ($assetRepairText -notlike "*Restoring uninstall script.*") {
         throw "Installed cup repair did not report restoring uninstall.ps1"
@@ -496,7 +511,10 @@ try {
     Remove-Item -LiteralPath $updateRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
 
-    foreach ($asset in @("packages.cfg", "install.cfg", "install.sh", "install.ps1", "uninstall.ps1")) {
+    $installedAssets = @(
+        "packages.cfg", "install.cfg", "install.sh",
+        "install.ps1", "uninstall.ps1")
+    foreach ($asset in $installedAssets) {
         Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $versionRoot
     }
     $updatedBinary = Join-Path $versionRoot "cup-windows-x64.exe"
@@ -515,7 +533,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $versionRoot "release.txt") `
         -Destination (Join-Path $updateRoot "release.txt")
 
-    $commonLines = foreach ($asset in @("packages.cfg", "install.cfg", "install.sh", "install.ps1")) {
+    $commonAssets = @(
+        "packages.cfg", "install.cfg", "install.sh", "install.ps1")
+    $commonLines = foreach ($asset in $commonAssets) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
             -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $asset"

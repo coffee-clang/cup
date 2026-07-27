@@ -74,10 +74,10 @@ when it provides independent diagnostic value:
 | Role | Linux | macOS | Windows |
 |---|---|---|---|
 | Primary development, integration and release compiler | GCC | Apple Clang | MSYS2 UCRT64 GCC |
-| Secondary compiler portability | Clang build and C unit tests on x64 | Covered by the native compiler | Covered by the CLANG64 sanitizer path |
+| Secondary compiler | Clang app/unit x64 | Native compiler | CLANG64 sanitizer |
 | Coverage | GCC/gcov | Clang source-based coverage | UCRT64 GCC/gcov |
 | ASan/UBSan | Clang/Compiler-RT | Apple Clang | MSYS2 CLANG64 Clang/Compiler-RT |
-| Canonical dependency compiler | GCC | Apple Clang | UCRT64 GCC; separate CLANG64 prefix for sanitizers |
+| Canonical dependency compiler | GCC | Apple Clang | UCRT64 GCC; CLANG64 for sanitizers |
 
 This is intentional diversity, not interchangeable compiler selection. Release
 artifacts and native integration behavior always use one primary compiler. The
@@ -89,8 +89,8 @@ behavior do not vary between GCC's libsanitizer and LLVM Compiler-RT.
 All C builds use C11 with warnings treated as errors. Development and debug use
 `-O0 -g3`; release uses `-O2 -g1 -DNDEBUG` so separate native symbol
 artifacts remain useful after the public executable is stripped. Coverage and
-sanitizer instrumentation are isolated in their own directories. The debug target adds the richest
-portable symbol information selected for the platform.
+sanitizer instrumentation are isolated in their own directories. The debug target adds
+the richest portable symbol information selected for the platform.
 
 Mandatory flags are defined by the Makefile and cannot be replaced with direct
 `CPPFLAGS=`, `CFLAGS=`, `LDFLAGS=` or `LDLIBS=` command-line assignments. Local
@@ -138,11 +138,14 @@ run `cup`.
 - **SHA-256** is implemented in-tree by `sha256.c`; OpenSSL is not a direct
   checksum dependency. POSIX builds use OpenSSL as libcurl's TLS backend.
 
+c-ares is a pinned transitive runtime dependency of libcurl. It provides the
+asynchronous hostname resolver on every supported platform.
+
 ### Test dependencies
 
 Unity is linked only into C unit-test binaries. Libevent is linked only into the
-`network-helper` fixture used by release and network-portability tests; it does
-not enter the cup application link or any published cup executable. `gcovr` and
+`network-helper` fixture used by integration, portability and release tests;
+it does not enter the cup application link or any published cup executable. `gcovr` and
 sanitizer runtime support are host tools and are not part of the application
 prefix contract.
 
@@ -260,8 +263,8 @@ cache miss runs the same `make deps` path used by local verification.
 Every build configuration consumes the same headers and static third-party
 libraries from `DEPS_PREFIX`:
 
-- the prefix include directory is used for Argtable3, uthash, libcurl,
-  libarchive, zlib, xz and the platform TLS backend;
+- the prefix include directory is used for Argtable3, uthash, c-ares,
+  libcurl, libarchive, zlib, xz and the platform TLS backend;
 - Argtable3 is linked by exact archive path;
 - `curl-config --static-libs` supplies the pinned curl graph;
 - prefix-scoped `pkg-config --static --libs libarchive` supplies the pinned
@@ -400,19 +403,18 @@ Remote theme assets can be fetched through `scripts/fetch-docs-assets.sh`. The
 static documentation workflow remains independent of application testing and
 release publication.
 
-## Linux network portability smoke test
+## Linux static runtime portability test
 
 `make PLATFORM=linux-x64 test-portability-linux` builds one isolated static
-release with a temporary test CA and exercises cup itself against local
-fixtures. It verifies rejection of an unknown CA, DNS resolution of `localhost`,
-direct HTTPS downloads, HTTP CONNECT proxy tunnelling, checksum validation,
-archive extraction, wrapper execution and `doctor`.
+release with a temporary test CA and exercises the Linux runtime against local
+fixtures. It verifies rejection of an unknown CA, acceptance of the embedded
+test CA, direct HTTPS downloads and HTTP CONNECT proxy tunnelling.
 
 The target does not contact the public Internet and is intentionally separate
-from `make test` because it creates certificates, starts local servers and
-builds an additional release executable. CI runs it on Linux x64 as the initial
-glibc portability gate. A multi-distribution matrix and a musl switch remain
-separate decisions and are not implied by this test.
+from `make test` because it validates Linux-specific static-runtime properties,
+creates certificates, starts local servers and builds an additional release
+executable. CI runs it on Linux x64 as the dedicated static-runtime portability
+gate.
 
 ## Native binary inspection
 

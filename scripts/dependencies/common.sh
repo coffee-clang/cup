@@ -153,11 +153,13 @@ dependency_compiled_paths_valid() {
                 fi
             done < <(dependency_path_variants "$forbidden")
             if [ -n "$found_variant" ]; then
-                echo "Error: compiled dependency contains forbidden path '$found_variant': $archive" >&2
+                echo "Error: compiled dependency contains forbidden path" \
+                    "'$found_variant': $archive" >&2
                 return 1
             fi
         done
-        if LC_ALL=C grep -aE -q -- '/\.[^/]*install\.staging\.|[\\/]\.[^\\/]*install\.staging\.' "$archive"; then
+        staging_pattern='/\.[^/]*install\.staging\.|[\\/]\.[^\\/]*install\.staging\.'
+        if LC_ALL=C grep -aE -q -- "$staging_pattern" "$archive"; then
             echo "Error: compiled dependency contains a transactional staging path: $archive" >&2
             return 1
         fi
@@ -317,7 +319,8 @@ dependency_release_build_lock() {
     CUP_DEPS_BUILD_LOCK=
 }
 
-DEPENDENCY_RECIPE_FILE=${CUP_DEPENDENCY_RECIPE_FILE:-$CUP_DEPENDENCIES_DIR/../../config/dependencies.recipe}
+DEPENDENCY_RECIPE_DEFAULT=$CUP_DEPENDENCIES_DIR/../../config/dependencies.recipe
+DEPENDENCY_RECIPE_FILE=${CUP_DEPENDENCY_RECIPE_FILE:-$DEPENDENCY_RECIPE_DEFAULT}
 
 dependency_recipe_version() {
     local value
@@ -460,7 +463,9 @@ application_dependency_prefix_complete() {
     local prefix="$1"
     [ -f "$prefix/include/argtable3.h" ] &&
         [ -f "$prefix/include/uthash.h" ] &&
-        dependency_library_exists "$prefix" argtable3
+        [ -f "$prefix/include/ares.h" ] &&
+        dependency_library_exists "$prefix" argtable3 &&
+        dependency_library_exists "$prefix" cares
 }
 
 test_dependency_prefix_complete() {
@@ -566,7 +571,8 @@ dependency_link_flags_valid() {
                     part=${linker_parts[part_index]}
                     path=
                     case "$part" in
-                        -L|-F|-R|-rpath|--rpath|-rpath-link|--rpath-link|--library-path|--sysroot|-B)
+                        -L|-F|-R|-rpath|--rpath|-rpath-link|--rpath-link|\
+                        --library-path|--sysroot|-B)
                             ((part_index + 1 < ${#linker_parts[@]})) || return 1
                             part_index=$((part_index + 1))
                             path=${linker_parts[part_index]}
@@ -574,7 +580,8 @@ dependency_link_flags_valid() {
                         -L?*|-F?*|-R?*|-B?*)
                             path=${part:2}
                             ;;
-                        -rpath=*|--rpath=*|-rpath-link=*|--rpath-link=*|--library-path=*|--sysroot=*)
+                        -rpath=*|--rpath=*|-rpath-link=*|--rpath-link=*|\
+                        --library-path=*|--sysroot=*)
                             path=${part#*=}
                             ;;
                         /*|[A-Za-z]:[\\/]*)
@@ -624,13 +631,20 @@ dependency_link_metadata_valid() {
     local prefix="$1"
     local expected_prefix="${2:-$prefix}"
     local pkg_config_path="$prefix/lib/pkgconfig:$prefix/lib64/pkgconfig"
+    local cares_flags=
     local curl_flags=
+    local curl_configure=
     local archive_flags=
     local event_flags=
 
     [ -x "$prefix/bin/curl-config" ] || return 1
     command -v pkg-config >/dev/null 2>&1 || return 1
+    cares_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
+        PKG_CONFIG_LIBDIR="$pkg_config_path" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        dependency_pkg_config --static --libs libcares 2>/dev/null) || return 1
     curl_flags=$("$prefix/bin/curl-config" --static-libs 2>/dev/null) || return 1
+    curl_configure=$("$prefix/bin/curl-config" --configure 2>/dev/null) || return 1
     archive_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
@@ -639,8 +653,43 @@ dependency_link_metadata_valid() {
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
         dependency_pkg_config --static --libs libevent_extra libevent_core 2>/dev/null) || return 1
-    [ -n "$curl_flags" ] && [ -n "$archive_flags" ] && [ -n "$event_flags" ] || return 1
-    dependency_link_flags_valid "$curl_flags" "$prefix" "$expected_prefix" &&
+    [ -n "$cares_flags" ] && [ -n "$curl_flags" ] && \
+        [ -n "$curl_configure" ] && [ -n "$archive_flags" ] && \
+        [ -n "$event_flags" ] || return 1
+    if ! "$prefix/bin/curl-config" --features 2>/dev/null | \
+        grep -Fx AsynchDNS >/dev/null; then
+        echo "Error: curl was not built with asynchronous hostname resolution." >&2
+        return 1
+    fi
+    case " $curl_flags " in
+        *" -lcares "*|*"/libcares.a "*)
+            ;;
+        *)
+            echo "Error: curl static link metadata does not include c-ares." >&2
+            return 1
+            ;;
+    esac
+    case "$curl_configure" in
+        *--enable-ares=*)
+            ;;
+        *)
+            echo "Error: curl configure metadata does not enable c-ares." >&2
+            return 1
+            ;;
+    esac
+    if ! dependency_text_references_path "$curl_configure" "$expected_prefix"; then
+        echo "Error: curl configure metadata does not reference the final prefix:" \
+            "$expected_prefix" >&2
+        return 1
+    fi
+    if [ "$prefix" != "$expected_prefix" ] &&
+        dependency_text_references_path "$curl_configure" "$prefix"; then
+        echo "Error: curl configure metadata still references the staging prefix:" \
+            "$prefix" >&2
+        return 1
+    fi
+    dependency_link_flags_valid "$cares_flags" "$prefix" "$expected_prefix" &&
+        dependency_link_flags_valid "$curl_flags" "$prefix" "$expected_prefix" &&
         dependency_link_flags_valid "$archive_flags" "$prefix" "$expected_prefix" &&
         dependency_link_flags_valid "$event_flags" "$prefix" "$expected_prefix"
 }
@@ -669,6 +718,8 @@ dependency_prefix_complete() {
         dependency_library_exists "$prefix" archive &&
         dependency_library_exists "$prefix" z &&
         dependency_library_exists "$prefix" lzma &&
+        { [ -f "$prefix/lib/pkgconfig/libcares.pc" ] ||
+          [ -f "$prefix/lib64/pkgconfig/libcares.pc" ]; } &&
         { [ -f "$prefix/lib/pkgconfig/libarchive.pc" ] ||
           [ -f "$prefix/lib64/pkgconfig/libarchive.pc" ]; } &&
         dependency_link_metadata_valid "$prefix" "$metadata_prefix" || return 1
@@ -734,7 +785,8 @@ prepare_dependency_prefix() {
     esac
     case "$final_prefix/" in
         */../*|*/./*)
-            echo "Error: dependency prefix must not contain '.' or '..' path segments: $final_prefix" >&2
+            echo "Error: dependency prefix must not contain '.' or '..'" \
+                "path segments: $final_prefix" >&2
             return 1
             ;;
     esac
@@ -875,7 +927,8 @@ normalize_dependency_metadata() {
                 fi
             done < <(dependency_path_variants "$stage_root")
             if [ -n "$found_variant" ]; then
-                echo "Error: generated metadata still contains the staging root '$found_variant': $metadata" >&2
+                echo "Error: generated metadata still contains the staging" \
+                    "root '$found_variant': $metadata" >&2
                 return 1
             fi
             if [ -n "$staging_directory" ] &&
@@ -1016,6 +1069,40 @@ extract_archive() {
     esac
 }
 
+# Static asynchronous resolver used by libcurl on every supported platform.
+build_cares_static() {
+    local src_dir="$1"
+    local build_dir="$2"
+    local compiler="$3"
+    local archiver="$4"
+    local ranlib_tool="$5"
+    local host_triple="${6:-}"
+    local extra_libs="${7:-}"
+    local archive="$src_dir/c-ares-${CARES_VERSION}.tar.gz"
+    local source="$build_dir/c-ares-${CARES_VERSION}"
+
+    download_source cares "$archive"
+    extract_archive "$archive" "$source"
+
+    set -- \
+        --prefix="$INSTALL_PREFIX" \
+        --disable-shared \
+        --enable-static \
+        --disable-tests
+    if [ -n "$host_triple" ]; then
+        set -- --host="$host_triple" "$@"
+    fi
+
+    echo "==> Building c-ares ${CARES_VERSION}"
+    cd "$source"
+    # shellcheck disable=SC2086
+    CC="$compiler" AR="$archiver" RANLIB="$ranlib_tool" \
+        CFLAGS="${CUP_DEPENDENCY_CFLAGS:-}" \
+        LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64" \
+        LIBS="$extra_libs" ./configure "$@"
+    make -j"$JOBS"
+    make install DESTDIR="$DESTDIR"
+}
 
 # Test-only portable network dependency shared by platform bootstraps.
 build_libevent_static() {

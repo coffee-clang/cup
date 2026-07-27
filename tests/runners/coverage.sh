@@ -126,9 +126,13 @@ cp "$clean_log" "$REPORT_DIR/clean.log"
     printf 'report_timeout_seconds=%s\n' "$REPORT_TIMEOUT"
 } >"$REPORT_DIR/environment.txt"
 
-cup_test_run_logged "Building the $COVERAGE_BACKEND coverage executable..." "$REPORT_DIR/build.log" \
+cup_test_run_logged \
+    "Building the $COVERAGE_BACKEND coverage executable..." \
+    "$REPORT_DIR/build.log" \
     make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" coverage -j2
-cup_test_run_logged 'Compiling instrumented unit tests and helpers...' "$REPORT_DIR/test-build.log" \
+cup_test_run_logged \
+    'Compiling instrumented unit tests and helpers...' \
+    "$REPORT_DIR/test-build.log" \
     make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" \
         CUP_TEST_CONFIGURATION=coverage test-unit-build test-helpers
 
@@ -145,14 +149,18 @@ cup_test_run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log
         "$ROOT/tests/runners/unit.sh"
 
 if [ "$PLATFORM" = windows-x64 ]; then
-    windows_runner=$(cygpath -w "$ROOT/tests/integration/windows/run.ps1")
+    windows_runner=$(cygpath -w "$ROOT/tests/runners/integration-windows.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
-    cup_test_run_logged 'Running instrumented Windows integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged \
+        'Running instrumented Windows integration tests...' \
+        "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
         -CupPath "$windows_binary" -Configuration coverage
 else
-    cup_test_run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged \
+        'Running instrumented POSIX integration tests...' \
+        "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=coverage CUP_TEST_PLATFORM="$PLATFORM" \
             CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \
@@ -242,7 +250,9 @@ if [ "$COVERAGE_BACKEND" = gcov ]; then
 
     if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
         printf '==> Validating coverage thresholds from the saved tracefile...\n' >>"$coverage_log"
-        (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
+        (cd "$ROOT" && \
+            "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
+                "$REPORT_TIMEOUT" \
             gcovr --root "$ROOT" --merge-mode-functions separate \
             --add-tracefile "$REPORT_DIR/coverage.json" --print-summary \
             --fail-under-line "$LINE_THRESHOLD" \
@@ -253,7 +263,9 @@ if [ "$COVERAGE_BACKEND" = gcov ]; then
 
     if coverage_reports_complete; then
         printf '==> Rendering HTML coverage report...\n'
-        (cd "$ROOT" && "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$HTML_TIMEOUT" \
+        (cd "$ROOT" && \
+            "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
+                "$HTML_TIMEOUT" \
             gcovr --root "$ROOT" --merge-mode-functions separate \
             --add-tracefile "$REPORT_DIR/coverage.json" \
             --html-details "$REPORT_DIR/index.html" --no-html-syntax-highlighting) \

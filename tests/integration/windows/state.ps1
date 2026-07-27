@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$CupExecutablePath
 )
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 try {
     Initialize-TestEnvironment -Name "state" -ExecutablePath $CupExecutablePath

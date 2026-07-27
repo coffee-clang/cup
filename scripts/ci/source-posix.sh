@@ -43,9 +43,9 @@ if [ "$platform" = linux-x64 ]; then
     make PLATFORM="$platform" CC=clang check-binary
 fi
 
-# The network portability smoke test is intentionally a Linux x64 pilot. It
-# stays outside the ordinary local test target because it generates certificates,
-# starts local servers and builds one isolated static release.
+# Local network scenarios run with the native integration suite on every platform.
+# Linux x64 additionally validates static-release, embedded-CA and HTTPS/proxy
+# properties through the dedicated portability test.
 if [ "$platform" = linux-x64 ]; then
     make clean
     PLATFORM="$platform" make test-portability-linux

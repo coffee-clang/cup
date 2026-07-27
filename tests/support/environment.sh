@@ -81,6 +81,7 @@ cup_test_find_static_library() {
 cup_test_dependencies_ready() {
     [ -f "$DEPS_PREFIX/include/argtable3.h" ] &&
         [ -f "$DEPS_PREFIX/include/uthash.h" ] &&
+        [ -f "$DEPS_PREFIX/include/ares.h" ] &&
         [ -f "$DEPS_PREFIX/include/unity.h" ] &&
         [ -f "$DEPS_PREFIX/include/unity_internals.h" ] &&
         [ -f "$DEPS_PREFIX/include/event2/event.h" ] &&
@@ -93,6 +94,8 @@ cup_test_dependencies_ready() {
         [ -f "$DEPS_PREFIX/include/zlib.h" ] &&
         [ -f "$DEPS_PREFIX/include/lzma.h" ] &&
         [ -x "$DEPS_PREFIX/bin/curl-config" ] &&
+        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libcares.pc" ] ||
+          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libcares.pc" ]; } &&
         { [ -f "$DEPS_PREFIX/lib/pkgconfig/libarchive.pc" ] ||
           [ -f "$DEPS_PREFIX/lib64/pkgconfig/libarchive.pc" ]; } &&
         { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_core.pc" ] ||
@@ -100,6 +103,7 @@ cup_test_dependencies_ready() {
         { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_extra.pc" ] ||
           [ -f "$DEPS_PREFIX/lib64/pkgconfig/libevent_extra.pc" ]; } &&
         cup_test_find_static_library argtable3 >/dev/null &&
+        cup_test_find_static_library cares >/dev/null &&
         cup_test_find_static_library unity >/dev/null &&
         cup_test_find_static_library event_core >/dev/null &&
         cup_test_find_static_library event_extra >/dev/null &&
@@ -138,7 +142,9 @@ cup_test_tool_hint() {
                     printf '%s\n' "Install it with: sudo apt-get install gcovr" >&2
                     ;;
                 gcc|gcov)
-                    printf '%s\n' "Install GCC coverage tools with: sudo apt-get install build-essential" >&2
+                    printf '%s\n' \
+                        "Install GCC coverage tools with:" \
+                        "sudo apt-get install build-essential" >&2
                     ;;
                 clang|llvm-cov|llvm-profdata|llvm-symbolizer)
                     printf '%s\n' \
@@ -165,17 +171,23 @@ cup_test_tool_hint() {
                         "Install Xcode Command Line Tools with: xcode-select --install" >&2
                     ;;
                 *)
-                    printf '%s\n' "Install '$_cup_test_tool' with Homebrew or Xcode Command Line Tools." >&2
+                    printf '%s\n' \
+                        "Install '$_cup_test_tool' with Homebrew or" \
+                        "Xcode Command Line Tools." >&2
                     ;;
             esac
             ;;
         windows-x64)
             case "$_cup_test_tool" in
                 gcovr)
-                    printf '%s\n' "Install it in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2
+                    printf '%s\n' \
+                        "Install it in UCRT64 with:" \
+                        "pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2
                     ;;
                 gcc|gcov)
-                    printf '%s\n' "Install GCC tools in UCRT64 with: pacman -S mingw-w64-ucrt-x86_64-gcc" >&2
+                    printf '%s\n' \
+                        "Install GCC tools in UCRT64 with:" \
+                        "pacman -S mingw-w64-ucrt-x86_64-gcc" >&2
                     ;;
                 clang|llvm-cov|llvm-profdata|llvm-symbolizer)
                     if [ "${MSYSTEM:-}" = CLANG64 ]; then

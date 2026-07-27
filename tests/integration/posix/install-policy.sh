@@ -4,7 +4,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin install-policy
 prepare_command_environment
@@ -34,8 +34,10 @@ prepare_fixture() {
 # Profile/default resolution and user preference scenarios.
 test_defaults_profile() {
     output=$(run_cup config)
-    assert_contains "$output" "Install selections for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
-    assert_contains "$output" 'compiler           clang              clang              official default'
+    assert_contains "$output" \
+        "Install selections for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
+    assert_contains "$output" \
+        'compiler           clang              clang              official default'
     assert_contains "$output" 'Profiles:'
     assert_contains "$output" 'minimal      compiler, linker'
     assert_contains "$output" 'Toolchains:'
@@ -43,7 +45,8 @@ test_defaults_profile() {
 
     output=$(run_cup install PROFILE MINIMAL)
     assert_contains "$output" "Installing profile 'minimal' (2 packages)"
-    assert_contains "$output" "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
+    assert_contains "$output" \
+        "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
     assert_file "$(component_root compiler clang 22.1.5)/info.txt"
     assert_file "$(component_root linker lld 22.1.5)/info.txt"
 }
@@ -52,7 +55,8 @@ test_scoped_preferences() {
     assert_contains "$(run_cup config set COMPILER GCC)" \
         "Preferred tool for 'compiler' on target '$TEST_PLATFORM' set to 'gcc'."
     output=$(run_cup config)
-    assert_contains "$output" 'compiler           gcc                clang              user preference'
+    assert_contains "$output" \
+        'compiler           gcc                clang              user preference'
 
     output=$(run_cup install COMPILER)
     assert_contains "$output" 'Installed compiler gcc@16.1.0-rev1'

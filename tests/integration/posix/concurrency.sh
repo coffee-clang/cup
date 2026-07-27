@@ -5,7 +5,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin concurrency
 prepare_command_environment
@@ -74,12 +74,14 @@ awk -v key="compiler.clang.$TEST_PLATFORM.$TEST_PLATFORM" \
     -v base="http://127.0.0.1:$port" '
     BEGIN { changed = 0 }
     index($0, key ".url_template=") == 1 {
-        print key ".url_template=" base "/clang-{version}-{host_platform}-{target_platform}.{format}"
+        package = "/clang-{version}-{host_platform}-{target_platform}.{format}"
+        print key ".url_template=" base package
         changed++
         next
     }
     index($0, key ".checksum_url_template=") == 1 {
-        print key ".checksum_url_template=" base "/{version}/{host_platform}/{target_platform}/SHA256SUMS"
+        checksum = "/{version}/{host_platform}/{target_platform}/SHA256SUMS"
+        print key ".checksum_url_template=" base checksum
         changed++
         next
     }

@@ -441,7 +441,7 @@ help:
 		'  make check                   dependencies, tests and quality checks' \
 		'  make test-coverage           coverage gate and reports' \
 		'  make test-sanitizers         ASan/UBSan gate' \
-		'  make test-portability-linux  Linux HTTPS/proxy/package smoke test' \
+		'  make test-portability-linux  Linux static runtime portability test' \
 		'  make test-windows            Windows unit and integration tests' \
 		'  make test-release RELEASE_DIR=<dir>' \
 		'                               validate an unpacked release candidate' \
@@ -662,9 +662,17 @@ test-integration: deps
 	+@$(MAKE) --no-print-directory all test-helpers PLATFORM='$(PLATFORM)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CONFIGURATION=development
-	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
-		CC='$(CC)' CUP_TEST_CONFIGURATION=development \
-		./tests/runners/integration-posix.sh
+	@case '$(PLATFORM)' in \
+		windows-x64) \
+			powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+				"$$(cygpath -w '$(PROJECT_ROOT)/tests/runners/integration-windows.ps1')" \
+				-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')" \
+				-Configuration development ;; \
+		*) \
+			CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+				CC='$(CC)' CUP_TEST_CONFIGURATION=development \
+				./tests/runners/integration-posix.sh ;; \
+	esac
 
 quality:
 	@CUP_TEST_PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' \
@@ -696,7 +704,7 @@ test-sanitizers: deps
 
 test-portability-linux: deps
 	@PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
-		./tests/portability/linux-network.sh
+		./tests/portability/linux-static-runtime.sh
 
 test-windows: deps
 	+@$(MAKE) --no-print-directory test-build PLATFORM=windows-x64 \
@@ -705,7 +713,7 @@ test-windows: deps
 		CC='$(CC)' CUP_TEST_CONFIGURATION=development \
 		./tests/runners/unit.sh
 	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
-		"$$(cygpath -w '$(PROJECT_ROOT)/tests/integration/windows/run.ps1')" \
+		"$$(cygpath -w '$(PROJECT_ROOT)/tests/runners/integration-windows.ps1')" \
 		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')" \
 		-Configuration development
 
@@ -716,7 +724,10 @@ update-ca-bundle:
 	@./scripts/certs/update-ca-bundle.sh
 
 finalize-release:
-	@test '$(CONFIGURATION)' = release || { echo 'finalize-release requires release configuration' >&2; exit 2; }
+	@test '$(CONFIGURATION)' = release || { \
+		echo 'finalize-release requires release configuration' >&2; \
+		exit 2; \
+	}
 	@./scripts/build/finalize-release.sh '$(PLATFORM)' '$(TARGET)' '$(CONFIG_DIR)/symbols'
 	@./scripts/build/check-path-leaks.sh '$(TARGET)' '$(PROJECT_ROOT)' '$(DEPS_PREFIX)' '$(HOME)'
 

@@ -116,14 +116,18 @@ cup_test_run_logged 'Running sanitizer unit tests...' "$REPORT_DIR/unit.log" \
             "$ROOT/tests/runners/unit.sh"
 
 if [ "$PLATFORM" = windows-x64 ]; then
-    windows_runner=$(cygpath -w "$ROOT/tests/integration/windows/run.ps1")
+    windows_runner=$(cygpath -w "$ROOT/tests/runners/integration-windows.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
-    cup_test_run_logged 'Running sanitizer Windows integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged \
+        'Running sanitizer Windows integration tests...' \
+        "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
             -CupPath "$windows_binary" -Configuration sanitizers
 else
-    cup_test_run_logged 'Running sanitizer POSIX integration tests...' "$REPORT_DIR/integration.log" \
+    cup_test_run_logged \
+        'Running sanitizer POSIX integration tests...' \
+        "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=sanitizers CUP_TEST_PLATFORM="$PLATFORM" \
             CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
             CUP_TEST_TIMEOUT_COMMAND="$TIMEOUT_COMMAND" \

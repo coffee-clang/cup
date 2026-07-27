@@ -25,6 +25,7 @@ Coverage is evidence of useful scenarios, not a target to maximize artificially.
 ```text
 unit         deterministic C behavior
 integration  native command workflows
+portability  platform-specific release properties
 repository   build, dependency and release contracts
 release      verification of assembled release candidates
 ```
@@ -43,8 +44,22 @@ They cover public commands, persistent effects, package lifecycle, diagnosis,
 repair, recovery, concurrency and uninstall.
 
 Linux and macOS use the POSIX suites. Windows uses the native PowerShell suites.
-Equivalent user-visible behavior is checked on both platform families, while
-platform-specific filesystem and process semantics remain native.
+Equivalent user-visible behavior uses matching suite names on both platform
+families, while platform-specific filesystem and process semantics remain
+native. Each runner discovers the scripts in its native integration directory,
+so adding a scenario does not require a separate suite manifest.
+
+Local-hostname download and rejection of a downloaded checksum mismatch belong
+to integration because they exercise the public network boundary. Package
+lifecycle, extraction, wrappers and `doctor` remain owned by their dedicated
+suites. The fixture is fully local and does not depend on an external service.
+
+### Portability tests
+
+Portability tests cover properties that are meaningful only for a particular
+release family. The Linux static-runtime test verifies binary policy,
+embedded-CA behavior, HTTPS validation and proxy tunnelling without pretending
+that the same implementation contract applies to Windows or macOS.
 
 ### Repository tests
 
@@ -71,6 +86,12 @@ make PLATFORM=<platform> test-unit
 make PLATFORM=<platform> test-integration
 make quality
 make PLATFORM=<platform> check
+```
+
+The Linux static runtime portability test is explicit:
+
+```sh
+make PLATFORM=linux-x64 test-portability-linux
 ```
 
 Coverage and sanitizer runs are explicit:

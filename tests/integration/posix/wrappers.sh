@@ -5,7 +5,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin wrappers
 prepare_command_environment

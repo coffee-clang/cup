@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Runs all POSIX real-CLI workflows against a prepared executable.
+# Purpose: Runs every native POSIX integration suite in a stable order.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -8,10 +8,12 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cup_test_prepare_environment
 
 run_suite() {
-    label=$1
-    script=$2
-    printf '==> %s\n' "$label"
+    script=$1
+    name=${script##*/}
+    name=${name%.sh}
+    label=$(printf '%s' "$name" | tr '-' ' ')
 
+    printf '==> Testing %s...\n' "$label"
     if [ -n "${CUP_TEST_SUITE_TIMEOUT:-}" ]; then
         case "$CUP_TEST_SUITE_TIMEOUT" in
             *[!0-9]*|'')
@@ -22,29 +24,26 @@ run_suite() {
         esac
         timeout_command=$(cup_test_find_timeout) || exit 2
         "$timeout_command" --foreground --signal=TERM --kill-after=30s \
-            "$CUP_TEST_SUITE_TIMEOUT" \
-            "$ROOT/tests/integration/posix/$script"
+            "$CUP_TEST_SUITE_TIMEOUT" "$script"
     else
-        "$ROOT/tests/integration/posix/$script"
+        "$script"
     fi
 }
 
 TESTS_ROOT="$ROOT/tests"
 export TESTS_ROOT
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 require_test_binary
 
-run_suite 'Testing package catalog checksum schema...' package-catalog.sh
-run_suite 'Testing unsafe package archives...' archive-safety.sh
-run_suite 'Testing CLI parsing and dispatch contracts...' cli-contract.sh
-run_suite 'Testing the public package lifecycle...' package-lifecycle.sh
-run_suite 'Testing install preferences, profiles and toolchains...' install-policy.sh
-run_suite 'Testing state persistence...' state.sh
-run_suite 'Testing managed wrappers...' wrappers.sh
-run_suite 'Testing transaction recovery...' recovery.sh
-run_suite 'Testing deterministic repair...' repair.sh
-run_suite 'Testing read-only diagnostics...' doctor.sh
-run_suite 'Testing concurrent commands...' concurrency.sh
-run_suite 'Testing uninstall cleanup...' uninstall.sh
+found=0
+for script in "$ROOT"/tests/integration/posix/*.sh; do
+    [ -f "$script" ] || continue
+    found=1
+    run_suite "$script"
+done
+[ "$found" -eq 1 ] || {
+    printf 'No POSIX integration suites were found.\n' >&2
+    exit 2
+}
 
 printf 'All POSIX integration tests passed.\n'

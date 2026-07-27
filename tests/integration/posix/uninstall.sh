@@ -4,8 +4,8 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
-. "$TESTS_ROOT/support/uninstall.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
+. "$TESTS_ROOT/support/posix/uninstall.sh"
 
 test_begin uninstall
 prepare_command_environment

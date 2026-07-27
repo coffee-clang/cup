@@ -4,7 +4,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin doctor
 prepare_command_environment
@@ -44,7 +44,8 @@ assert_contains "$output" 'transaction journal is invalid'
 assert_contains "$output" "installed state record 'linter:clang-tidy@22.1.5' has no valid package"
 assert_contains "$output" "package metadata for 'compiler:clang@99.0.0' is not read-only"
 assert_contains "$output" "installed package 'compiler:clang@99.0.0' is not listed"
-assert_contains "$output" "valid package 'lldb@22.1.5' exists in components but is absent from state.txt"
+assert_contains "$output" \
+    "valid package 'lldb@22.1.5' exists in components but is absent from state.txt"
 assert_contains "$output" "package path '$invalid_package' is invalid"
 assert_contains "$output" 'staging directory contains 1 leftover item(s)'
 assert_contains "$output" 'Run '\''cup repair'\'' after reviewing them.'

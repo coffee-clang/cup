@@ -2,7 +2,7 @@
 # Purpose: Sourced POSIX integration library for isolated cup homes, catalogs,
 # package fixtures and generated wrappers. This file is sourced, not executed.
 
-: "${TESTS_ROOT:?TESTS_ROOT must be set before sourcing tests/support/posix-cli.sh}"
+: "${TESTS_ROOT:?TESTS_ROOT must be set before sourcing tests/support/posix/cli.sh}"
 . "$TESTS_ROOT/support/common.sh"
 
 . "$TESTS_ROOT/support/environment.sh"
@@ -99,18 +99,21 @@ package_catalog_ensure_package() {
 
     grep -F "$key.stable_version=" "$catalog" >/dev/null 2>&1 && return 0
 
+    package_path="$tool-{version}-{host_platform}-{target_platform}.{format}"
+    url_template="https://example.invalid/$package_path"
+    checksum_template="https://example.invalid/"
+    checksum_path="$tool-{version}-{host_platform}-{target_platform}/SHA256SUMS"
+    checksum_template="${checksum_template}${checksum_path}"
     cat >> "$catalog" <<EOF_PACKAGE_CATALOG
 
 $key.stable_version=$version
 $key.available_versions=$version
 $key.default_format=$format
 $key.formats=$format
-$key.url_template=https://example.invalid/$tool-{version}-{host_platform}-{target_platform}.{format}
-$key.checksum_url_template=https://example.invalid/$tool-{version}-{host_platform}-{target_platform}/SHA256SUMS
+$key.url_template=$url_template
+$key.checksum_url_template=$checksum_template
 EOF_PACKAGE_CATALOG
 }
-
-
 
 
 make_package() {

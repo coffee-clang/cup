@@ -5,7 +5,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin package-lifecycle
 prepare_command_environment
@@ -108,8 +108,10 @@ test_updates() {
     global_update=$(run_cup update)
     assert_contains "$global_update" \
         '1 stable package(s) installed, 1 default(s) moved'
-    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/21.1.5/bin/lldb"
-    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5/bin/lldb"
+    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/21.1.5/bin/lldb"
+    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/22.1.5/bin/lldb"
     assert_contains "$(run_cup info debugger)" \
         "debugger [$TEST_PLATFORM]: lldb@22.1.5 (stable)"
     assert_equals "$(run_native_wrapper lldb)" \
@@ -169,7 +171,8 @@ test_dev_cup_update() {
 test_remove_default_without_promotion() {
     run_cup remove compiler clang@stable >/dev/null
     assert_missing "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5"
-    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/21.1.5/info.txt"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/21.1.5/info.txt"
     assert_missing "$(native_wrapper_path clang)"
     assert_missing "$(native_wrapper_path clang++)"
     assert_contains "$(run_cup info compiler --target "$TEST_PLATFORM")" \

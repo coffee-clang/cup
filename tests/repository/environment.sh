@@ -19,6 +19,7 @@ create_private_prefix() {
     mkdir -p "$prefix/include/event2" "$prefix/lib"
     touch "$prefix/include/argtable3.h" \
         "$prefix/include/uthash.h" \
+        "$prefix/include/ares.h" \
         "$prefix/include/unity.h" \
         "$prefix/include/unity_internals.h" \
         "$prefix/include/event2/event.h" \
@@ -26,6 +27,7 @@ create_private_prefix() {
         "$prefix/include/event2/bufferevent.h" \
         "$prefix/include/event2/listener.h" \
         "$prefix/lib/libargtable3.a" \
+        "$prefix/lib/libcares.a" \
         "$prefix/lib/libunity.a" \
         "$prefix/lib/libevent_core.a" \
         "$prefix/lib/libevent_extra.a"
@@ -54,10 +56,34 @@ create_complete_prefix() {
     fi
     cat >"$prefix/bin/curl-config" <<EOF_CURL_CONFIG
 #!/bin/sh
-[ "\${1:-}" = --static-libs ] || exit 2
-printf '%s\\n' '$prefix/lib/libcurl.a $prefix/lib/libssl.a $prefix/lib/libcrypto.a $prefix/lib/libz.a'
+case "\${1:-}" in
+    --static-libs)
+        printf '%s%s\\n' \
+            '$prefix/lib/libcurl.a -L$prefix/lib -lcares ' \
+            '$prefix/lib/libssl.a $prefix/lib/libcrypto.a $prefix/lib/libz.a'
+        ;;
+    --features)
+        printf '%s\\n' AsynchDNS
+        ;;
+    --configure)
+        printf "%s\\n" " '--prefix=$prefix' '--enable-ares=$prefix'"
+        ;;
+    *)
+        exit 2
+        ;;
+esac
 EOF_CURL_CONFIG
     chmod +x "$prefix/bin/curl-config"
+    cat >"$prefix/lib/pkgconfig/libcares.pc" <<EOF_CARES_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: c-ares
+Description: test metadata
+Version: 1
+Libs: -L\${libdir} -lcares
+Cflags: -I\${includedir}
+EOF_CARES_PC
     cat >"$prefix/lib/pkgconfig/libarchive.pc" <<EOF_ARCHIVE_PC
 prefix=$prefix
 libdir=\${prefix}/lib
@@ -250,6 +276,7 @@ bash -eu -o pipefail -c '
             "$prefix/include/openssl" "$prefix/include/event2" \
             "$prefix/lib/pkgconfig"
         touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
+            "$prefix/include/ares.h" \
             "$prefix/include/unity.h" "$prefix/include/unity_internals.h" \
             "$prefix/include/event2/event.h" "$prefix/include/event2/http.h" \
             "$prefix/include/event2/bufferevent.h" \
@@ -257,16 +284,33 @@ bash -eu -o pipefail -c '
             "$prefix/include/curl/curl.h" "$prefix/include/archive.h" \
             "$prefix/include/archive_entry.h" "$prefix/include/zlib.h" \
             "$prefix/include/lzma.h" "$prefix/include/openssl/ssl.h" \
-            "$prefix/lib/libargtable3.a" "$prefix/lib/libunity.a" \
+            "$prefix/lib/libargtable3.a" "$prefix/lib/libcares.a" \
+            "$prefix/lib/libunity.a" \
             "$prefix/lib/libevent_core.a" "$prefix/lib/libevent_extra.a" \
             "$prefix/lib/libcurl.a" "$prefix/lib/libarchive.a" \
             "$prefix/lib/libz.a" "$prefix/lib/liblzma.a" \
             "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a"
         cat >"$prefix/bin/curl-config" <<EOF_CURL_CONFIG
 #!/bin/sh
-printf "%s\n" "-L$embedded_prefix/lib -lcurl"
+case "\${1:-}" in
+    --features) printf "%s\n" AsynchDNS ;;
+    --static-libs|"") printf "%s\n" "-L$embedded_prefix/lib -lcurl -lcares" ;;
+    --configure)
+        printf " \047--prefix=$embedded_prefix\047"
+        printf " \047--enable-ares=$embedded_prefix\047\n"
+        ;;
+    *) exit 2 ;;
+esac
 EOF_CURL_CONFIG
         chmod +x "$prefix/bin/curl-config"
+        cat >"$prefix/lib/pkgconfig/libcares.pc" <<EOF_CARES_PC
+prefix=$embedded_prefix
+libdir=\${prefix}/lib
+Name: c-ares
+Description: test metadata
+Version: 1
+Libs: -L\${libdir} -lcares
+EOF_CARES_PC
         cat >"$prefix/lib/pkgconfig/libarchive.pc" <<EOF_LIBARCHIVE_PC
 prefix=$embedded_prefix
 libdir=\${prefix}/lib
@@ -397,7 +441,7 @@ EOF_WINDOWS_PATHS
         \( -name '*.pc' -o -name '*.la' -o -name '*.cmake' \
            -o -name '*-config' -o -name 'curl-config' \) \
         -exec grep -F -l "$CUP_DEPS_STAGE_ROOT" {} + | grep .
-    [ "$("$CUP_DEPS_BUILD_PREFIX/bin/curl-config")" = "-L$final/lib -lcurl" ]
+    [ "$("$CUP_DEPS_BUILD_PREFIX/bin/curl-config")" = "-L$final/lib -lcurl -lcares" ]
     windows_metadata="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake"
     grep -F "posix=$final" "$windows_metadata" >/dev/null
     grep -F "native=$final_native" "$windows_metadata" >/dev/null
@@ -462,7 +506,7 @@ EOF_WINDOWS_PATHS
     [ ! -e "$final/old.txt" ]
     [ ! -e "$final/.cup-deps-building" ]
     [ "$(cat "$final/.cup-dependencies")" = "$metadata" ]
-    [ "$("$final/bin/curl-config")" = "-L$final/lib -lcurl" ]
+    [ "$("$final/bin/curl-config")" = "-L$final/lib -lcurl -lcares" ]
 
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 1 ]
@@ -470,6 +514,23 @@ EOF_WINDOWS_PATHS
 
     cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
     printf "#!/bin/sh\nexit 0\n" >"$final/bin/curl-config"
+    chmod +x "$final/bin/curl-config"
+    prepare_dependency_prefix "$final" "$metadata" 1
+    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
+    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
+    abort_dependency_prefix
+    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
+
+    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
+    cat >"$final/bin/curl-config" <<EOF_NO_CARES_CONFIGURE
+#!/bin/sh
+case "\${1:-}" in
+    --static-libs) printf "%s\n" "-L$final/lib -lcurl -lcares" ;;
+    --features) printf "%s\n" AsynchDNS ;;
+    --configure) printf " \047--prefix=$final\047\n" ;;
+    *) exit 2 ;;
+esac
+EOF_NO_CARES_CONFIGURE
     chmod +x "$final/bin/curl-config"
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 0 ]
@@ -832,10 +893,13 @@ printf '==> Testing dependency inventory, scopes and notices...\n'
 DEPENDENCY_SOURCES="$DEPENDENCY_DIR/sources.sh"
 DEPENDENCY_NOTICES="$DEPENDENCY_DIR/THIRD_PARTY_NOTICES.txt"
 [ -f "$DEPENDENCY_NOTICES" ] || fail 'third-party notices file is missing'
-packages=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; all_source_packages' sh "$DEPENDENCY_SOURCES")
+packages=$(sh -eu -c \
+    'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; all_source_packages' \
+    sh "$DEPENDENCY_SOURCES")
 expected_packages='zlib
 xz
 openssl
+cares
 curl
 libarchive
 argtable3
@@ -844,20 +908,23 @@ unity
 libevent'
 [ "$packages" = "$expected_packages" ] ||
     fail 'canonical dependency inventory changed unexpectedly'
-for package in zlib xz openssl curl libarchive argtable3 uthash; do
-    scope=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
+for package in zlib xz openssl cares curl libarchive argtable3 uthash; do
+    scope=$(sh -eu -c \
+        'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
         sh "$DEPENDENCY_SOURCES" "$package")
     [ "$scope" = runtime ] || fail "$package does not have runtime scope"
 done
 for package in unity libevent; do
-    scope=$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
+    scope=$(sh -eu -c \
+        'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
         sh "$DEPENDENCY_SOURCES" "$package")
     [ "$scope" = test ] || fail "$package does not have test scope"
 done
 [ "$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package uthash' \
     sh "$DEPENDENCY_SOURCES")" = header-only ] ||
     fail 'uthash usage classification is incorrect'
-[ "$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package libevent' \
+[ "$(sh -eu -c \
+    'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package libevent' \
     sh "$DEPENDENCY_SOURCES")" = network-test-library ] ||
     fail 'libevent usage classification is incorrect'
 if sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package unknown' \

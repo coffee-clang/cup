@@ -139,6 +139,7 @@ build_curl() {
         --enable-static \
         --with-schannel \
         --without-openssl \
+        --enable-ares="$PREFIX" \
         --with-zlib="$PREFIX" \
         --without-ca-bundle \
         --without-ca-path \
@@ -226,6 +227,7 @@ verify_link_metadata_value() {
 
 # Final prefix and static metadata verification.
 verify() {
+    local cares_flags
     local curl_flags
     local archive_flags
     local event_flags
@@ -237,6 +239,10 @@ verify() {
         exit 1
     fi
 
+    cares_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
+        PKG_CONFIG_SYSROOT_DIR="" \
+        dependency_pkg_config --static --libs libcares)"
     curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
     archive_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
         PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
@@ -246,6 +252,7 @@ verify() {
         PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="" \
         dependency_pkg_config --static --libs libevent_extra libevent_core)"
+    verify_link_metadata_value c-ares "$cares_flags" || exit 1
     verify_link_metadata_value curl "$curl_flags" || exit 1
     verify_link_metadata_value libarchive "$archive_flags" || exit 1
     verify_link_metadata_value libevent "$event_flags" || exit 1
@@ -261,6 +268,7 @@ verify() {
         exit 1
     fi
 
+    printf '%s\n' "$cares_flags"
     printf '%s\n' "$curl_flags"
     printf '%s\n' "$archive_flags"
     printf '%s\n' "$event_flags"
@@ -320,6 +328,9 @@ main() {
 
     build_zlib
     build_xz
+    build_cares_static "$SRC_DIR" "$BUILD_DIR" \
+        "$CC" "$AR" "$RANLIB" "$HOST_TRIPLE" \
+        "-lws2_32 -ladvapi32 -liphlpapi"
     build_curl
     build_libarchive
     build_libevent_static "$SRC_DIR" "$BUILD_DIR" \

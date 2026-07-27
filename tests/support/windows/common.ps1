@@ -98,7 +98,7 @@ function Assert-Equals {
     }
 }
 
-# Native process invocation and command-line quoting.
+# Isolated paths and native process invocation.
 function New-IsolatedTestRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -296,7 +296,8 @@ function Initialize-TestEnvironment {
 
     New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "config") | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "scripts\install") | Out-Null
+    $installScripts = Join-Path $Script:CupTestDevRoot "scripts\install"
+    New-Item -ItemType Directory -Force -Path $installScripts | Out-Null
     Copy-Item (Join-Path $Script:CupTestProjectRoot "config\packages.cfg") (
         Join-Path $Script:CupTestDevRoot "config\packages.cfg")
     Copy-Item (Join-Path $Script:CupTestProjectRoot "config\install.cfg") (
@@ -446,7 +447,8 @@ function New-TestPackage {
     $platform = "windows-x64"
     $packageName = "$Tool-$Version-$platform-$platform"
     $packageRoot = Join-Path $Script:CupTestRoot "packages\$packageName"
-    $cacheDir = Join-Path $Script:CupTestHome ".cup\cache\$Component\$Tool\$platform\$platform\$Version"
+    $cacheDir = Join-Path $Script:CupTestHome (
+        ".cup\cache\$Component\$Tool\$platform\$platform\$Version")
     $archive = Join-Path $cacheDir "$packageName.zip"
 
     Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -462,7 +464,12 @@ function New-TestPackage {
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
         $body = "@echo off`r`necho $Tool-$Version-${platform}:$entry`r`n"
-        Set-Content -LiteralPath (Join-Path $packageRoot "bin\$entry.cmd") -Value $body -Encoding ascii -NoNewline
+        $entryPath = Join-Path $packageRoot "bin\$entry.cmd"
+        Set-Content `
+            -LiteralPath $entryPath `
+            -Value $body `
+            -Encoding ascii `
+            -NoNewline
     }
     Write-Utf8NoBom -Path (Join-Path $packageRoot "info.txt") -Lines $info
 

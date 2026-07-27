@@ -17,6 +17,7 @@ mkdir -p "$fake_bin" "$prefix/bin" "$prefix/include/curl" \
     "$prefix/include/openssl" "$prefix/include/event2" \
     "$prefix/lib/pkgconfig"
 touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
+    "$prefix/include/ares.h" \
     "$prefix/include/unity.h" "$prefix/include/unity_internals.h" \
     "$prefix/include/event2/event.h" "$prefix/include/event2/http.h" \
     "$prefix/include/event2/bufferevent.h" \
@@ -24,17 +25,38 @@ touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
     "$prefix/include/curl/curl.h" "$prefix/include/archive.h" \
     "$prefix/include/archive_entry.h" "$prefix/include/zlib.h" \
     "$prefix/include/lzma.h" "$prefix/include/openssl/ssl.h" \
-    "$prefix/lib/libargtable3.a" "$prefix/lib/libunity.a" \
+    "$prefix/lib/libargtable3.a" "$prefix/lib/libcares.a" \
+    "$prefix/lib/libunity.a" \
     "$prefix/lib/libevent_core.a" "$prefix/lib/libevent_extra.a" \
     "$prefix/lib/libcurl.a" "$prefix/lib/libarchive.a" \
     "$prefix/lib/libz.a" "$prefix/lib/liblzma.a" \
     "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a"
 cat >"$prefix/bin/curl-config" <<EOF_CURL_CONFIG
 #!/bin/sh
-[ "\${1:-}" = --static-libs ] || exit 2
-printf '%s\n' '$prefix/lib/libcurl.a -L$prefix/lib -lssl -lcrypto -lz'
+case "\${1:-}" in
+    --static-libs)
+        printf '%s\n' '$prefix/lib/libcurl.a -L$prefix/lib -lcares -lssl -lcrypto -lz'
+        ;;
+    --features)
+        printf '%s\n' AsynchDNS
+        ;;
+    --configure)
+        printf "%s\n" " '--prefix=$prefix' '--enable-ares=$prefix'"
+        ;;
+    *) exit 2 ;;
+esac
 EOF_CURL_CONFIG
 chmod +x "$prefix/bin/curl-config"
+cat >"$prefix/lib/pkgconfig/libcares.pc" <<EOF_CARES_PC
+prefix=$prefix
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: c-ares
+Description: build-system fixture
+Version: 1
+Libs: -L\${libdir} -lcares
+Cflags: -I\${includedir}
+EOF_CARES_PC
 cat >"$prefix/lib/pkgconfig/libarchive.pc" <<EOF_ARCHIVE_PC
 prefix=$prefix
 libdir=\${prefix}/lib
@@ -169,7 +191,7 @@ assert_contains "$config_text" '-lm'
 assert_contains "$config_text" 'official_build=0'
 assert_contains "$config_text" 'dependency_platform=linux-x64'
 assert_contains "$config_text" 'dependency_profile=gcc'
-assert_contains "$config_text" 'dependency_recipe=1'
+assert_contains "$config_text" 'dependency_recipe=2'
 dependency_lock=$(sed -n 's/^dependency_lock_sha256=//p' "$config")
 case "$dependency_lock" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;

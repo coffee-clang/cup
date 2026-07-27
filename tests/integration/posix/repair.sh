@@ -5,7 +5,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin repair
 prepare_command_environment
@@ -54,7 +54,8 @@ find "$TEST_HOME/.cup/recovery" -type d -name package | grep . >/dev/null ||
     fail 'quarantined package was not preserved under recovery'
 assert_contains "$output" 'unknown component'
 rm -rf "$TEST_HOME/.cup/components/unknown-component"
-assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5/info.txt"
+assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/22.1.5/info.txt"
 
 # Invalid state is preserved and deterministically rebuilt from valid packages
 # when no package transaction makes that reconstruction ambiguous.

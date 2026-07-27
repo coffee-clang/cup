@@ -58,8 +58,6 @@ dkms.conf
 # debug information files
 *.dwo
 
-# vscode directory
-.vscode/
 
 # doxygen
 /doxygen-output

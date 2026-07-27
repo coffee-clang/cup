@@ -4,7 +4,7 @@
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$TESTS_ROOT/support/posix-cli.sh"
+. "$TESTS_ROOT/support/posix/cli.sh"
 
 test_begin archive-safety
 prepare_command_environment
@@ -117,7 +117,8 @@ create_unsafe_archive() {
     archive=$cache_dir/$package_name.tar.gz
     mkdir -p "$cache_dir"
 
-    fixture=$PROJECT_ROOT/build/$TEST_PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/archive-fixture
+    configuration=${CUP_TEST_CONFIGURATION:-development}
+    fixture=$PROJECT_ROOT/build/$TEST_PLATFORM/$configuration/tests/helpers/archive-fixture
     assert_file "$fixture"
     "$fixture" "$package_name" "$version" "$host" "$target" \
         "$archive" "$mode"

@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$CupExecutablePath
 )
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 
 function Get-Sha256Lower {
@@ -117,7 +117,9 @@ try {
 
     Write-Utf8NoBom -Path $statePath -Lines @("unexpected.key=value")
     $ambiguous = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
-    Assert-Contains $ambiguous "state.txt is missing or invalid while a package transaction is pending"
+    Assert-Contains $ambiguous (
+        "state.txt is missing or invalid while a package transaction is " +
+        "pending")
     Assert-PathExists $transactionPath
     Assert-PathExists $stagingPath
     Write-Utf8NoBom -Path $statePath -Lines $validState

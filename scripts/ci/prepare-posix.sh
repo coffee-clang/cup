@@ -30,7 +30,7 @@ case "$family" in
             source)
                 # The primary Linux build uses GCC. Clang is installed only for
                 # the x64 secondary compiler pass; OpenSSL is needed only by
-                # the x64 network-portability fixture.
+                # the x64 static-release portability fixture.
                 case "$platform" in
                     linux-x64|'')
                         packages="$packages clang openssl"

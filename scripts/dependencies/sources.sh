@@ -3,7 +3,8 @@
 # download sizes are transport details and do not invalidate a compatible
 # dependency prefix.
 
-DEPENDENCY_LOCK_FILE=${CUP_DEPENDENCY_LOCK_FILE:-$CUP_DEPENDENCIES_DIR/../../config/dependencies.lock}
+DEPENDENCY_LOCK_DEFAULT=$CUP_DEPENDENCIES_DIR/../../config/dependencies.lock
+DEPENDENCY_LOCK_FILE=${CUP_DEPENDENCY_LOCK_FILE:-$DEPENDENCY_LOCK_DEFAULT}
 
 load_dependency_lock() {
     [ -f "$DEPENDENCY_LOCK_FILE" ] || {
@@ -56,6 +57,8 @@ load_dependency_lock() {
             xz.sha256) XZ_SHA256=$value ;;
             openssl.version) OPENSSL_VERSION=$value ;;
             openssl.sha256) OPENSSL_SHA256=$value ;;
+            cares.version) CARES_VERSION=$value ;;
+            cares.sha256) CARES_SHA256=$value ;;
             curl.version) CURL_VERSION=$value ;;
             curl.sha256) CURL_SHA256=$value ;;
             libarchive.version) LIBARCHIVE_VERSION=$value ;;
@@ -80,7 +83,7 @@ load_dependency_lock() {
         return 1
     }
 
-    for package in ZLIB XZ OPENSSL CURL LIBARCHIVE ARGTABLE3 UTHASH UNITY LIBEVENT; do
+    for package in ZLIB XZ OPENSSL CARES CURL LIBARCHIVE ARGTABLE3 UTHASH UNITY LIBEVENT; do
         eval "version=\${${package}_VERSION:-}"
         eval "checksum=\${${package}_SHA256:-}"
         case "$version" in
@@ -104,19 +107,30 @@ load_dependency_lock() {
 
 load_dependency_lock
 
-ZLIB_URL="https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz"
-XZ_URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/xz-${XZ_VERSION}.tar.xz"
-OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+ZLIB_URL="https://github.com/madler/zlib/releases/download"
+ZLIB_URL="${ZLIB_URL}/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz"
+XZ_URL="https://github.com/tukaani-project/xz/releases/download"
+XZ_URL="${XZ_URL}/v${XZ_VERSION}/xz-${XZ_VERSION}.tar.xz"
+OPENSSL_URL="https://github.com/openssl/openssl/releases/download"
+OPENSSL_URL="${OPENSSL_URL}/openssl-${OPENSSL_VERSION}"
+OPENSSL_URL="${OPENSSL_URL}/openssl-${OPENSSL_VERSION}.tar.gz"
+CARES_URL="https://github.com/c-ares/c-ares/releases/download"
+CARES_URL="${CARES_URL}/v${CARES_VERSION}/c-ares-${CARES_VERSION}.tar.gz"
 CURL_URL="https://curl.se/download/curl-${CURL_VERSION}.tar.xz"
-LIBARCHIVE_URL="https://github.com/libarchive/libarchive/releases/download/v${LIBARCHIVE_VERSION}/libarchive-${LIBARCHIVE_VERSION}.tar.xz"
+LIBARCHIVE_URL="https://github.com/libarchive/libarchive/releases/download"
+LIBARCHIVE_URL="${LIBARCHIVE_URL}/v${LIBARCHIVE_VERSION}"
+LIBARCHIVE_URL="${LIBARCHIVE_URL}/libarchive-${LIBARCHIVE_VERSION}.tar.xz"
 ARGTABLE3_URL="https://github.com/argtable/argtable3/archive/refs/tags/v${ARGTABLE3_VERSION}.tar.gz"
 UTHASH_URL="https://github.com/troydhanson/uthash/archive/refs/tags/v${UTHASH_VERSION}.tar.gz"
 UNITY_URL="https://github.com/ThrowTheSwitch/Unity/archive/refs/tags/v${UNITY_VERSION}.tar.gz"
-LIBEVENT_URL="https://github.com/libevent/libevent/releases/download/release-${LIBEVENT_VERSION}/libevent-${LIBEVENT_VERSION}.tar.gz"
+LIBEVENT_URL="https://github.com/libevent/libevent/releases/download"
+LIBEVENT_URL="${LIBEVENT_URL}/release-${LIBEVENT_VERSION}"
+LIBEVENT_URL="${LIBEVENT_URL}/libevent-${LIBEVENT_VERSION}.tar.gz"
 
 ZLIB_MIN_BYTES=100000
 XZ_MIN_BYTES=500000
 OPENSSL_MIN_BYTES=1000000
+CARES_MIN_BYTES=500000
 CURL_MIN_BYTES=1000000
 LIBEVENT_MIN_BYTES=1000000
 LIBARCHIVE_MIN_BYTES=1000000
@@ -125,12 +139,12 @@ UTHASH_MIN_BYTES=100000
 UNITY_MIN_BYTES=100000
 
 all_source_packages() {
-    printf '%s\n' zlib xz openssl curl libarchive argtable3 uthash unity libevent
+    printf '%s\n' zlib xz openssl cares curl libarchive argtable3 uthash unity libevent
 }
 
 dependency_scope_for_package() {
     case "$1" in
-        zlib|xz|openssl|curl|libarchive|argtable3|uthash) printf '%s\n' runtime ;;
+        zlib|xz|openssl|cares|curl|libarchive|argtable3|uthash) printf '%s\n' runtime ;;
         unity|libevent) printf '%s\n' test ;;
         *) echo "Error: unknown source package '$1'." >&2; return 1 ;;
     esac
@@ -138,7 +152,7 @@ dependency_scope_for_package() {
 
 dependency_usage_for_package() {
     case "$1" in
-        zlib|xz|openssl|curl|libarchive|argtable3) printf '%s\n' static-library ;;
+        zlib|xz|openssl|cares|curl|libarchive|argtable3) printf '%s\n' static-library ;;
         uthash) printf '%s\n' header-only ;;
         unity) printf '%s\n' unit-test-library ;;
         libevent) printf '%s\n' network-test-library ;;
@@ -151,6 +165,7 @@ source_url_for_package() {
         zlib) printf '%s\n' "$ZLIB_URL" ;;
         xz) printf '%s\n' "$XZ_URL" ;;
         openssl) printf '%s\n' "$OPENSSL_URL" ;;
+        cares) printf '%s\n' "$CARES_URL" ;;
         curl) printf '%s\n' "$CURL_URL" ;;
         libarchive) printf '%s\n' "$LIBARCHIVE_URL" ;;
         argtable3) printf '%s\n' "$ARGTABLE3_URL" ;;
@@ -166,6 +181,7 @@ minimum_bytes_for_package() {
         zlib) printf '%s\n' "$ZLIB_MIN_BYTES" ;;
         xz) printf '%s\n' "$XZ_MIN_BYTES" ;;
         openssl) printf '%s\n' "$OPENSSL_MIN_BYTES" ;;
+        cares) printf '%s\n' "$CARES_MIN_BYTES" ;;
         curl) printf '%s\n' "$CURL_MIN_BYTES" ;;
         libevent) printf '%s\n' "$LIBEVENT_MIN_BYTES" ;;
         libarchive) printf '%s\n' "$LIBARCHIVE_MIN_BYTES" ;;
@@ -181,6 +197,7 @@ sha256_for_package() {
         zlib) printf '%s\n' "$ZLIB_SHA256" ;;
         xz) printf '%s\n' "$XZ_SHA256" ;;
         openssl) printf '%s\n' "$OPENSSL_SHA256" ;;
+        cares) printf '%s\n' "$CARES_SHA256" ;;
         curl) printf '%s\n' "$CURL_SHA256" ;;
         libarchive) printf '%s\n' "$LIBARCHIVE_SHA256" ;;
         argtable3) printf '%s\n' "$ARGTABLE3_SHA256" ;;
