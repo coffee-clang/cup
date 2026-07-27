@@ -706,7 +706,8 @@ test-windows: deps
 		./tests/runners/unit.sh
 	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
 		"$$(cygpath -w '$(PROJECT_ROOT)/tests/integration/windows/run.ps1')" \
-		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')"
+		-CupPath "$$(cygpath -w '$(PROJECT_ROOT)/build/windows-x64/development/bin/cup.exe')" \
+		-Configuration development
 
 check-ca-bundle:
 	@./scripts/certs/check-ca-bundle.sh

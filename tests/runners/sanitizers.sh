@@ -121,7 +121,7 @@ if [ "$PLATFORM" = windows-x64 ]; then
     cup_test_run_logged 'Running sanitizer Windows integration tests...' "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
-            -CupPath "$windows_binary"
+            -CupPath "$windows_binary" -Configuration sanitizers
 else
     cup_test_run_logged 'Running sanitizer POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=sanitizers CUP_TEST_PLATFORM="$PLATFORM" \

@@ -150,7 +150,7 @@ if [ "$PLATFORM" = windows-x64 ]; then
     cup_test_run_logged 'Running instrumented Windows integration tests...' "$REPORT_DIR/integration.log" \
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
-        -CupPath "$windows_binary"
+        -CupPath "$windows_binary" -Configuration coverage
 else
     cup_test_run_logged 'Running instrumented POSIX integration tests...' "$REPORT_DIR/integration.log" \
         env CUP_TEST_CONFIGURATION=coverage CUP_TEST_PLATFORM="$PLATFORM" \

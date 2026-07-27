@@ -2,7 +2,11 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$CupPath
+    [string]$CupPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("development", "debug", "coverage", "sanitizers", "release")]
+    [string]$Configuration
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -14,6 +18,7 @@ $resolvedCup = (Resolve-Path -LiteralPath $CupPath).Path
 if ([string]::IsNullOrWhiteSpace($resolvedCup)) {
     throw "failed to resolve cup executable path"
 }
+$env:CUP_TEST_CONFIGURATION = $Configuration
 $suites = @(
     "cli-contract.ps1",
     "package-catalog.ps1",
