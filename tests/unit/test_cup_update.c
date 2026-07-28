@@ -326,7 +326,7 @@ CupError system_create_temp_directory(const char *directory,
         return CUP_ERR_TEMPORARY;
     }
     staging_serial++;
-    if (snprintf(path, path_size, "%s/staging-%u", temp_dir, staging_serial) <= 0) {
+    if (snprintf(path, path_size, "%s/cup-update-%u.tmp", temp_dir, staging_serial) <= 0) {
         return CUP_ERR_TEMPORARY;
     }
     return test_mkdir(path, 0700) == 0 ? CUP_OK : CUP_ERR_TEMPORARY;
@@ -353,7 +353,8 @@ CupError cup_update_helper_prepare(void) {
 
 CupError cup_update_helper_start(const char *token) {
     TEST_ASSERT_NOT_NULL(token);
-    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-staging-"));
+    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));
+    TEST_ASSERT_NOT_NULL(strstr(token, ".tmp"));
     helper_calls++;
     return helper_result;
 }
@@ -455,7 +456,8 @@ CupError cup_update_journal_begin(const char *temporary_path,
                                   const char *version) {
     TEST_ASSERT_NOT_NULL(temporary_path);
     TEST_ASSERT_NOT_NULL(token);
-    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-staging-"));
+    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));
+    TEST_ASSERT_NOT_NULL(strstr(token, ".tmp"));
     TEST_ASSERT_EQUAL_STRING(versioned_version, version);
     transaction_begin_calls++;
     return transaction_begin_result;

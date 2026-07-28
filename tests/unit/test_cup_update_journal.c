@@ -336,12 +336,14 @@ static void test_model_and_begin(void) {
     TEST_ASSERT_EQUAL_STRING("failed", cup_update_phase_name(CUP_UPDATE_PHASE_FAILED));
     TEST_ASSERT_EQUAL_STRING("invalid", cup_update_phase_name((CupUpdatePhase)99));
 
-    make_staging("cup-update-begin", staging, sizeof(staging));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_begin(staging, "token-1", "1.2.3"));
+    make_staging("cup-update-begin.tmp", staging, sizeof(staging));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        cup_update_journal_begin(staging, "u1234-cup-update-begin.tmp", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_LOADED, status);
-    TEST_ASSERT_EQUAL_STRING("cup-update-begin", journal.temporary_name);
-    TEST_ASSERT_EQUAL_STRING("token-1", journal.token);
+    TEST_ASSERT_EQUAL_STRING("cup-update-begin.tmp", journal.temporary_name);
+    TEST_ASSERT_EQUAL_STRING("u1234-cup-update-begin.tmp", journal.token);
     TEST_ASSERT_EQUAL_STRING("1.2.3", journal.version);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_SCHEDULED, journal.phase);
 

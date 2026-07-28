@@ -85,10 +85,11 @@ static int token_is_valid(const char *token) {
     if (text_is_empty(token) || strlen(token) >= MAX_PATH_LEN) {
         return 0;
     }
+    /* Tokens embed the generated staging name; Windows temporary directories use a .tmp suffix. */
     for (i = 0; token[i] != '\0'; ++i) {
         char c = token[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '-' || c == '_')) {
+              c == '-' || c == '_' || c == '.')) {
             return 0;
         }
     }
