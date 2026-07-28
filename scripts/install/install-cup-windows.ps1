@@ -33,6 +33,10 @@ $CupAsset = "cup-windows-x64.exe"
 $Staging = ""
 $UninstallMarker = ""
 $CupAvailableInPath = $false
+# PowerShell converts $null to an empty string for .NET string parameters.
+# NullString preserves the real null required to omit File.Replace backups.
+$NoFileReplaceBackup =
+    [System.Management.Automation.Language.NullString]::Value
 
 function Fail([string]$Message) {
     throw "Error: $Message"
@@ -498,7 +502,8 @@ function Restore-Asset([hashtable]$Asset) {
     if ($null -ne $backupItem) {
         Clear-ReadOnly $Asset.Destination
         if ($null -ne $destinationItem) {
-            [System.IO.File]::Replace($backup, $Asset.Destination, $null, $true)
+            [System.IO.File]::Replace(
+                $backup, $Asset.Destination, $NoFileReplaceBackup, $true)
         } else {
             [System.IO.File]::Move($backup, $Asset.Destination)
         }
@@ -590,7 +595,8 @@ function Commit-Asset([hashtable]$Asset) {
     New-Item -ItemType File -Path $installed | Out-Null
     if ($null -ne $destinationItem) {
         Clear-ReadOnly $Asset.Destination
-        [System.IO.File]::Replace($Asset.Source, $Asset.Destination, $null, $true)
+        [System.IO.File]::Replace(
+            $Asset.Source, $Asset.Destination, $NoFileReplaceBackup, $true)
     } else {
         [System.IO.File]::Move($Asset.Source, $Asset.Destination)
     }
@@ -792,8 +798,6 @@ function Main {
     New-Item -ItemType Directory -Path $Staging | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $Staging "backup") | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $Staging "installed") | Out-Null
-    $committed = $false
-
     try {
         Write-Info "Installing cup into $CupRoot"
         Receive-BootstrapAssets
@@ -806,12 +810,18 @@ function Main {
             Remove-Item -LiteralPath $UninstallMarker -Force
         }
         New-Item -ItemType File -Path (Join-Path $Staging "committed") | Out-Null
-        $committed = $true
-    } finally {
-        if (-not $committed -and
-            (Test-Path -LiteralPath $Staging -PathType Container)) {
-            Invoke-BootstrapRollback
+    } catch {
+        $installError = $_.Exception.Message
+        if (Test-Path -LiteralPath $Staging -PathType Container) {
+            try {
+                Invoke-BootstrapRollback
+            } catch {
+                throw (
+                    "$installError$([Environment]::NewLine)" +
+                    $_.Exception.Message)
+            }
         }
+        throw
     }
 
     try {
