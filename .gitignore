@@ -1,46 +1,11 @@
-# Official build and test outputs
+# Build and test outputs
 /build/
 
-# Generated release artifacts
+# Release artifacts
 /dist/
 
 # Generated documentation
 /book/
 
-# Documentation assets fetched locally
+# Documentation theme fetched locally
 /docs/theme/index.hbs
-
-# Root-level static-analysis reports
-/*.plist
-
-# Accidental native build outputs outside build/
-*.d
-*.o
-*.obj
-*.elf
-
-*.a
-*.lib
-*.la
-*.lo
-
-*.so
-*.so.*
-*.dylib
-*.dll
-
-*.exe
-*.out
-*.app/
-
-*.map
-*.ilk
-*.exp
-
-*.gch
-*.pch
-*.su
-*.dwo
-
-*.pdb
-*.dSYM/
