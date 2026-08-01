@@ -17,6 +17,8 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
+#include "registry.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -35,18 +37,155 @@ typedef struct {
     int wrappers_ready;
 } RemoveOperation;
 
+static CupError normalize_remove_selection(const char *component_input,
+                                           const char *selector_input,
+                                           char *component,
+                                           size_t component_size,
+                                           char *tool,
+                                           size_t tool_size,
+                                           char *release,
+                                           size_t release_size,
+                                           int *release_omitted) {
+    CupError err;
+    char normalized_release[MAX_IDENTIFIER_LEN];
+
+    if (text_is_empty(selector_input) || component == NULL || component_size == 0 ||
+        tool == NULL || tool_size == 0 || release == NULL || release_size == 0 ||
+        release_omitted == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    *release_omitted = strchr(selector_input, '@') == NULL;
+    if (*release_omitted) {
+        err = text_copy_lower_ascii(tool, tool_size, selector_input);
+        release[0] = '\0';
+    } else {
+        err = package_selector_parse_parts(
+            selector_input, tool, tool_size, release, release_size);
+        if (err == CUP_OK) {
+            err = text_copy_lower_ascii(tool, tool_size, tool);
+        }
+        if (err == CUP_OK) {
+            err = text_copy_lower_ascii(
+                normalized_release, sizeof(normalized_release), release);
+        }
+        if (err == CUP_OK && strcmp(normalized_release, "stable") == 0) {
+            err = text_copy(release, release_size, "stable");
+        }
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: invalid remove selector '%s'. Expected '<tool>[@<release>]'.\n",
+                selector_input);
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    if (text_is_empty(component_input)) {
+        err = registry_find_tool_component(tool, component, component_size);
+    } else {
+        err = text_copy_lower_ascii(component, component_size, component_input);
+        if (err == CUP_OK) {
+            err = registry_validate_tool(component, tool);
+        }
+    }
+    return err;
+}
+
+static int installed_identity_matches(const PackageIdentity *candidate,
+                                      const char *component,
+                                      const char *tool,
+                                      const char *host,
+                                      const char *target) {
+    return candidate != NULL && strcmp(candidate->component, component) == 0 &&
+           strcmp(candidate->tool, tool) == 0 &&
+           strcmp(candidate->host_platform, host) == 0 &&
+           strcmp(candidate->target_platform, target) == 0;
+}
+
+static CupError resolve_unique_installed_release(const CupState *state,
+                                                 const char *component,
+                                                 const char *tool,
+                                                 const char *host,
+                                                 const char *target,
+                                                 char *release,
+                                                 size_t release_size) {
+    const PackageIdentity *match = NULL;
+    size_t match_count = 0;
+    size_t i;
+
+    if (state == NULL || text_is_empty(component) || text_is_empty(tool) ||
+        text_is_empty(host) || text_is_empty(target) || release == NULL || release_size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    for (i = 0; i < state->installed_count; ++i) {
+        if (installed_identity_matches(
+                &state->installed[i], component, tool, host, target)) {
+            match = &state->installed[i];
+            match_count++;
+        }
+    }
+
+    if (match_count == 0) {
+        fprintf(stderr,
+                "Error: no installed release matches '%s:%s' for host '%s', target '%s'.\n",
+                component,
+                tool,
+                host,
+                target);
+        return CUP_ERR_NOT_INSTALLED;
+    }
+    if (match_count > 1) {
+        fprintf(stderr,
+                "Error: remove selection '%s:%s' is ambiguous for host '%s', target '%s'.\n"
+                "Installed releases:\n",
+                component,
+                tool,
+                host,
+                target);
+        for (i = 0; i < state->installed_count; ++i) {
+            if (installed_identity_matches(
+                    &state->installed[i], component, tool, host, target)) {
+                fprintf(stderr, "  %s@%s\n", tool, state->installed[i].version);
+            }
+        }
+        fprintf(stderr,
+                "Specify one of the installed releases with:\n"
+                "  cup remove %s %s@<release> --target %s\n",
+                component,
+                tool,
+                target);
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    return text_copy(release, release_size, match->version);
+}
+
 static CupError prepare_remove(RemoveOperation *operation,
                                const char *component,
                                const char *selector,
                                const char *target_override) {
     CupError err;
+    char normalized_component[MAX_IDENTIFIER_LEN];
+    char tool[MAX_IDENTIFIER_LEN];
+    char release[MAX_IDENTIFIER_LEN];
+    char normalized_selector[MAX_SELECTOR_LEN];
+    int release_omitted;
 
-    /* Parse and resolve the request under an exclusive, transaction-free context. */
-    err = package_request_parse(component, selector, &operation->request);
+    err = normalize_remove_selection(component,
+                                     selector,
+                                     normalized_component,
+                                     sizeof(normalized_component),
+                                     tool,
+                                     sizeof(tool),
+                                     release,
+                                     sizeof(release),
+                                     &release_omitted);
     if (err != CUP_OK) {
         return err;
     }
 
+    /* Resolve the request under one exclusive, transaction-free state snapshot. */
     err = command_context_begin(&operation->context, target_override, SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
         return err;
@@ -62,6 +201,36 @@ static CupError prepare_remove(RemoveOperation *operation,
         return err;
     }
 
+    if (release_omitted) {
+        err = resolve_unique_installed_release(&operation->context.state,
+                                               normalized_component,
+                                               tool,
+                                               operation->context.host_platform,
+                                               operation->context.target_platform,
+                                               release,
+                                               sizeof(release));
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+    err = package_selector_format_parts(
+        normalized_selector, sizeof(normalized_selector), tool, release);
+    if (err == CUP_OK) {
+        err = package_request_parse(
+            normalized_component, normalized_selector, &operation->request);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (release_omitted) {
+        err = text_copy(operation->request.input_selector,
+                        sizeof(operation->request.input_selector),
+                        tool);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
     if (package_release_is_stable(operation->request.selector.release)) {
         err = command_context_load_catalog(&operation->context);
         if (err != CUP_OK) {
@@ -71,7 +240,7 @@ static CupError prepare_remove(RemoveOperation *operation,
 
     err =
         package_request_resolve(operation->context.has_catalog ? &operation->context.catalog : NULL,
-                                component,
+                                normalized_component,
                                 operation->context.host_platform,
                                 operation->context.target_platform,
                                 &operation->request);
@@ -80,7 +249,7 @@ static CupError prepare_remove(RemoveOperation *operation,
     }
 
     err = package_identity_init(&operation->package,
-                                component,
+                                normalized_component,
                                 operation->request.selector.tool,
                                 operation->context.host_platform,
                                 operation->context.target_platform,

@@ -38,15 +38,17 @@ does not mean a Windows executable installed on Linux.
 Availability is determined by the exact catalog tuple. Not every tool supports
 every host/target combination.
 
-## Canonical roots
+## Persistent roots
 
 ```text
 Linux/macOS  $HOME/.cup
 Windows      %USERPROFILE%\.cup
 ```
 
-Unix-like shells on Windows delegate cup asset installation to PowerShell and
-use the native Windows root.
+These are the primary names. When the primary path is an unrelated directory,
+CUP preserves it and uses `.coffee-cup` in the same home. A strict `root.txt`
+marker keeps selection stable. Unix-like shells on Windows delegate cup asset
+installation to PowerShell and use the selected native Windows root.
 
 ## Executable names
 

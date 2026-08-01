@@ -4,6 +4,7 @@
 
 #include "constants.h"
 #include "checksum.h"
+#include "cup_assets.h"
 #include "cup_update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -29,7 +30,6 @@ static char root[MAX_PATH_LEN];
 static char staging[MAX_PATH_LEN];
 static int journal_cleared;
 static int journal_clear_failures_remaining;
-static int success_recorded;
 static int failure_recorded;
 static int lock_released;
 static int replace_calls;
@@ -155,7 +155,6 @@ static void reset_scenario(void) {
 
     journal_cleared = 0;
     journal_clear_failures_remaining = 0;
-    success_recorded = 0;
     failure_recorded = 0;
     lock_released = 0;
     replace_calls = 0;
@@ -508,6 +507,7 @@ CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
     } else {
         TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_FAILED, phase);
         TEST_ASSERT_EQUAL_INT(expected_failure_error, error_code);
+        failure_recorded++;
     }
     journal->phase = phase;
     journal->error_code = error_code;
@@ -535,19 +535,26 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
     return recovery_error;
 }
 
-CupError cup_update_result_write(CupUpdateResultStatus status,
-                                 int error_code,
-                                 const char *version) {
-    TEST_ASSERT_EQUAL_STRING("2.0.0", version);
-    if (status == CUP_UPDATE_RESULT_SUCCESS) {
-        TEST_ASSERT_EQUAL_INT(0, error_code);
-        success_recorded++;
-    } else {
-        TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RESULT_FAILED, status);
-        TEST_ASSERT_EQUAL_INT(expected_failure_error, error_code);
-        failure_recorded++;
-    }
+CupError cup_assets_inspect(CupAssetsInspection *inspection) {
+    TEST_ASSERT_NOT_NULL(inspection);
+    memset(inspection, 0, sizeof(*inspection));
+    inspection->binary = CUP_ASSET_VALID;
+    inspection->helper = CUP_ASSET_VALID;
+    inspection->catalog = CUP_ASSET_VALID;
+    inspection->install_policy = CUP_ASSET_VALID;
+    inspection->uninstall = CUP_ASSET_VALID;
+    inspection->common_checksums = CUP_ASSET_VALID;
+    inspection->platform_checksums = CUP_ASSET_VALID;
     return CUP_OK;
+}
+
+int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
+    return inspection != NULL && inspection->binary == CUP_ASSET_VALID &&
+           inspection->helper == CUP_ASSET_VALID && inspection->catalog == CUP_ASSET_VALID &&
+           inspection->install_policy == CUP_ASSET_VALID &&
+           inspection->uninstall == CUP_ASSET_VALID &&
+           inspection->common_checksums == CUP_ASSET_VALID &&
+           inspection->platform_checksums == CUP_ASSET_VALID;
 }
 
 static void make_closed_parent_signal(char *value, size_t size) {
@@ -647,16 +654,15 @@ static void test_run_rejects_parent_and_journal_failures(void) {
                           cup_update_helper_run("token", wait_value));
 }
 
-static void test_lock_failure_is_recorded_without_recovery(void) {
+static void test_lock_failure_preserves_scheduled_journal(void) {
     char wait_value[32];
 
     lock_result = CUP_ERR_FILESYSTEM;
-    expected_failure_error = CUP_ERR_FILESYSTEM;
     make_closed_parent_signal(wait_value, sizeof(wait_value));
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           cup_update_helper_run("token", wait_value));
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
+    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
     TEST_ASSERT_EQUAL_INT(0, lock_released);
 }
@@ -749,7 +755,7 @@ static void test_asset_path_failures_abort_before_commit(void) {
         make_closed_parent_signal(wait_value, sizeof(wait_value));
         TEST_ASSERT_EQUAL_INT(
             expected_failure_error, cup_update_helper_run("token", wait_value));
-        TEST_ASSERT_EQUAL_INT(1, failure_recorded);
+        TEST_ASSERT_EQUAL_INT(fail_call == 1 ? 0 : 1, failure_recorded);
         TEST_ASSERT_EQUAL_INT(fail_call == 1 ? 0 : 1, recovery_calls);
     }
 }
@@ -766,12 +772,11 @@ static void test_lock_retry_and_exhaustion(void) {
 
     restart_scenario();
     lock_failures_remaining = 600;
-    expected_failure_error = CUP_ERR_LOCK;
     make_closed_parent_signal(wait_value, sizeof(wait_value));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(600, lock_calls);
     TEST_ASSERT_EQUAL_INT(600, sleep_calls);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
+    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
 }
 #endif
@@ -810,7 +815,6 @@ static void test_commit_keeps_executable_continuously_available(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(1, success_recorded);
     TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_released);
@@ -833,7 +837,6 @@ static void test_cleanup_failure_does_not_turn_committed_update_into_failure(voi
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(1, success_recorded);
     TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_released);
@@ -844,7 +847,7 @@ static void test_cleanup_failure_does_not_turn_committed_update_into_failure(voi
     assert_supporting_assets_are_new();
 }
 
-static void test_recovery_finalization_records_committed_generation_as_success(void) {
+static void test_recovery_finalizes_committed_generation(void) {
     char wait_value[32];
     char path[MAX_PATH_LEN];
 
@@ -855,8 +858,7 @@ static void test_recovery_finalization_records_committed_generation_as_success(v
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(1, success_recorded);
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
+    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_REPLACE_BINARY, recovery_mode);
     TEST_ASSERT_EQUAL_INT(1, lock_released);
@@ -875,7 +877,6 @@ static void test_failure_delegates_binary_rollback_to_detached_helper(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_helper_run("token", wait_value));
     TEST_ASSERT_EQUAL_INT(0, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(0, success_recorded);
     TEST_ASSERT_EQUAL_INT(1, failure_recorded);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_REPLACE_BINARY, recovery_mode);
@@ -983,7 +984,7 @@ int main(void) {
     RUN_TEST(test_prepare_reports_copy_and_permission_failures);
     RUN_TEST(test_run_rejects_invalid_handoff);
     RUN_TEST(test_run_rejects_parent_and_journal_failures);
-    RUN_TEST(test_lock_failure_is_recorded_without_recovery);
+    RUN_TEST(test_lock_failure_preserves_scheduled_journal);
     RUN_TEST(test_missing_staged_asset_fails_validation);
     RUN_TEST(test_backup_copy_failure_rolls_back);
     RUN_TEST(test_marker_durability_failure_is_commit_error);
@@ -993,7 +994,7 @@ int main(void) {
     RUN_TEST(test_permission_failure_after_replace_is_commit_error);
     RUN_TEST(test_commit_keeps_executable_continuously_available);
     RUN_TEST(test_cleanup_failure_does_not_turn_committed_update_into_failure);
-    RUN_TEST(test_recovery_finalization_records_committed_generation_as_success);
+    RUN_TEST(test_recovery_finalizes_committed_generation);
     RUN_TEST(test_failure_delegates_binary_rollback_to_detached_helper);
     RUN_TEST(test_failed_recovery_preserves_original_error);
     return UNITY_END();

@@ -11,6 +11,7 @@
 #include "registry.h"
 #include "system.h"
 #include "text.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -355,6 +356,7 @@ CupError install_policy_load(InstallPolicy *policy) {
     if (policy == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    install_policy_init(policy);
     err = layout_get_install_policy_path(path, sizeof(path));
     if (err != CUP_OK) {
         return err;
@@ -366,6 +368,7 @@ CupError install_policy_load(InstallPolicy *policy) {
     if (exists) {
         return install_policy_load_installed(policy);
     }
+#if !CUP_VERSION_OFFICIAL
     err = system_path_exists(CUP_DEVELOPMENT_INSTALL_POLICY_PATH, &exists);
     if (err != CUP_OK) {
         return err;
@@ -373,6 +376,7 @@ CupError install_policy_load(InstallPolicy *policy) {
     if (exists) {
         return install_policy_load_development(policy);
     }
+#endif
     fprintf(stderr,
             "Error: installation policy not found. "
             "Run 'cup repair' to restore official configuration assets.\n");

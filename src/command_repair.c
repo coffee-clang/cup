@@ -23,6 +23,7 @@
 #include "cup_update_journal.h"
 #include "cup_update_helper.h"
 #include "runtime_journal.h"
+#include "uninstall_journal.h"
 #include "text.h"
 #include "version.h"
 
@@ -72,18 +73,18 @@ static CupError download_asset(const char *asset_name, char *path, size_t path_s
 #else
     char release_url[MAX_CATALOG_URL_LEN];
     char url[MAX_CATALOG_URL_LEN];
-    const char *test_base_url = getenv("CUP_INSTALL_BASE_URL");
+    const char *override_base_url = getenv("CUP_INSTALL_BASE_URL");
 
-    if (download_insecure_loopback_is_allowed(test_base_url)) {
-        size_t length = strlen(test_base_url);
+    if (download_insecure_loopback_is_allowed(override_base_url)) {
+        size_t length = strlen(override_base_url);
 
-        while (length > 0 && test_base_url[length - 1] == '/') {
+        while (length > 0 && override_base_url[length - 1] == '/') {
             length--;
         }
         if (length == 0 || length >= sizeof(release_url)) {
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
-        memcpy(release_url, test_base_url, length);
+        memcpy(release_url, override_base_url, length);
         release_url[length] = '\0';
     } else if (text_format(release_url,
                            sizeof(release_url),
@@ -788,15 +789,34 @@ static CupError repair_load_state(RepairContext *context) {
         return CUP_ERR_TRANSACTION;
     }
 
+    /* A cup-update journal does not own state, but its complete schema must still be validated
+     * before repair preserves or replaces an invalid state file. Classification by operation alone
+     * is not sufficient evidence for any mutation. */
+    if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
+        CupUpdateJournal journal;
+        CupUpdateJournalStatus status;
+
+        cup_update_journal_init(&journal);
+        err = cup_update_journal_load(&journal, &status);
+        if (err != CUP_OK || status != CUP_UPDATE_JOURNAL_LOADED) {
+            fprintf(stderr,
+                    "Error: the cup update journal is invalid; repair preserved it and state "
+                    "without modification.\n");
+            context->preserve_staging = 1;
+            return CUP_ERR_TRANSACTION;
+        }
+    }
+
     load_error = state_load(&context->state, &context->state_status);
     if (load_error == CUP_OK && context->state_status == STATE_FILE_LOADED &&
         state_validate(&context->state) == CUP_OK) {
         return CUP_OK;
     }
 
-    if (journal_kind == RUNTIME_JOURNAL_PACKAGE) {
+    if (journal_kind == RUNTIME_JOURNAL_PACKAGE ||
+        journal_kind == RUNTIME_JOURNAL_UNINSTALL) {
         fprintf(stderr,
-                "Error: state.txt is missing or invalid while a package "
+                "Error: state.txt is missing or invalid while a state-owning "
                 "transaction is pending; the commit point is ambiguous and all "
                 "evidence was preserved.\n");
         context->preserve_staging = 1;
@@ -829,6 +849,8 @@ static CupError repair_pending_transaction(RepairContext *context) {
     RuntimeJournalKind journal_kind;
     PackageTransactionStatus package_status;
     CupUpdateJournalStatus update_status;
+    UninstallJournal uninstall_journal;
+    UninstallJournalStatus uninstall_status;
     CupError err;
     err = runtime_journal_detect(&journal_kind);
     if (err != CUP_OK) {
@@ -851,12 +873,21 @@ static CupError repair_pending_transaction(RepairContext *context) {
         } else {
             err = CUP_ERR_TRANSACTION;
         }
-    } else {
+    } else if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
         err = cup_update_journal_load(&context->cup_update_journal, &update_status);
         if (err == CUP_OK && update_status == CUP_UPDATE_JOURNAL_LOADED) {
             err = cup_update_journal_recover(&context->cup_update_journal,
                                              CUP_UPDATE_RECOVER_PRESERVE_BINARY,
                                              NULL);
+        } else {
+            err = CUP_ERR_TRANSACTION;
+        }
+    } else {
+        uninstall_journal_init(&uninstall_journal);
+        err = uninstall_journal_load(&uninstall_journal, &uninstall_status);
+        if (err == CUP_OK && uninstall_status == UNINSTALL_JOURNAL_LOADED &&
+            uninstall_journal.phase == UNINSTALL_PHASE_FAILED) {
+            err = uninstall_journal_acknowledge_failure(&uninstall_journal);
         } else {
             err = CUP_ERR_TRANSACTION;
         }
@@ -1060,10 +1091,7 @@ CupError command_repair(void) {
         return err;
     }
 
-    err = cup_assets_require_no_pending_uninstall();
-    if (err == CUP_OK) {
-        err = layout_ensure_runtime();
-    }
+    err = layout_ensure_runtime();
     if (err == CUP_OK) {
         err = repair_load_state(&context);
     }

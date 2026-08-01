@@ -63,7 +63,7 @@ jobs:
         env:
           FAMILY: ${{ matrix.family }}
           PLATFORM: ${{ matrix.platform }}
-        run: scripts/ci/prepare-posix.sh source
+        run: scripts/ci/prepare-posix.sh debug
       - id: cache
         run: |
           prefix="$HOME/deps/${{ matrix.platform }}/install"

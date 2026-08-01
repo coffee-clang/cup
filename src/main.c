@@ -9,7 +9,6 @@
 #include "exit_status.h"
 #include "interrupt.h"
 #include "cup_update_helper.h"
-#include "cup_update_journal.h"
 #include "runtime_journal.h"
 #include "system.h"
 #include "package_selector.h"
@@ -61,33 +60,39 @@ static const CommandHelp COMMAND_HELP[] = {
      "Effects:\n  Read-only; missing or invalid package entries produce degraded output and a "
      "nonzero status."},
     {"install",
-     "install <component> [<tool>[@<release>]] [--target <target-platform>] "
+     "install [<component>] <tool>[@<release>] [--target <target-platform>] "
+     "[--format|-f <archive-format>] | install <component> [--target <target-platform>] "
      "[--format|-f <archive-format>] | install <profile|toolchain> <name> "
      "[--target <target-platform>] [--format|-f <archive-format>]",
      "Install one package, profile or toolchain.",
      "Description:\n  Resolve and install one package or a prevalidated group.\n"
-     "Arguments:\n  component            Component to install.\n"
-     "  tool[@release]      Optional explicit selector.\n"
+     "Arguments:\n  component            Optional explicit component or abbreviated component "
+     "install.\n"
+     "  tool[@release]      Tool selection; release defaults to stable.\n"
      "  profile|toolchain   Group kind followed by its name.\n"
      "Options:\n  --target <target-platform>  Select the target scope.\n"
      "  -f, --format <format>       Select tar.xz, tar.gz or zip.\n"
      "  -h, --help                  Show this help.\n"
      "Defaults:\n  Omitted tool resolves preferred > official default; omitted release means "
      "stable.\n"
-     "Examples:\n  cup install compiler\n  cup install compiler gcc@stable\n  cup install profile "
+     "Examples:\n  cup install gcc\n  cup install gcc@stable\n  cup install compiler\n"
+     "  cup install compiler gcc@stable\n  cup install profile "
      "standard\n  cup install toolchain llvm\n"
      "Effects:\n  Downloads, validates and atomically commits packages; an intact installed "
      "selection is idempotent."},
     {"remove",
-     "remove <component> <tool>@<release> [--target <target-platform>]",
+     "remove [<component>] <tool>[@<release>] [--target <target-platform>]",
      "Remove one installed release.",
      "Description:\n  Remove one concrete installed package and update exposed commands.\n"
-     "Arguments:\n  component       Installed component.\n  tool@release    Concrete installed "
-     "selector.\n"
+     "Arguments:\n  component       Optional explicit installed component.\n"
+     "  tool[@release]  Installed selection; release may be omitted only when unique.\n"
      "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
      "help.\n"
-     "Defaults:\n  Uses the current host and target.\n"
-     "Examples:\n  cup remove compiler clang@22.1.5\n"
+     "Defaults:\n  Uses the current host and target. Without a release, removes the package only "
+     "when exactly one installed version matches; otherwise lists the installed releases and "
+     "requires one explicitly.\n"
+     "Examples:\n  cup remove clang\n  cup remove clang@22.1.5\n"
+     "  cup remove compiler clang@22.1.5\n"
      "Effects:\n  Removes the selected package and updates defaults and exposed commands."},
     {"update",
      "update [cup|<tool>|<component>]",
@@ -191,6 +196,18 @@ static CupError normalize_selector(const char *input, char *output, size_t outpu
     return err == CUP_OK ? package_selector_format_parts(output, output_size, tool, release) : err;
 }
 
+static CupError normalize_optional_release_selector(const char *input,
+                                                    char *output,
+                                                    size_t output_size) {
+    if (text_is_empty(input) || output == NULL || output_size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (strchr(input, '@') != NULL) {
+        return normalize_selector(input, output, output_size);
+    }
+    return text_copy_lower_ascii(output, output_size, input);
+}
+
 static const CommandHelp *find_help(const char *name) {
     size_t i;
     for (i = 0; i < sizeof(COMMAND_HELP) / sizeof(COMMAND_HELP[0]); ++i) {
@@ -233,6 +250,7 @@ static void print_help(void) {
             "\nPackage selector:\n  <tool>@<release>\n"
             "\nExamples:\n"
             "  cup search compiler\n"
+            "  cup install gcc\n"
             "  cup install compiler gcc@stable\n"
             "  cup update compiler\n"
             "  cup default compiler gcc@stable\n"
@@ -355,7 +373,8 @@ static CupError parse_component_entry(const char *command,
 }
 
 static CupError parse_install(int argc, char **argv) {
-    struct arg_str *selector = arg_str1(NULL, NULL, "<component|profile|toolchain>", NULL);
+    struct arg_str *selector =
+        arg_str1(NULL, NULL, "<component|tool[@release]|profile|toolchain>", NULL);
     struct arg_str *value = arg_str0(NULL, NULL, "[tool[@release]|name]", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
     struct arg_str *format = arg_str0("f", "format", "<archive-format>", NULL);
@@ -375,9 +394,52 @@ static CupError parse_install(int argc, char **argv) {
         result = report_parse_error("install", end, errors);
     } else {
         result = command_install(selector->sval[0],
-                                         value->count ? value->sval[0] : NULL,
-                                         target->count ? target->sval[0] : NULL,
-                                         format->count ? format->sval[0] : NULL);
+                                 value->count ? value->sval[0] : NULL,
+                                 target->count ? target->sval[0] : NULL,
+                                 format->count ? format->sval[0] : NULL);
+    }
+    arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    return result;
+}
+
+static CupError parse_remove(int argc, char **argv) {
+    struct arg_str *first = arg_str1(NULL, NULL, "<component|tool[@release]>", NULL);
+    struct arg_str *second = arg_str0(NULL, NULL, "[tool[@release]]", NULL);
+    struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
+    struct arg_end *end = arg_end(8);
+    void *table[] = {first, second, target, end};
+    int errors;
+    CupError result;
+    char component[MAX_IDENTIFIER_LEN] = "";
+    char selector[MAX_SELECTOR_LEN];
+
+    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
+        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
+        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+        return CUP_ERR_TEMPORARY;
+    }
+
+    errors = arg_parse(argc - 1, argv + 1, table);
+    if (errors != 0) {
+        result = report_parse_error("remove", end, errors);
+    } else {
+        const char *selector_input = first->sval[0];
+
+        result = CUP_OK;
+        if (second->count != 0) {
+            result = text_copy_lower_ascii(
+                component, sizeof(component), first->sval[0]);
+            selector_input = second->sval[0];
+        }
+        if (result == CUP_OK) {
+            result = normalize_optional_release_selector(
+                selector_input, selector, sizeof(selector));
+        }
+        if (result == CUP_OK) {
+            result = command_remove(text_is_empty(component) ? NULL : component,
+                                    selector,
+                                    target->count ? target->sval[0] : NULL);
+        }
     }
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
@@ -560,9 +622,6 @@ int main(int argc, char *argv[]) {
         return CUP_STATUS_SUCCESS;
     }
 
-    /* Report the previous detached update result before enforcing the current journal policy. */
-    (void)cup_update_result_report();
-
     if (help != NULL && strcmp(command, "help") != 0 && strcmp(command, "doctor") != 0 &&
         strcmp(command, "repair") != 0) {
         result = runtime_journal_require_none();
@@ -591,7 +650,7 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(command, "install") == 0) {
         result = parse_install(argc, argv);
     } else if (strcmp(command, "remove") == 0) {
-        result = parse_component_entry(command, argc, argv, command_remove);
+        result = parse_remove(argc, argv);
     } else if (strcmp(command, "update") == 0) {
         result = parse_update(argc, argv);
     } else if (strcmp(command, "config") == 0) {

@@ -123,8 +123,10 @@ static void test_sha256_million_a(void) {
 static void test_checksum_records(void) {
     char asset[256], sums[256];
     char digest[SHA256_HEX_LENGTH + 1];
+    char uppercase[SHA256_HEX_LENGTH + 1];
     int matches;
     FILE *file;
+    size_t i;
 
     build_path(asset, sizeof(asset), "asset.bin");
     build_path(sums, sizeof(sums), "SHA256SUMS");
@@ -137,6 +139,19 @@ static void test_checksum_records(void) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     TEST_ASSERT_EQUAL_INT(CUP_OK, checksum_verify_file(sums, "asset.bin", asset, &matches));
     TEST_ASSERT_TRUE(matches);
+
+    for (i = 0; i < sizeof(uppercase); ++i) {
+        char value = digest[i];
+        uppercase[i] = value >= 'a' && value <= 'f' ? (char)(value - 'a' + 'A') : value;
+    }
+    file = fopen(sums, "w");
+    TEST_ASSERT_NOT_NULL(file);
+    fprintf(file, "%s    *asset.bin\n", uppercase);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          checksum_find_expected(sums, "asset.bin", digest, sizeof(digest)));
+    TEST_ASSERT_EQUAL_STRING("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                             digest);
 
     file = fopen(sums, "w");
     TEST_ASSERT_NOT_NULL(file);
@@ -243,6 +258,12 @@ static void test_checksum_validation(void) {
     file = fopen(sums, "w");
     TEST_ASSERT_NOT_NULL(file);
     fprintf(file, "%064dxasset.bin\n", 0);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, checksum_validate_file(sums, &count));
+
+    file = fopen(sums, "w");
+    TEST_ASSERT_NOT_NULL(file);
+    fprintf(file, "g%063d  asset.bin\n", 0);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, checksum_validate_file(sums, &count));
 

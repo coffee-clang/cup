@@ -490,6 +490,7 @@ static void test_build_failures(void) {
 
     wrapper_plan_init(&plan);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build(&plan, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_active(&plan, NULL));
 
     state.active[state.active_count++] = default_entry("clang", TEST_HOST);
     state.active[0].version[0] = '\0';
@@ -558,6 +559,29 @@ static void test_apply_and_check(void) {
     wrapper_plan_free(&plan);
 }
 
+static void test_empty_plan_reconciles_bin(void) {
+    WrapperPlan plan;
+    char binary[MAX_PATH_LEN];
+    char stale[MAX_PATH_LEN];
+    int matches = 0;
+    size_t issues = 99;
+
+    wrapper_plan_init(&plan);
+    join_test_path(binary, sizeof(binary), root, "bin/" TEST_BINARY_NAME);
+    write_file(binary, "cup");
+    join_test_path(stale, sizeof(stale), root, "bin/stale");
+    write_file(stale, "stale");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
+    TEST_ASSERT_TRUE(test_access_exists(binary));
+    TEST_ASSERT_FALSE(test_access_exists(stale));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_TRUE(matches);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_check(&plan, &issues));
+    TEST_ASSERT_EQUAL_size_t(0, issues);
+    wrapper_plan_free(&plan);
+}
+
 static void test_apply_failures(void) {
     WrapperPlan plan = simple_plan();
     int matches;
@@ -567,6 +591,8 @@ static void test_apply_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_active(NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_apply(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_expected_matches(NULL, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_expected_matches(&plan, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_check(NULL, &issues));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_check(&plan, NULL));
 
     temp_result = CUP_ERR_TEMPORARY;
@@ -619,6 +645,7 @@ int main(void) {
     RUN_TEST(test_build_conflicts);
     RUN_TEST(test_build_failures);
     RUN_TEST(test_apply_and_check);
+    RUN_TEST(test_empty_plan_reconciles_bin);
     RUN_TEST(test_apply_failures);
     RUN_TEST(test_scan_failures);
     return UNITY_END();

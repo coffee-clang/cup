@@ -18,6 +18,7 @@
 #include "package_transaction.h"
 #include "cup_update_journal.h"
 #include "runtime_journal.h"
+#include "uninstall_journal.h"
 
 #include <stdio.h>
 
@@ -57,27 +58,6 @@ static void check_read_only_path(const char *path, const char *description, Doct
     } else if (!is_read_only) {
         printf("Issue: %s is not read-only.\n", description);
         report->issue_count++;
-    }
-}
-
-static void check_cup_update_result(DoctorReport *report) {
-    CupUpdateResult result;
-    CupError err;
-
-    err = cup_update_result_load(&result);
-    if (err != CUP_OK) {
-        printf("Issue: the previous cup update result is invalid.\n");
-        report->issue_count++;
-        return;
-    }
-    if (result.status == CUP_UPDATE_RESULT_FAILED) {
-        printf("Issue: the previous cup update failed with error %d at version %s.\n",
-               result.error_code,
-               result.version);
-        report->issue_count++;
-    } else if (result.status == CUP_UPDATE_RESULT_SUCCESS) {
-        printf("OK: the previous cup update completed successfully at version %s.\n",
-               result.version);
     }
 }
 
@@ -326,23 +306,6 @@ static CupError print_doctor_summary(const DoctorReport *report) {
 
 /* Runtime snapshot preparation. Diagnostics continue only after a shared lock protects one
  * coherent view of state, journals and installed packages. */
-static void check_uninstall_marker(DoctorReport *report) {
-    CupError err;
-    SystemPathKind marker_kind = SYSTEM_PATH_MISSING;
-    char path[MAX_PATH_LEN];
-
-    err = layout_get_uninstall_marker_path(path, sizeof(path));
-    if (err == CUP_OK) {
-        err = system_get_path_kind(path, &marker_kind);
-    }
-    if (err != CUP_OK) {
-        report_incomplete(report, "uninstall marker");
-    } else if (marker_kind != SYSTEM_PATH_MISSING) {
-        printf("Issue: an uninstall marker exists: %s\n", path);
-        report->issue_count++;
-    }
-}
-
 static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
     LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     CupError err;
@@ -458,11 +421,14 @@ static void check_transaction_journal(DoctorReport *report) {
     PackageTransactionStatus package_status;
     CupUpdateJournal cup_update_journal;
     CupUpdateJournalStatus cup_update_status;
+    UninstallJournal uninstall_journal;
+    UninstallJournalStatus uninstall_status;
     RuntimeJournalKind journal_kind;
     CupError err;
 
     package_transaction_init(&package_transaction);
     cup_update_journal_init(&cup_update_journal);
+    uninstall_journal_init(&uninstall_journal);
 
     err = runtime_journal_detect(&journal_kind);
     if (err != CUP_OK) {
@@ -484,9 +450,32 @@ static void check_transaction_journal(DoctorReport *report) {
         report->issue_count++;
     } else if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
         err = cup_update_journal_load(&cup_update_journal, &cup_update_status);
-        printf(err == CUP_OK && cup_update_status == CUP_UPDATE_JOURNAL_LOADED
-                   ? "Issue: interrupted cup update transaction detected.\n"
-                   : "Issue: cup update journal is invalid.\n");
+        if (err != CUP_OK || cup_update_status != CUP_UPDATE_JOURNAL_LOADED) {
+            printf("Issue: cup update journal is invalid.\n");
+        } else if (cup_update_journal.phase == CUP_UPDATE_PHASE_FAILED) {
+            printf("Issue: the previous cup update to version %s failed with error %d; "
+                   "recovery is %s.\n",
+                   cup_update_journal.version,
+                   cup_update_journal.error_code,
+                   cup_update_failure_recovery_name(cup_update_journal.recovery));
+        } else {
+            printf("Issue: interrupted cup update transaction detected in phase '%s'.\n",
+                   cup_update_phase_name(cup_update_journal.phase));
+        }
+        report->issue_count++;
+    } else if (journal_kind == RUNTIME_JOURNAL_UNINSTALL) {
+        err = uninstall_journal_load(&uninstall_journal, &uninstall_status);
+        if (err != CUP_OK || uninstall_status != UNINSTALL_JOURNAL_LOADED) {
+            printf("Issue: cup uninstall journal is invalid.\n");
+        } else if (uninstall_journal.phase == UNINSTALL_PHASE_FAILED) {
+            printf("Issue: the previous cup uninstall failed during '%s' with error %d.\n",
+                   uninstall_stage_name(uninstall_journal.stage),
+                   uninstall_journal.error_code);
+        } else {
+            printf("Issue: cup uninstall is pending in phase '%s' during '%s'.\n",
+                   uninstall_phase_name(uninstall_journal.phase),
+                   uninstall_stage_name(uninstall_journal.stage));
+        }
         report->issue_count++;
     }
 }
@@ -583,17 +572,25 @@ CupError command_doctor(void) {
     int state_loaded;
     int state_valid;
     int has_catalog = 0;
+    size_t root_issue_count = 0;
 
     package_catalog_init(&catalog);
     printf("==> Checking cup installation...\n");
 
-    /* Assets and uninstall state can be inspected before the managed runtime exists. */
+    err = layout_check_root_candidates(&root_issue_count);
+    if (err != CUP_OK) {
+        report_incomplete(&report, "cup root candidates");
+    } else if (root_issue_count != 0) {
+        report.issue_count += (int)root_issue_count;
+        err = print_doctor_summary(&report);
+        goto done;
+    }
+
+    /* Assets can be inspected before the managed runtime exists. */
     err = check_cup_assets(&catalog, &report, &has_catalog);
     if (err != CUP_OK) {
         goto done;
     }
-    check_uninstall_marker(&report);
-
     if (!acquire_runtime_snapshot(&report, &lock)) {
         err = print_doctor_summary(&report);
         goto done;
@@ -603,7 +600,6 @@ CupError command_doctor(void) {
     load_and_check_state(
         &state, current_host, &report, &state_loaded, &state_valid);
     check_transaction_journal(&report);
-    check_cup_update_result(&report);
     check_state_wrappers(
         &state, state_loaded, state_valid, &catalog, has_catalog, &report);
     check_package_tree(&state, state_loaded, &report);

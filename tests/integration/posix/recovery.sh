@@ -164,9 +164,10 @@ format=1
 operation=cup-update
 phase=committing
 temporary_name=cup-update-safe-rollback-test
-token=recovery-safe-rollback
+token=recovery-cup-update-safe-rollback-test
 version=0.0.0
 error=0
+recovery=none
 JOURNAL
 
 output=$(run_cup repair)
@@ -204,9 +205,10 @@ format=1
 operation=cup-update
 phase=scheduled
 temporary_name=cup-update-unsafe-rollback-test
-token=recovery-unsafe-rollback
+token=recovery-cup-update-unsafe-rollback-test
 version=0.0.0
 error=0
+recovery=none
 JOURNAL
 
 run_cup_expect_failure "$TMP_ROOT/unsafe-cup-update-repair.out" repair
@@ -247,9 +249,10 @@ format=1
 operation=cup-update
 phase=committing
 temporary_name=cup-update-committed-test
-token=recovery-committed
+token=recovery-cup-update-committed-test
 version=0.0.0
 error=0
+recovery=none
 JOURNAL
 
 output=$(run_cup repair)

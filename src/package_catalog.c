@@ -13,6 +13,7 @@
 #include "registry.h"
 #include "system.h"
 #include "text.h"
+#include "version.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -608,6 +609,7 @@ CupError package_catalog_load(PackageCatalog *catalog) {
         return package_catalog_load_path(catalog, installed, PACKAGE_CATALOG_SOURCE_INSTALLED);
     }
 
+#if !CUP_VERSION_OFFICIAL
     err = system_path_exists(DEVELOPMENT_CATALOG_PATH, &exists);
     if (err != CUP_OK) {
         return err;
@@ -616,11 +618,19 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     if (exists) {
         return package_catalog_load_development(catalog);
     }
+#endif
 
+#if CUP_VERSION_OFFICIAL
+    fprintf(stderr,
+            "Error: installed package catalog not found at '%s'. "
+            "Run 'cup repair' to restore official configuration assets.\n",
+            installed);
+#else
     fprintf(stderr,
             "Error: package catalog not found at '%s' or './%s'.\n",
             installed,
             DEVELOPMENT_CATALOG_PATH);
+#endif
     return CUP_ERR_CATALOG;
 }
 

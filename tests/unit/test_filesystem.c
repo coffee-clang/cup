@@ -121,6 +121,7 @@ static void test_count_and_clear(void) {
     char remove_file[1024];
     char remove_dir[1024];
     char nested[1024];
+    char missing[1024];
     size_t count;
     int exists;
 
@@ -130,6 +131,7 @@ static void test_count_and_clear(void) {
     TEST_ASSERT_TRUE(snprintf(remove_file, sizeof(remove_file), "%s/remove", root) > 0);
     TEST_ASSERT_TRUE(snprintf(remove_dir, sizeof(remove_dir), "%s/remove-dir", root) > 0);
     TEST_ASSERT_TRUE(snprintf(nested, sizeof(nested), "%s/nested", remove_dir) > 0);
+    build_path(missing, sizeof(missing), "clear-missing");
     write_text(keep, "keep");
     write_text(remove_file, "remove");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(remove_dir));
@@ -159,6 +161,11 @@ static void test_count_and_clear(void) {
     TEST_ASSERT_FALSE(exists);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_count_children(root, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_count_children(NULL, NULL, &count));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_clear_directory(NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_count_children(missing, NULL, &count));
+    TEST_ASSERT_EQUAL_size_t(0, count);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_clear_directory(missing, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, filesystem_count_children(keep, NULL, &count));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, filesystem_clear_directory(keep, NULL));
 }
@@ -187,6 +194,7 @@ static void test_file_policy(void) {
                           filesystem_apply_required_permissions(path, 2, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           filesystem_apply_required_permissions(path, 0, -1));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_apply_required_permissions(path, 0, 0));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(path, 0));
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(path));
@@ -196,10 +204,12 @@ static void test_invalid_backup(void) {
     char path[1024];
     char first_candidate[1024];
     char backup[1024];
+    char missing[1024];
     int exists;
     int read_only;
 
     build_path(path, sizeof(path), "invalid-state");
+    build_path(missing, sizeof(missing), "invalid-missing");
     TEST_ASSERT_TRUE(snprintf(first_candidate, sizeof(first_candidate), "%s.invalid", path) > 0);
     write_text(path, "state");
     write_text(first_candidate, "older");
@@ -222,6 +232,9 @@ static void test_invalid_backup(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           filesystem_backup_invalid(NULL, backup, sizeof(backup)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_backup_invalid(backup, NULL, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, filesystem_backup_invalid(backup, backup, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          filesystem_backup_invalid(missing, backup, sizeof(backup)));
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(backup));
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_remove_tree(first_candidate));
 }

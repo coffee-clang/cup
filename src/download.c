@@ -116,7 +116,7 @@ static long validation_timeout(DownloadValidation validation) {
     return validation == DOWNLOAD_VALIDATE_ARCHIVE ? 7200L : 300L;
 }
 
-/* HTTP is accepted only for an explicit loopback release-test override. The parser requires a
+/* HTTP is accepted only for an explicit loopback release-source override. The parser requires a
  * numeric port and rejects user-info forms such as localhost:80@example.invalid. */
 int download_insecure_loopback_is_allowed(const char *url) {
     const char *allow = getenv("CUP_INSTALL_ALLOW_INSECURE");

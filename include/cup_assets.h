@@ -39,6 +39,7 @@ typedef struct {
     int development_uninstall_valid;
 } CupAssetsInspection;
 
+
 /* Inspect every CUP asset without repairing or replacing any file. */
 CupError cup_assets_inspect(CupAssetsInspection *inspection);
 
@@ -49,10 +50,6 @@ int cup_assets_development_is_valid(const CupAssetsInspection *inspection);
 
 /* Select a validated uninstall helper, preferring the installed asset. */
 CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *source);
-
-/* Report or reject a detached uninstall that still owns the canonical root. */
-CupError cup_assets_uninstall_is_pending(int *pending);
-CupError cup_assets_require_no_pending_uninstall(void);
 
 /* Build platform-dependent names used by checksum files and installers. */
 CupError cup_assets_binary_asset_name(char *name, size_t size);

@@ -229,6 +229,29 @@ static void test_policy_load(void) {
     TEST_ASSERT_NOT_NULL(install_policy_find_toolchain(&policy, "gnu"));
 }
 
+static void test_policy_comments_and_blank_lines(void) {
+    InstallPolicy policy;
+
+    write_text(official_path,
+               "# Official installation policy\n"
+               "\n"
+               "  format=1  \n"
+               "\n"
+               "# Scoped defaults\n"
+               "default.linux-x64.linux-x64.compiler=clang\n"
+               "default.linux-x64.linux-x64.linker=lld\n"
+               "\n"
+               "profile.minimal=compiler,linker\n"
+               "# A toolchain is explicit and does not use defaults.\n"
+               "toolchain.llvm=clang,lldb,lld\n");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_NOT_NULL(
+        install_policy_find_default(&policy, "linux-x64", "linux-x64", "compiler"));
+    TEST_ASSERT_NOT_NULL(install_policy_find_profile(&policy, "minimal"));
+    TEST_ASSERT_NOT_NULL(install_policy_find_toolchain(&policy, "llvm"));
+}
+
 static void assert_invalid_policy(const char *text) {
     InstallPolicy policy;
     write_text(official_path, text);
@@ -236,7 +259,25 @@ static void assert_invalid_policy(const char *text) {
     TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_NONE, policy.source);
 }
 
+
+static void test_official_load_does_not_use_development_policy(void) {
+    InstallPolicy policy;
+
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(official_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_policy_load(&policy));
+    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_NONE, policy.source);
+}
+
 static void test_policy_invalid(void) {
+    assert_invalid_policy("");
+    assert_invalid_policy("# comments only\n\n");
+    assert_invalid_policy("format=2\n");
+    assert_invalid_policy("format=1\nformat=1\n");
+    assert_invalid_policy("format=1\nmalformed\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\n");
+    assert_invalid_policy("format=1\nprofile.minimal=compiler\ntoolchain.llvm=clang\n");
+    assert_invalid_policy(
+        "format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal=compiler\n");
     assert_invalid_policy(
         "format=1\ndefault_preset=llvm\nprofile.minimal=compiler\ntoolchain.llvm=clang\n");
     assert_invalid_policy(
@@ -248,6 +289,55 @@ static void test_policy_invalid(void) {
                           "compiler\ntoolchain.llvm=clang\n");
     assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
                           "compiler\ntoolchain.bad=clang,gcc\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
+                          "compiler,compiler\ntoolchain.llvm=clang\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
+                          "compiler,,linker\ntoolchain.llvm=clang\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
+                          "unknown\ntoolchain.llvm=clang\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
+                          "compiler\nprofile.minimal=linker\ntoolchain.llvm=clang\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal="
+                          "compiler\ntoolchain.llvm=clang\ntoolchain.llvm=lld\n");
+    assert_invalid_policy("format=1\ndefault.bad.linux-x64.compiler=clang\nprofile.minimal="
+                          "compiler\ntoolchain.llvm=clang\n");
+    assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.Compiler=clang\nprofile.minimal="
+                          "compiler\ntoolchain.llvm=clang\n");
+}
+
+static void test_policy_lookup_contracts(void) {
+    InstallPolicy policy;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    install_policy_init(NULL);
+
+    TEST_ASSERT_NULL(
+        install_policy_find_default(NULL, "linux-x64", "linux-x64", "compiler"));
+    TEST_ASSERT_NULL(
+        install_policy_find_default(&policy, NULL, "linux-x64", "compiler"));
+    TEST_ASSERT_NULL(
+        install_policy_find_default(&policy, "linux-x64", NULL, "compiler"));
+    TEST_ASSERT_NULL(
+        install_policy_find_default(&policy, "linux-x64", "linux-x64", NULL));
+    TEST_ASSERT_NULL(
+        install_policy_find_default(&policy, "invalid", "linux-x64", "compiler"));
+    TEST_ASSERT_NULL(install_policy_find_profile(NULL, "minimal"));
+    TEST_ASSERT_NULL(install_policy_find_profile(&policy, NULL));
+    TEST_ASSERT_NULL(install_policy_find_profile(&policy, "missing"));
+    TEST_ASSERT_NULL(install_policy_find_toolchain(NULL, "llvm"));
+    TEST_ASSERT_NULL(install_policy_find_toolchain(&policy, NULL));
+    TEST_ASSERT_NULL(install_policy_find_toolchain(&policy, "missing"));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        install_policy_load_path(&policy, NULL, INSTALL_POLICY_SOURCE_INSTALLED));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        install_policy_load_path(&policy, official_path, INSTALL_POLICY_SOURCE_NONE));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          install_policy_load_path(&policy,
+                                                   "/missing/cup/install.cfg",
+                                                   INSTALL_POLICY_SOURCE_INSTALLED));
 }
 
 static void test_resolution_scope(void) {
@@ -327,6 +417,20 @@ static void test_preference_mutation(void) {
     TEST_ASSERT_EQUAL_size_t(1, removed_count);
     TEST_ASSERT_EQUAL_size_t(1, preferences.count);
     TEST_ASSERT_EQUAL_STRING("windows-x64", preferences.items[0].scope.target_platform);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, tool_preferences_set(&preferences, "linux-x64", "windows-x64", "compiler", "clang"));
+    TEST_ASSERT_EQUAL_size_t(1, preferences.count);
+    TEST_ASSERT_EQUAL_STRING("clang", preferences.items[0].tool);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        tool_preferences_reset(&preferences, "linux-x64", "linux-x64", "compiler", &removed));
+    TEST_ASSERT_FALSE(removed);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        tool_preferences_reset_scope(&preferences, "macos-x64", "macos-x64", &removed_count));
+    TEST_ASSERT_EQUAL_size_t(0, removed_count);
 }
 
 static void test_round_trip(void) {
@@ -366,6 +470,76 @@ static void test_preferences_invalid(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
     write_text(preferences_path, "format=1\npreferred.linux-x64.linux-x64.compiler=gdb\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "format=2\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "format=1\nformat=1\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "format=1\nmalformed\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "format=1\nwrong.linux-x64.linux-x64.compiler=clang\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    write_text(preferences_path, "format=1\npreferred.invalid.linux-x64.compiler=clang\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+}
+
+static void test_preferences_comments_missing_and_capacity(void) {
+    InstallPolicy policy;
+    ToolPreferences preferences;
+    size_t i;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    (void)test_unlink(preferences_path);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_size_t(0, preferences.count);
+
+    write_text(preferences_path,
+               "# Local choices\n\n"
+               " format=1 \n"
+               "\n"
+               "preferred.linux-x64.linux-x64.compiler=gcc\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_size_t(1, preferences.count);
+
+    tool_preferences_init(&preferences);
+    for (i = 0; i < MAX_INSTALL_DEFAULTS; ++i) {
+        preferences.items[i].scope.component[0] = 'x';
+        preferences.items[i].scope.component[1] = '\0';
+    }
+    preferences.count = MAX_INSTALL_DEFAULTS;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_BUFFER_TOO_SMALL,
+        tool_preferences_set(&preferences, "linux-x64", "linux-x64", "compiler", "clang"));
+}
+
+static void test_invalid_preferences_save(void) {
+    InstallPolicy policy;
+    ToolPreferences preferences;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    tool_preferences_init(NULL);
+
+    tool_preferences_init(&preferences);
+    preferences.count = MAX_INSTALL_DEFAULTS + 1;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+
+    tool_preferences_init(&preferences);
+    preferences.count = 1;
+    strcpy(preferences.items[0].scope.component, "compiler");
+    strcpy(preferences.items[0].scope.host_platform, "invalid");
+    strcpy(preferences.items[0].scope.target_platform, "linux-x64");
+    strcpy(preferences.items[0].tool, "clang");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+
+    strcpy(preferences.items[0].scope.host_platform, "linux-x64");
+    strcpy(preferences.items[0].tool, "gdb");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+
+    strcpy(preferences.items[0].tool, "clang");
+    preferences.items[1] = preferences.items[0];
+    preferences.count = 2;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
 }
 
 static void test_empty_save(void) {
@@ -393,21 +567,67 @@ static void test_argument_contracts(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         install_policy_load_path(NULL, official_path, INSTALL_POLICY_SOURCE_INSTALLED));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(NULL, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(&policy, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(NULL, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, NULL));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         tool_preferences_set(NULL, "linux-x64", "linux-x64", "compiler", "clang"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
+        tool_preferences_set(&preferences, NULL, "linux-x64", "compiler", "clang"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_set(&preferences, "linux-x64", NULL, "compiler", "clang"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_set(&preferences, "linux-x64", "linux-x64", NULL, "clang"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_set(&preferences, "linux-x64", "linux-x64", "compiler", "gdb"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
         tool_preferences_reset(&preferences, "linux-x64", "linux-x64", "compiler", NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_reset(NULL, "linux-x64", "linux-x64", "compiler", &removed));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_reset(&preferences, NULL, "linux-x64", "compiler", &removed));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         tool_preferences_reset_scope(&preferences, "linux-x64", "linux-x64", NULL));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
+        tool_preferences_reset_scope(NULL, "linux-x64", "linux-x64", &count));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_reset_scope(&preferences, "invalid", "linux-x64", &count));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
         tool_preferences_resolve(
             NULL, &preferences, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
-    (void)removed;
-    (void)count;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            &policy, NULL, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            &policy, &preferences, "linux-x64", "linux-x64", "compiler", NULL, 2, &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            &policy, &preferences, "linux-x64", "linux-x64", "compiler", tool, 0, &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            &policy, &preferences, "linux-x64", "linux-x64", "compiler", tool, 2, NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            &policy, &preferences, "invalid", "linux-x64", "compiler", tool, 2, &source));
 }
 
 /* Suite registration. */
@@ -415,11 +635,16 @@ static void test_argument_contracts(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_load);
+    RUN_TEST(test_policy_comments_and_blank_lines);
+    RUN_TEST(test_official_load_does_not_use_development_policy);
     RUN_TEST(test_policy_invalid);
+    RUN_TEST(test_policy_lookup_contracts);
     RUN_TEST(test_resolution_scope);
     RUN_TEST(test_preference_mutation);
     RUN_TEST(test_round_trip);
     RUN_TEST(test_preferences_invalid);
+    RUN_TEST(test_preferences_comments_missing_and_capacity);
+    RUN_TEST(test_invalid_preferences_save);
     RUN_TEST(test_empty_save);
     RUN_TEST(test_argument_contracts);
     return UNITY_END();

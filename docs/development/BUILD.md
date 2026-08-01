@@ -120,6 +120,27 @@ promises; the final floors require evidence from native runners. The Makefile
 rejects conflicting ambient values and records the effective compiler/linker
 flags in `build-config.txt`.
 
+## Script execution boundaries
+
+Shell portability is evaluated according to where a script executes:
+
+- release `install.sh` and the copied `uninstall.sh` execute on machines that
+  CUP does not control. They use `/bin/sh`, avoid optional text processors and
+  non-portable GNU/BSD command options, preflight their required core commands,
+  and provide explicit downloader and SHA-256 alternatives;
+- build, dependency, test and release scripts execute in repository-controlled
+  CI profiles. They may use a broader tool set, but the matching workflow must
+  install it or `scripts/ci/prepare-posix.sh` must verify it before work starts.
+  Source, coverage, sanitizer, debug and release profiles are checked against
+  their actual compiler, timeout, inspection and symbol-tool requirements. The
+  package versions selected by APT or Homebrew are printed in the job log. A
+  command being present incidentally in a hosted-runner image is not treated as
+  a stable dependency contract.
+
+This distinction avoids weakening the build scripts merely to support arbitrary
+hosts while keeping the public bootstrap usable without a compiler or a package
+preparation step.
+
 ## Dependencies
 
 ### End-user runtime
@@ -393,8 +414,10 @@ Destructive local cleanup remains guarded:
 CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home
 ```
 
-The target rejects a missing, relative or root `HOME` before deleting
-`$HOME/.cup`.
+The target rejects a missing, relative or root `HOME`. It deletes only the
+candidate root whose strict `root.txt` identifies `coffee-clang/cup`; an
+unrelated `.cup`, an unmarked directory, or two marked candidates makes the
+target stop without deleting either root.
 
 ## Documentation build
 

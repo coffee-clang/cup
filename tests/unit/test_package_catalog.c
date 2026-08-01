@@ -305,7 +305,8 @@ static void test_source_choice(void) {
         TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(installed_path, sizeof(installed_path), path));
         installed_exists = 0;
         development_exists = 1;
-        TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load(&catalog));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load(&catalog));
+        TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_development(&catalog));
         TEST_ASSERT_EQUAL_INT(PACKAGE_CATALOG_SOURCE_DEVELOPMENT, catalog.source);
         package_catalog_free(&catalog);
         TEST_ASSERT_EQUAL_INT(0, chdir(cwd));
@@ -535,31 +536,274 @@ static void assert_invalid_catalog_queries(PackageCatalog *catalog, char *value)
             catalog, NULL, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
+        package_catalog_resolve_stable(
+            NULL, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_resolve_stable(
+            catalog, value, MAX_CATALOG_URL_LEN, "", "clang", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_resolve_stable(
+            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_resolve_stable(
+            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_resolve_stable(
+            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", ""));
+
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            catalog, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
         package_catalog_is_stable(
             catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL, &flag));
     TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            NULL, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            catalog, "", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            catalog, "compiler", "", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            catalog, "compiler", "clang", "", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_is_stable(
+            catalog, "compiler", "clang", "linux-x64", "", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_has_package(
             catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL));
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_package(
+            NULL, "compiler", "clang", "linux-x64", "linux-x64", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_package(catalog, "", "clang", "linux-x64", "linux-x64", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_package(catalog, "compiler", "", "linux-x64", "linux-x64", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_has_package(catalog, "compiler", "clang", "", "linux-x64", &flag));
     TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_package(catalog, "compiler", "clang", "linux-x64", "", &flag));
+    TEST_ASSERT_FALSE(flag);
+
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            catalog, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", NULL));
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            NULL, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            catalog, "", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            catalog, "compiler", "", "linux-x64", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            catalog, "compiler", "clang", "", "linux-x64", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_version(
+            catalog, "compiler", "clang", "linux-x64", "", "22.1.5", &flag));
+    TEST_ASSERT_FALSE(flag);
+    flag = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_has_version(
             catalog, "compiler", "clang", "linux-x64", "linux-x64", "", &flag));
     TEST_ASSERT_FALSE(flag);
+
+    flag = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_has_format(
             catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL, &flag));
     TEST_ASSERT_FALSE(flag);
+    flag = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_format(
+            catalog, "compiler", "clang", "linux-x64", "linux-x64", "tar.xz", NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_has_format(
+            NULL, "compiler", "clang", "linux-x64", "linux-x64", "tar.xz", &flag));
+    TEST_ASSERT_FALSE(flag);
+
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_get_default_format(
             catalog, value, 0, "compiler", "clang", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_get_default_format(
+            catalog, NULL, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(NULL,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  NULL,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  0,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "",
+                                  "22.1.5",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "",
+                                  "tar.xz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_url(catalog,
+                                  value,
+                                  MAX_CATALOG_URL_LEN,
+                                  "compiler",
+                                  "clang",
+                                  "linux-x64",
+                                  "linux-x64",
+                                  "22.1.5",
+                                  ""));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_catalog_build_checksum_url(catalog,
+                                           value,
+                                           MAX_CATALOG_URL_LEN,
+                                           "compiler",
+                                           "clang",
+                                           "linux-x64",
+                                           "linux-x64",
+                                           ""));
 }
 
 static void assert_missing_catalog_queries(PackageCatalog *catalog, char *value) {
@@ -673,6 +917,8 @@ static void test_load_failures(void) {
     unsigned char bad[] = {'k', 'e', 'y', '=', 'v', 1, '\n'};
     FILE *file;
 
+    package_catalog_init(NULL);
+    package_catalog_free(NULL);
     package_catalog_init(&catalog);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_catalog_load_path(NULL, "x", PACKAGE_CATALOG_SOURCE_INSTALLED));

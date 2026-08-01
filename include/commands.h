@@ -13,11 +13,11 @@ CupError command_list(const char *component, const char *target_override);
 
 /* Install one concrete or stable-resolved package. */
 CupError command_install(const char *selector,
-                                 const char *value,
-                                 const char *target_override,
-                                 const char *format_override);
+                         const char *value,
+                         const char *target_override,
+                         const char *format_override);
 
-/* Remove one installed package and reconcile its default and launchers. */
+/* Remove one installed package; component and release may be inferred only when unambiguous. */
 CupError command_remove(const char *component, const char *selector, const char *target_override);
 
 /* Select one installed package as the default of its exact scope. */

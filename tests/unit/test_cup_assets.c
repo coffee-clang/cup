@@ -1,6 +1,6 @@
 /*
  * Test focus: Exercises cup asset inspection, source selection, checksum lookup and
- * pending-uninstall detection through controlled filesystem/system boundaries.
+ * platform-name helpers through controlled filesystem/system boundaries.
  */
 
 #include "cup_assets.h"
@@ -12,6 +12,7 @@
 #include "platform.h"
 #include "system.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,7 +31,6 @@ static SystemPathKind install_policy_kind;
 static SystemPathKind uninstall_kind;
 static SystemPathKind common_kind;
 static SystemPathKind platform_kind;
-static SystemPathKind marker_kind;
 static CupError common_schema_result;
 static CupError platform_schema_result;
 static CupError executable_result;
@@ -45,6 +45,8 @@ static CupError development_catalog_result;
 static CupError installed_install_policy_result;
 static CupError development_install_policy_result;
 static CupError verify_result;
+static CupError hash_result;
+static int helper_matches_binary;
 static int binary_matches;
 static int package_catalog_matches;
 static int install_policy_matches;
@@ -68,7 +70,6 @@ static void reset_scenario(void) {
     uninstall_kind = SYSTEM_PATH_MISSING;
     common_kind = SYSTEM_PATH_MISSING;
     platform_kind = SYSTEM_PATH_MISSING;
-    marker_kind = SYSTEM_PATH_MISSING;
     common_schema_result = CUP_OK;
     platform_schema_result = CUP_OK;
     executable_result = CUP_OK;
@@ -83,6 +84,8 @@ static void reset_scenario(void) {
     installed_install_policy_result = CUP_OK;
     development_install_policy_result = CUP_ERR_VALIDATION;
     verify_result = CUP_OK;
+    hash_result = CUP_OK;
+    helper_matches_binary = 1;
     binary_matches = 1;
     package_catalog_matches = 1;
     install_policy_matches = 1;
@@ -138,10 +141,6 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return write_layout_path(6, buffer, size, "/platform");
 }
 
-CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
-    return write_layout_path(7, buffer, size, "/marker");
-}
-
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     TEST_ASSERT_NOT_NULL(path);
     TEST_ASSERT_NOT_NULL(kind);
@@ -162,13 +161,15 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
         *kind = common_kind;
     } else if (strcmp(path, "/platform") == 0) {
         *kind = platform_kind;
-    } else if (strcmp(path, "/marker") == 0) {
-        *kind = marker_kind;
     } else {
         TEST_FAIL_MESSAGE("unexpected cup assets path");
         return CUP_ERR_INVALID_INPUT;
     }
     return CUP_OK;
+}
+
+int path_is_safe_identifier(const char *value) {
+    return value != NULL && value[0] != '\0';
 }
 
 CupError checksum_validate_assets(const char *checksum_path,
@@ -187,6 +188,20 @@ CupError checksum_validate_assets(const char *checksum_path,
     }
     TEST_ASSERT_EQUAL_UINT(3, asset_count);
     return platform_schema_result;
+}
+
+CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
+    const char *value;
+
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(hex);
+    if (hash_result != CUP_OK) {
+        return hash_result;
+    }
+    value = strcmp(path, "/helper") == 0 && !helper_matches_binary
+                ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    return buffer_write_result(snprintf(hex, size, "%s", value), size);
 }
 
 CupError system_is_executable(const char *path, int *is_executable) {
@@ -335,7 +350,7 @@ static void test_empty_and_complete(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
     TEST_ASSERT_TRUE(cup_assets_has_installed_assets(&inspection));
     TEST_ASSERT_TRUE(cup_assets_installed_is_valid(&inspection));
-    TEST_ASSERT_TRUE(cup_assets_development_is_valid(&inspection));
+    TEST_ASSERT_FALSE(cup_assets_development_is_valid(&inspection));
 }
 
 static void test_bad_assets(void) {
@@ -379,6 +394,12 @@ static void test_bad_assets(void) {
     reset_scenario();
     make_assets_regular();
     helper_kind = SYSTEM_PATH_DIRECTORY;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
+
+    reset_scenario();
+    make_assets_regular();
+    helper_matches_binary = 0;
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
 
@@ -445,30 +466,9 @@ static void test_inspection_errors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, cup_assets_inspect(&inspection));
 
     reset_scenario();
-    development_catalog_result = CUP_ERR_TEMPORARY;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, cup_assets_inspect(&inspection));
-
-    reset_scenario();
-    development_install_policy_result = CUP_ERR_TEMPORARY;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, cup_assets_inspect(&inspection));
-
-    reset_scenario();
-    development_install_policy_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
-    TEST_ASSERT_FALSE(inspection.development_install_policy_valid);
-
-    reset_scenario();
-    regular_result = CUP_ERR_FILESYSTEM;
+    make_assets_regular();
+    hash_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_assets_inspect(&inspection));
-
-    reset_scenario();
-    development_uninstall_regular = 1;
-    executable_result = CUP_ERR_FILESYSTEM;
-#if !defined(_WIN32)
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_assets_inspect(&inspection));
-#else
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
-#endif
 }
 
 static void test_uninstall_fallback(void) {
@@ -489,9 +489,9 @@ static void test_uninstall_fallback(void) {
 
     reset_scenario();
     development_uninstall_regular = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_find_uninstall(path, sizeof(path), &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSETS_SOURCE_DEVELOPMENT, source);
-    TEST_ASSERT_EQUAL_STRING(CUP_DEVELOPMENT_UNINSTALL_PATH, path);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          cup_assets_find_uninstall(path, sizeof(path), &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSETS_SOURCE_NONE, source);
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -504,24 +504,9 @@ static void test_uninstall_fallback(void) {
                           cup_assets_find_uninstall(path, sizeof(path), &source));
 }
 
-static void test_marker_helpers(void) {
+static void test_platform_asset_names(void) {
     char name[MAX_IDENTIFIER_LEN];
-    int pending;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_assets_uninstall_is_pending(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_uninstall_is_pending(&pending));
-    TEST_ASSERT_FALSE(pending);
-    marker_kind = SYSTEM_PATH_REGULAR_FILE;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_uninstall_is_pending(&pending));
-    TEST_ASSERT_TRUE(pending);
-
-    layout_failure = 7;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, cup_assets_uninstall_is_pending(&pending));
-    reset_scenario();
-    kind_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_assets_uninstall_is_pending(&pending));
-
-    reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_binary_asset_name(name, sizeof(name)));
     TEST_ASSERT_EQUAL_STRING("cup-linux-x64", name);
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_platform_checksums_name(name, sizeof(name)));
@@ -549,6 +534,6 @@ int main(void) {
     RUN_TEST(test_bad_assets);
     RUN_TEST(test_inspection_errors);
     RUN_TEST(test_uninstall_fallback);
-    RUN_TEST(test_marker_helpers);
+    RUN_TEST(test_platform_asset_names);
     return UNITY_END();
 }

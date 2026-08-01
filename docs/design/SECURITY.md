@@ -185,7 +185,7 @@ Filesystem inspection does not follow links when deciding an object's type.
 POSIX recursive removal is descriptor-relative (`openat`, `fstatat`, `unlinkat`)
 and refuses linked parents. Windows uses wide APIs, explicit reparse-point
 classification and long-path prefixes. This prevents a canonical package-level
-link from redirecting validation or cleanup outside `.cup`.
+link from redirecting validation or cleanup outside the selected CUP root.
 
 The cup root is private to its owner. POSIX enforces owner-only permissions;
 Windows uses a protected DACL limited to the current user, Local System and

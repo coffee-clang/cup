@@ -213,8 +213,43 @@ static void test_invalid_inputs(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_archive("", "/tmp", "tar.gz"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_extract_archive("/tmp/archive", "", "tar.gz"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_extract_archive("/tmp/archive", "/tmp", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_extract_archive("/tmp/archive", "/tmp", "7z"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE,
                           package_extract_archive("/missing/archive.tar.gz", "/tmp", "tar.gz"));
+}
+
+static void test_destination_and_declared_format(void) {
+    const TestEntry entries[] = {
+        {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
+        {TEST_FILE, "pkg/tool", "hello", NULL, 1},
+    };
+    char archive_path[1024];
+    char missing[1024];
+    char regular[1024];
+    char output[1024];
+
+    create_archive(archive_path, sizeof(archive_path), entries, 2);
+    TEST_ASSERT_TRUE(snprintf(missing, sizeof(missing), "%s/missing-output", root) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          package_extract_archive(archive_path, missing, "tar.gz"));
+
+    TEST_ASSERT_TRUE(snprintf(regular, sizeof(regular), "%s/regular-output", root) > 0);
+    {
+        FILE *file = fopen(regular, "wb");
+
+        TEST_ASSERT_NOT_NULL(file);
+        TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          package_extract_archive(archive_path, regular, "tar.gz"));
+
+    TEST_ASSERT_TRUE(snprintf(output, sizeof(output), "%s/wrong-format", root) > 0);
+    make_dir(output);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          package_extract_archive(archive_path, output, "zip"));
 }
 
 static void test_valid_archive(void) {
@@ -313,9 +348,33 @@ static void test_unsafe_links(void) {
         {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
         {TEST_SYMLINK, "pkg/bin/out", NULL, "../../escape", 0},
     };
+    const TestEntry absolute_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/out", NULL, "/escape", 0},
+    };
+    const TestEntry rooted_backslash_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/out", NULL, "\\escape", 0},
+    };
+    const TestEntry embedded_backslash_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/out", NULL, "dir\\escape", 0},
+    };
+    const TestEntry drive_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/out", NULL, "C:/escape", 0},
+    };
     const TestEntry hardlink[] = {
         {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
         {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+    };
+    const TestEntry hardlink_other_root[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_HARDLINK, "pkg/bin/copy", NULL, "other/bin/tool", 0},
+    };
+    const TestEntry hardlink_absolute[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_HARDLINK, "pkg/bin/copy", NULL, "/pkg/bin/tool", 0},
     };
     const TestEntry fifo[] = {
         {TEST_FIFO, "pkg/pipe", NULL, NULL, 0},
@@ -325,7 +384,19 @@ static void test_unsafe_links(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(symlink, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(absolute_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(rooted_backslash_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(embedded_backslash_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(drive_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(hardlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(hardlink_other_root, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(hardlink_absolute, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE, extract_entries(fifo, 1, output, sizeof(output)));
 }
 
@@ -353,6 +424,15 @@ static void test_path_collisions(void) {
     const TestEntry non_ascii[] = {
         {TEST_FILE, "pkg/caf\303\251", "x", NULL, 0},
     };
+    const TestEntry file_root[] = {
+        {TEST_FILE, "pkg", "x", NULL, 0},
+    };
+    const TestEntry symlink_root[] = {
+        {TEST_SYMLINK, "pkg", NULL, "target", 0},
+    };
+    const TestEntry hardlink_root[] = {
+        {TEST_HARDLINK, "pkg", NULL, "pkg/tool", 0},
+    };
     char output[1024];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
@@ -367,6 +447,12 @@ static void test_path_collisions(void) {
                           extract_entries(reserved, 1, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(non_ascii, 1, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(file_root, 1, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(symlink_root, 1, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(hardlink_root, 1, output, sizeof(output)));
 }
 
 static void test_empty_archive(void) {
@@ -404,6 +490,7 @@ static void test_interrupt(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_invalid_inputs);
+    RUN_TEST(test_destination_and_declared_format);
     RUN_TEST(test_valid_archive);
     RUN_TEST(test_unsafe_paths);
     RUN_TEST(test_unsafe_links);

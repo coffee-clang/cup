@@ -155,6 +155,13 @@ compile_test test_runtime_journal \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/text.c"
 
+compile_test test_uninstall_journal \
+    "$ROOT/tests/unit/test_uninstall_journal.c" \
+    "$ROOT/src/uninstall_journal.c" \
+    "$ROOT/src/runtime_journal.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
+
 compile_test test_command_repair \
     "$ROOT/tests/unit/test_command_repair.c" \
     "$ROOT/src/command_repair.c" \
@@ -323,6 +330,17 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/system.c" \
         "$ROOT/src/system_posix.c" \
         "$ROOT/src/interrupt.c" \
+        "$ROOT/src/checksum.c" \
+        "$ROOT/src/sha256.c" \
+        "$ROOT/src/package_catalog.c" \
+        "$ROOT/src/package_archive_format.c" \
+        "$ROOT/src/install_policy.c" \
+        "$ROOT/src/tool_preferences.c" \
+        "$ROOT/src/state.c" \
+        "$ROOT/src/package.c" \
+        "$ROOT/src/package_selector.c" \
+        "$ROOT/src/package_metadata.c" \
+        "$ROOT/src/registry.c" \
         "$ROOT/src/platform.c" \
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c"
@@ -352,6 +370,17 @@ else
         "$ROOT/src/system.c" \
         "$ROOT/src/system_windows.c" \
         "$ROOT/src/interrupt.c" \
+        "$ROOT/src/checksum.c" \
+        "$ROOT/src/sha256.c" \
+        "$ROOT/src/package_catalog.c" \
+        "$ROOT/src/package_archive_format.c" \
+        "$ROOT/src/install_policy.c" \
+        "$ROOT/src/tool_preferences.c" \
+        "$ROOT/src/state.c" \
+        "$ROOT/src/package.c" \
+        "$ROOT/src/package_selector.c" \
+        "$ROOT/src/package_metadata.c" \
+        "$ROOT/src/registry.c" \
         "$ROOT/src/platform.c" \
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c" \
@@ -393,6 +422,8 @@ compile_test test_cup_update \
 
 compile_test test_command_uninstall \
     "$ROOT/tests/unit/test_command_uninstall.c" \
-    "$ROOT/src/command_uninstall.c"
+    "$ROOT/src/command_uninstall.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 printf 'All C unit-test binaries compiled for %s (%s).\n' "$PLATFORM" "$TEST_CONFIGURATION"

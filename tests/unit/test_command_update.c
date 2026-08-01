@@ -37,7 +37,7 @@ static int scope_active_moved[MAX_SCOPE_CALLS];
 static ScopeCall scope_calls[MAX_SCOPE_CALLS];
 static size_t scope_call_count;
 static int context_end_calls;
-static CupError cup_update_result;
+static CupError cup_update_command_result;
 static int cup_update_calls;
 
 /* Fixture lifecycle and local construction helpers. */
@@ -51,7 +51,7 @@ static void reset_scenario(void) {
     load_result = CUP_OK;
     scope_call_count = 0;
     context_end_calls = 0;
-    cup_update_result = CUP_OK;
+    cup_update_command_result = CUP_OK;
     cup_update_calls = 0;
     for (i = 0; i < MAX_SCOPE_CALLS; ++i) {
         scope_results[i] = CUP_OK;
@@ -211,7 +211,7 @@ CupError package_install_update_scope(const char *component,
 
 CupError cup_update_start(void) {
     cup_update_calls++;
-    return cup_update_result;
+    return cup_update_command_result;
 }
 
 static void assert_scope(size_t index,

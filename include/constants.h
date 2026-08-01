@@ -21,6 +21,14 @@
 #define CUP_STATE_FORMAT 1
 #define MAX_STATE_LINE_LEN 256
 
+/* Persistent root identity and deterministic fallback. */
+#define CUP_PRIMARY_ROOT_DIRECTORY ".cup"
+#define CUP_ALTERNATIVE_ROOT_DIRECTORY ".coffee-cup"
+#define CUP_ROOT_MARKER_FILENAME "root.txt"
+#define CUP_ROOT_MARKER_FORMAT 1
+#define CUP_ROOT_MARKER_PRODUCT "coffee-clang/cup"
+#define CUP_ROOT_LAYOUT_FORMAT 1
+
 /* PackageCatalog file. */
 #define MAX_CATALOG_LINE_LEN 1024
 #define MAX_CATALOG_KEY_LEN 128
@@ -66,7 +74,6 @@
                            CUP_INSTALL_POLICY_FILENAME, \
                            CUP_INSTALL_POSIX_FILENAME, \
                            CUP_INSTALL_WINDOWS_FILENAME})
-#define CUP_UNINSTALL_MARKER_FILENAME "uninstall.pending"
 #define CUP_RELEASE_LATEST_URL "https://github.com/coffee-clang/cup/releases/latest/download"
 #define CUP_RELEASE_VERSIONED_URL_TEMPLATE \
     "https://github.com/coffee-clang/cup/releases/download/v%s"
@@ -85,7 +92,6 @@
 #define CUP_UPDATE_INSTALL_POLICY_OLD "install-config.old"
 #define CUP_UPDATE_COMMON_CHECKSUMS_OLD "common-checksums.old"
 #define CUP_UPDATE_COMMITTED "committed"
-#define CUP_UPDATE_RESULT_FILENAME "cup-update-result.txt"
 #if defined(_WIN32)
 #define CUP_BINARY_FILENAME "cup.exe"
 #define CUP_UPDATE_HELPER_FILENAME "cup-update-helper.exe"

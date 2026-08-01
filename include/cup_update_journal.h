@@ -2,9 +2,9 @@
 #define CUP_UPDATE_JOURNAL_H
 
 /*
- * Persists the detached CUP-update protocol. transaction.txt records the in-progress
- * generation and its commit phase; cup-update-result.txt records the helper outcome that
- * a later command can diagnose after the parent process has exited.
+ * Persists the detached CUP-update protocol in transaction.txt. The journal remains the
+ * authoritative record until a committed generation is finalized or a failed rollback is
+ * explicitly acknowledged by repair.
  */
 #include <stddef.h>
 
@@ -23,10 +23,10 @@ typedef enum {
 } CupUpdatePhase;
 
 typedef enum {
-    CUP_UPDATE_RESULT_MISSING,
-    CUP_UPDATE_RESULT_SUCCESS,
-    CUP_UPDATE_RESULT_FAILED
-} CupUpdateResultStatus;
+    CUP_UPDATE_FAILURE_NONE,
+    CUP_UPDATE_FAILURE_PENDING,
+    CUP_UPDATE_FAILURE_ROLLED_BACK
+} CupUpdateFailureRecovery;
 
 typedef enum {
     CUP_UPDATE_RECOVER_REPLACE_BINARY,
@@ -36,7 +36,8 @@ typedef enum {
 typedef enum {
     CUP_UPDATE_RECOVERY_NONE,
     CUP_UPDATE_RECOVERY_FINALIZED,
-    CUP_UPDATE_RECOVERY_ROLLED_BACK
+    CUP_UPDATE_RECOVERY_ROLLED_BACK,
+    CUP_UPDATE_RECOVERY_ACKNOWLEDGED
 } CupUpdateRecoveryResult;
 
 typedef struct {
@@ -44,24 +45,22 @@ typedef struct {
     char token[MAX_PATH_LEN];
     char version[MAX_IDENTIFIER_LEN];
     CupUpdatePhase phase;
+    CupUpdateFailureRecovery recovery;
     int error_code;
 } CupUpdateJournal;
 
-typedef struct {
-    CupUpdateResultStatus status;
-    int error_code;
-    char version[MAX_IDENTIFIER_LEN];
-} CupUpdateResult;
-
-/* In-progress journal lifecycle and recovery. */
+/* In-progress, failed and acknowledged journal lifecycle. */
 void cup_update_journal_init(CupUpdateJournal *journal);
 const char *cup_update_phase_name(CupUpdatePhase phase);
+const char *cup_update_failure_recovery_name(CupUpdateFailureRecovery recovery);
 CupError cup_update_journal_begin(const char *temporary_path,
                                   const char *token,
                                   const char *version);
 CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
                                       CupUpdatePhase phase,
                                       int error_code);
+CupError cup_update_journal_set_recovery(CupUpdateJournal *journal,
+                                         CupUpdateFailureRecovery recovery);
 CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStatus *status);
 CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
                                              char *buffer,
@@ -69,11 +68,5 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
                                     CupUpdateRecoveryMode mode,
                                     CupUpdateRecoveryResult *result);
-
-/* Detached helper result lifecycle and user-facing reporting. */
-void cup_update_result_init(CupUpdateResult *result);
-CupError cup_update_result_write(CupUpdateResultStatus status, int error_code, const char *version);
-CupError cup_update_result_load(CupUpdateResult *result);
-CupError cup_update_result_report(void);
 
 #endif /* CUP_UPDATE_JOURNAL_H */

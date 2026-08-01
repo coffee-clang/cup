@@ -67,6 +67,8 @@ CupError runtime_journal_detect(RuntimeJournalKind *kind) {
                 detected = RUNTIME_JOURNAL_PACKAGE;
             } else if (strcmp(value, "cup-update") == 0) {
                 detected = RUNTIME_JOURNAL_CUP_UPDATE;
+            } else if (strcmp(value, "uninstall") == 0) {
+                detected = RUNTIME_JOURNAL_UNINSTALL;
             } else {
                 fclose(file);
                 return CUP_ERR_TRANSACTION;
@@ -111,10 +113,16 @@ CupError runtime_journal_require_none(void) {
     if (kind == RUNTIME_JOURNAL_MISSING) {
         return CUP_OK;
     }
-    fprintf(stderr,
-            kind == RUNTIME_JOURNAL_CUP_UPDATE
-                ? "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n"
-                : "Error: a package transaction is active or requires recovery; "
-                  "retry shortly or run 'cup repair'.\n");
+    if (kind == RUNTIME_JOURNAL_CUP_UPDATE) {
+        fprintf(stderr,
+                "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n");
+    } else if (kind == RUNTIME_JOURNAL_UNINSTALL) {
+        fprintf(stderr,
+                "Error: a cup uninstall is pending or failed; retry shortly or run 'cup repair'.\n");
+    } else {
+        fprintf(stderr,
+                "Error: a package transaction is active or requires recovery; "
+                "retry shortly or run 'cup repair'.\n");
+    }
     return CUP_ERR_TRANSACTION;
 }

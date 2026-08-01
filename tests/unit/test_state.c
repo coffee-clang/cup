@@ -465,6 +465,10 @@ static void test_save_load(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load(NULL, &status));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load(&loaded, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(NULL, &status, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, NULL, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, &status, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, &status, ""));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_save(NULL));
     state_path_error = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, state_load(&loaded, &status));
@@ -550,14 +554,21 @@ static void test_format_host_policy(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &native));
+    TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(NULL, "linux-x64"));
+    TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, NULL));
+    TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, ""));
     TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, "linux-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate_current_host(&state, "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, ""));
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         package_identity_init(&foreign, "compiler", "clang", "windows-x64", "windows-x64", "1"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &foreign));
     TEST_ASSERT_EQUAL_size_t(1, state_count_foreign_hosts(&state, "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &foreign));
+    TEST_ASSERT_EQUAL_size_t(2, state_count_foreign_hosts(&state, "linux-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
                           state_validate_current_host(&state, "linux-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(NULL, "linux-x64"));

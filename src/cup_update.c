@@ -238,7 +238,7 @@ static CupError build_staging_path(const char *staging, const char *name, char *
     return path_join(path, size, staging, name);
 }
 
-static CupError copy_test_release_base(char *base, size_t size) {
+static CupError copy_override_release_base(char *base, size_t size) {
     const char *value = getenv("CUP_INSTALL_BASE_URL");
     size_t length;
 
@@ -262,7 +262,7 @@ static CupError copy_test_release_base(char *base, size_t size) {
 static CupError build_latest_asset_url(char *url, size_t size, const char *asset) {
     char base[MAX_CATALOG_URL_LEN];
 
-    if (copy_test_release_base(base, sizeof(base)) == CUP_OK) {
+    if (copy_override_release_base(base, sizeof(base)) == CUP_OK) {
         return text_format(url, size, "%s/%s", base, asset);
     }
     return text_format(url, size, "%s/%s", CUP_RELEASE_LATEST_URL, asset);
@@ -274,7 +274,7 @@ static CupError build_release_asset_url(char *url,
                                         const char *asset) {
     char base[MAX_CATALOG_URL_LEN];
 
-    if (copy_test_release_base(base, sizeof(base)) == CUP_OK) {
+    if (copy_override_release_base(base, sizeof(base)) == CUP_OK) {
         return text_format(url, size, "%s/%s/%s", base, version, asset);
     }
     return text_format(url, size, CUP_RELEASE_VERSIONED_URL_TEMPLATE "/%s", version, asset);

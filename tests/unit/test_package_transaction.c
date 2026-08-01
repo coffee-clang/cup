@@ -37,6 +37,9 @@ static SystemCommitState move_state;
 static CupError sync_parent_result;
 static CupError remove_result;
 static CupError permission_result;
+static CupError ensure_parent_result;
+static CupError backup_result;
+static CupError remove_tree_result;
 static int cup_assets_valid;
 static int legacy_cup_assets_valid;
 static int clear_calls;
@@ -112,6 +115,9 @@ static void reset_scenario(void) {
     sync_parent_result = CUP_OK;
     remove_result = CUP_OK;
     permission_result = CUP_OK;
+    ensure_parent_result = CUP_OK;
+    backup_result = CUP_OK;
+    remove_tree_result = CUP_OK;
     cup_assets_valid = 1;
     legacy_cup_assets_valid = 0;
     clear_calls = 0;
@@ -155,7 +161,7 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
 
 CupError layout_ensure_package_parent(const PackageIdentity *package) {
     (void)package;
-    return CUP_OK;
+    return ensure_parent_result;
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
@@ -286,12 +292,18 @@ CupError system_set_read_only(const char *path, int read_only) {
 
 CupError filesystem_remove_tree(const char *path) {
     remove_tree_calls++;
+    if (remove_tree_result != CUP_OK) {
+        return remove_tree_result;
+    }
     remove_tree_real(path);
     return CUP_OK;
 }
 
 CupError filesystem_backup_invalid(const char *path, char *backup_path, size_t backup_size) {
     backup_calls++;
+    if (backup_result != CUP_OK) {
+        return backup_result;
+    }
     if (snprintf(backup_path, backup_size, "%s.invalid", path) < 0) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
@@ -534,6 +546,16 @@ static void test_tmp_and_clear(void) {
                           package_transaction_get_staging_path(NULL, path, sizeof(path)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_transaction_get_staging_path(&transaction, NULL, sizeof(path)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_transaction_get_staging_path(&transaction, path, 0));
+    transaction.operation = PACKAGE_OPERATION_NONE;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_transaction_get_staging_path(&transaction, path, sizeof(path)));
+    transaction.operation = PACKAGE_OPERATION_INSTALL;
+    strcpy(transaction.temporary_name, "../unsafe");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_transaction_get_staging_path(&transaction, path, sizeof(path)));
+    strcpy(transaction.temporary_name, "install-pkg-4");
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           package_transaction_get_staging_path(&transaction, path, sizeof(path)));
     TEST_ASSERT_TRUE(strstr(path, "staging/install-pkg-4") != NULL);
@@ -604,6 +626,28 @@ static void test_recover_existing(void) {
     TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
+static void test_recover_idempotent_existing(void) {
+    PackageTransaction transaction;
+    CupState state = {0};
+    char install[MAX_PATH_LEN];
+    char journal[MAX_PATH_LEN];
+
+    set_installed(&state);
+    package_transaction_init(&transaction);
+    transaction.operation = PACKAGE_OPERATION_INSTALL;
+    transaction.package = package_identity();
+    strcpy(transaction.temporary_name, "install-pkg-1");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, layout_build_install_path(install, sizeof(install), &transaction.package));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal, sizeof(journal)));
+    write_file(journal, "journal");
+    make_valid_package(install);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_recover(&transaction, &state));
+    TEST_ASSERT_EQUAL_INT(0, remove_tree_calls);
+    TEST_ASSERT_TRUE(test_access_exists(install));
+}
+
 static void test_recover_absent(void) {
     PackageTransaction transaction;
     CupState state = {0};
@@ -636,18 +680,67 @@ static void test_recover_failures(void) {
 
     set_installed(&state);
     package_transaction_init(&transaction);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_recover(NULL, &state));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_recover(&transaction, &state));
     transaction.operation = PACKAGE_OPERATION_INSTALL;
     transaction.package = package_identity();
     strcpy(transaction.temporary_name, "install-pkg-1");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_recover(&transaction, NULL));
     layout_get_transaction_path(journal, sizeof(journal));
     write_file(journal, "journal");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_recover(&transaction, &state));
 
     package_transaction_get_staging_path(&transaction, staging, sizeof(staging));
     make_valid_package(staging);
+    path_exists_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_recover(&transaction, &state));
+    path_exists_result = CUP_OK;
     move_result = CUP_ERR_FILESYSTEM;
     move_state = SYSTEM_COMMIT_APPLIED;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_transaction_recover(&transaction, &state));
+}
+
+
+static void test_recover_boundary_failures(void) {
+    PackageTransaction transaction;
+    CupState state = {0};
+    char install[MAX_PATH_LEN];
+    char staging[MAX_PATH_LEN];
+    char journal[MAX_PATH_LEN];
+
+    set_installed(&state);
+    package_transaction_init(&transaction);
+    transaction.operation = PACKAGE_OPERATION_INSTALL;
+    transaction.package = package_identity();
+    strcpy(transaction.temporary_name, "install-pkg-1");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, layout_build_install_path(install, sizeof(install), &transaction.package));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, package_transaction_get_staging_path(&transaction, staging, sizeof(staging)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal, sizeof(journal)));
+
+    write_file(journal, "journal");
+    make_dir(install);
+    make_valid_package(staging);
+    backup_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          package_transaction_recover(&transaction, &state));
+
+    backup_result = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          package_transaction_recover(&transaction, &state));
+
+    backup_result = CUP_OK;
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(install));
+    ensure_parent_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          package_transaction_recover(&transaction, &state));
+
+    ensure_parent_result = CUP_OK;
+    make_valid_package(install);
+    remove_tree_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          package_transaction_recover(&transaction, &state));
 }
 
 /* Suite registration. */
@@ -663,7 +756,9 @@ int main(void) {
     RUN_TEST(test_tmp_and_clear);
     RUN_TEST(test_recover_installed);
     RUN_TEST(test_recover_existing);
+    RUN_TEST(test_recover_idempotent_existing);
     RUN_TEST(test_recover_absent);
     RUN_TEST(test_recover_failures);
+    RUN_TEST(test_recover_boundary_failures);
     return UNITY_END();
 }

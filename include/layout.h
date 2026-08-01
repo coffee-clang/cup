@@ -2,8 +2,8 @@
 #define CUP_LAYOUT_H
 
 /*
- * Canonical .cup paths and creation of CUP asset, runtime, staging, cache, and recovery
- * directories. Callers must not construct managed paths independently.
+ * Canonical paths below the selected CUP root and creation of asset, runtime, staging,
+ * cache, and recovery directories. Callers must not construct managed paths independently.
  */
 
 #include <stddef.h>
@@ -18,8 +18,9 @@ typedef enum {
     LAYOUT_RUNTIME_INCOMPLETE
 } LayoutRuntimeStatus;
 
-/* Canonical paths inside the current user's ~/.cup root. */
+/* Canonical paths inside the selected current-user cup root. */
 CupError layout_get_root(char *buffer, size_t size);
+CupError layout_get_root_marker_path(char *buffer, size_t size);
 CupError layout_get_bin_dir(char *buffer, size_t size);
 CupError layout_get_components_dir(char *buffer, size_t size);
 CupError layout_get_staging_dir(char *buffer, size_t size);
@@ -33,9 +34,7 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size);
 CupError layout_get_uninstall_path(char *buffer, size_t size);
 CupError layout_get_lock_path(char *buffer, size_t size);
 CupError layout_get_transaction_path(char *buffer, size_t size);
-CupError layout_get_cup_update_result_path(char *buffer, size_t size);
 CupError layout_get_cup_update_helper_path(char *buffer, size_t size);
-CupError layout_get_uninstall_marker_path(char *buffer, size_t size);
 CupError layout_get_binary_path(char *buffer, size_t size);
 
 /* Canonical paths derived from one already validated package identity. */
@@ -46,6 +45,7 @@ CupError layout_build_cache_archive_path(char *buffer,
                                          const char *format);
 
 /* Inspect the runtime tree without creating or modifying it. */
+CupError layout_check_root_candidates(size_t *issue_count);
 CupError layout_get_runtime_status(LayoutRuntimeStatus *status);
 CupError layout_check_runtime(size_t *missing_count);
 
@@ -57,7 +57,7 @@ CupError layout_ensure_cup_assets(void);
 CupError layout_ensure_package_parent(const PackageIdentity *identity);
 CupError layout_ensure_cache_parent(const PackageIdentity *identity);
 
-/* Build or create unique staging and recovery locations below ~/.cup. */
+/* Build or create unique staging and recovery locations below the selected root. */
 CupError layout_create_staging_dir(char *buffer,
                                    size_t size,
                                    const char *operation,

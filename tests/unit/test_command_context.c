@@ -14,6 +14,7 @@
 #include "platform.h"
 #include "state.h"
 #include "system.h"
+#include "runtime_journal.h"
 #include "unity.h"
 
 #include <stdio.h>
@@ -25,10 +26,9 @@
  * counters record the calls made by production code.
  */
 
-static CupError pending_result;
-static int uninstall_pending;
-static int uninstall_pending_after_lock;
-static size_t uninstall_pending_calls;
+static CupError journal_result;
+static CupError journal_after_lock_result;
+static size_t journal_calls;
 static CupError host_result;
 static char host_value[MAX_PLATFORM_LEN];
 static CupError platform_validation_result;
@@ -70,10 +70,9 @@ static CupError buffer_write_result(int written, size_t size) {
 }
 
 static void reset_scenario(void) {
-    pending_result = CUP_OK;
-    uninstall_pending = 0;
-    uninstall_pending_after_lock = 0;
-    uninstall_pending_calls = 0;
+    journal_result = CUP_OK;
+    journal_after_lock_result = CUP_OK;
+    journal_calls = 0;
     host_result = CUP_OK;
     strcpy(host_value, "linux-x64");
     platform_validation_result = CUP_OK;
@@ -134,23 +133,9 @@ static void read_stream_text(FILE *stream, char *output, size_t output_size) {
  * state above.
  */
 
-CupError cup_assets_uninstall_is_pending(int *pending) {
-    if (pending == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    uninstall_pending_calls++;
-    *pending = uninstall_pending_calls > 1 && uninstall_pending_after_lock ? 1 : uninstall_pending;
-    return pending_result;
-}
-
-CupError cup_assets_require_no_pending_uninstall(void) {
-    int pending;
-    CupError err = cup_assets_uninstall_is_pending(&pending);
-
-    if (err != CUP_OK) {
-        return err;
-    }
-    return pending ? CUP_ERR_LOCK : CUP_OK;
+CupError runtime_journal_require_none(void) {
+    journal_calls++;
+    return journal_calls > 1 ? journal_after_lock_result : journal_result;
 }
 
 CupError platform_get_host(char *buffer, size_t size) {
@@ -349,13 +334,14 @@ static void test_invalid_context(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           command_context_begin(NULL, NULL, SYSTEM_LOCK_SHARED));
 
-    pending_result = CUP_ERR_FILESYSTEM;
+    journal_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
-    uninstall_pending = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+    journal_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     host_result = CUP_ERR_INVALID_OS;
@@ -378,12 +364,13 @@ static void test_invalid_context(void) {
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 }
 
-static void test_marker_after_lock(void) {
+static void test_journal_after_lock(void) {
     CommandContext context;
 
-    uninstall_pending_after_lock = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
-    TEST_ASSERT_EQUAL_INT(2, (int)uninstall_pending_calls);
+    journal_after_lock_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(2, (int)journal_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
@@ -464,8 +451,23 @@ static void test_runtime_recheck(void) {
                           command_context_begin(&context, "windows-x64", SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_STRING("windows-x64", context.target_platform);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_SHARED, acquired_mode);
+    TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
     command_context_end(&context);
     command_context_end(NULL);
+
+    reset_scenario();
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, acquired_mode);
+    TEST_ASSERT_EQUAL_INT(1, ensure_root_calls);
+    command_context_end(&context);
+
+    reset_scenario();
+    ensure_root_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM, command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_EQUAL_INT(1, ensure_root_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
 static void test_read_only_context(void) {
@@ -648,8 +650,22 @@ static void test_package_guards(void) {
     package_validation_result = CUP_OK;
     TEST_ASSERT_EQUAL_INT(CUP_OK, installed_package_require_valid(&context.state, &package));
 
+    package_validation_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          installed_package_require_valid(&context.state, &package));
+
     state_has_package = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
+                          installed_package_require_absent(&context.state, &package));
+
+    package_on_disk = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED,
+                          installed_package_require_valid(&context.state, &package));
+
+    package.tool[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          installed_package_require_present(&context.state, &package));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           installed_package_require_absent(&context.state, &package));
 }
 
@@ -658,7 +674,7 @@ static void test_package_guards(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_invalid_context);
-    RUN_TEST(test_marker_after_lock);
+    RUN_TEST(test_journal_after_lock);
     RUN_TEST(test_missing_runtime);
     RUN_TEST(test_runtime_recheck);
     RUN_TEST(test_read_only_context);

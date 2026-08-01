@@ -31,7 +31,7 @@ $UninstallScript = ""
 $UpdateHelper = ""
 $CupAsset = "cup-windows-x64.exe"
 $Staging = ""
-$UninstallMarker = ""
+$RootMarker = ""
 $CupAvailableInPath = $false
 # PowerShell converts $null to an empty string for .NET string parameters.
 # NullString preserves the real null required to omit File.Replace backups.
@@ -114,8 +114,464 @@ function Test-WindowsX64 {
     }
 }
 
+function Test-RootMarker([string]$Candidate) {
+    $marker = Join-Path $Candidate "root.txt"
+    $item = Get-FileSystemItemOrNull $marker
+    if ($null -eq $item -or $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+    try {
+        $lines = @(Get-Content -LiteralPath $marker -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+    return $lines.Count -eq 3 -and
+        $lines[0] -ceq "format=1" -and
+        $lines[1] -ceq "product=coffee-clang/cup" -and
+        $lines[2] -ceq "layout=1"
+}
+
+function Test-RealPathKind([string]$Path, [bool]$Directory) {
+    $item = Get-FileSystemItemOrNull $Path
+    if ($null -eq $item -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+    return $item.PSIsContainer -eq $Directory
+}
+
+function Read-LegacyRecords([string]$Path) {
+    if (-not (Test-RealPathKind $Path $false)) {
+        throw "not a regular file"
+    }
+    $records = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($physicalLine in [IO.File]::ReadAllLines($Path)) {
+        $line = $physicalLine.Trim()
+        if ($line.Length -eq 0 -or $line.StartsWith('#', [StringComparison]::Ordinal)) {
+            continue
+        }
+        $separator = $line.IndexOf('=')
+        if ($separator -le 0 -or $separator -eq $line.Length - 1) {
+            throw "invalid key/value record"
+        }
+        $key = $line.Substring(0, $separator).Trim()
+        $value = $line.Substring($separator + 1).Trim()
+        if ($key.Length -eq 0 -or $value.Length -eq 0 -or -not $seen.Add($key)) {
+            throw "invalid or duplicate key"
+        }
+        $records.Add([pscustomobject]@{ Key = $key; Value = $value })
+    }
+    if ($records.Count -eq 0) {
+        throw "empty document"
+    }
+    return ,$records
+}
+
+function Test-SafeIdentifier([string]$Value) {
+    return $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._+\-]{0,126}$'
+}
+
+function Test-CanonicalName([string]$Value) {
+    return (Test-SafeIdentifier $Value) -and $Value -cnotmatch '[A-Z]'
+}
+
+function Test-SupportedPlatform([string]$Value) {
+    return $Value -cin @(
+        'linux-x64', 'linux-arm64', 'windows-x64', 'macos-x64', 'macos-arm64'
+    )
+}
+
+function Test-SupportedComponent([string]$Value) {
+    return $Value -cin @(
+        'compiler', 'debugger', 'linker', 'formatter', 'linter',
+        'language-server', 'analyzer'
+    )
+}
+
+function Get-ToolComponent([string]$Tool) {
+    switch -CaseSensitive ($Tool) {
+        'gcc' { return 'compiler' }
+        'clang' { return 'compiler' }
+        'gdb' { return 'debugger' }
+        'lldb' { return 'debugger' }
+        'lld' { return 'linker' }
+        'ld' { return 'linker' }
+        'clang-format' { return 'formatter' }
+        'clang-tidy' { return 'linter' }
+        'clangd' { return 'language-server' }
+        'valgrind' { return 'analyzer' }
+        default { return $null }
+    }
+}
+
+function Test-ToolComponent([string]$Component, [string]$Tool) {
+    $actual = Get-ToolComponent $Tool
+    return $null -ne $actual -and $actual -ceq $Component
+}
+
+function Test-LegacyList(
+    [string]$Value,
+    [ValidateSet('identifier', 'component', 'tool', 'format')][string]$Kind,
+    [string]$Expected = ''
+) {
+    $items = @($Value.Split(',') | ForEach-Object { $_.Trim() })
+    if ($items.Count -eq 0 -or $items -contains '') {
+        return $false
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $seenComponents = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $containsExpected = [string]::IsNullOrEmpty($Expected)
+    foreach ($item in $items) {
+        if (-not (Test-CanonicalName $item) -or -not $seen.Add($item)) {
+            return $false
+        }
+        if ($item -ceq $Expected) {
+            $containsExpected = $true
+        }
+        switch ($Kind) {
+            'component' {
+                if (-not (Test-SupportedComponent $item)) { return $false }
+            }
+            'tool' {
+                $component = Get-ToolComponent $item
+                if ($null -eq $component -or -not $seenComponents.Add($component)) {
+                    return $false
+                }
+            }
+            'format' {
+                if ($item -cnotin @('tar.xz', 'tar.gz', 'zip')) { return $false }
+            }
+        }
+    }
+    return $containsExpected
+}
+
+function Test-LegacyUrlTemplate([string]$Value, [bool]$PackageUrl) {
+    if (-not $Value.StartsWith('https://', [StringComparison]::Ordinal) -or
+        $Value -match '\s') {
+        return $false
+    }
+    $allowed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($name in @('tool', 'host_platform', 'target_platform', 'version')) {
+        [void]$allowed.Add($name)
+    }
+    if ($PackageUrl) { [void]$allowed.Add('format') }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($match in [regex]::Matches($Value, '\{([^{}]+)\}')) {
+        $name = $match.Groups[1].Value
+        if (-not $allowed.Contains($name)) { return $false }
+        [void]$seen.Add($name)
+    }
+    $withoutPlaceholders = [regex]::Replace($Value, '\{[^{}]+\}', '')
+    if ($withoutPlaceholders.Contains('{') -or $withoutPlaceholders.Contains('}')) {
+        return $false
+    }
+    foreach ($required in @('host_platform', 'target_platform', 'version')) {
+        if (-not $seen.Contains($required)) { return $false }
+    }
+    return (-not $PackageUrl -and -not $seen.Contains('format')) -or
+        ($PackageUrl -and $seen.Contains('format'))
+}
+
+function Test-LegacyCatalog([string]$Path) {
+    try { $records = Read-LegacyRecords $Path } catch { return $false }
+    $tuples = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $allowedFields = @(
+        'stable_version', 'available_versions', 'default_format', 'formats',
+        'url_template', 'checksum_url_template'
+    )
+    foreach ($record in $records) {
+        $parts = @($record.Key.Split('.'))
+        if ($parts.Count -ne 5) { return $false }
+        $component, $tool, $hostPlatform, $targetPlatform, $field = $parts
+        if (-not (Test-SupportedComponent $component) -or
+            -not (Test-ToolComponent $component $tool) -or
+            -not (Test-SupportedPlatform $hostPlatform) -or
+            -not (Test-SupportedPlatform $targetPlatform) -or
+            $field -cnotin $allowedFields) {
+            return $false
+        }
+        $tupleKey = "$component.$tool.$hostPlatform.$targetPlatform"
+        if (-not $tuples.ContainsKey($tupleKey)) {
+            $tuples[$tupleKey] = [Collections.Generic.Dictionary[string, string]]::new(
+                [StringComparer]::Ordinal
+            )
+        }
+        $fields = $tuples[$tupleKey]
+        if ($fields.ContainsKey($field)) { return $false }
+        $fields[$field] = $record.Value
+    }
+    if ($tuples.Count -eq 0) { return $false }
+    foreach ($fields in $tuples.Values) {
+        if ($fields.Count -ne $allowedFields.Count) { return $false }
+        foreach ($requiredField in $allowedFields) {
+            if (-not $fields.ContainsKey($requiredField)) { return $false }
+        }
+        $stable = $fields['stable_version']
+        $defaultFormat = $fields['default_format']
+        if (-not (Test-SafeIdentifier $stable) -or
+            $defaultFormat -cnotin @('tar.xz', 'tar.gz', 'zip') -or
+            -not (Test-LegacyList $fields['available_versions'] 'identifier' $stable) -or
+            -not (Test-LegacyList $fields['formats'] 'format' $defaultFormat) -or
+            -not (Test-LegacyUrlTemplate $fields['url_template'] $true) -or
+            -not (Test-LegacyUrlTemplate $fields['checksum_url_template'] $false)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-LegacyPolicy([string]$Path) {
+    try { $records = Read-LegacyRecords $Path } catch { return $false }
+    $seenFormat = $false
+    $defaults = 0
+    $profiles = 0
+    $toolchains = 0
+    foreach ($record in $records) {
+        if ($record.Key -ceq 'format') {
+            if ($seenFormat -or $record.Value -cne '1') { return $false }
+            $seenFormat = $true
+            continue
+        }
+        if (-not $seenFormat) { return $false }
+        $parts = @($record.Key.Split('.'))
+        if ($parts.Count -eq 4 -and $parts[0] -ceq 'default') {
+            if (-not (Test-SupportedPlatform $parts[1]) -or
+                -not (Test-SupportedPlatform $parts[2]) -or
+                -not (Test-SupportedComponent $parts[3]) -or
+                -not (Test-CanonicalName $record.Value) -or
+                -not (Test-ToolComponent $parts[3] $record.Value)) {
+                return $false
+            }
+            $defaults++
+        } elseif ($parts.Count -eq 2 -and $parts[0] -ceq 'profile') {
+            if (-not (Test-CanonicalName $parts[1]) -or
+                -not (Test-LegacyList $record.Value 'component')) { return $false }
+            $profiles++
+        } elseif ($parts.Count -eq 2 -and $parts[0] -ceq 'toolchain') {
+            if (-not (Test-CanonicalName $parts[1]) -or
+                -not (Test-LegacyList $record.Value 'tool')) { return $false }
+            $toolchains++
+        } else {
+            return $false
+        }
+    }
+    return $seenFormat -and $defaults -gt 0 -and $profiles -gt 0 -and $toolchains -gt 0
+}
+
+function Test-LegacyState([string]$Path) {
+    $item = Get-FileSystemItemOrNull $Path
+    if ($null -eq $item) { return $true }
+    try { $records = Read-LegacyRecords $Path } catch { return $false }
+    $seenFormat = $false
+    $installed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($record in $records) {
+        if ($record.Key -ceq 'format') {
+            if ($seenFormat -or $record.Value -cne '1') { return $false }
+            $seenFormat = $true
+            continue
+        }
+        if (-not $seenFormat) { return $false }
+        $parts = @($record.Key.Split('.'))
+        if ($parts.Count -ne 4 -or $parts[0] -cnotin @('installed', 'default') -or
+            -not (Test-SupportedComponent $parts[1]) -or
+            -not (Test-SupportedPlatform $parts[2]) -or
+            -not (Test-SupportedPlatform $parts[3])) {
+            return $false
+        }
+        $selector = @($record.Value.Split('@'))
+        if ($selector.Count -ne 2 -or -not (Test-CanonicalName $selector[0]) -or
+            -not (Test-SafeIdentifier $selector[1]) -or $selector[1] -ceq 'stable' -or
+            -not (Test-ToolComponent $parts[1] $selector[0])) {
+            return $false
+        }
+        $scopeIdentity = "$($parts[1]).$($parts[2]).$($parts[3])=$($record.Value)"
+        if ($parts[0] -ceq 'installed') {
+            [void]$installed.Add($scopeIdentity)
+        } elseif (-not $installed.Contains($scopeIdentity)) {
+            return $false
+        }
+    }
+    return $seenFormat
+}
+
+function Test-LegacyChecksumSet([string]$Path, [string[]]$ExpectedNames) {
+    if (-not (Test-RealPathKind $Path $false)) {
+        return $false
+    }
+    try {
+        $entries = @(Read-ChecksumEntries $Path)
+    } catch {
+        return $false
+    }
+    if ($entries.Count -ne $ExpectedNames.Count) {
+        return $false
+    }
+    foreach ($name in $ExpectedNames) {
+        if (@($entries | Where-Object { $_.Name -ceq $name }).Count -ne 1) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-LegacyNamedChecksum(
+    [string]$ChecksumFile,
+    [string]$ExpectedName,
+    [string]$ActualFile
+) {
+    if (-not (Test-RealPathKind $ActualFile $false)) {
+        return $false
+    }
+    try {
+        $entries = @(Read-ChecksumEntries $ChecksumFile)
+        $matching = @($entries | Where-Object { $_.Name -ceq $ExpectedName })
+        if ($matching.Count -ne 1) {
+            return $false
+        }
+        $actual = (Get-FileHash -LiteralPath $ActualFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        return $actual -ceq $matching[0].Hash
+    } catch {
+        return $false
+    }
+}
+
+function Test-CupRootTraces([string]$Candidate) {
+    foreach ($relative in @(
+        'bin\cup.exe',
+        'helpers\cup-update-helper.exe',
+        'helpers\uninstall.ps1',
+        'config\SHA256SUMS.common',
+        'state.txt'
+    )) {
+        if ($null -ne (Get-FileSystemItemOrNull (Join-Path $Candidate $relative))) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-CupRootBinary([string]$Candidate) {
+    return $null -ne (Get-FileSystemItemOrNull (Join-Path $Candidate 'bin\cup.exe'))
+}
+
+function Test-LegacyCupRoot([string]$Candidate) {
+    foreach ($relative in @('bin', 'components', 'staging', 'cache', 'config', 'helpers')) {
+        if (-not (Test-RealPathKind (Join-Path $Candidate $relative) $true)) {
+            return $false
+        }
+    }
+
+    $binary = Join-Path $Candidate 'bin\cup.exe'
+    $helper = Join-Path $Candidate 'helpers\cup-update-helper.exe'
+    $uninstall = Join-Path $Candidate 'helpers\uninstall.ps1'
+    $catalog = Join-Path $Candidate 'config\packages.cfg'
+    $policy = Join-Path $Candidate 'config\install.cfg'
+    $common = Join-Path $Candidate 'config\SHA256SUMS.common'
+    $platformChecksums = Join-Path $Candidate 'config\SHA256SUMS.windows-x64'
+    foreach ($path in @($binary, $helper, $uninstall, $catalog, $policy, $common, $platformChecksums)) {
+        if (-not (Test-RealPathKind $path $false)) {
+            return $false
+        }
+    }
+
+    if (-not (Test-LegacyChecksumSet $common @(
+            'packages.cfg', 'install.cfg', 'install.sh', 'install.ps1')) -or
+        -not (Test-LegacyChecksumSet $platformChecksums @(
+            'cup-windows-x64.exe', 'uninstall.ps1', 'release.txt')) -or
+        -not (Test-LegacyNamedChecksum $platformChecksums 'cup-windows-x64.exe' $binary) -or
+        -not (Test-LegacyNamedChecksum $platformChecksums 'uninstall.ps1' $uninstall) -or
+        -not (Test-LegacyNamedChecksum $common 'packages.cfg' $catalog) -or
+        -not (Test-LegacyNamedChecksum $common 'install.cfg' $policy)) {
+        return $false
+    }
+    try {
+        $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+        $helperHash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash
+    } catch {
+        return $false
+    }
+    if ($binaryHash -cne $helperHash -or
+        -not (Test-LegacyCatalog $catalog) -or
+        -not (Test-LegacyPolicy $policy) -or
+        -not (Test-LegacyState (Join-Path $Candidate 'state.txt'))) {
+        return $false
+    }
+    return $true
+}
+
+function Get-RootCandidateStatus([string]$Candidate) {
+    $item = Get-FileSystemItemOrNull $Candidate
+    if ($null -eq $item) {
+        return 'missing'
+    }
+    if (-not $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return 'foreign'
+    }
+    if (Test-RootMarker $Candidate) {
+        return 'owned'
+    }
+    if ($null -ne (Get-FileSystemItemOrNull (Join-Path $Candidate 'root.txt'))) {
+        if (Test-CupRootTraces $Candidate) {
+            return 'invalid-marker'
+        }
+        return 'foreign'
+    }
+    if (Test-LegacyCupRoot $Candidate) {
+        return 'legacy'
+    }
+    if (Test-CupRootBinary $Candidate) {
+        return 'damaged'
+    }
+    return 'foreign'
+}
+
+function Select-CupRoot {
+    $primary = Join-Path $script:UserProfilePath '.cup'
+    $alternative = Join-Path $script:UserProfilePath '.coffee-cup'
+    $primaryStatus = Get-RootCandidateStatus $primary
+    $alternativeStatus = Get-RootCandidateStatus $alternative
+    $primaryOwned = $primaryStatus -in @('owned', 'legacy')
+    $alternativeOwned = $alternativeStatus -in @('owned', 'legacy')
+
+    if ($primaryStatus -ceq 'damaged') {
+        Fail (
+            "a probable legacy cup root was found but its installed generation could not be " +
+            "verified: $primary; the alternative root was preserved"
+        )
+    }
+    if ($alternativeStatus -ceq 'damaged') {
+        Fail (
+            "a probable legacy cup root was found but its installed generation could not be " +
+            "verified: $alternative; the primary root was preserved"
+        )
+    }
+    if ($primaryStatus -ceq 'invalid-marker') {
+        Fail (
+            "cup root marker is invalid for the recognized root: $primary; " +
+            'the alternative root was preserved'
+        )
+    }
+    if ($alternativeStatus -ceq 'invalid-marker') {
+        Fail (
+            "cup root marker is invalid for the recognized root: $alternative; " +
+            'the primary root was preserved'
+        )
+    }
+    if ($primaryOwned -and $alternativeOwned) {
+        Fail "both cup root candidates are recognized: $primary and $alternative"
+    }
+    if ($primaryOwned) { return $primary }
+    if ($alternativeOwned) { return $alternative }
+    if ($primaryStatus -ceq 'missing') { return $primary }
+    if ($alternativeStatus -ceq 'missing') { return $alternative }
+    Fail "neither existing cup root candidate is recognized: $primary or $alternative"
+}
 function Initialize-InstallationPaths {
-    $script:CupRoot = Join-Path $script:UserProfilePath ".cup"
+    $script:CupRoot = Select-CupRoot
     $script:CupBinDir = Join-Path $script:CupRoot "bin"
     $script:CupConfigDir = Join-Path $script:CupRoot "config"
     $script:CupHelpersDir = Join-Path $script:CupRoot "helpers"
@@ -127,7 +583,7 @@ function Initialize-InstallationPaths {
     $script:UninstallScript = Join-Path $script:CupHelpersDir "uninstall.ps1"
     $script:UpdateHelper = Join-Path $script:CupHelpersDir "cup-update-helper.exe"
     $script:Staging = Join-Path $script:CupRoot ".bootstrap"
-    $script:UninstallMarker = Join-Path $script:CupRoot "uninstall.pending"
+    $script:RootMarker = Join-Path $script:CupRoot "root.txt"
 }
 
 # Download and strict checksum validation.
@@ -608,35 +1064,42 @@ function Remove-ValidatedUninstallResidues {
         Where-Object { $_.Name -like '.cup-uninstall.*' })
     foreach ($residue in $residues) {
         if (-not $residue.PSIsContainer -or
-            ($residue.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            ($residue.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $residue.Name -notmatch '^\.cup-uninstall\.([A-Za-z0-9_-]+)$') {
             Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
         }
-        $children = @(Get-ChildItem -LiteralPath $residue.FullName -Force)
-        $stagedRoot = Join-Path $residue.FullName "root"
-        $marker = Join-Path $stagedRoot "uninstall.pending"
-        $binary = Join-Path (Join-Path $stagedRoot "bin") "cup.exe"
-        if ($children.Count -ne 1 -or $children[0].Name -cne 'root' -or
-            -not (Test-Path -LiteralPath $stagedRoot -PathType Container) -or
-            -not (Test-Path -LiteralPath $marker -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+        $token = $Matches[1]
+        $binary = Join-Path $residue.FullName 'bin\cup.exe'
+        $journal = Join-Path $residue.FullName 'transaction.txt'
+        if (-not (Test-RootMarker $residue.FullName) -or
+            -not (Test-RealPathKind $binary $false) -or
+            -not (Test-RealPathKind $journal $false)) {
             Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
         }
-        foreach ($path in @($stagedRoot, $marker, $binary)) {
-            $item = Get-Item -LiteralPath $path -Force
-            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
-            }
+        try {
+            $lines = @([IO.File]::ReadAllLines($journal))
+        } catch {
+            Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
         }
-        $markerLines = @(Get-Content -LiteralPath $marker)
-        if ($markerLines.Count -ne 1 -or
-            $markerLines[0] -cnotmatch '^parent_pid=[1-9][0-9]*$') {
+        if ($lines.Count -ne 7 -or
+            $lines[0] -cne 'format=1' -or
+            $lines[1] -cne 'operation=uninstall' -or
+            $lines[3] -cne "temporary_name=$($residue.Name)" -or
+            $lines[4] -cne "token=$token") {
+            Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
+        }
+        $isDetached = $lines[2] -ceq 'phase=detaching' -and
+            $lines[5] -ceq 'stage=detach' -and $lines[6] -ceq 'error=0'
+        $isFailedCleanup = $lines[2] -ceq 'phase=failed' -and
+            $lines[5] -ceq 'stage=cleanup' -and
+            $lines[6] -match '^error=([1-9][0-9]*)$'
+        if (-not $isDetached -and -not $isFailedCleanup) {
             Fail "unrecognized uninstall residue was preserved: $($residue.FullName)"
         }
         Write-Info "Removing validated uninstall residue: $($residue.FullName)"
         Remove-TreeNoFollow $residue.FullName
     }
 }
-
 # Private root ACL creation and validation.
 function Set-PrivateDirectory([string]$Path) {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -710,6 +1173,26 @@ function Initialize-InstallationDirectories {
     New-Item -ItemType Directory -Force -Path $CupRoot | Out-Null
     Set-PrivateDirectory $CupRoot
     Assert-PrivateDirectory $CupRoot
+    if (-not (Test-RootMarker $CupRoot)) {
+        if ($null -ne (Get-FileSystemItemOrNull $RootMarker)) {
+            Fail "cup root marker is invalid: $RootMarker"
+        }
+        $temporaryMarker = Join-Path $CupRoot (
+            ".root-marker." + [Guid]::NewGuid().ToString("N")
+        )
+        try {
+            [System.IO.File]::WriteAllText(
+                $temporaryMarker,
+                "format=1`nproduct=coffee-clang/cup`nlayout=1`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            [System.IO.File]::Move($temporaryMarker, $RootMarker)
+        } finally {
+            if (Test-Path -LiteralPath $temporaryMarker -PathType Leaf) {
+                Remove-Item -LiteralPath $temporaryMarker -Force
+            }
+        }
+    }
 
     foreach ($directory in @($CupBinDir, $CupConfigDir, $CupHelpersDir)) {
         Assert-RealDirectory $directory
@@ -806,9 +1289,6 @@ function Main {
         Commit-BootstrapAssets
         Set-BootstrapPermissions -RequireAssets $true
 
-        if (Test-Path -LiteralPath $UninstallMarker) {
-            Remove-Item -LiteralPath $UninstallMarker -Force
-        }
         New-Item -ItemType File -Path (Join-Path $Staging "committed") | Out-Null
     } catch {
         $installError = $_.Exception.Message

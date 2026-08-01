@@ -82,7 +82,29 @@ temporary_name=install-compiler-clang-$TEST_PLATFORM-$TEST_PLATFORM-22.1.5-test
 JOURNAL
 run_cup_expect_failure "$TMP_ROOT/ambiguous-state.out" repair
 assert_contains "$(cat "$TMP_ROOT/ambiguous-state.out")" \
-    'state.txt is missing or invalid while a package transaction is pending'
+    'state.txt is missing or invalid while a state-owning transaction is pending'
+rm -f "$transaction_file"
+cp "$TMP_ROOT/state.valid" "$state_file"
+rm -f "$state_file.invalid"
+
+# A malformed CUP-update journal must also block preservation or reconstruction
+# of invalid state. The journal is the only evidence describing the detached
+# replacement generation, so repair cannot mutate either file until it parses.
+chmod u+w "$state_file"
+printf 'unexpected.key=value\n' > "$state_file"
+cat > "$transaction_file" <<'JOURNAL'
+format=1
+operation=cup-update
+phase=failed
+JOURNAL
+invalid_state_hash=$(hash_file "$state_file")
+invalid_update_hash=$(hash_file "$transaction_file")
+run_cup_expect_failure "$TMP_ROOT/malformed-update-invalid-state.out" repair
+output=$(cat "$TMP_ROOT/malformed-update-invalid-state.out")
+assert_contains "$output" 'cup update journal is invalid'
+assert_equals "$(hash_file "$state_file")" "$invalid_state_hash"
+assert_equals "$(hash_file "$transaction_file")" "$invalid_update_hash"
+assert_missing "$state_file.invalid"
 rm -f "$transaction_file"
 cp "$TMP_ROOT/state.valid" "$state_file"
 
@@ -135,12 +157,34 @@ grep -v "installed.compiler.$foreign_host.$foreign_host=" "$state_file" \
 mv "$state_file.tmp" "$state_file"
 rm -rf "$TEST_HOME/.cup/components/compiler/clang/$foreign_host"
 
-# Repair cannot race a detached uninstall operation.
-: > "$TEST_HOME/.cup/uninstall.pending"
+# Repair cannot acknowledge an uninstall that is still in its detached handoff.
+cat > "$transaction_file" <<'JOURNAL'
+format=1
+operation=uninstall
+phase=scheduled
+temporary_name=.cup-uninstall.fixture
+token=fixture
+stage=parent-wait
+error=0
+JOURNAL
 run_cup_expect_failure "$TMP_ROOT/pending-uninstall.out" repair
 assert_contains "$(cat "$TMP_ROOT/pending-uninstall.out")" \
-    'cup uninstall is in progress or did not finish'
-rm -f "$TEST_HOME/.cup/uninstall.pending"
+    'interrupted operation cannot be repaired safely'
+rm -f "$transaction_file"
+
+# A failed uninstall whose detached sibling is gone can be explicitly acknowledged by repair.
+cat > "$transaction_file" <<'JOURNAL'
+format=1
+operation=uninstall
+phase=failed
+temporary_name=.cup-uninstall.fixture
+token=fixture
+stage=handoff
+error=7
+JOURNAL
+output=$(run_cup repair)
+assert_contains "$output" "Acknowledged failed cup uninstall during 'handoff' (error 7)."
+assert_missing "$transaction_file"
 assert_cup_healthy
 
 printf 'Repair integration tests passed for %s.\n' "$TEST_PLATFORM"

@@ -485,6 +485,7 @@ static void test_private_directory_tree_removal_and_locks(void) {
     SystemLock first = {0};
     SystemLock second = {0};
     int is_private;
+    int exists;
 
     build_path(private_directory, sizeof(private_directory), "private");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_private_directory(private_directory));
@@ -514,6 +515,10 @@ static void test_private_directory_tree_removal_and_locks(void) {
                           system_lock_acquire(&second, lock_path, SYSTEM_LOCK_SHARED));
     system_lock_release(&second);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_lock_acquire(&second, lock_path, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(lock_path, &exists));
+    TEST_ASSERT_FALSE(exists);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(private_directory));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(private_directory));

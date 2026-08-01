@@ -184,13 +184,37 @@ case "\${1:-}" in
 esac
 EOF_BREW
 chmod +x "$FAKE_BREW_DIR/brew"
+for tool in ar clang dsymutil dwarfdump lipo otool ranlib strings xcrun; do
+    cat >"$FAKE_BREW_DIR/$tool" <<'EOF_TOOL'
+#!/bin/sh
+exit 0
+EOF_TOOL
+    chmod +x "$FAKE_BREW_DIR/$tool"
+done
 PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
     "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" dependencies
 for package in perl pkg-config xz; do
     grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
         fail "macOS dependency preparation omitted $package"
 done
-printf 'macOS dependency tool preparation tests passed.\n'
+: >"$FAKE_BREW_LOG"
+PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
+    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" source
+for package in coreutils perl pkg-config xz; do
+    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
+        fail "macOS source preparation omitted $package"
+done
+: >"$FAKE_BREW_LOG"
+PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
+    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" debug
+if grep -Fq 'list --formula coreutils' "$FAKE_BREW_LOG"; then
+    fail 'macOS debug preparation installs source-test-only coreutils'
+fi
+for package in perl pkg-config xz; do
+    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
+        fail "macOS debug preparation omitted $package"
+done
+printf 'macOS CI profile preparation tests passed.\n'
 
 printf '==> Testing explicit dependency preparation...\n'
 FAKE_ROOT="$TMP_ROOT/fake-project"
@@ -829,9 +853,6 @@ missing_prefix="$TMP_ROOT/missing-prefix"
     make --no-print-directory -n PLATFORM=linux-x64 \
         DEPS_PREFIX="$missing_prefix" all
 ) >"$TMP_ROOT/missing-prefix.out" 2>&1 || true
-assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" 'build-posix.sh'
-assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" \
-    'make --no-print-directory _build'
 if (
     cd "$PROJECT_ROOT"
     make --no-print-directory -s PLATFORM=linux-x64 \
@@ -848,10 +869,7 @@ deps_command=$(
     unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES
     make --no-print-directory -B -n PLATFORM=linux-x64 deps
 )
-assert_contains "$deps_command" 'build-posix.sh'
-assert_contains "$deps_command" "JOBS=''"
 assert_contains "$deps_command" "$default_deps_prefix"
-assert_not_contains "$deps_command" 'CUP_DEPS_SCOPE'
 custom_deps_prefix="$TMP_ROOT/custom-deps-prefix"
 custom_deps_command=$(
     cd "$PROJECT_ROOT"
@@ -862,17 +880,8 @@ custom_deps_command=$(
 assert_contains "$custom_deps_command" "DEPS_PREFIX='$custom_deps_prefix'"
 printf 'Dependency diagnostic tests passed.\n'
 
-printf '==> Testing dependency entry points and platform rejection...\n'
+printf '==> Testing dependency platform rejection...\n'
 DEPENDENCY_DIR="$PROJECT_ROOT/scripts/dependencies"
-for library in sources.sh common.sh; do
-    path="$DEPENDENCY_DIR/$library"
-    [ -f "$path" ] || fail "dependency library is missing: $library"
-    [ ! -x "$path" ] || fail "dependency library must not be executable: $library"
-done
-for executable in build-posix.sh build-windows.sh verify.sh; do
-    path="$DEPENDENCY_DIR/$executable"
-    [ -x "$path" ] || fail "dependency entry point is missing or not executable: $executable"
-done
 if PLATFORM=macos-x64 MACOSX_DEPLOYMENT_TARGET=12.0 \
         bash "$DEPENDENCY_DIR/build-posix.sh" \
         >"$TMP_ROOT/macos-deps-floor.out" 2>&1; then
@@ -887,7 +896,7 @@ if MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 \
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-deps-runtime.out")" \
     'require an MSYS2 UCRT64 or CLANG64 shell'
-printf 'Dependency entry-point and platform rejection tests passed.\n'
+printf 'Dependency platform rejection tests passed.\n'
 
 printf '==> Testing dependency inventory, scopes and notices...\n'
 DEPENDENCY_SOURCES="$DEPENDENCY_DIR/sources.sh"

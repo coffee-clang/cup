@@ -150,11 +150,16 @@ static void test_line_failures(void) {
     PackageMetadata info;
     char path[256];
     unsigned char control[] = {'k', 'e', 'y', '=', 'a', 1, 'b', '\n'};
+    unsigned char delete_control[] = {'k', 'e', 'y', '=', 'a', 127, 'b', '\n'};
     char long_line[MAX_METADATA_LINE_LEN + 16];
 
     package_metadata_init(&info);
     build_path(path, sizeof(path), "control.txt");
     write_bytes(path, control, sizeof(control));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+
+    build_path(path, sizeof(path), "delete-control.txt");
+    write_bytes(path, delete_control, sizeof(delete_control));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
 
     memset(long_line, 'x', sizeof(long_line));
@@ -177,6 +182,7 @@ static void test_line_failures(void) {
 
 static void test_query_guards(void) {
     PackageMetadata info;
+    PackageCommand command;
     char path[256];
     size_t cursor = 0;
 
@@ -193,6 +199,15 @@ static void test_query_guards(void) {
     TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", NULL));
     cursor = info.count;
     TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", &cursor));
+
+    cursor = 0;
+    TEST_ASSERT_FALSE(package_metadata_next_command(NULL, &command, &cursor));
+    TEST_ASSERT_FALSE(package_metadata_next_command(&info, NULL, &cursor));
+    TEST_ASSERT_FALSE(package_metadata_next_command(&info, &command, NULL));
+    TEST_ASSERT_TRUE(package_metadata_next_command(&info, &command, &cursor));
+    TEST_ASSERT_EQUAL_STRING("clang", command.name);
+    TEST_ASSERT_EQUAL_STRING("bin/clang", command.path);
+    TEST_ASSERT_FALSE(package_metadata_next_command(&info, &command, &cursor));
     package_metadata_free(&info);
 }
 

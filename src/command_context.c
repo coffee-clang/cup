@@ -1,5 +1,5 @@
 /*
- * Owns the shared lifetime of one CLI command: canonical root validation, platform resolution,
+ * Owns the shared lifetime of one CLI command: selected-root validation, platform resolution,
  * lock acquisition, state loading and catalog loading.
  */
 
@@ -11,6 +11,7 @@
 #include "path.h"
 #include "platform.h"
 #include "registry.h"
+#include "runtime_journal.h"
 #include "text.h"
 
 #include <stdio.h>
@@ -93,11 +94,11 @@ static CupError acquire_runtime_lock(CommandContext *context, SystemLockMode mod
     return err;
 }
 
-/* Lock acquisition may race with uninstall or runtime deletion, so both are rechecked. */
+/* Lock acquisition may race with another journal owner or runtime deletion, so both are rechecked. */
 static CupError recheck_locked_runtime(CommandContext *context, LayoutRuntimeStatus *status) {
     CupError err;
 
-    err = cup_assets_require_no_pending_uninstall();
+    err = runtime_journal_require_none();
     if (err == CUP_OK) {
         err = layout_get_runtime_status(status);
     }
@@ -126,7 +127,7 @@ CupError command_context_begin(CommandContext *context,
     package_catalog_init(&context->catalog);
 
     /* Resolve and validate the pre-lock view without creating runtime state. */
-    err = cup_assets_require_no_pending_uninstall();
+    err = runtime_journal_require_none();
     if (err == CUP_OK) {
         err = resolve_platforms(context, target_override);
     }
@@ -164,6 +165,18 @@ CupError command_context_begin(CommandContext *context,
         return err;
     }
 
+    /*
+     * An exclusive context is a mutating ownership boundary. Adopt a recognized legacy
+     * installation here so every mutation leaves the selected root durably marked.
+     */
+    if (lock_mode == SYSTEM_LOCK_EXCLUSIVE) {
+        err = layout_ensure_root();
+        if (err != CUP_OK) {
+            command_context_end(context);
+            return err;
+        }
+    }
+
     /* The exclusive lock now protects first-time runtime initialization. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
         err = initialize_runtime();
@@ -194,7 +207,7 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
 
     err = resolve_platforms(context, target_override);
     if (err == CUP_OK) {
-        err = cup_assets_require_no_pending_uninstall();
+        err = runtime_journal_require_none();
     }
     if (err == CUP_OK) {
         err = layout_get_runtime_status(&runtime_status);

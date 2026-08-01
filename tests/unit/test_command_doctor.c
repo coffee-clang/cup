@@ -15,6 +15,7 @@
 #include "package_transaction.h"
 #include "cup_update_journal.h"
 #include "runtime_journal.h"
+#include "uninstall_journal.h"
 #include "wrappers.h"
 #include "unity.h"
 
@@ -22,14 +23,13 @@
 #include <string.h>
 
 typedef struct {
+    CupError root_candidates_result;
+    size_t root_issue_count;
     CupError cup_assets_result;
     CupAssetsInspection cup_assets;
     CupError package_catalog_result;
     LayoutRuntimeStatus runtime_status;
     CupError runtime_result;
-    CupError marker_path_result;
-    CupError marker_kind_result;
-    SystemPathKind marker_kind;
     CupError lock_path_result;
     CupError lock_file_result;
     int lock_exists;
@@ -45,11 +45,16 @@ typedef struct {
     CupError transaction_result;
     PackageTransactionStatus transaction_status;
     PackageOperation transaction_operation;
-    CupError cup_update_result;
+    CupError cup_update_load_result;
+    CupUpdatePhase cup_update_phase;
+    CupUpdateFailureRecovery cup_update_recovery;
+    int cup_update_error;
     CupUpdateJournalStatus cup_update_status;
-    CupError update_result_load_result;
-    CupUpdateResultStatus update_result_status;
-    int update_result_error;
+    CupError uninstall_load_result;
+    UninstallJournalStatus uninstall_status;
+    UninstallPhase uninstall_phase;
+    UninstallStage uninstall_stage;
+    int uninstall_error;
     CupError identity_result;
     CupError install_path_result;
     CupError package_result;
@@ -80,7 +85,6 @@ typedef struct {
 static DoctorScenario scenario;
 static int lock_release_calls;
 static int plan_free_calls;
-static int marker_path_calls;
 static int runtime_check_calls;
 static int package_metadata_protection_calls;
 static int package_catalog_check_calls;
@@ -112,14 +116,17 @@ static void reset_scenario(void) {
     scenario.cup_assets.common_checksums = CUP_ASSET_VALID;
     scenario.cup_assets.platform_checksums = CUP_ASSET_VALID;
     scenario.runtime_status = LAYOUT_RUNTIME_READY;
-    scenario.marker_kind = SYSTEM_PATH_MISSING;
     scenario.lock_exists = 1;
     scenario.state_status = STATE_FILE_LOADED;
     scenario.include_state_package = 1;
     scenario.journal_kind = RUNTIME_JOURNAL_MISSING;
     scenario.transaction_status = PACKAGE_TRANSACTION_MISSING;
     scenario.cup_update_status = CUP_UPDATE_JOURNAL_MISSING;
-    scenario.update_result_status = CUP_UPDATE_RESULT_MISSING;
+    scenario.cup_update_phase = CUP_UPDATE_PHASE_SCHEDULED;
+    scenario.cup_update_recovery = CUP_UPDATE_FAILURE_NONE;
+    scenario.uninstall_status = UNINSTALL_JOURNAL_MISSING;
+    scenario.uninstall_phase = UNINSTALL_PHASE_SCHEDULED;
+    scenario.uninstall_stage = UNINSTALL_STAGE_HANDOFF;
     scenario.package_metadata_read_only = 1;
     scenario.package_catalog_available = 1;
     scenario.packages.complete = 1;
@@ -130,7 +137,6 @@ static void reset_scenario(void) {
     scenario.packages.total_count = 1;
     lock_release_calls = 0;
     plan_free_calls = 0;
-    marker_path_calls = 0;
     runtime_check_calls = 0;
     package_metadata_protection_calls = 0;
     package_catalog_check_calls = 0;
@@ -243,11 +249,6 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "platform", CUP_OK);
 }
 
-CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
-    marker_path_calls++;
-    return copy_path(buffer, size, "uninstall.pending", scenario.marker_path_result);
-}
-
 CupError layout_get_lock_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "cup.lock", scenario.lock_path_result);
 }
@@ -265,6 +266,13 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
         *status = scenario.runtime_status;
     }
     return scenario.runtime_result;
+}
+
+CupError layout_check_root_candidates(size_t *issue_count) {
+    if (issue_count != NULL) {
+        *issue_count = scenario.root_issue_count;
+    }
+    return scenario.root_candidates_result;
 }
 
 CupError layout_check_runtime(size_t *missing_count) {
@@ -286,14 +294,6 @@ CupError system_is_read_only(const char *path, int *is_read_only) {
         *is_read_only = scenario.read_only;
     }
     return scenario.read_only_result;
-}
-
-CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
-    (void)path;
-    if (kind != NULL) {
-        *kind = scenario.marker_kind;
-    }
-    return scenario.marker_kind_result;
 }
 
 CupError system_is_regular_file(const char *path, int *is_regular) {
@@ -380,21 +380,63 @@ void cup_update_journal_init(CupUpdateJournal *journal) {
 }
 
 CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStatus *status) {
-    (void)journal;
+    cup_update_journal_init(journal);
     *status = scenario.cup_update_status;
-    return scenario.cup_update_result;
+    journal->phase = scenario.cup_update_phase;
+    journal->recovery = scenario.cup_update_recovery;
+    journal->error_code = scenario.cup_update_error;
+    (void)snprintf(journal->version, sizeof(journal->version), "0.2.2");
+    return scenario.cup_update_load_result;
 }
 
-CupError cup_update_result_load(CupUpdateResult *result) {
-    cup_update_result_init(result);
-    result->status = scenario.update_result_status;
-    result->error_code = scenario.update_result_error;
-    (void)snprintf(result->version, sizeof(result->version), "0.3.0");
-    return scenario.update_result_load_result;
+const char *cup_update_phase_name(CupUpdatePhase phase) {
+    switch (phase) {
+        case CUP_UPDATE_PHASE_SCHEDULED: return "scheduled";
+        case CUP_UPDATE_PHASE_COMMITTING: return "committing";
+        case CUP_UPDATE_PHASE_FAILED: return "failed";
+        default: return "invalid";
+    }
 }
 
-void cup_update_result_init(CupUpdateResult *result) {
-    memset(result, 0, sizeof(*result));
+const char *cup_update_failure_recovery_name(CupUpdateFailureRecovery recovery) {
+    switch (recovery) {
+        case CUP_UPDATE_FAILURE_NONE: return "none";
+        case CUP_UPDATE_FAILURE_PENDING: return "pending";
+        case CUP_UPDATE_FAILURE_ROLLED_BACK: return "rolled-back";
+        default: return "invalid";
+    }
+}
+
+void uninstall_journal_init(UninstallJournal *journal) {
+    memset(journal, 0, sizeof(*journal));
+}
+
+CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatus *status) {
+    uninstall_journal_init(journal);
+    *status = scenario.uninstall_status;
+    journal->phase = scenario.uninstall_phase;
+    journal->stage = scenario.uninstall_stage;
+    journal->error_code = scenario.uninstall_error;
+    return scenario.uninstall_load_result;
+}
+
+const char *uninstall_phase_name(UninstallPhase phase) {
+    switch (phase) {
+        case UNINSTALL_PHASE_SCHEDULED: return "scheduled";
+        case UNINSTALL_PHASE_DETACHING: return "detaching";
+        case UNINSTALL_PHASE_FAILED: return "failed";
+        default: return "invalid";
+    }
+}
+
+const char *uninstall_stage_name(UninstallStage stage) {
+    switch (stage) {
+        case UNINSTALL_STAGE_HANDOFF: return "handoff";
+        case UNINSTALL_STAGE_PARENT_WAIT: return "parent-wait";
+        case UNINSTALL_STAGE_DETACH: return "detach";
+        case UNINSTALL_STAGE_CLEANUP: return "cleanup";
+        default: return "invalid";
+    }
 }
 
 void package_transaction_init(PackageTransaction *transaction) {
@@ -540,7 +582,6 @@ static void test_asset_issues(void) {
 }
 
 static void test_runtime_gates(void) {
-    scenario.marker_kind = SYSTEM_PATH_REGULAR_FILE;
     scenario.runtime_status = LAYOUT_RUNTIME_INCOMPLETE;
     scenario.lock_exists = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
@@ -551,6 +592,25 @@ static void test_runtime_gates(void) {
 
     reset_scenario();
     scenario.lock_result = CUP_ERR_LOCK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+}
+
+static void test_root_and_uninstall_journal(void) {
+    scenario.root_issue_count = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(0, runtime_check_calls);
+
+    reset_scenario();
+    scenario.journal_kind = RUNTIME_JOURNAL_UNINSTALL;
+    scenario.uninstall_status = UNINSTALL_JOURNAL_LOADED;
+    scenario.uninstall_phase = UNINSTALL_PHASE_FAILED;
+    scenario.uninstall_stage = UNINSTALL_STAGE_CLEANUP;
+    scenario.uninstall_error = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+
+    reset_scenario();
+    scenario.journal_kind = RUNTIME_JOURNAL_UNINSTALL;
+    scenario.uninstall_load_result = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
@@ -587,18 +647,24 @@ static void test_package_issues(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
-static void test_update_result(void) {
-    scenario.update_result_status = CUP_UPDATE_RESULT_FAILED;
-    scenario.update_result_error = CUP_ERR_TRANSACTION;
+static void test_update_journal(void) {
+    scenario.journal_kind = RUNTIME_JOURNAL_CUP_UPDATE;
+    scenario.cup_update_status = CUP_UPDATE_JOURNAL_LOADED;
+    scenario.cup_update_phase = CUP_UPDATE_PHASE_FAILED;
+    scenario.cup_update_recovery = CUP_UPDATE_FAILURE_ROLLED_BACK;
+    scenario.cup_update_error = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.update_result_load_result = CUP_ERR_TRANSACTION;
+    scenario.journal_kind = RUNTIME_JOURNAL_CUP_UPDATE;
+    scenario.cup_update_load_result = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.update_result_status = CUP_UPDATE_RESULT_SUCCESS;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
+    scenario.journal_kind = RUNTIME_JOURNAL_CUP_UPDATE;
+    scenario.cup_update_status = CUP_UPDATE_JOURNAL_LOADED;
+    scenario.cup_update_phase = CUP_UPDATE_PHASE_SCHEDULED;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
 static void test_warning_only(void) {
@@ -613,14 +679,12 @@ static void test_warning_only(void) {
 }
 
 static void test_incomplete_checks(void) {
-    scenario.marker_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     scenario.runtime_check_result = CUP_ERR_FILESYSTEM;
     scenario.package_metadata_protection_result = CUP_ERR_FILESYSTEM;
     scenario.package_catalog_check_result = CUP_ERR_VALIDATION;
     scenario.plan_build_result = CUP_ERR_VALIDATION;
     scenario.tmp_count_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
-    TEST_ASSERT_EQUAL_INT(1, marker_path_calls);
     TEST_ASSERT_EQUAL_INT(1, runtime_check_calls);
     TEST_ASSERT_EQUAL_INT(1, package_metadata_protection_calls);
     TEST_ASSERT_EQUAL_INT(1, package_catalog_check_calls);
@@ -638,9 +702,10 @@ int main(void) {
     RUN_TEST(test_cup_assets_modes);
     RUN_TEST(test_asset_issues);
     RUN_TEST(test_runtime_gates);
+    RUN_TEST(test_root_and_uninstall_journal);
     RUN_TEST(test_state_issues);
     RUN_TEST(test_package_issues);
-    RUN_TEST(test_update_result);
+    RUN_TEST(test_update_journal);
     RUN_TEST(test_warning_only);
     RUN_TEST(test_incomplete_checks);
     return UNITY_END();

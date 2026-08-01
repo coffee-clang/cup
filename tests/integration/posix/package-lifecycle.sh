@@ -28,7 +28,7 @@ prepare_fixture() {
 
 # Installation, catalog and default behavior.
 test_install_defaults() {
-    output=$(run_cup install compiler clang@21.1.5)
+    output=$(run_cup install clang@21.1.5)
     assert_contains "$output" 'set it as the first default'
     assert_equals "$(run_native_wrapper clang)" \
         "clang-21.1.5-$TEST_PLATFORM:clang"
@@ -116,7 +116,6 @@ test_updates() {
         "debugger [$TEST_PLATFORM]: lldb@22.1.5 (stable)"
     assert_equals "$(run_native_wrapper lldb)" \
         "lldb-22.1.5-$TEST_PLATFORM:lldb"
-    assert_missing "$TEST_HOME/.cup/cup-update-result.txt"
     assert_missing "$TEST_HOME/.cup/transaction.txt"
 
     package_info=$(run_cup inspect compiler clang@stable)
@@ -169,6 +168,19 @@ test_dev_cup_update() {
 }
 
 test_remove_default_without_promotion() {
+    run_cup_expect_failure "$TMP_ROOT/remove-ambiguous.out" remove clang
+    ambiguous=$(cat "$TMP_ROOT/remove-ambiguous.out")
+    assert_contains "$ambiguous" "remove selection 'compiler:clang' is ambiguous"
+    assert_contains "$ambiguous" 'clang@21.1.5'
+    assert_contains "$ambiguous" 'clang@22.1.5'
+    assert_contains "$ambiguous" 'Specify one of the installed releases with:'
+    assert_contains "$ambiguous" \
+        "cup remove compiler clang@<release> --target $TEST_PLATFORM"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/21.1.5/info.txt"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
+"$TEST_PLATFORM/22.1.5/info.txt"
+
     run_cup remove compiler clang@stable >/dev/null
     assert_missing "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5"
     assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
@@ -181,7 +193,7 @@ test_remove_default_without_promotion() {
     assert_not_contains "$(run_cup list compiler)" 'compiler:clang@22.1.5'
     assert_cup_healthy
 
-    run_cup remove compiler clang@21.1.5 >/dev/null
+    assert_contains "$(run_cup remove clang)" 'Removed compiler clang -> clang@21.1.5'
     assert_not_contains "$(run_cup list compiler)" 'compiler:clang@'
     assert_cup_healthy
 }

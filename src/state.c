@@ -288,25 +288,21 @@ static CupError parse_state_line(CupState *state, char *line) {
 }
 
 /* Serialize a canonical ordering so state bytes do not depend on command history. */
-CupError state_load(CupState *state, StateFileStatus *status) {
+static CupError load_state_path(CupState *state,
+                                StateFileStatus *status,
+                                const char *state_path) {
     CupError err;
     FILE *file;
-    char state_path[MAX_PATH_LEN];
     char line[MAX_STATE_LINE_LEN];
     size_t line_number = 0;
     int has_line;
 
-    if (state == NULL || status == NULL) {
+    if (state == NULL || status == NULL || text_is_empty(state_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     memset(state, 0, sizeof(*state));
     *status = STATE_FILE_MISSING;
-
-    err = layout_get_state_path(state_path, sizeof(state_path));
-    if (err != CUP_OK) {
-        return err;
-    }
 
     file = fopen(state_path, "r");
     if (file == NULL) {
@@ -354,6 +350,21 @@ CupError state_load(CupState *state, StateFileStatus *status) {
 
     *status = STATE_FILE_LOADED;
     return CUP_OK;
+}
+
+CupError state_load_path(CupState *state, StateFileStatus *status, const char *path) {
+    return load_state_path(state, status, path);
+}
+
+CupError state_load(CupState *state, StateFileStatus *status) {
+    char state_path[MAX_PATH_LEN];
+    CupError err;
+
+    if (state == NULL || status == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = layout_get_state_path(state_path, sizeof(state_path));
+    return err == CUP_OK ? load_state_path(state, status, state_path) : err;
 }
 
 static int compare_identity_pointers(const void *left, const void *right) {

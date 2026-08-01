@@ -389,6 +389,26 @@ static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_STRING("tar.xz", installed_formats[0]);
 }
 
+static void test_tool_first_selection(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("Clang@Release-X", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, resolver_calls);
+    TEST_ASSERT_EQUAL_INT(0, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
+    TEST_ASSERT_EQUAL_INT(1, install_calls);
+    TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
+    TEST_ASSERT_EQUAL_STRING("clang@Release-X", installed_entries[0]);
+}
+
+static void test_tool_first_stable_selection(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("Clang", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, resolver_calls);
+    TEST_ASSERT_EQUAL_INT(0, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
+    TEST_ASSERT_EQUAL_INT(1, install_calls);
+    TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
+    TEST_ASSERT_EQUAL_STRING("clang@1.0.0", installed_entries[0]);
+}
+
 static void test_abbreviated_install(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, resolver_calls);
@@ -452,7 +472,7 @@ static void test_invalid_groups(void) {
                           command_install("toolchain", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           command_install("toolchain", "missing", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_UNSUPPORTED_COMPONENT,
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_TOOL,
                           command_install("unknown", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_install(NULL, NULL, NULL, NULL));
 }
@@ -552,6 +572,8 @@ static void test_group_execution(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_direct_selection);
+    RUN_TEST(test_tool_first_selection);
+    RUN_TEST(test_tool_first_stable_selection);
     RUN_TEST(test_abbreviated_install);
     RUN_TEST(test_profile_preferences);
     RUN_TEST(test_explicit_toolchain);

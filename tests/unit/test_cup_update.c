@@ -65,6 +65,8 @@ static unsigned staging_serial;
 static CupError cup_assets_inspect_result;
 static int installed_generation_valid;
 static int cup_assets_inspect_calls;
+static int allow_insecure_loopback;
+static char expected_url_base[MAX_CATALOG_URL_LEN];
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -107,6 +109,8 @@ static void reset_scenario(void) {
     cup_assets_inspect_result = CUP_OK;
     installed_generation_valid = 1;
     cup_assets_inspect_calls = 0;
+    allow_insecure_loopback = 0;
+    expected_url_base[0] = '\0';
 }
 
 void setUp(void) {
@@ -114,6 +118,11 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+#if defined(_WIN32)
+    (void)_putenv_s("CUP_INSTALL_BASE_URL", "");
+#else
+    (void)unsetenv("CUP_INSTALL_BASE_URL");
+#endif
 }
 
 static void write_text(const char *path, const char *text) {
@@ -360,19 +369,27 @@ CupError cup_update_helper_start(const char *token) {
 }
 
 int download_insecure_loopback_is_allowed(const char *url) {
-    (void)url;
-    return 0;
+    return allow_insecure_loopback && url != NULL;
 }
 
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
     (void)validation;
+    if (expected_url_base[0] != '\0') {
+        TEST_ASSERT_TRUE(strncmp(url, expected_url_base, strlen(expected_url_base)) == 0);
+        TEST_ASSERT_EQUAL_CHAR('/', url[strlen(expected_url_base)]);
+        TEST_ASSERT_TRUE(url[strlen(expected_url_base) + 1] != '/');
+    }
     fetch_calls++;
     if (fail_fetch_call == fetch_calls) {
         return CUP_ERR_FETCH;
     }
 
     if (fetch_calls == 1) {
-        TEST_ASSERT_TRUE(strstr(url, "/latest/download/release.txt") != NULL);
+        if (expected_url_base[0] != '\0') {
+            TEST_ASSERT_TRUE(strstr(url, "/release.txt") != NULL);
+        } else {
+            TEST_ASSERT_TRUE(strstr(url, "/latest/download/release.txt") != NULL);
+        }
         write_metadata(destination, remote_version, remote_commit, latest_metadata_mode);
     } else if (fetch_calls == 2) {
         TEST_ASSERT_TRUE(strstr(url, "SHA256SUMS.linux-x64") != NULL);
@@ -381,7 +398,11 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         TEST_ASSERT_TRUE(strstr(url, "SHA256SUMS.common") != NULL);
         write_text(destination, "common checksums\n");
     } else if (fetch_calls == 4) {
-        TEST_ASSERT_TRUE(strstr(url, "/download/v") != NULL);
+        if (expected_url_base[0] != '\0') {
+            TEST_ASSERT_TRUE(strstr(url, "/1.2.4/release.txt") != NULL);
+        } else {
+            TEST_ASSERT_TRUE(strstr(url, "/download/v") != NULL);
+        }
         write_metadata(destination, versioned_version, versioned_commit, versioned_metadata_mode);
     } else if (fetch_calls == 5) {
         TEST_ASSERT_TRUE(strstr(url, "cup-linux-x64") != NULL);
@@ -507,6 +528,22 @@ static void test_update_success(void) {
     TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
+}
+
+
+static void test_loopback_base_normalization(void) {
+    allow_insecure_loopback = 1;
+    strcpy(expected_url_base, "http://127.0.0.1:18080");
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(
+        0, _putenv_s("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080////"));
+#else
+    TEST_ASSERT_EQUAL_INT(
+        0, setenv("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080////", 1));
+#endif
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_start());
+    TEST_ASSERT_EQUAL_INT(8, fetch_calls);
 }
 
 static void test_noop_versions(void) {
@@ -710,6 +747,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_installed_preflight);
     RUN_TEST(test_update_success);
+    RUN_TEST(test_loopback_base_normalization);
     RUN_TEST(test_noop_versions);
     RUN_TEST(test_version_order);
     RUN_TEST(test_bad_latest_metadata);

@@ -2,7 +2,7 @@
 #define CUP_RUNTIME_JOURNAL_H
 
 /*
- * transaction.txt is shared physically by package operations and deferred CUP updates.
+ * transaction.txt is shared physically by package operations, deferred CUP updates and uninstall.
  * This boundary identifies the owner without parsing owner-specific fields and provides the
  * common command blocker used before mutable state is opened.
  */
@@ -12,7 +12,8 @@
 typedef enum {
     RUNTIME_JOURNAL_MISSING,
     RUNTIME_JOURNAL_PACKAGE,
-    RUNTIME_JOURNAL_CUP_UPDATE
+    RUNTIME_JOURNAL_CUP_UPDATE,
+    RUNTIME_JOURNAL_UNINSTALL
 } RuntimeJournalKind;
 
 /* Detect the owner of transaction.txt without interpreting owner-specific fields. */

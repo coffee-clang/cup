@@ -34,6 +34,9 @@ typedef enum {
  */
 CupError state_load(CupState *state, StateFileStatus *status);
 
+/* Load and validate syntax from one explicitly selected state path. */
+CupError state_load_path(CupState *state, StateFileStatus *status, const char *path);
+
 /* Validate capacities, uniqueness, identities, and active references. */
 CupError state_validate(const CupState *state);
 

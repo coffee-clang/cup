@@ -98,7 +98,8 @@ network operation.
 
 ## Userspace model
 
-All managed data stays under the canonical user root. `cup` does not require:
+All managed data stays under one automatically selected, CUP-owned user root.
+`cup` does not require:
 
 ```text
 administrator privileges
@@ -178,7 +179,7 @@ The exact contents remain the responsibility of `cup-components`.
 ## State and derived data
 
 `state.txt` records installed identities and defaults. Managed wrappers under
-`.cup/bin` are derived from defaults; they are not an independent source of
+`<cup-root>/bin` entries are derived from defaults; they are not an independent source of
 truth. `repair` can therefore rebuild them from valid state and packages.
 
 The canonical filesystem, state rules and entry-point naming are specified in
@@ -186,13 +187,16 @@ The canonical filesystem, state rules and entry-point naming are specified in
 
 ## PackageTransaction model
 
-Install, remove and cup update can be interrupted after filesystem changes but
-before the caller receives a final result. A persistent journal records the
-operation and temporary path before the first irreversible-looking step.
+Install, remove, CUP update and uninstall can be interrupted after filesystem
+changes but before the caller receives a final result. The single persistent
+`transaction.txt` journal records the operation and its identity before the
+first recoverable mutation; detached operations do not add result or pending
+sidecar files.
 
 The state replacement is the commit point for package installation and removal.
-cup update has an explicit committed marker because its detached helper
-replaces cup assets after the original process exits.
+CUP update has an explicit committed marker because its detached helper replaces
+CUP assets after the original process exits. Uninstall commits by atomically
+moving the complete owned root to its identity-bound sibling residue.
 
 The complete model is in [TRANSACTIONS](TRANSACTIONS.md).
 
@@ -318,8 +322,11 @@ package_archive.c / package_extract.c
 system.c / system_posix.c / system_windows.c
   shared filesystem queries and policy-neutral native operating-system primitives
 
+cup_update_journal.c / uninstall_journal.c / runtime_journal.c
+  strict shared-journal schemas, recovery and command blocking
+
 cup_update_helper.c
-  platform-specific detached replacement of cup assets
+  platform-specific detached replacement of CUP assets
 
 path.c / text.c / platform.c / interrupt.c
   focused parsing, path, platform and interrupt helpers
@@ -375,7 +382,7 @@ administrator or service-based installation
 local component builds during cup install
 cross-package dependency solving
 one merged global sysroot
-a configurable cup root
+an environment-configurable cup root
 automatic PATH cleanup
 automatic VERSION increments
 signature infrastructure beyond HTTPS and published SHA-256 files

@@ -20,7 +20,6 @@
 #include <string.h>
 
 #define CUP_UPDATE_JOURNAL_FORMAT "1"
-#define CUP_UPDATE_RESULT_FORMAT "1"
 #define CUP_UPDATE_JOURNAL_LINE_LEN 512
 #define FIELD_FORMAT (1u << 0)
 #define FIELD_OPERATION (1u << 1)
@@ -29,9 +28,10 @@
 #define FIELD_TOKEN (1u << 4)
 #define FIELD_VERSION (1u << 5)
 #define FIELD_ERROR (1u << 6)
+#define FIELD_RECOVERY (1u << 7)
 #define JOURNAL_FIELDS \
     (FIELD_FORMAT | FIELD_OPERATION | FIELD_PHASE | FIELD_TEMPORARY_NAME | FIELD_TOKEN | \
-     FIELD_VERSION | FIELD_ERROR)
+     FIELD_VERSION | FIELD_ERROR | FIELD_RECOVERY)
 
 typedef struct {
     const char *backup_name;
@@ -46,6 +46,7 @@ void cup_update_journal_init(CupUpdateJournal *journal) {
     if (journal != NULL) {
         memset(journal, 0, sizeof(*journal));
         journal->phase = CUP_UPDATE_PHASE_SCHEDULED;
+        journal->recovery = CUP_UPDATE_FAILURE_NONE;
     }
 }
 
@@ -62,6 +63,19 @@ const char *cup_update_phase_name(CupUpdatePhase phase) {
     }
 }
 
+const char *cup_update_failure_recovery_name(CupUpdateFailureRecovery recovery) {
+    switch (recovery) {
+        case CUP_UPDATE_FAILURE_NONE:
+            return "none";
+        case CUP_UPDATE_FAILURE_PENDING:
+            return "pending";
+        case CUP_UPDATE_FAILURE_ROLLED_BACK:
+            return "rolled-back";
+        default:
+            return "invalid";
+    }
+}
+
 static int parse_phase(const char *value, CupUpdatePhase *phase) {
     if (strcmp(value, "scheduled") == 0) {
         *phase = CUP_UPDATE_PHASE_SCHEDULED;
@@ -71,6 +85,57 @@ static int parse_phase(const char *value, CupUpdatePhase *phase) {
         *phase = CUP_UPDATE_PHASE_FAILED;
     } else {
         return 0;
+    }
+    return 1;
+}
+
+static int parse_failure_recovery(const char *value, CupUpdateFailureRecovery *recovery) {
+    if (strcmp(value, "none") == 0) {
+        *recovery = CUP_UPDATE_FAILURE_NONE;
+    } else if (strcmp(value, "pending") == 0) {
+        *recovery = CUP_UPDATE_FAILURE_PENDING;
+    } else if (strcmp(value, "rolled-back") == 0) {
+        *recovery = CUP_UPDATE_FAILURE_ROLLED_BACK;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static int concrete_version_is_valid(const char *value) {
+    const char *cursor = value;
+    size_t part;
+
+    if (text_is_empty(value)) {
+        return 0;
+    }
+    for (part = 0; part < 3; ++part) {
+        unsigned long number = 0;
+        size_t digits = 0;
+
+        if (*cursor < '0' || *cursor > '9' ||
+            (*cursor == '0' && cursor[1] >= '0' && cursor[1] <= '9')) {
+            return 0;
+        }
+        while (*cursor >= '0' && *cursor <= '9') {
+            number = number * 10u + (unsigned long)(*cursor - '0');
+            if (number > 999999u) {
+                return 0;
+            }
+            cursor++;
+            digits++;
+        }
+        if (digits == 0) {
+            return 0;
+        }
+        if (part < 2) {
+            if (*cursor != '.') {
+                return 0;
+            }
+            cursor++;
+        } else if (*cursor != '\0') {
+            return 0;
+        }
     }
     return 1;
 }
@@ -96,6 +161,35 @@ static int token_is_valid(const char *token) {
     return 1;
 }
 
+static int token_matches_temporary_name(const char *token, const char *temporary_name) {
+    size_t token_length;
+    size_t name_length;
+
+    if (!token_is_valid(token) || !temporary_name_is_valid(temporary_name)) {
+        return 0;
+    }
+    token_length = strlen(token);
+    name_length = strlen(temporary_name);
+    return token_length > name_length && token[token_length - name_length - 1] == '-' &&
+           strcmp(token + token_length - name_length, temporary_name) == 0;
+}
+
+static int journal_fields_are_coherent(const CupUpdateJournal *journal) {
+    if (journal == NULL || !temporary_name_is_valid(journal->temporary_name) ||
+        !token_matches_temporary_name(journal->token, journal->temporary_name) ||
+        !concrete_version_is_valid(journal->version) ||
+        strcmp(cup_update_phase_name(journal->phase), "invalid") == 0 ||
+        strcmp(cup_update_failure_recovery_name(journal->recovery), "invalid") == 0) {
+        return 0;
+    }
+    if (journal->phase == CUP_UPDATE_PHASE_FAILED) {
+        return journal->error_code > 0 &&
+               (journal->recovery == CUP_UPDATE_FAILURE_PENDING ||
+                journal->recovery == CUP_UPDATE_FAILURE_ROLLED_BACK);
+    }
+    return journal->error_code == 0 && journal->recovery == CUP_UPDATE_FAILURE_NONE;
+}
+
 static CupError save_cup_update_journal(const CupUpdateJournal *journal) {
     CupError err;
     FILE *file = NULL;
@@ -105,9 +199,7 @@ static CupError save_cup_update_journal(const CupUpdateJournal *journal) {
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     int failed = 0;
 
-    if (journal == NULL || !temporary_name_is_valid(journal->temporary_name) ||
-        !token_is_valid(journal->token) ||
-        strcmp(cup_update_phase_name(journal->phase), "invalid") == 0 ||
+    if (!journal_fields_are_coherent(journal) ||
         layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
         layout_get_staging_dir(staging_dir, sizeof(staging_dir)) != CUP_OK ||
         system_create_temp_file(staging_dir, "transaction", temporary, sizeof(temporary), &file) !=
@@ -121,7 +213,10 @@ static CupError save_cup_update_journal(const CupUpdateJournal *journal) {
         fprintf(file, "temporary_name=%s\n", journal->temporary_name) < 0 ||
         fprintf(file, "token=%s\n", journal->token) < 0 ||
         fprintf(file, "version=%s\n", journal->version) < 0 ||
-        fprintf(file, "error=%d\n", journal->error_code) < 0 || system_sync_file(file) != CUP_OK) {
+        fprintf(file, "error=%d\n", journal->error_code) < 0 ||
+        fprintf(file, "recovery=%s\n",
+                cup_update_failure_recovery_name(journal->recovery)) < 0 ||
+        system_sync_file(file) != CUP_OK) {
         failed = 1;
     }
     if (fclose(file) != 0) {
@@ -151,8 +246,8 @@ CupError cup_update_journal_begin(const char *temporary_path,
     char path[MAX_PATH_LEN];
     int exists;
 
-    if (text_is_empty(temporary_path) || !token_is_valid(token) || text_is_empty(version) ||
-        strlen(version) >= MAX_IDENTIFIER_LEN) {
+    if (text_is_empty(temporary_path) || !token_is_valid(token) ||
+        !concrete_version_is_valid(version) || strlen(version) >= MAX_IDENTIFIER_LEN) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
@@ -165,7 +260,7 @@ CupError cup_update_journal_begin(const char *temporary_path,
     }
 
     name = path_last_segment(temporary_path);
-    if (!temporary_name_is_valid(name)) {
+    if (!temporary_name_is_valid(name) || !token_matches_temporary_name(token, name)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -181,11 +276,25 @@ CupError cup_update_journal_begin(const char *temporary_path,
 CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
                                       CupUpdatePhase phase,
                                       int error_code) {
-    if (journal == NULL || strcmp(cup_update_phase_name(phase), "invalid") == 0 || error_code < 0) {
+    if (journal == NULL || strcmp(cup_update_phase_name(phase), "invalid") == 0 ||
+        (phase == CUP_UPDATE_PHASE_FAILED ? error_code <= 0 : error_code != 0)) {
         return CUP_ERR_INVALID_INPUT;
     }
     journal->phase = phase;
     journal->error_code = error_code;
+    journal->recovery = phase == CUP_UPDATE_PHASE_FAILED ? CUP_UPDATE_FAILURE_PENDING
+                                                         : CUP_UPDATE_FAILURE_NONE;
+    return save_cup_update_journal(journal);
+}
+
+CupError cup_update_journal_set_recovery(CupUpdateJournal *journal,
+                                         CupUpdateFailureRecovery recovery) {
+    if (journal == NULL || journal->phase != CUP_UPDATE_PHASE_FAILED ||
+        recovery == CUP_UPDATE_FAILURE_NONE ||
+        strcmp(cup_update_failure_recovery_name(recovery), "invalid") == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    journal->recovery = recovery;
     return save_cup_update_journal(journal);
 }
 
@@ -248,6 +357,11 @@ static CupError set_cup_update_field(CupUpdateJournal *journal,
     } else if (strcmp(key, "error") == 0) {
         bit = FIELD_ERROR;
         err = parse_nonnegative_int(value, &journal->error_code);
+    } else if (strcmp(key, "recovery") == 0) {
+        bit = FIELD_RECOVERY;
+        if (!parse_failure_recovery(value, &journal->recovery)) {
+            err = CUP_ERR_TRANSACTION;
+        }
     } else {
         return CUP_ERR_TRANSACTION;
     }
@@ -307,9 +421,7 @@ CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStat
     }
 
     if (fclose(file) != 0 || seen != JOURNAL_FIELDS ||
-        !temporary_name_is_valid(candidate.temporary_name) || !token_is_valid(candidate.token) ||
-        text_is_empty(candidate.version) ||
-        (candidate.phase != CUP_UPDATE_PHASE_FAILED && candidate.error_code != 0)) {
+        !journal_fields_are_coherent(&candidate)) {
         return CUP_ERR_TRANSACTION;
     }
     *journal = candidate;
@@ -332,164 +444,6 @@ CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
     return path_join(buffer, size, staging_dir, journal->temporary_name);
 }
 
-
-/* Persistent result file. The detached helper reports success or failure without relying on an
- * inherited terminal. */
-void cup_update_result_init(CupUpdateResult *result) {
-    if (result != NULL) {
-        memset(result, 0, sizeof(*result));
-    }
-}
-
-CupError cup_update_result_write(CupUpdateResultStatus status,
-                                 int error_code,
-                                 const char *version) {
-    char path[MAX_PATH_LEN];
-    char root[MAX_PATH_LEN];
-    char temporary[MAX_PATH_LEN];
-    FILE *file = NULL;
-    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-    CupError err;
-    const char *status_name;
-    int failed = 0;
-
-    if ((status != CUP_UPDATE_RESULT_SUCCESS && status != CUP_UPDATE_RESULT_FAILED) ||
-        error_code < 0 || text_is_empty(version)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    status_name = status == CUP_UPDATE_RESULT_SUCCESS ? "success" : "failed";
-    if (layout_get_cup_update_result_path(path, sizeof(path)) != CUP_OK ||
-        layout_get_root(root, sizeof(root)) != CUP_OK ||
-        system_create_temp_file(root, "cup-update-result", temporary, sizeof(temporary), &file) !=
-            CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    if (fprintf(file, "format=%s\n", CUP_UPDATE_RESULT_FORMAT) < 0 ||
-        fprintf(file, "status=%s\n", status_name) < 0 ||
-        fprintf(file, "error=%d\n", error_code) < 0 || fprintf(file, "version=%s\n", version) < 0 ||
-        system_sync_file(file) != CUP_OK)
-        failed = 1;
-    if (fclose(file) != 0) {
-        failed = 1;
-    }
-    if (failed) {
-        system_remove_file(temporary);
-        return CUP_ERR_TRANSACTION;
-    }
-    err = system_replace_file(temporary, path, &commit_state);
-    if (err == CUP_OK) {
-        return CUP_OK;
-    }
-    if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
-        system_remove_file(temporary);
-    }
-    return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
-}
-
-CupError cup_update_result_load(CupUpdateResult *result) {
-    char path[MAX_PATH_LEN];
-    char line[256];
-    FILE *file;
-    size_t line_number = 0;
-    unsigned seen = 0;
-
-    if (result == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    cup_update_result_init(result);
-
-    /* A missing result is normal; a present file must satisfy the complete strict schema. */
-    if (layout_get_cup_update_result_path(path, sizeof(path)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    file = fopen(path, "r");
-    if (file == NULL) {
-        return errno == ENOENT ? CUP_OK : CUP_ERR_TRANSACTION;
-    }
-
-    /* Reject unknown or duplicate fields rather than accepting a partial helper result. */
-    while (1) {
-        char key[64];
-        char value[128];
-        int has_line;
-        CupError err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
-        unsigned bit;
-        if (err != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
-        if (!has_line) {
-            break;
-        }
-        if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
-        if (strcmp(key, "format") == 0) {
-            bit = 1u << 0;
-            if (strcmp(value, CUP_UPDATE_RESULT_FORMAT) != 0) {
-                fclose(file);
-                return CUP_ERR_TRANSACTION;
-            }
-        } else if (strcmp(key, "status") == 0) {
-            bit = 1u << 1;
-            if (strcmp(value, "success") == 0) {
-                result->status = CUP_UPDATE_RESULT_SUCCESS;
-            } else if (strcmp(value, "failed") == 0) {
-                result->status = CUP_UPDATE_RESULT_FAILED;
-            } else {
-                fclose(file);
-                return CUP_ERR_TRANSACTION;
-            }
-        } else if (strcmp(key, "error") == 0) {
-            bit = 1u << 2;
-            if (parse_nonnegative_int(value, &result->error_code) != CUP_OK) {
-                fclose(file);
-                return CUP_ERR_TRANSACTION;
-            }
-        } else if (strcmp(key, "version") == 0) {
-            bit = 1u << 3;
-            if (text_copy(result->version, sizeof(result->version), value) != CUP_OK) {
-                fclose(file);
-                return CUP_ERR_TRANSACTION;
-            }
-        } else {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
-        if ((seen & bit) != 0) {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
-        seen |= bit;
-    }
-    /* Cross-field validation distinguishes a valid failed update from a corrupt result file. */
-    if (fclose(file) != 0 || seen != 0xfu || result->status == CUP_UPDATE_RESULT_MISSING ||
-        text_is_empty(result->version) ||
-        (result->status == CUP_UPDATE_RESULT_SUCCESS && result->error_code != 0)) {
-        return CUP_ERR_TRANSACTION;
-    }
-    return CUP_OK;
-}
-
-CupError cup_update_result_report(void) {
-    CupUpdateResult result;
-    CupError err = cup_update_result_load(&result);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Warning: the previous cup update result is invalid. Run 'cup doctor'.\n");
-        return err;
-    }
-    if (result.status == CUP_UPDATE_RESULT_SUCCESS) {
-        printf("Info: the previous cup update completed successfully at version %s.\n",
-               result.version);
-    } else if (result.status == CUP_UPDATE_RESULT_FAILED) {
-        fprintf(stderr,
-                "Warning: the previous cup update failed (error %d). Run 'cup doctor' and 'cup "
-                "repair'.\n",
-                result.error_code);
-    }
-    return CUP_OK;
-}
 
 /* cup update recovery. */
 static CupError files_are_equal(const char *left, const char *right, int *equal) {
@@ -620,6 +574,7 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
     char install_policy[MAX_PATH_LEN];
     char common_checksums[MAX_PATH_LEN];
     SystemPathKind marker_kind = SYSTEM_PATH_MISSING;
+    SystemPathKind staging_kind = SYSTEM_PATH_MISSING;
     CupUpdateAsset assets[6];
     size_t i;
 
@@ -630,6 +585,44 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
     }
     if (result != NULL) {
         *result = CUP_UPDATE_RECOVERY_NONE;
+    }
+
+    if (journal->phase == CUP_UPDATE_PHASE_FAILED &&
+        journal->recovery == CUP_UPDATE_FAILURE_ROLLED_BACK) {
+        err = cup_update_journal_get_staging_path(journal, staging, sizeof(staging));
+        if (err == CUP_OK) {
+            err = system_get_path_kind(staging, &staging_kind);
+        }
+        if (err != CUP_OK ||
+            (staging_kind != SYSTEM_PATH_MISSING &&
+             staging_kind != SYSTEM_PATH_DIRECTORY)) {
+            return CUP_ERR_TRANSACTION;
+        }
+        if (staging_kind == SYSTEM_PATH_DIRECTORY) {
+            err = filesystem_remove_tree(staging);
+            if (err == CUP_OK) {
+                err = system_get_path_kind(staging, &staging_kind);
+            }
+            if (err != CUP_OK || staging_kind != SYSTEM_PATH_MISSING) {
+                return CUP_ERR_TRANSACTION;
+            }
+        }
+        err = cup_assets_inspect(&inspection);
+        if (err != CUP_OK || !cup_assets_installed_is_valid(&inspection)) {
+            return CUP_ERR_TRANSACTION;
+        }
+        err = runtime_journal_clear();
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (result != NULL) {
+            *result = CUP_UPDATE_RECOVERY_ACKNOWLEDGED;
+        }
+        printf("Acknowledged failed cup update to version %s after a successful rollback "
+               "(error %d).\n",
+               journal->version,
+               journal->error_code);
+        return CUP_OK;
     }
 
     /* Resolve canonical destinations and inspect the durable commit marker first. */
@@ -723,18 +716,35 @@ CupError cup_update_journal_recover(const CupUpdateJournal *journal,
         return CUP_ERR_TRANSACTION;
     }
 
-    err = runtime_journal_clear();
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (filesystem_remove_tree(staging) != CUP_OK) {
-        fprintf(stderr,
-                "Warning: the cup update was rolled back, but stale update staging could not "
-                "be removed. Run 'cup repair'.\n");
+    if (journal->phase == CUP_UPDATE_PHASE_FAILED) {
+        CupUpdateJournal recovered = *journal;
+
+        err = cup_update_journal_set_recovery(&recovered, CUP_UPDATE_FAILURE_ROLLED_BACK);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (filesystem_remove_tree(staging) != CUP_OK) {
+            fprintf(stderr,
+                    "Warning: the failed cup update was rolled back, but stale staging could "
+                    "not be removed. Run 'cup repair' again.\n");
+        }
+        printf("Rolled back failed cup update to version %s. Run 'cup repair' again to "
+               "acknowledge the recorded failure.\n",
+               journal->version);
+    } else {
+        err = runtime_journal_clear();
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (filesystem_remove_tree(staging) != CUP_OK) {
+            fprintf(stderr,
+                    "Warning: the cup update was rolled back, but stale update staging could "
+                    "not be removed. Run 'cup repair'.\n");
+        }
+        printf("Rolled back interrupted cup update transaction.\n");
     }
     if (result != NULL) {
         *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
     }
-    printf("Rolled back interrupted cup update transaction.\n");
     return CUP_OK;
 }

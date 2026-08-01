@@ -138,22 +138,24 @@ static CupError install_plan_build(InstallPlan *plan,
                                    const char *target_platform,
                                    const char *selector_input,
                                    const char *value_input) {
-    char selection[MAX_IDENTIFIER_LEN];
+    char selection[MAX_SELECTOR_LEN];
+    char selection_key[MAX_SELECTOR_LEN];
     char value[MAX_SELECTOR_LEN] = "";
     CupError err;
     size_t i;
 
     /* Normalize the public selector before deciding which plan grammar applies. */
     memset(plan, 0, sizeof(*plan));
-    if (text_copy_lower_ascii(selection, sizeof(selection), selector_input) != CUP_OK ||
+    if (text_copy(selection, sizeof(selection), selector_input) != CUP_OK ||
+        text_copy_lower_ascii(selection_key, sizeof(selection_key), selector_input) != CUP_OK ||
         (!text_is_empty(value_input) && text_copy(value, sizeof(value), value_input) != CUP_OK)) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
     /* A component creates one selection, optionally overridden by an explicit tool selector. */
-    if (registry_is_component(selection)) {
+    if (registry_is_component(selection_key)) {
         plan->kind = INSTALL_PLAN_SINGLE;
-        if (text_copy(plan->description, sizeof(plan->description), selection) != CUP_OK) {
+        if (text_copy(plan->description, sizeof(plan->description), selection_key) != CUP_OK) {
             return CUP_ERR_BUFFER_TOO_SMALL;
         }
         return install_plan_add_component(plan,
@@ -161,12 +163,12 @@ static CupError install_plan_build(InstallPlan *plan,
                                           preferences,
                                           host_platform,
                                           target_platform,
-                                          selection,
+                                          selection_key,
                                           text_is_empty(value) ? NULL : value);
     }
 
     /* Profiles expand components and therefore apply scoped user preferences. */
-    if (strcmp(selection, "profile") == 0) {
+    if (strcmp(selection_key, "profile") == 0) {
         const InstallNamedList *profile;
 
         if (text_is_empty(value)) {
@@ -197,7 +199,7 @@ static CupError install_plan_build(InstallPlan *plan,
     }
 
     /* Toolchains name concrete tools and intentionally bypass user preferences. */
-    if (strcmp(selection, "toolchain") == 0) {
+    if (strcmp(selection_key, "toolchain") == 0) {
         const InstallNamedList *toolchain;
 
         if (text_is_empty(value)) {
@@ -236,7 +238,32 @@ static CupError install_plan_build(InstallPlan *plan,
         return CUP_OK;
     }
 
-    fprintf(stderr, "Error: unsupported component or install group '%s'.\n", selection);
+    /*
+     * Tool-first forms resolve their unique component through the compiled registry. A second
+     * positional value is never accepted because it would make the grammar ambiguous.
+     */
+    if (text_is_empty(value)) {
+        char normalized[MAX_SELECTOR_LEN];
+        char tool[MAX_IDENTIFIER_LEN];
+        char release[MAX_IDENTIFIER_LEN];
+        char component[MAX_IDENTIFIER_LEN];
+
+        err = normalize_install_selection(selection, normalized, sizeof(normalized));
+        if (err == CUP_OK) {
+            err = package_selector_parse_parts(
+                normalized, tool, sizeof(tool), release, sizeof(release));
+        }
+        if (err == CUP_OK) {
+            err = registry_find_tool_component(tool, component, sizeof(component));
+        }
+        if (err == CUP_OK) {
+            plan->kind = INSTALL_PLAN_SINGLE;
+            err = text_copy(plan->description, sizeof(plan->description), normalized);
+        }
+        return err == CUP_OK ? install_plan_add(plan, component, normalized) : err;
+    }
+
+    fprintf(stderr, "Error: unsupported component, tool or install group '%s'.\n", selection_key);
     return CUP_ERR_UNSUPPORTED_COMPONENT;
 }
 
@@ -436,7 +463,7 @@ CupError command_install(const char *selector,
     ToolPreferences preferences;
     InstallPlan plan;
     CupError err;
-    char normalized_selector[MAX_IDENTIFIER_LEN];
+    char normalized_selector[MAX_SELECTOR_LEN];
     char normalized_format[MAX_IDENTIFIER_LEN] = "";
     int need_config;
     int need_preferences;

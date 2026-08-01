@@ -11,7 +11,10 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "package_archive.h"
+#include "package_catalog.h"
 #include "platform.h"
+#include "install_policy.h"
+#include "state.h"
 #include "system.h"
 #include "unity.h"
 #include "test_platform.h"
@@ -29,10 +32,12 @@
 #if defined(CUP_USE_OPENSSL_INIT)
 #include <openssl/ssl.h>
 
+static int mock_tls_init_result = 1;
+
 int OPENSSL_init_ssl(uint64_t options, const OPENSSL_INIT_SETTINGS *settings) {
     (void)options;
     (void)settings;
-    return 1;
+    return mock_tls_init_result;
 }
 #endif
 
@@ -82,11 +87,83 @@ static int verify_values[MAX_SEQUENCE];
 static size_t verify_count;
 static size_t verify_index;
 
+/* layout.c links its strong markerless-root verifier into this suite. Cache tests never exercise
+ * that verifier, so these boundary doubles keep the suite focused on cache behavior. */
+CupError checksum_validate_assets(const char *checksum_path,
+                                  const char *const *asset_names,
+                                  size_t asset_count) {
+    (void)checksum_path;
+    (void)asset_names;
+    (void)asset_count;
+    return CUP_ERR_VALIDATION;
+}
+
+CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
+    (void)path;
+    if (hex != NULL && size > 0) {
+        hex[0] = '\0';
+    }
+    return CUP_ERR_VALIDATION;
+}
+
+void package_catalog_init(PackageCatalog *catalog) {
+    if (catalog != NULL) {
+        memset(catalog, 0, sizeof(*catalog));
+    }
+}
+
+void package_catalog_free(PackageCatalog *catalog) {
+    (void)catalog;
+}
+
+CupError package_catalog_load_path(PackageCatalog *catalog,
+                                   const char *path,
+                                   PackageCatalogSource source) {
+    (void)catalog;
+    (void)path;
+    (void)source;
+    return CUP_ERR_CATALOG;
+}
+
+void install_policy_init(InstallPolicy *policy) {
+    if (policy != NULL) {
+        memset(policy, 0, sizeof(*policy));
+    }
+}
+
+CupError install_policy_load_path(InstallPolicy *policy,
+                                  const char *path,
+                                  InstallPolicySource source) {
+    (void)policy;
+    (void)path;
+    (void)source;
+    return CUP_ERR_VALIDATION;
+}
+
+CupError state_load_path(CupState *state, StateFileStatus *status, const char *path) {
+    (void)path;
+    if (state != NULL) {
+        memset(state, 0, sizeof(*state));
+    }
+    if (status != NULL) {
+        *status = STATE_FILE_MISSING;
+    }
+    return CUP_OK;
+}
+
+CupError state_validate(const CupState *state) {
+    (void)state;
+    return CUP_OK;
+}
+
 /* Fixture lifecycle and local construction helpers. */
 
 static void set_test_environment(const char *name, const char *value);
 
 static void reset_mocks(void) {
+#if defined(CUP_USE_OPENSSL_INIT)
+    mock_tls_init_result = 1;
+#endif
     mock_global_result = CURLE_OK;
     mock_perform_result = CURLE_OK;
     mock_info_result = CURLE_OK;
@@ -541,6 +618,14 @@ static void assert_download_setup_failures(const char *destination) {
     char missing_parent[1024];
 
     reset_mocks();
+#if defined(CUP_USE_OPENSSL_INIT)
+    mock_tls_init_result = 0;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FETCH,
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+#endif
+
+    reset_mocks();
     mock_global_result = CURLE_FAILED_INIT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
@@ -563,6 +648,14 @@ static void assert_download_setup_failures(const char *destination) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+
+#if defined(CUP_USE_EMBEDDED_CA_BUNDLE)
+    reset_mocks();
+    mock_fail_option = CURLOPT_CAINFO_BLOB;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FETCH,
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+#endif
 }
 
 static void assert_download_transport_failures(const char *destination) {
@@ -865,6 +958,70 @@ static void test_package_failures(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_cache_fetch(NULL, 0, "u", "c", &identity, "tar.gz", PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              sizeof(archive_path),
+                                              "u",
+                                              "c",
+                                              &identity,
+                                              "tar.gz",
+                                              PACKAGE_CACHE_ALLOW,
+                                              NULL));
+    source = PACKAGE_CACHE_SOURCE_NETWORK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              0,
+                                              "u",
+                                              "c",
+                                              &identity,
+                                              "tar.gz",
+                                              PACKAGE_CACHE_ALLOW,
+                                              &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = PACKAGE_CACHE_SOURCE_NETWORK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              sizeof(archive_path),
+                                              "",
+                                              "c",
+                                              &identity,
+                                              "tar.gz",
+                                              PACKAGE_CACHE_ALLOW,
+                                              &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = PACKAGE_CACHE_SOURCE_NETWORK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              sizeof(archive_path),
+                                              "u",
+                                              "",
+                                              &identity,
+                                              "tar.gz",
+                                              PACKAGE_CACHE_ALLOW,
+                                              &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = PACKAGE_CACHE_SOURCE_NETWORK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              sizeof(archive_path),
+                                              "u",
+                                              "c",
+                                              NULL,
+                                              "tar.gz",
+                                              PACKAGE_CACHE_ALLOW,
+                                              &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = PACKAGE_CACHE_SOURCE_NETWORK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch(archive_path,
+                                              sizeof(archive_path),
+                                              "u",
+                                              "c",
+                                              &identity,
+                                              "",
+                                              PACKAGE_CACHE_ALLOW,
+                                              &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     source = PACKAGE_CACHE_SOURCE_NETWORK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_cache_fetch(archive_path,

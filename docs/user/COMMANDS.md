@@ -121,6 +121,8 @@ selectors and curated toolchains are not changed by them.
 ### `install`
 
 ```sh
+cup install <tool>
+cup install <tool>@<release>
 cup install <component>
 cup install <component> <tool>
 cup install <component> <tool>@<release>
@@ -129,8 +131,9 @@ cup install profile <name>
 cup install toolchain <name>
 ```
 
-When the tool is omitted, `cup` uses the scoped preference and then the official
-default. When the release is omitted, `stable` is used.
+Tool-first forms infer the unique registered component. When the tool is
+omitted from a component install, `cup` uses the scoped preference and then the
+official default. When the release is omitted, `stable` is used.
 
 A profile resolves its components through the current preferences. A toolchain
 uses its defined set of tools. The complete group is validated before package
@@ -146,12 +149,19 @@ format is available.
 ### `remove`
 
 ```sh
-cup remove <component> <tool>@<release>
+cup remove <tool>
+cup remove <tool>@<release>
+cup remove <component> <tool>
 cup remove <component> <tool>@<release> --target <platform>
 ```
 
-Removes one installed release. Other versions remain installed. A matching
-default is cleared and the exposed commands are updated.
+Removes one installed release. A missing component is inferred from the
+registered tool. A missing release is accepted only when exactly one installed
+version matches the host and target; zero matches report not installed and
+multiple matches are listed before CUP asks for an explicit release. Nothing is
+removed in the ambiguous case. Profile and toolchain removal are not commands.
+Other versions remain installed. A matching default is cleared and the exposed
+commands are updated.
 
 ### `default`
 
@@ -183,6 +193,10 @@ when it selected an older release of the same tool.
 
 `cup update cup` checks for a newer official `cup` release. It is unavailable in
 development builds. An equal version is a no-op and downgrades are rejected.
+The command verifies and schedules the transition; a native helper completes it
+after the initiating process exits. Success leaves no result sidecar. A failed
+or rolled-back transition remains in `transaction.txt` until `cup repair`
+recovers or explicitly acknowledges it.
 
 ## Diagnosis and recovery
 
@@ -201,8 +215,9 @@ commands. It is read-only and returns a nonzero status when issues are found.
 cup repair
 ```
 
-Recovers supported interrupted operations and rebuilds data that can be derived
-safely. Ambiguous data is reported and preserved.
+Recovers supported interrupted operations, acknowledges terminal failed update
+or uninstall journals, and rebuilds data that can be derived safely. It runs
+under the exclusive lock. Ambiguous data is reported and preserved.
 
 `repair` never removes or replaces the canonical `cup` or `cup.exe` executable.
 Use the official installer when that executable is missing or altered.
@@ -215,12 +230,17 @@ cup uninstall --yes
 ```
 
 Removes the canonical installation and all packages managed by `cup`. The
-operation prompts unless `--yes` is supplied and does not edit PATH.
+operation prompts unless `--yes` is supplied and does not edit PATH. A detached
+helper proves parent termination through inherited operating-system objects,
+moves the complete root to a unique sibling and deletes it. No persistent PID or
+separate pending/result file is used.
 
 ## Concurrency and interrupted operations
 
-Read-only commands may run together. Commands that modify the installation use
-exclusive access and fail rather than racing another modification.
+Read-only commands may run together. Help and version never consult the runtime;
+`doctor` observes journal evidence byte-for-byte without consuming it. Commands
+that modify the installation use exclusive access and fail rather than racing
+another modification.
 
 When an interrupted operation requires recovery, normal commands report it.
 Use `cup doctor` to inspect the problem and `cup repair` for supported recovery.

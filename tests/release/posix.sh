@@ -54,6 +54,7 @@ temporary_root=${RUNNER_TEMP:-/tmp}
 ready="$temporary_root/cup-http-ready.$$"
 server_log="$temporary_root/cup-http.$$.log"
 test_home="$temporary_root/cup-installer-home.$$"
+foreign_home="$temporary_root/cup-installer-foreign-home.$$"
 server_pid=
 
 cleanup() {
@@ -62,7 +63,7 @@ cleanup() {
         wait "$server_pid" 2>/dev/null || true
     fi
     rm -f "$ready" "$server_log"
-    rm -rf "$test_home"
+    rm -rf "$test_home" "$foreign_home"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -111,6 +112,30 @@ case "$doctor_output" in
         ;;
 esac
 printf '%s\n' "$doctor_output" | grep -F 'Doctor found no issues.' >/dev/null
+
+# An unrelated primary directory is preserved while the same release installs,
+# runs and uninstalls from the stable fallback root.
+mkdir -p "$foreign_home/.cup"
+printf 'unrelated\n' > "$foreign_home/.cup/foreign.txt"
+HOME="$foreign_home" \
+CUP_INSTALL_ALLOW_INSECURE=1 \
+CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+CUP_INSTALL_NO_PATH_PROMPT=1 \
+    sh "$release_dir/install.sh"
+foreign_cup="$foreign_home/.coffee-cup/bin/cup"
+test -f "$foreign_home/.cup/foreign.txt"
+test -x "$foreign_cup"
+test "$(sed -n '1p' "$foreign_home/.coffee-cup/root.txt")" = 'format=1'
+test "$(sed -n '2p' "$foreign_home/.coffee-cup/root.txt")" = \
+    'product=coffee-clang/cup'
+test "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" = 'layout=1'
+HOME="$foreign_home" "$foreign_cup" --version | grep -Fx "cup $VERSION"
+foreign_doctor=$(HOME="$foreign_home" "$foreign_cup" doctor 2>&1)
+printf '%s\n' "$foreign_doctor" | grep -F 'Doctor found no issues.' >/dev/null
+HOME="$foreign_home" "$foreign_cup" uninstall --yes >/dev/null
+cup_test_wait_for_uninstall "$foreign_home/.coffee-cup" "$foreign_home" ||
+    fail 'fallback-root uninstall did not complete cleanly'
+test -f "$foreign_home/.cup/foreign.txt"
 
 # Repair may recreate mutable runtime paths, but it must never replace or remove the
 # currently installed executable on either POSIX or Windows.
@@ -241,16 +266,17 @@ printf '%s\n' "$update_output" | \
     grep -F "Verified update from cup $VERSION to $next_version scheduled." \
         >/dev/null
 
-update_result="$test_home/.cup/cup-update-result.txt"
 attempt=0
-while [ "$attempt" -lt 200 ] && [ ! -f "$update_result" ]; do
+while [ "$attempt" -lt 200 ]; do
+    if [ ! -e "$test_home/.cup/transaction.txt" ] &&
+        HOME="$test_home" "$installed_cup" --version 2>/dev/null |
+            grep -Fx "cup $next_version" >/dev/null; then
+        break
+    fi
     attempt=$((attempt + 1))
     sleep 0.1
 done
-[ -f "$update_result" ] || fail 'cup update helper did not publish a result'
-grep -Fx 'status=success' "$update_result" >/dev/null
-grep -Fx 'error=0' "$update_result" >/dev/null
-grep -Fx "version=$next_version" "$update_result" >/dev/null
+[ "$attempt" -lt 200 ] || fail 'cup update helper did not complete the verified update'
 test ! -e "$test_home/.cup/transaction.txt"
 test "$(hash_file "$installed_cup")" = "$(hash_file "$version_root/cup-$PLATFORM")"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $next_version"

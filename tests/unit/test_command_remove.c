@@ -15,9 +15,13 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
+#include "registry.h"
+#include "text.h"
 #include "unity.h"
+#include "test_platform.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /*
@@ -55,6 +59,7 @@ static int transaction_clear_calls;
 static int remove_tree_calls;
 static int plan_build_calls;
 static int plan_apply_calls;
+static size_t installed_match_count;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -93,6 +98,7 @@ static void reset_scenario(void) {
     remove_tree_calls = 0;
     plan_build_calls = 0;
     plan_apply_calls = 0;
+    installed_match_count = 0;
 }
 
 void setUp(void) {
@@ -121,6 +127,73 @@ CupError package_request_parse(const char *component, const char *entry, Package
     return CUP_OK;
 }
 
+int text_is_empty(const char *value) {
+    return value == NULL || value[0] == '\0';
+}
+
+CupError text_copy(char *destination, size_t size, const char *source) {
+    size_t length = strlen(source);
+
+    if (length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memmove(destination, source, length + 1);
+    return CUP_OK;
+}
+
+CupError text_copy_lower_ascii(char *destination, size_t size, const char *source) {
+    size_t i;
+    CupError err = text_copy(destination, size, source);
+
+    if (err != CUP_OK) {
+        return err;
+    }
+    for (i = 0; destination[i] != '\0'; ++i) {
+        if (destination[i] >= 'A' && destination[i] <= 'Z') {
+            destination[i] = (char)(destination[i] - 'A' + 'a');
+        }
+    }
+    return CUP_OK;
+}
+
+CupError package_selector_parse_parts(
+    const char *text, char *tool, size_t tool_size, char *release, size_t release_size) {
+    const char *separator = text == NULL ? NULL : strchr(text, '@');
+    size_t tool_length;
+
+    if (separator == NULL || separator == text || separator[1] == '\0' ||
+        strchr(separator + 1, '@') != NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    tool_length = (size_t)(separator - text);
+    if (tool_length >= tool_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(tool, text, tool_length);
+    tool[tool_length] = '\0';
+    return text_copy(release, release_size, separator + 1);
+}
+
+CupError package_selector_format_parts(char *buffer,
+                                       size_t size,
+                                       const char *tool,
+                                       const char *release) {
+    return buffer_write_result(snprintf(buffer, size, "%s@%s", tool, release), size);
+}
+
+CupError registry_validate_tool(const char *component, const char *tool) {
+    return strcmp(component, "compiler") == 0 && strcmp(tool, "clang") == 0
+               ? CUP_OK
+               : CUP_ERR_INVALID_TOOL;
+}
+
+CupError registry_find_tool_component(const char *tool, char *component, size_t component_size) {
+    if (strcmp(tool, "clang") != 0) {
+        return CUP_ERR_INVALID_TOOL;
+    }
+    return text_copy(component, component_size, "compiler");
+}
+
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -145,7 +218,19 @@ CupError runtime_journal_require_none(void) {
 }
 
 CupError command_context_load_state(CommandContext *context) {
+    size_t i;
+
     TEST_ASSERT_NOT_NULL(context);
+    for (i = 0; i < installed_match_count; ++i) {
+        PackageIdentity *identity = &context->state.installed[i];
+
+        strcpy(identity->component, "compiler");
+        strcpy(identity->tool, "clang");
+        strcpy(identity->host_platform, "linux-x64");
+        strcpy(identity->target_platform, "linux-x64");
+        strcpy(identity->version, i == 0 ? "21.1.5" : "22.1.5");
+    }
+    context->state.installed_count = installed_match_count;
     return load_state_result;
 }
 
@@ -345,6 +430,42 @@ static void assert_common_cleanup(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
 }
 
+static char *capture_ambiguous_remove(CupError *result) {
+    FILE *capture = tmpfile();
+    int saved;
+    int capture_flush_result;
+    int restore_result;
+    int close_result;
+    long length;
+    char *output;
+
+    TEST_ASSERT_NOT_NULL(capture);
+    TEST_ASSERT_EQUAL_INT(0, fflush(stderr));
+    saved = test_dup_fd(TEST_PLATFORM_STDERR_FD);
+    TEST_ASSERT_TRUE(saved >= 0);
+    TEST_ASSERT_TRUE(test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDERR_FD) >= 0);
+
+    *result = command_remove(NULL, "clang", NULL);
+
+    capture_flush_result = fflush(stderr);
+    restore_result = test_dup2_fd(saved, TEST_PLATFORM_STDERR_FD);
+    close_result = test_close_fd(saved);
+    TEST_ASSERT_EQUAL_INT(0, capture_flush_result);
+    TEST_ASSERT_TRUE(restore_result >= 0);
+    TEST_ASSERT_EQUAL_INT(0, close_result);
+
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_END));
+    length = ftell(capture);
+    TEST_ASSERT_TRUE(length >= 0);
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_SET));
+    output = calloc((size_t)length + 1, 1);
+    TEST_ASSERT_NOT_NULL(output);
+    TEST_ASSERT_EQUAL_size_t((size_t)length, fread(output, 1, (size_t)length, capture));
+    TEST_ASSERT_FALSE(ferror(capture));
+    TEST_ASSERT_EQUAL_INT(0, fclose(capture));
+    return output;
+}
+
 /*
  * Test cases exercise the real production entry point while changing only controlled boundary
  * outcomes.
@@ -352,7 +473,8 @@ static void assert_common_cleanup(void) {
 
 static void test_remove_prepare_fail(void) {
     parse_result = CUP_ERR_INVALID_INPUT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_remove("compiler", "bad", NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, command_remove("compiler", "clang@22.1.5", NULL));
     assert_common_cleanup();
 
     reset_scenario();
@@ -497,6 +619,47 @@ static void test_remove_success(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_apply_calls);
 }
 
+static void test_inferred_remove_selection(void) {
+    CupError result;
+    char *output;
+    const char *heading;
+    const char *first_release;
+    const char *second_release;
+    const char *instruction;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove(NULL, "clang@22.1.5", NULL));
+
+    reset_scenario();
+    installed_match_count = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove(NULL, "clang", NULL));
+
+    reset_scenario();
+    installed_match_count = 2;
+    output = capture_ambiguous_remove(&result);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, result);
+    heading = strstr(output, "Installed releases:\n");
+    first_release = strstr(output, "  clang@21.1.5\n");
+    second_release = strstr(output, "  clang@22.1.5\n");
+    instruction = strstr(
+        output,
+        "Specify one of the installed releases with:\n"
+        "  cup remove compiler clang@<release> --target linux-x64\n");
+    TEST_ASSERT_NOT_NULL(heading);
+    TEST_ASSERT_NOT_NULL(first_release);
+    TEST_ASSERT_NOT_NULL(second_release);
+    TEST_ASSERT_NOT_NULL(instruction);
+    TEST_ASSERT_TRUE(heading < first_release);
+    TEST_ASSERT_TRUE(first_release < second_release);
+    TEST_ASSERT_TRUE(second_release < instruction);
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(0, remove_tree_calls);
+    assert_common_cleanup();
+    free(output);
+
+    reset_scenario();
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED, command_remove(NULL, "clang", NULL));
+}
+
 /* Suite registration. */
 
 int main(void) {
@@ -509,5 +672,6 @@ int main(void) {
     RUN_TEST(test_state_commit_error);
     RUN_TEST(test_wrapper_commit);
     RUN_TEST(test_remove_success);
+    RUN_TEST(test_inferred_remove_selection);
     return UNITY_END();
 }

@@ -952,10 +952,51 @@ CupError system_sync_file(FILE *file) {
 }
 
 CupError system_sync_parent_directory(const char *path) {
-    if (text_is_empty(path)) {
+    char parent[MAX_PATH_LEN];
+    wchar_t wide_parent[MAX_PATH_LEN];
+    HANDLE handle;
+    DWORD flush_error;
+
+    if (text_is_empty(path) || path_parent(parent, sizeof(parent), path) != CUP_OK ||
+        utf8_to_wide_path(parent, wide_parent, MAX_PATH_LEN) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return CUP_OK;
+
+    handle = CreateFileW(wide_parent,
+                         GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL,
+                         OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        flush_error = GetLastError();
+        /* Directory flushing is not supported uniformly. The replacement itself uses
+         * MOVEFILE_WRITE_THROUGH; only capability-style failures fall back to that guarantee. */
+        if (flush_error == ERROR_ACCESS_DENIED || flush_error == ERROR_INVALID_FUNCTION ||
+            flush_error == ERROR_NOT_SUPPORTED) {
+            return CUP_OK;
+        }
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (FlushFileBuffers(handle)) {
+        return CloseHandle(handle) ? CUP_OK : CUP_ERR_FILESYSTEM;
+    }
+
+    flush_error = GetLastError();
+    if (!CloseHandle(handle)) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    /* Windows has no portable directory-fsync contract. Some filesystems reject a writable
+     * directory handle or FlushFileBuffers even though metadata replacement itself used
+     * write-through APIs. Treat only capability-style failures as best-effort; all other errors
+     * remain observable. */
+    if (flush_error == ERROR_ACCESS_DENIED || flush_error == ERROR_INVALID_FUNCTION ||
+        flush_error == ERROR_NOT_SUPPORTED) {
+        return CUP_OK;
+    }
+    return CUP_ERR_FILESYSTEM;
 }
 
 /* Create-exclusive long-path-aware temporary files and directories. */
@@ -1362,7 +1403,7 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
                          GENERIC_READ | GENERIC_WRITE,
                          FILE_SHARE_READ | FILE_SHARE_WRITE,
                          NULL,
-                         OPEN_ALWAYS,
+                         mode == SYSTEM_LOCK_EXCLUSIVE ? OPEN_ALWAYS : OPEN_EXISTING,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                          NULL);
     if (handle == INVALID_HANDLE_VALUE) {

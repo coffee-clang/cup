@@ -344,6 +344,67 @@ static void test_identity_validation(void) {
         package_identity_from_selector(&identity, "compiler", "linux-x64", "linux-x64", "clang"));
 }
 
+static void test_identity_argument_contracts(void) {
+    PackageIdentity identity;
+    PackageIdentity invalid;
+    PackageScope scope;
+    PackageList packages = {0};
+    char selector[MAX_SELECTOR_LEN];
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_scope_init(&scope, NULL, "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_scope_init(&scope, "compiler", NULL, "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_scope_init(&scope, "compiler", "linux-x64", NULL));
+    TEST_ASSERT_NOT_EQUAL(
+        CUP_OK, package_scope_init(&scope, "compiler", "linux-x64", "bad-platform"));
+    TEST_ASSERT_FALSE(package_scope_equals(&scope, NULL));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_get_scope(&identity, NULL));
+    TEST_ASSERT_FALSE(package_identity_equals(&identity, NULL));
+    TEST_ASSERT_EQUAL_INT(0, package_identity_compare(NULL, NULL));
+    TEST_ASSERT_TRUE(package_identity_compare(&identity, NULL) > 0);
+    TEST_ASSERT_FALSE(package_identity_matches(&identity, "", NULL, NULL));
+    package_identity_sort(&identity, 1);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_identity_format_selector(NULL, selector, sizeof(selector)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_identity_format_selector(&identity, NULL, sizeof(selector)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_identity_format_selector(&identity, selector, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          package_identity_format_selector(&identity, selector, 2));
+
+    invalid = identity;
+    invalid.tool[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(&invalid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_identity_format_selector(&invalid, selector, sizeof(selector)));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_identity_init(&identity, "compiler", NULL, "linux-x64", "linux-x64", "22.1.5"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", NULL));
+    TEST_ASSERT_NOT_EQUAL(
+        CUP_OK,
+        package_identity_init(&identity, "compiler", "gdb", "linux-x64", "linux-x64", "22.1.5"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_identity_from_selector(NULL, "compiler", "linux-x64", "linux-x64", "clang@22.1.5"));
+
+    TEST_ASSERT_FALSE(package_list_contains(NULL, &identity));
+    TEST_ASSERT_FALSE(package_list_contains(&packages, NULL));
+}
+
 static void test_valid_package(void) {
     PackageIdentity identity;
     char root[512];
@@ -737,6 +798,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_scope_validation);
     RUN_TEST(test_identity_validation);
+    RUN_TEST(test_identity_argument_contracts);
     RUN_TEST(test_valid_package);
     RUN_TEST(test_invalid_package);
     RUN_TEST(test_metadata_paths);

@@ -29,7 +29,7 @@ to related contracts where a boundary is crossed.
 - [PACKAGES](design/PACKAGES.md) defines `packages.cfg`, the verified
   `install.cfg` policy, local installation preferences, package identities,
   `info.txt`, cache names and the contract with `cup-components`.
-- [STATE](design/STATE.md) defines `~/.cup`, `state.txt`, defaults, locks and managed
+- [STATE](design/STATE.md) defines root selection, `state.txt`, defaults, locks and managed
   package commands.
 - [TRANSACTIONS](design/TRANSACTIONS.md) defines journals, commit points, rollback,
   recovery, `doctor`, `repair` and uninstall.

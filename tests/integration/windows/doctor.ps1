@@ -19,7 +19,6 @@ try {
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $statePath = Join-Path $cupRoot "state.txt"
     $transactionPath = Join-Path $cupRoot "transaction.txt"
-    $markerPath = Join-Path $cupRoot "uninstall.pending"
 
     $compilerRoot = New-InstalledPackageFixture -Component "compiler" -Tool "clang" `
         -Version "99.0.0" -Entries @("clang")
@@ -36,11 +35,9 @@ try {
     $leftover = Join-Path $cupRoot "staging\leftover"
     New-Item -ItemType Directory -Force -Path $leftover | Out-Null
     Write-Utf8NoBom -Path $transactionPath -Lines @("invalid journal")
-    New-Item -ItemType File -Path $markerPath | Out-Null
     $stateHash = (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash
 
     $issues = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
-    Assert-Contains $issues "an uninstall marker exists"
     Assert-Contains $issues "transaction journal is invalid"
     Assert-Contains $issues "installed state record 'linter:clang-tidy@22.1.5' has no valid package"
     Assert-Contains $issues "package metadata for 'compiler:clang@99.0.0' is not read-only"
@@ -55,12 +52,11 @@ try {
     Assert-Equals (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash $stateHash
     Assert-PathExists $invalidPackage
     Assert-PathExists $leftover
-    Assert-PathExists $markerPath
     if ((Get-Item -LiteralPath (Join-Path $compilerRoot "info.txt")).IsReadOnly) {
         Fail-Test "doctor changed package metadata permissions"
     }
 
-    Remove-Item -LiteralPath $markerPath, $transactionPath -Force
+    Remove-Item -LiteralPath $transactionPath -Force
     Remove-Item -LiteralPath $leftover, $invalidPackage -Recurse -Force
     Write-Utf8NoBom -Path $statePath -Lines @(
         "format=1",
@@ -86,16 +82,72 @@ try {
     Assert-Contains $warningOnly "Doctor found 1 warning(s), but no blocking issues."
     Assert-Contains $warningOnly "installed package 'compiler:clang@99.0.0' is not listed"
 
-    $resultPath = Join-Path $cupRoot "cup-update-result.txt"
-    Write-Utf8NoBom -Path $resultPath -Lines @(
-        "format=1", "status=failed", "error=15", "version=0.3.0")
+    Write-Utf8NoBom -Path $transactionPath -Lines @(
+        "format=1",
+        "operation=cup-update",
+        "phase=failed",
+        "temporary_name=cup-update-test",
+        "token=fixture-cup-update-test",
+        "version=0.3.0",
+        "error=15",
+        "recovery=pending"
+    )
+    $updateJournalHash = (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup update failed with error 15 at version 0.3.0"
+        "the previous cup update to version 0.3.0 failed with error 15; recovery is pending"
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $updateJournalHash
 
-    Write-Utf8NoBom -Path $resultPath -Lines @("invalid update result")
+    # Help, version, typos, parse errors and read-only views never rewrite durable evidence.
+    Invoke-Cup -CommandArgs @("help") | Out-Null
+    Invoke-Cup -CommandArgs @("--version") | Out-Null
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $updateJournalHash
+    Invoke-Cup -CommandArgs @("not-a-command") -ExpectFailure | Out-Null
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $updateJournalHash
+    Invoke-Cup -CommandArgs @("install") -ExpectFailure | Out-Null
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $updateJournalHash
+    foreach ($readOnlyCommand in @("search", "list", "config", "info", "inspect")) {
+        Invoke-Cup -CommandArgs @($readOnlyCommand) -ExpectFailure | Out-Null
+        Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+            $updateJournalHash
+    }
+
+    Write-Utf8NoBom -Path $transactionPath -Lines @(
+        "format=1",
+        "operation=cup-update",
+        "phase=failed",
+        "temporary_name=cup-update-test",
+        "token=fixture-cup-update-test",
+        "version=NEWER",
+        "error=15",
+        "recovery=pending"
+    )
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup update result is invalid"
-    Remove-Item -LiteralPath $resultPath -Force
+        "cup update journal is invalid"
+    Remove-Item -LiteralPath $transactionPath -Force
+
+    Write-Utf8NoBom -Path $transactionPath -Lines @(
+        "format=1",
+        "operation=uninstall",
+        "phase=failed",
+        "temporary_name=.cup-uninstall.fixture",
+        "token=fixture",
+        "stage=cleanup",
+        "error=1"
+    )
+    $uninstallJournalHash = (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash
+    Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
+        "the previous cup uninstall failed during 'cleanup' with error 1"
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $uninstallJournalHash
+    Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
+        "the previous cup uninstall failed during 'cleanup' with error 1"
+    Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
+        $uninstallJournalHash
+    Remove-Item -LiteralPath $transactionPath -Force
 
     Write-Host "Windows doctor tests passed."
 } finally {

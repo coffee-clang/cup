@@ -36,7 +36,7 @@ component build system, Docker images, MSYS2 packages or Homebrew formulas.
 Installed catalog:
 
 ```text
-~/.cup/config/packages.cfg
+<cup-root>/config/packages.cfg
 ```
 
 Repository development copy:
@@ -55,8 +55,10 @@ registry remains the sole authority for recognized components, recognized tools
 and each tool's component. A catalog can make one registered pair available for
 a platform, but cannot introduce a new component/tool relationship.
 
-The official installation policy is installed at `~/.cup/config/install.cfg`;
-its repository development copy is `config/install.cfg`. It defines:
+The official installation policy is installed at `<cup-root>/config/install.cfg`;
+its repository development copy is `config/install.cfg`. It uses the same
+blank-line and whole-line comment rules as the catalog and otherwise remains a
+strict closed key/value document. It defines:
 
 ```text
 default.<host>.<target>.<component>=<tool>
@@ -70,7 +72,7 @@ at install time. Curated toolchains contain explicit tools, with at most one too
 per component. The file is covered by `SHA256SUMS.common`, protected as an
 official asset and replaced transactionally by `cup update cup`.
 
-Local choices are stored separately at `~/.cup/config/preferences.txt`:
+Local choices are stored separately at `<cup-root>/config/preferences.txt`:
 
 ```text
 preferred.<host>.<target>.<component>=<tool>
@@ -98,7 +100,10 @@ tools from these preferences.
 
 ## Catalog record model
 
-The catalog is a line-based key/value document. Keys use:
+The catalog is a line-based key/value document. Blank lines and lines whose first
+non-whitespace character is `#` are ignored; every remaining line must be one
+non-empty `key=value` record. Unknown fields, duplicates, partial tuples and
+malformed records are rejected. Keys use:
 
 ```text
 <component>.<tool>.<host_platform>.<target_platform>.<field>=<value>
@@ -225,13 +230,13 @@ version
 Canonical installation path:
 
 ```text
-~/.cup/components/<component>/<tool>/<host>/<target>/<version>/
+<cup-root>/components/<component>/<tool>/<host>/<target>/<version>/
 ```
 
 Canonical cache directory and filename:
 
 ```text
-~/.cup/cache/<component>/<tool>/<host>/<target>/<version>/
+<cup-root>/cache/<component>/<tool>/<host>/<target>/<version>/
   <tool>-<version>-<host>-<target>.<format>
 ```
 

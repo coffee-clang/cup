@@ -176,6 +176,7 @@ COMMON_SRC := \
     src/package_transaction.c \
     src/cup_update_journal.c \
     src/runtime_journal.c \
+    src/uninstall_journal.c \
     src/cup_update_helper.c \
     src/text.c \
     src/system.c \
@@ -466,7 +467,7 @@ help:
 		'' \
 		'Maintenance target:' \
 		'  CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home' \
-		'                               remove build outputs and the dev ~/.cup' \
+		'                               remove build outputs and the marked dev root' \
 		'' \
 		'Local additions: EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS, EXTRA_LDLIBS' \
 		'Current platform: $(PLATFORM)' \
@@ -603,15 +604,35 @@ clean:
 
 reset-dev-home:
 	@test "$(CUP_ALLOW_DEV_CLEAN)" = "1" || { \
-		echo "Refusing to remove $(HOME)/.cup without CUP_ALLOW_DEV_CLEAN=1" >&2; \
+		echo "Refusing to remove the dev root without CUP_ALLOW_DEV_CLEAN=1" >&2; \
 		exit 1; \
 	}
 	@case "$(HOME)" in \
 		/*) test "$(HOME)" != "/" ;; \
 		*) false ;; \
 	esac || { echo "Invalid HOME for reset-dev-home" >&2; exit 1; }
-	@rm -rf -- "$(BUILD_DIR)"
-	@rm -rf -- "$(HOME)/.cup"
+	@selected_root=; \
+	for candidate_root in "$(HOME)/.cup" "$(HOME)/.coffee-cup"; do \
+		marker_path="$$candidate_root/root.txt"; \
+		if test -d "$$candidate_root" && test ! -L "$$candidate_root" && \
+			test -f "$$marker_path" && test ! -L "$$marker_path" && \
+			test "$$(awk 'END { print NR }' "$$marker_path")" = 3 && \
+			test "$$(sed -n '1p' "$$marker_path")" = 'format=1' && \
+			test "$$(sed -n '2p' "$$marker_path")" = 'product=coffee-clang/cup' && \
+			test "$$(sed -n '3p' "$$marker_path")" = 'layout=1'; then \
+			test -z "$$selected_root" || { \
+				echo "Both dev root candidates are marked as CUP roots." >&2; \
+				exit 1; \
+			}; \
+			selected_root="$$candidate_root"; \
+		fi; \
+	done; \
+	test -n "$$selected_root" || { \
+		echo "No marked CUP dev root was found; nothing was removed." >&2; \
+		exit 1; \
+	}; \
+	rm -rf -- "$(BUILD_DIR)"; \
+	rm -rf -- "$$selected_root"
 	@clear 2>/dev/null || true
 
 # The Makefile owns compilation of product and test binaries. Runners only

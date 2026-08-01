@@ -20,6 +20,7 @@
 typedef struct _stat64 TestPlatformStat;
 
 #define TEST_PLATFORM_STDOUT_FD 1
+#define TEST_PLATFORM_STDERR_FD 2
 
 static inline int test_set_home(const char *path) {
     return path == NULL ? EINVAL : _putenv_s("USERPROFILE", path);
@@ -199,6 +200,7 @@ static inline int test_sync_file(FILE *file) {
 typedef struct stat TestPlatformStat;
 
 #define TEST_PLATFORM_STDOUT_FD STDOUT_FILENO
+#define TEST_PLATFORM_STDERR_FD STDERR_FILENO
 
 static inline int test_set_home(const char *path) {
     return path == NULL ? EINVAL : setenv("HOME", path, 1);

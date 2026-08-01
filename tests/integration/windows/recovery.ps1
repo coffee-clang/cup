@@ -81,7 +81,8 @@ function Write-CupUpdateJournal {
         "temporary_name=$TemporaryName",
         "token=$Token",
         "version=0.0.0",
-        "error=0"
+        "error=0",
+        "recovery=none"
     )
 }
 
@@ -164,7 +165,7 @@ try {
     Write-Utf8NoBom -Path $uninstallPath -Lines @("broken uninstall")
     Write-Utf8NoBom -Path $platformChecksumsPath -Lines @("broken checksums")
     Write-CupUpdateJournal -Path $transactionPath -TemporaryName $safeName `
-        -Token "recovery-safe-rollback" -Phase "committing"
+        -Token "recovery-cup-update-safe-rollback-test" -Phase "committing"
 
     $safeRepair = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $safeRepair "Rolled back interrupted cup update transaction."
@@ -194,7 +195,7 @@ try {
     $brokenUninstallHash = Get-Sha256Lower -Path $uninstallPath
     $brokenChecksumsHash = Get-Sha256Lower -Path $platformChecksumsPath
     Write-CupUpdateJournal -Path $transactionPath -TemporaryName $unsafeName `
-        -Token "recovery-unsafe-rollback"
+        -Token "recovery-cup-update-unsafe-rollback-test"
 
     $unsafeRepair = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
     Assert-Contains $unsafeRepair `
@@ -235,7 +236,7 @@ try {
     New-Item -ItemType File -Path (Join-Path $committedStaging "committed") | Out-Null
     $committedBinaryHash = Get-Sha256Lower -Path $binaryPath
     Write-CupUpdateJournal -Path $transactionPath -TemporaryName $committedName `
-        -Token "recovery-committed" -Phase "committing"
+        -Token "recovery-cup-update-committed-test" -Phase "committing"
 
     $committedRepair = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $committedRepair "Completed interrupted cup update transaction."

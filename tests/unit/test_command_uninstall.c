@@ -1,6 +1,6 @@
 /*
- * Test focus: Exercises canonical-root validation, marker creation and detached uninstall
- * startup through system boundaries.
+ * Test focus: Exercises canonical-root validation, transaction journal creation and detached
+ * uninstall startup through controlled system boundaries.
  */
 
 #include "cup_assets.h"
@@ -8,8 +8,9 @@
 #include "commands.h"
 #include "error.h"
 #include "layout.h"
-#include "system.h"
 #include "runtime_journal.h"
+#include "system.h"
+#include "uninstall_journal.h"
 #include "unity.h"
 #include "test_platform.h"
 
@@ -17,27 +18,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static int root_is_directory;
+static CupError root_path_result;
 static CupError inspect_root_result;
+static CupError lock_path_result;
 static CupError lock_result;
-static CupError transaction_load_result;
+static CupError ensure_root_result;
+static CupError journal_detect_result;
 static RuntimeJournalKind journal_kind;
 static CupError find_uninstall_result;
-static CupError marker_create_result;
-static CupError sync_file_result;
-static CupError sync_parent_result;
+static CupError unique_path_result;
+static int unique_path_has_expected_prefix;
+static CupError journal_begin_result;
 static CupError helper_result;
+static CupError journal_clear_result;
+static CupError journal_load_result;
+static UninstallJournalStatus journal_load_status;
+static UninstallJournal loaded_journal;
 static int lock_release_calls;
-static int remove_file_calls;
+static int unique_path_calls;
+static int journal_begin_calls;
 static int helper_calls;
-
-/* Fixture lifecycle and local construction helpers. */
+static int journal_clear_calls;
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -45,18 +48,31 @@ static CupError buffer_write_result(int written, size_t size) {
 
 static void reset_scenario(void) {
     root_is_directory = 1;
+    root_path_result = CUP_OK;
     inspect_root_result = CUP_OK;
+    lock_path_result = CUP_OK;
     lock_result = CUP_OK;
-    transaction_load_result = CUP_OK;
+    ensure_root_result = CUP_OK;
+    journal_detect_result = CUP_OK;
     journal_kind = RUNTIME_JOURNAL_MISSING;
     find_uninstall_result = CUP_OK;
-    marker_create_result = CUP_OK;
-    sync_file_result = CUP_OK;
-    sync_parent_result = CUP_OK;
+    unique_path_result = CUP_OK;
+    unique_path_has_expected_prefix = 1;
+    journal_begin_result = CUP_OK;
     helper_result = CUP_OK;
+    journal_clear_result = CUP_OK;
+    journal_load_result = CUP_OK;
+    journal_load_status = UNINSTALL_JOURNAL_LOADED;
+    memset(&loaded_journal, 0, sizeof(loaded_journal));
+    loaded_journal.phase = UNINSTALL_PHASE_SCHEDULED;
+    loaded_journal.stage = UNINSTALL_STAGE_HANDOFF;
+    strcpy(loaded_journal.temporary_name, ".cup-uninstall.token");
+    strcpy(loaded_journal.token, "token");
     lock_release_calls = 0;
-    remove_file_calls = 0;
+    unique_path_calls = 0;
+    journal_begin_calls = 0;
     helper_calls = 0;
+    journal_clear_calls = 0;
 }
 
 void setUp(void) {
@@ -65,11 +81,6 @@ void setUp(void) {
 
 void tearDown(void) {
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static CupError test_path(char *buffer, size_t size, const char *name) {
     return buffer_write_result(snprintf(buffer, size, "%s/%s", temp_dir, name), size);
@@ -87,12 +98,10 @@ static void provide_input(const char *text) {
     TEST_ASSERT_NOT_NULL(freopen(path, "r", stdin));
 }
 
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
 CupError layout_get_root(char *buffer, size_t size) {
+    if (root_path_result != CUP_OK) {
+        return root_path_result;
+    }
     return test_path(buffer, size, "root");
 }
 
@@ -105,7 +114,14 @@ CupError system_is_directory(const char *path, int *is_directory) {
 }
 
 CupError layout_get_lock_path(char *buffer, size_t size) {
+    if (lock_path_result != CUP_OK) {
+        return lock_path_result;
+    }
     return test_path(buffer, size, "cup.lock");
+}
+
+CupError layout_ensure_root(void) {
+    return ensure_root_result;
 }
 
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
@@ -128,7 +144,20 @@ void system_lock_release(SystemLock *lock) {
 CupError runtime_journal_detect(RuntimeJournalKind *kind) {
     TEST_ASSERT_NOT_NULL(kind);
     *kind = journal_kind;
-    return transaction_load_result;
+    return journal_detect_result;
+}
+
+CupError runtime_journal_clear(void) {
+    journal_clear_calls++;
+    return journal_clear_result;
+}
+
+CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatus *status) {
+    TEST_ASSERT_NOT_NULL(journal);
+    TEST_ASSERT_NOT_NULL(status);
+    *journal = loaded_journal;
+    *status = journal_load_status;
+    return journal_load_result;
 }
 
 CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *source) {
@@ -140,33 +169,30 @@ CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *sou
     return test_path(path, size, CUP_UNINSTALL_FILENAME);
 }
 
-CupError layout_get_uninstall_marker_path(char *buffer, size_t size) {
-    return test_path(buffer, size, "uninstall.pending");
-}
-
-CupError system_create_file_exclusive(const char *path, FILE **file) {
-    if (marker_create_result != CUP_OK) {
-        return marker_create_result;
+CupError system_make_unique_temp_path(const char *directory,
+                                      const char *prefix,
+                                      char *path,
+                                      size_t path_size) {
+    unique_path_calls++;
+    TEST_ASSERT_EQUAL_STRING(temp_dir, directory);
+    TEST_ASSERT_EQUAL_STRING(".cup-uninstall", prefix);
+    if (unique_path_result != CUP_OK) {
+        return unique_path_result;
     }
-    TEST_ASSERT_NOT_NULL(file);
-    *file = fopen(path, "wx");
-    return *file != NULL ? CUP_OK : CUP_ERR_LOCK;
+    return buffer_write_result(
+        snprintf(path,
+                 path_size,
+                 "%s/%s",
+                 directory,
+                 unique_path_has_expected_prefix ? ".cup-uninstall-token" : "unexpected-token"),
+        path_size);
 }
 
-CupError system_sync_file(FILE *file) {
-    TEST_ASSERT_NOT_NULL(file);
-    return sync_file_result == CUP_OK && fflush(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
-}
-
-CupError system_sync_parent_directory(const char *path) {
-    TEST_ASSERT_NOT_NULL(path);
-    return sync_parent_result;
-}
-
-CupError system_remove_file(const char *path) {
-    TEST_ASSERT_NOT_NULL(path);
-    remove_file_calls++;
-    return test_unlink(path) == 0 || !test_access_exists(path) ? CUP_OK : CUP_ERR_FILESYSTEM;
+CupError uninstall_journal_begin(const char *temporary_path, const char *token) {
+    journal_begin_calls++;
+    TEST_ASSERT_TRUE(strstr(temporary_path, "/.cup-uninstall.token") != NULL);
+    TEST_ASSERT_EQUAL_STRING("token", token);
+    return journal_begin_result;
 }
 
 unsigned long system_get_process_id(void) {
@@ -185,6 +211,12 @@ CupError system_start_uninstall(const char *cup_root,
 
 static void test_invalid_runtime(void) {
     provide_input("y\n");
+    root_path_result = CUP_ERR_BUFFER_TOO_SMALL;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
+
+    reset_scenario();
+    provide_input("y\n");
     inspect_root_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
     TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
@@ -197,9 +229,21 @@ static void test_invalid_runtime(void) {
 
     reset_scenario();
     provide_input("y\n");
+    lock_path_result = CUP_ERR_BUFFER_TOO_SMALL;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
+
+    reset_scenario();
+    provide_input("y\n");
     lock_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_uninstall(0));
     TEST_ASSERT_EQUAL_INT(0, helper_calls);
+
+    reset_scenario();
+    provide_input("y\n");
+    ensure_root_result = CUP_ERR_VALIDATION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
 static void test_pending_or_missing(void) {
@@ -210,7 +254,7 @@ static void test_pending_or_missing(void) {
 
     reset_scenario();
     provide_input("y\n");
-    transaction_load_result = CUP_ERR_FILESYSTEM;
+    journal_detect_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_uninstall(0));
 
     reset_scenario();
@@ -220,45 +264,77 @@ static void test_pending_or_missing(void) {
     TEST_ASSERT_EQUAL_INT(0, helper_calls);
 }
 
-static void test_confirmation(void) {
+static void test_confirmation_and_success(void) {
+    provide_input("");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, unique_path_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
+
+    reset_scenario();
     provide_input("n\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, unique_path_calls);
     TEST_ASSERT_EQUAL_INT(0, helper_calls);
 
     reset_scenario();
     provide_input("Y\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(1, unique_path_calls);
+    TEST_ASSERT_EQUAL_INT(1, journal_begin_calls);
     TEST_ASSERT_EQUAL_INT(1, helper_calls);
-    TEST_ASSERT_EQUAL_INT(0, remove_file_calls);
+    TEST_ASSERT_EQUAL_INT(0, journal_clear_calls);
 
-    {
-        char marker[1024];
-        TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_marker_path(marker, sizeof(marker)));
-        TEST_ASSERT_EQUAL_INT(0, test_unlink(marker));
-    }
+    reset_scenario();
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_uninstall(1));
+    TEST_ASSERT_EQUAL_INT(1, unique_path_calls);
+    TEST_ASSERT_EQUAL_INT(1, helper_calls);
 }
 
-static void test_marker_cleanup(void) {
+static void test_journal_and_handoff_failures(void) {
     provide_input("y\n");
-    marker_create_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_uninstall(0));
+    unique_path_result = CUP_ERR_TEMPORARY;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, journal_begin_calls);
     TEST_ASSERT_EQUAL_INT(0, helper_calls);
 
     reset_scenario();
     provide_input("y\n");
-    sync_file_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
-    TEST_ASSERT_TRUE(remove_file_calls >= 1);
+    unique_path_has_expected_prefix = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, journal_begin_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
+
+    reset_scenario();
+    provide_input("y\n");
+    journal_begin_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(1, journal_begin_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
+    TEST_ASSERT_EQUAL_INT(0, journal_clear_calls);
 
     reset_scenario();
     provide_input("y\n");
     helper_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
     TEST_ASSERT_EQUAL_INT(1, helper_calls);
-    TEST_ASSERT_EQUAL_INT(1, remove_file_calls);
-}
+    TEST_ASSERT_EQUAL_INT(1, journal_clear_calls);
 
-/* Suite registration. */
+    reset_scenario();
+    provide_input("y\n");
+    helper_result = CUP_ERR_FILESYSTEM;
+    loaded_journal.phase = UNINSTALL_PHASE_FAILED;
+    loaded_journal.stage = UNINSTALL_STAGE_PARENT_WAIT;
+    loaded_journal.error_code = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(0, journal_clear_calls);
+
+    reset_scenario();
+    provide_input("y\n");
+    helper_result = CUP_ERR_FILESYSTEM;
+    journal_clear_result = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(1, journal_clear_calls);
+}
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(
@@ -266,7 +342,8 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_invalid_runtime);
     RUN_TEST(test_pending_or_missing);
-    RUN_TEST(test_confirmation);
-    RUN_TEST(test_marker_cleanup);
+    RUN_TEST(test_confirmation_and_success);
+    RUN_TEST(test_journal_and_handoff_failures);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
     return UNITY_END();
 }

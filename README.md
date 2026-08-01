@@ -32,13 +32,16 @@ curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.
 powershell -NoProfile -ExecutionPolicy Bypass -Command '$installer = Join-Path $env:TEMP "install-cup.ps1"; iwr "https://github.com/coffee-clang/cup/releases/latest/download/install.ps1" -OutFile $installer; & $installer'
 ```
 
-The installer places cup under `~/.cup` or `%USERPROFILE%\.cup` and verifies the
-release metadata and SHA-256 checksums before replacing existing assets.
+The installer normally uses `~/.cup` or `%USERPROFILE%\.cup`. If that name is
+already occupied by an unrelated directory, it preserves the directory and uses
+`.coffee-cup` instead. A strict `root.txt` marker makes the selected root
+stable across later commands and updates.
 
 ## Quick start
 
 ```sh
 cup search
+cup install gcc
 cup install compiler
 cup install profile standard
 cup list

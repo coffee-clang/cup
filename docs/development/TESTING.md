@@ -64,12 +64,19 @@ that the same implementation contract applies to Windows or macOS.
 ### Repository tests
 
 Repository checks exercise operational contracts that are not CLI behavior,
-such as dependency preparation, public Make targets, version generation and
-release publication recovery.
+such as dependency preparation, public Make targets, version generation,
+release publication recovery and minimal source-package hygiene.
 
-They do not inspect production source for particular functions, macros or
-implementation order, and they do not validate the internal organization of the
-test suite itself.
+The public POSIX scripts are parsed by the available `/bin/sh`, Dash and BusyBox
+shells as a supplemental compatibility check. Their portability is verified
+behaviorally by executing the generated installer in a restricted environment
+where optional host text utilities fail, then checking the installed files,
+permissions, ownership marker and cleanup results.
+
+Repository checks do not freeze private function names, implementation order,
+script inventories or test-harness organization. Structural assertions are kept
+only where the structure itself is part of a published build, package or release
+contract.
 
 ### Release tests
 

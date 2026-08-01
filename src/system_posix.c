@@ -424,9 +424,11 @@ static CupError split_parent_entry(
         }
     } else {
         if (slash == copy) {
+            if (text_copy(entry, entry_size, slash + 1) != CUP_OK) {
+                return CUP_ERR_BUFFER_TOO_SMALL;
+            }
             slash[1] = '\0';
-            if (text_copy(parent, parent_size, copy) != CUP_OK ||
-                text_copy(entry, entry_size, slash + 1) != CUP_OK) {
+            if (text_copy(parent, parent_size, copy) != CUP_OK) {
                 return CUP_ERR_BUFFER_TOO_SMALL;
             }
         } else {
@@ -944,6 +946,7 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     struct flock operation;
     struct stat info;
+    int flags;
     int fd;
 
     if (lock == NULL || text_is_empty(path) ||
@@ -952,7 +955,11 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     }
 
     memset(lock, 0, sizeof(*lock));
-    fd = open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0644);
+    flags = O_RDWR | O_NOFOLLOW | O_CLOEXEC;
+    if (mode == SYSTEM_LOCK_EXCLUSIVE) {
+        flags |= O_CREAT;
+    }
+    fd = open(path, flags, 0644);
     if (fd < 0) {
         return CUP_ERR_FILESYSTEM;
     }

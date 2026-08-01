@@ -1,73 +1,46 @@
-# Prerequisites
-*.d
-
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-/build
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Clang static analyzer reports
-/*.plist
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# debug information files
-*.dwo
-
-
-# doxygen
-/doxygen-output
-Doxyfile
-
-# mdbook output
-/book/
-
-# Remote docs theme assets (fetched via make docs-assets)
-/docs/theme/index.hbs
+# Official build and test outputs
+/build/
 
 # Generated release artifacts
 /dist/
+
+# Generated documentation
+/book/
+
+# Documentation assets fetched locally
+/docs/theme/index.hbs
+
+# Root-level static-analysis reports
+/*.plist
+
+# Accidental native build outputs outside build/
+*.d
+*.o
+*.obj
+*.elf
+
+*.a
+*.lib
+*.la
+*.lo
+
+*.so
+*.so.*
+*.dylib
+*.dll
+
+*.exe
+*.out
+*.app/
+
+*.map
+*.ilk
+*.exp
+
+*.gch
+*.pch
+*.su
+*.dwo
+
+*.pdb
+*.dSYM/

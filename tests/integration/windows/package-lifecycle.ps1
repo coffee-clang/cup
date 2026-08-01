@@ -22,7 +22,7 @@ function Initialize-LifecycleFixture {
 }
 
 function Test-InstallDefaults {
-    $installed = Invoke-Cup -CommandArgs @("install", "compiler", "clang@21.1.5")
+    $installed = Invoke-Cup -CommandArgs @("install", "clang@21.1.5")
     Assert-Contains $installed "set it as the first default"
 
     $statePath = Join-Path $Script:CupTestHome ".cup\state.txt"
@@ -90,7 +90,6 @@ function Test-Updates {
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "debugger")) `
         "debugger [windows-x64]: gdb@17.1 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "gdb") "gdb-17.1-windows-x64:gdb"
-    Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\cup-update-result.txt")
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\transaction.txt")
 
     $packageInfo = Invoke-Cup -CommandArgs @("inspect", "compiler", "clang@stable")
@@ -107,6 +106,18 @@ function Test-Updates {
 }
 
 function Test-RemoveDefaultWithoutPromotion {
+    $ambiguous = Invoke-Cup -CommandArgs @("remove", "clang") -ExpectFailure
+    Assert-Contains $ambiguous "remove selection 'compiler:clang' is ambiguous"
+    Assert-Contains $ambiguous "clang@21.1.5"
+    Assert-Contains $ambiguous "clang@22.1.5"
+    Assert-Contains $ambiguous "Specify one of the installed releases with:"
+    Assert-Contains $ambiguous (
+        "cup remove compiler clang@<release> --target windows-x64")
+    Assert-PathExists (Join-Path $Script:CupTestHome (
+        ".cup\components\compiler\clang\windows-x64\windows-x64\21.1.5\info.txt"))
+    Assert-PathExists (Join-Path $Script:CupTestHome (
+        ".cup\components\compiler\clang\windows-x64\windows-x64\22.1.5\info.txt"))
+
     Invoke-Cup -CommandArgs @("remove", "compiler", "clang@stable") | Out-Null
     Assert-PathMissing (Join-Path $Script:CupTestHome `
         ".cup\components\compiler\clang\windows-x64\windows-x64\22.1.5")
@@ -121,7 +132,8 @@ function Test-RemoveDefaultWithoutPromotion {
     Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@22.1.5"
     Assert-CupHealthy
 
-    Invoke-Cup -CommandArgs @("remove", "compiler", "clang@21.1.5") | Out-Null
+    $removed = Invoke-Cup -CommandArgs @("remove", "clang")
+    Assert-Contains $removed "Removed compiler clang -> clang@21.1.5"
     Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@"
     Assert-CupHealthy
 }

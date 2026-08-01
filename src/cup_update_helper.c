@@ -7,6 +7,7 @@
 
 #include "constants.h"
 #include "checksum.h"
+#include "cup_assets.h"
 #include "cup_update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -234,10 +235,17 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
         err = install_staged_asset(staging, &assets[0]);
     }
     if (err == CUP_OK) {
+        CupAssetsInspection inspection;
+
+        err = cup_assets_inspect(&inspection);
+        if (err == CUP_OK && !cup_assets_installed_is_valid(&inspection)) {
+            err = CUP_ERR_VALIDATION;
+        }
+    }
+    if (err == CUP_OK) {
         err = runtime_journal_clear();
     }
     if (err == CUP_OK) {
-        (void)cup_update_result_write(CUP_UPDATE_RESULT_SUCCESS, 0, journal->version);
         if (filesystem_remove_tree(staging) != CUP_OK) {
             fprintf(stderr,
                     "Warning: cup was updated successfully, but stale update staging could not "
@@ -247,35 +255,34 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
     return err;
 }
 
-/* Persistent completion channel. Detached failures are recorded for the next command and for doctor
- * diagnostics. */
+/* Persist one detached failure in transaction.txt before attempting deterministic recovery. */
 static CupError record_helper_failure(CupUpdateJournal *journal,
                                       CupError error,
                                       int recover) {
-    CupError recovery_error = CUP_ERR_TRANSACTION;
+    CupError err;
     CupUpdateRecoveryResult recovery_result = CUP_UPDATE_RECOVERY_NONE;
 
-    if (journal == NULL) {
+    if (journal == NULL || error == CUP_OK) {
         return error;
     }
 
-    if (recover &&
-        cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error) == CUP_OK) {
-        recovery_error = cup_update_journal_recover(
-            journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &recovery_result);
-        if (recovery_error != CUP_OK) {
-            (void)cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
-        }
-    } else {
-        (void)cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
+    err = cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: the cup update failure could not be persisted; transaction evidence "
+                "was preserved.\n");
+        return err;
+    }
+    if (!recover) {
+        return error;
     }
 
-    if (recovery_error == CUP_OK && recovery_result == CUP_UPDATE_RECOVERY_FINALIZED) {
-        (void)cup_update_result_write(CUP_UPDATE_RESULT_SUCCESS, 0, journal->version);
-        return CUP_OK;
+    err = cup_update_journal_recover(
+        journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &recovery_result);
+    if (err != CUP_OK) {
+        return error;
     }
-    (void)cup_update_result_write(CUP_UPDATE_RESULT_FAILED, (int)error, journal->version);
-    return error;
+    return recovery_result == CUP_UPDATE_RECOVERY_FINALIZED ? CUP_OK : error;
 }
 
 static CupError acquire_helper_lock(SystemLock *lock) {
@@ -540,7 +547,10 @@ CupError cup_update_helper_run(const char *token, const char *wait_value) {
 
     err = acquire_helper_lock(&lock);
     if (err != CUP_OK) {
-        return record_helper_failure(&journal, err, 0);
+        /* Without the global lock, the helper must not rewrite evidence that repair or another
+         * process may already be inspecting. The scheduled journal remains the durable pending
+         * handoff and can be recovered safely later. */
+        return err;
     }
     err = commit_update(&journal, staging);
     if (err != CUP_OK) {

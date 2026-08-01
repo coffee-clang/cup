@@ -4,22 +4,50 @@ This document defines the canonical local layout, persistent state, default
 selection, locking and managed wrappers. Interrupted mutations are specified
 in [TRANSACTIONS](TRANSACTIONS.md).
 
-## Canonical root
+## Persistent root
 
-The root is always:
+The primary root is:
 
 ```text
 POSIX   ~/.cup
 Windows %USERPROFILE%\.cup
 ```
 
-It is derived from `HOME` or `USERPROFILE`. It is not configurable and is not
-derived from the executable path.
+It is derived from `HOME` or `USERPROFILE`, is not configurable and is not
+derived from the executable path. If the primary name already identifies an
+unrelated directory, CUP preserves it and selects:
 
-A fixed root provides one location for:
+```text
+POSIX   ~/.coffee-cup
+Windows %USERPROFILE%\.coffee-cup
+```
+
+`root.txt` contains exactly `format=1`, `product=coffee-clang/cup`, and
+`layout=1`. A candidate with that valid marker is owned by CUP.
+
+A markerless root is adopted only when its complete installed generation can be
+verified without executing the discovered binary. CUP requires the canonical
+executable, the matching native update-helper copy, the uninstall helper, the
+exact common and platform checksum sets, matching asset digests, strictly
+parsed catalog and installation policy, an optional valid `state.txt`, and real
+(non-link) runtime directories. Merely finding familiar directory names or a
+`format=1` line is never sufficient.
+
+A markerless candidate that contains the canonical CUP executable but fails
+that complete verification is classified as a probable damaged legacy
+installation. CUP preserves it, stops, and does not select or create the
+alternative root. Other familiar-looking files such as `state.txt`, checksum
+files or runtime directory names do not establish ownership without the
+canonical executable; those markerless directories remain foreign. With an
+invalid marker, the broader asset set is still used as evidence that CUP must
+stop rather than hide a damaged installation. If both candidates are
+recognized, CUP stops instead of choosing silently. A verified legacy root
+receives the marker atomically during the next mutating command.
+
+The selected root provides one location for:
 
 - operating-system locking;
-- transaction and uninstall markers;
+- one shared transaction journal;
 - cup assets verification;
 - package identity paths;
 - deterministic repair;
@@ -28,7 +56,8 @@ A fixed root provides one location for:
 ## Filesystem layout
 
 ```text
-.cup/
+<cup-root>/
+  root.txt               persistent CUP ownership marker
   bin/
   components/
   staging/
@@ -45,10 +74,8 @@ A fixed root provides one location for:
     uninstall.sh          POSIX
     uninstall.ps1         Windows
   state.txt
-  transaction.txt         present only while a transaction is pending
-  cup-update-result.txt   result of the last detached cup update
+  transaction.txt         pending or failed mutation; removed after success/acknowledgement
   cup.lock
-  uninstall.pending       one parent_pid=<decimal> record while uninstall is pending
 ```
 
 The cup asset installer initially creates `bin`, `config` and `helpers`,
@@ -231,7 +258,7 @@ public naming model is the same; implementation differences are documented in
 The canonical lock file is:
 
 ```text
-.cup/cup.lock
+<cup-root>/cup.lock
 ```
 
 Read commands acquire a shared lock. Mutating commands acquire an exclusive
@@ -261,7 +288,9 @@ state or the selected default version of an installed component.
 
 cup assets metadata and installation preferences are not stored in `state.txt`.
 Package state, cup assets integrity and local selection policy have different
-lifecycles and recovery mechanisms.
+lifecycles and recovery mechanisms. Detached update and uninstall outcomes do
+not create separate result or pending files: `transaction.txt` remains their
+single authoritative durable record until success or explicit recovery.
 
 ## Invalid state preservation
 

@@ -111,6 +111,10 @@ static CupError fail_callback(const char *path, SystemPathKind kind, void *userd
     return CUP_ERR_INTERRUPT;
 }
 
+static int cancellation_requested(void) {
+    return 1;
+}
+
 static void test_path_and_walk(void) {
     char directory[1024];
     char nested[1024];
@@ -286,6 +290,7 @@ static void test_lock_contention(void) {
     SystemLock lock = {0, 0};
     pid_t child;
     int status;
+    int exists;
 
     build_path(lock_path, sizeof(lock_path), "cup.lock");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
@@ -315,6 +320,12 @@ static void test_lock_contention(void) {
                           system_lock_acquire(NULL, lock_path, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_lock_acquire(&lock, lock_path, (SystemLockMode)99));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(lock_path, &exists));
+    TEST_ASSERT_FALSE(exists);
 }
 
 static void assert_directory_contracts(const char *file_path,
@@ -535,6 +546,87 @@ static void test_extra_paths(void) {
                           system_walk_directory(second_dir, fail_callback, &count));
 }
 
+static void test_private_directory_contract(void) {
+    char private_dir[1024];
+    char regular_file[1024];
+    char missing[1024];
+    char link_path[1024];
+    struct stat info;
+    int is_private = 1;
+
+    build_path(private_dir, sizeof(private_dir), "private-directory");
+    build_path(regular_file, sizeof(regular_file), "private-file");
+    build_path(missing, sizeof(missing), "private-missing");
+    build_path(link_path, sizeof(link_path), "private-link");
+    write_text(regular_file, "data");
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_directory_is_private(NULL, &is_private));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_directory_is_private(private_dir, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(missing, &is_private));
+    TEST_ASSERT_FALSE(is_private);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(regular_file, &is_private));
+    TEST_ASSERT_FALSE(is_private);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_make_private_directory(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_make_private_directory(regular_file));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(private_dir));
+    TEST_ASSERT_EQUAL_INT(0, chmod(private_dir, 0755));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(private_dir, &is_private));
+    TEST_ASSERT_FALSE(is_private);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_private_directory(private_dir));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(private_dir, &is_private));
+    TEST_ASSERT_TRUE(is_private);
+    TEST_ASSERT_EQUAL_INT(0, stat(private_dir, &info));
+    TEST_ASSERT_EQUAL_INT(0700, info.st_mode & 0777);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_private_directory(private_dir));
+
+    TEST_ASSERT_EQUAL_INT(0, symlink("private-directory", link_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(link_path, &is_private));
+    TEST_ASSERT_FALSE(is_private);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_make_private_directory(link_path));
+}
+
+static void test_remove_tree_path_forms(void) {
+    char cwd[1024];
+    char absolute[1024];
+    char trailing[1024];
+    char child[1024];
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_tree(NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_tree("", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_tree(".", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_remove_tree("..", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_remove_tree("/cup-definitely-missing-tree", NULL));
+
+    TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
+    TEST_ASSERT_EQUAL_INT(0, chdir(temp_dir));
+    TEST_ASSERT_EQUAL_INT(0, mkdir("relative-tree", 0700));
+    write_text("relative-tree/file", "data");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree("relative-tree", NULL));
+    TEST_ASSERT_FALSE(access("relative-tree", F_OK) == 0);
+    TEST_ASSERT_EQUAL_INT(0, chdir(cwd));
+
+    build_path(absolute, sizeof(absolute), "trailing-tree");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(absolute, 0700));
+    TEST_ASSERT_TRUE(snprintf(child, sizeof(child), "%s/file", absolute) > 0);
+    write_text(child, "data");
+    TEST_ASSERT_TRUE(snprintf(trailing, sizeof(trailing), "%s///", absolute) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(trailing, NULL));
+    TEST_ASSERT_FALSE(access(absolute, F_OK) == 0);
+
+    build_path(absolute, sizeof(absolute), "cancelled-tree");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(absolute, 0700));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          system_remove_tree(absolute, cancellation_requested));
+    TEST_ASSERT_TRUE(access(absolute, F_OK) == 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(absolute, NULL));
+}
+
 static void test_uninstall_helper(void) {
     char script[1024];
     char marker[1024];
@@ -592,5 +684,7 @@ void register_system_posix_tests(void) {
     RUN_TEST(test_lock_contention);
     RUN_TEST(test_api_errors);
     RUN_TEST(test_extra_paths);
+    RUN_TEST(test_private_directory_contract);
+    RUN_TEST(test_remove_tree_path_forms);
     RUN_TEST(test_uninstall_helper);
 }

@@ -1,40 +1,39 @@
 # Transactions
 
-This document defines the current recovery protocol for package mutations, cup
+This document defines the current recovery protocol for package mutations, CUP
 updates and uninstall. The canonical state and paths are specified in
 [STATE](STATE.md).
 
 ## Shared runtime blocker
 
-Only one mutation can own the installation at a time. The canonical journal is:
+Only one mutation can own the installation at a time. Every persistent mutation
+uses the same canonical journal:
 
 ```text
-~/.cup/transaction.txt
+<cup-root>/transaction.txt
 ```
 
-Staged objects are placed below:
+Package and CUP-update staging objects are placed below:
 
 ```text
-~/.cup/staging/
+<cup-root>/staging/
 ```
 
-The journal is written before the first recoverable persistent mutation. It
-contains only a safe staging basename; recovery reconstructs the path below the
-canonical staging directory.
+The journal is written before the first recoverable persistent mutation. Each
+operation has one strict `format=1` schema. Unknown, missing, duplicate or
+incoherent fields make the journal invalid; invalid evidence remains at the
+canonical path and is never guessed or renamed away.
 
 The command policy is intentionally small:
 
 | Command | Valid or invalid journal |
 |---|---|
-| `help`, `--version` | allowed |
+| `help`, `--help`, `--version` | allowed without consulting or modifying the runtime |
 | `doctor` | allowed, read-only diagnosis |
-| `repair` | recovery, or preservation and failure when ambiguous |
+| `repair` | deterministic recovery or acknowledgement; preservation on ambiguity |
 | every other command, including `uninstall` | blocked |
 
-An invalid journal remains at the canonical path. `repair` does not rename it
-away, reconcile state, modify packages or rebuild wrappers. The journal and all
-staging evidence remain available for diagnosis.
-
+A read-only command never consumes, clears or rewrites transaction evidence.
 There is no compatibility reader for pre-release journal formats.
 
 ## Package journal
@@ -68,9 +67,9 @@ journal
 ```
 
 Recovery is allowed only when `state.txt` is present, readable, syntactically
-valid and semantically valid. A missing or invalid state with a package journal
-makes the commit point unknowable; `repair` stops without changing journal,
-staging, canonical package paths, state or wrappers.
+valid and semantically valid. A missing or invalid state beside a package
+journal makes the commit point unknowable; `repair` preserves journal, staging,
+canonical package paths, state and wrappers unchanged.
 
 ### Install recovery
 
@@ -98,7 +97,7 @@ identity absent from valid state
 A failure after state commit is not rolled back blindly. Cleanup failures are
 reported as commit failures and remain recoverable.
 
-## cup update protocol
+## CUP update protocol
 
 The public command is:
 
@@ -106,7 +105,7 @@ The public command is:
 cup update cup
 ```
 
-cup update uses the same `transaction.txt`, but a distinct strict record:
+CUP update uses the shared journal with this strict schema:
 
 ```ini
 format=1
@@ -114,73 +113,152 @@ operation=cup-update
 phase=scheduled|committing|failed
 temporary_name=cup-update-<unique-id>
 token=<handoff-token>
-version=<concrete-version>
-error=<publicly diagnosable internal code>
+version=<MAJOR.MINOR.PATCH>
+error=<0-or-public-error-code>
+recovery=none|pending|rolled-back
 ```
 
-The update generation contains the executable, uninstall helper, platform
-checksums, package catalog, installation policy and common checksums. All are
-fetched from one immutable release and verified before the journal is written.
+Coherence rules are part of the format:
+
+```text
+scheduled or committing  error=0, recovery=none
+failed                   error>0, recovery=pending|rolled-back
+```
+
+The target version is a strict concrete semantic version. The token must embed
+the exact staging basename. The update generation contains the executable,
+uninstall helper, platform checksums, package catalog, installation policy and
+common checksums fetched from one immutable release and verified before the
+journal is written.
 
 ### Native helper and parent handshake
 
 The installed native helper is:
 
 ```text
-POSIX   ~/.cup/helpers/cup-update-helper
-Windows %USERPROFILE%\.cup\helpers\cup-update-helper.exe
+POSIX   <cup-root>/helpers/cup-update-helper
+Windows <cup-root>\helpers\cup-update-helper.exe
 ```
 
-Before scheduling an update, cup refreshes that helper from the currently
-installed executable. The parent creates an inherited pipe and starts the helper
-with the journal token and the read endpoint. The helper proceeds only after it
-observes EOF/broken-pipe, which proves that every process holding the parent
-write endpoint has exited. A numeric PID is not used as the completion signal
-and therefore cannot be confused with a reused process identifier.
+Before scheduling an update, CUP refreshes that helper from the canonical
+executable and verifies their identity. The parent creates an inherited pipe
+and starts the helper with the journal token and read endpoint. The helper
+proceeds only after EOF/broken-pipe proves that every process holding the parent
+write endpoint has exited. A numeric PID is not used as the completion signal.
 
 The helper then:
 
 ```text
 validates token, journal phase and staging path
-waits for the exclusive lock with one bounded cross-platform policy
+waits for the exclusive lock with the bounded cross-platform policy
 changes phase to committing
 copies the six current assets to rollback backups
 atomically installs the five verified supporting assets
-writes the durable committed marker
+writes and synchronizes the committed marker
 atomically replaces cup or cup.exe last              commit point
-clears transaction.txt
-writes cup-update-result.txt
+validates the installed generation
+clears and synchronizes transaction.txt
 cleans staging when possible
 ```
 
-The helper result is persisted at:
+A successful detached update creates no persistent result file. The initiating
+command reports only that the verified transition was scheduled; a later
+`cup --version` reports the actual installed version.
+
+### Failure and recovery
+
+Before the committed marker, the detached helper may restore the complete old
+generation, including the executable because it runs from a separate copy. A
+successful rollback persists:
 
 ```text
-~/.cup/cup-update-result.txt
+phase=failed
+error=<original-nonzero-error>
+recovery=rolled-back
 ```
 
-It records `success` or `failed`, the error code and the target version so a
-later command can report an update completed by the detached process. Once the
-journal has been cleared, inability to remove stale staging is reported as a
-warning and does not change an otherwise successful update into a failure.
+This terminal journal preserves the failed target version and original error.
+`doctor` reports it without modification. A later `repair`, under the exclusive
+lock, verifies that no referenced staging residue remains and acknowledges the
+completed rollback by durably clearing the journal.
 
-### cup update recovery
+With `recovery=pending`, `repair` uses the committed marker and the complete
+asset evidence to choose only one provable action:
 
-`repair` distinguishes only the current `format=1` protocol:
+- committed marker plus a valid installed generation: finalize the new generation;
+- no committed marker and a restorable old generation: roll back;
+- any mixed, missing or invalid evidence: preserve everything and fail.
 
-- a committed marker finalizes the new generation only when the complete
-  installed asset set validates;
-- otherwise it can roll back supporting assets only when the canonical
-  executable already equals its rollback backup, including the crash window
-  after marker creation but before executable replacement;
-- it never replaces `cup` or `cup.exe`; when rollback would require that change,
-  it preserves the journal, staging tree and every canonical asset unchanged;
-- the detached helper may restore the executable because it runs from a separate
-  copy after the parent process has exited;
-- any mixed, missing or invalid evidence remains blocked and is not guessed.
+The normal `repair` process never replaces its own running executable. If safe
+recovery would require that replacement, it leaves the journal and staging
+unchanged for the detached helper or official installer.
 
-There is no legacy update operation and no compatibility path for older cup
-asset generations.
+There is no separate `cup-update-result.txt`, no implicit acknowledgement by a
+normal command and no legacy update operation.
+
+## Uninstall protocol
+
+`cup uninstall` obtains the exclusive lock, validates the selected owned root
+and installed helper, creates a unique direct sibling destination and writes:
+
+```ini
+format=1
+operation=uninstall
+phase=scheduled|detaching|failed
+temporary_name=.cup-uninstall.<token>
+token=<token>
+stage=handoff|parent-wait|detach|cleanup
+error=<0-or-public-error-code>
+```
+
+Coherence rules are strict:
+
+```text
+scheduled  stage=handoff|parent-wait, error=0
+detaching  stage=detach,              error=0
+failed     error>0
+```
+
+The process ID passed to the platform helper is diagnostic input only. Parent
+lifetime is proven through an inherited pipe on POSIX and inherited handles on
+Windows; no PID is persisted.
+
+The helper validates `root.txt`, the complete journal identity and its own
+copied script, persists `parent-wait`, acknowledges the handoff, waits for the
+parent lifetime signal, and then records `detaching`. The logical uninstall
+commit point is the atomic move:
+
+```text
+<cup-root> → <home>/.cup-uninstall.<token>
+```
+
+After the move the same `transaction.txt` travels inside the detached root. The
+helper records a cleanup failure and preserves `root.txt`, the canonical
+executable and the journal until every unrelated payload entry has been removed.
+A failed cleanup therefore leaves the three ownership proofs that a later
+official installer requires before it may retry or delete the detached residue.
+Complete deletion removes those proofs only from the final minimal residue. No
+`uninstall.pending`, result or failure sidecar file exists.
+
+### Residue validation
+
+A later installer removes a detached sibling only when all evidence agrees:
+
+- the sibling name is exactly `.cup-uninstall.<token>` with a safe token;
+- it is a real directory, not a link or reparse point;
+- it contains the valid CUP root marker;
+- it contains the canonical CUP executable as a real file;
+- its seven-line uninstall journal names that exact sibling and token;
+- the journal is either `detaching/detach/error=0` or
+  `failed/cleanup/error>0`.
+
+A name prefix or familiar directory shape alone is never sufficient.
+Unrecognized lookalikes are preserved and installation stops.
+
+If a failed uninstall journal remains in the canonical root before detachment,
+`doctor` reports it and `repair` may acknowledge it only when the named sibling
+does not exist. A scheduled or detaching canonical journal is not guessed or
+acknowledged.
 
 ## Repair pipeline
 
@@ -189,8 +267,8 @@ transaction:
 
 ```text
 validate state/journal relationship
-recover one unambiguous transaction
-restore cup assets and native update helper
+recover or acknowledge one unambiguous transaction
+restore CUP assets and native update helper
 scan current-host packages
 preserve foreign-host package trees
 quarantine only fully identified invalid current-host packages
@@ -200,12 +278,8 @@ clean unambiguous staging leftovers
 ```
 
 An ambiguous phase stops every later phase. In particular, an invalid journal
-or an invalid/missing state beside a package journal prevents package scanning,
-state reconciliation and wrapper changes.
-
-State records and package trees for a host different from the current host are
-reported and preserved. cup does not adopt, quarantine, delete or operate on
-them in this generation.
+or invalid/missing state beside a state-owning package or uninstall journal
+prevents package scanning, state reconciliation and wrapper changes.
 
 ## Interrupt lifecycle
 
@@ -214,39 +288,16 @@ its command implementation and restores the previous process disposition on
 exit.
 
 - POSIX observes `SIGINT` and `SIGTERM`;
-- Windows observes `CTRL_C_EVENT`, `CTRL_BREAK_EVENT` and console close;
+- Windows observes console control events;
 - handlers only set an async-safe flag;
-- network, archive and recursive-filesystem work checks that flag at safe
-  boundaries;
-- code inside a commit boundary finishes or leaves its journal for deterministic
-  recovery rather than rolling back an uncertain commit;
+- network, archive and recursive-filesystem work checks that flag at safe boundaries;
+- code inside a commit boundary finishes or leaves its journal for deterministic recovery;
 - an observed cancellable interrupt maps to public exit status `130`.
 
-After the cup-update or uninstall handoff has been committed, the detached
-helper is responsible for completion and the parent can no longer cancel it.
+After an update or uninstall handoff is acknowledged, the detached helper owns
+completion and the parent can no longer cancel it.
 
-## Uninstall protocol and residues
-
-`cup uninstall` uses `~/.cup/uninstall.pending`, obtains the exclusive lock and
-starts its detached platform helper. The logical uninstall commit point is the
-atomic rename:
-
-```text
-~/.cup → ~/.cup-uninstall.<unique-id>/root
-```
-
-Failure to delete the detached tree can leave a sibling residue. A later
-installer removes such a residue only when all of these checks succeed:
-
-- the sibling is a real directory, not a link/reparse point;
-- it contains exactly the expected `root` child;
-- that root contains the cup uninstall marker;
-- the expected canonical cup executable exists inside it.
-
-A name prefix alone is never sufficient. Unrecognized lookalike directories are
-preserved and installation stops with a diagnostic.
-
-## Commit-state errors
+## Commit-state and durability errors
 
 Native replacement primitives distinguish:
 
@@ -260,19 +311,26 @@ This maps to the important error classes:
 
 ```text
 CUP_ERR_TRANSACTION  journal or evidence is invalid/ambiguous
-CUP_ERR_COMMIT       a replacement may be visible or durability is uncertain
+CUP_ERR_COMMIT       replacement may be visible or durability is uncertain
 CUP_ERR_ROLLBACK     restoration did not complete
 CUP_ERR_LOCK         another process owns the installation
 CUP_ERR_INTERRUPT    cancellation observed at a safe boundary
 ```
 
+Journal deletion is complete only after the parent directory synchronization
+supported by the platform succeeds. POSIX uses directory `fsync`. Windows opens
+the parent directory with backup-semantics and calls `FlushFileBuffers`; Windows
+filesystems may reject directory flushing, in which case CUP documents and
+accepts that platform capability limit rather than claiming a stronger guarantee.
+
 ## Relevant implementation
 
 ```text
 package_transaction.c        package journal and state-based recovery
-cup_update_journal.c         cup journal, result and recovery
+cup_update_journal.c         CUP update journal and recovery
 cup_update_helper.c          native detached update commit
-runtime_journal.c            journal handling and command blocker
+uninstall_journal.c          uninstall journal validation and acknowledgement
+runtime_journal.c            shared journal classification and command blocker
 interrupt.c                  process-wide native handler lifecycle
 command_doctor.c             read-only diagnosis
 command_repair.c             conservative ordered recovery

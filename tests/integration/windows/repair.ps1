@@ -89,6 +89,33 @@ try {
     Write-Utf8NoBom -Path $statePath -Lines $cleanState
     Remove-Item -LiteralPath (Join-Path $cupRoot "components\compiler\clang\$foreignHost") `
         -Recurse -Force
+
+    $transactionPath = Join-Path $cupRoot "transaction.txt"
+    Write-Utf8NoBom -Path $transactionPath -Lines @(
+        "format=1",
+        "operation=uninstall",
+        "phase=scheduled",
+        "temporary_name=.cup-uninstall.fixture",
+        "token=fixture",
+        "stage=parent-wait",
+        "error=0"
+    )
+    Assert-Contains (Invoke-Cup -CommandArgs @("repair") -ExpectFailure) `
+        "interrupted operation cannot be repaired safely"
+    Remove-Item -LiteralPath $transactionPath -Force
+
+    Write-Utf8NoBom -Path $transactionPath -Lines @(
+        "format=1",
+        "operation=uninstall",
+        "phase=failed",
+        "temporary_name=.cup-uninstall.fixture",
+        "token=fixture",
+        "stage=handoff",
+        "error=7"
+    )
+    Assert-Contains (Invoke-Cup -CommandArgs @("repair")) `
+        "Acknowledged failed cup uninstall during 'handoff' (error 7)."
+    Assert-PathMissing $transactionPath
     Assert-CupHealthy
 
     Write-Host "Windows repair tests passed."

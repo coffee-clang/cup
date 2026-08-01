@@ -11,9 +11,12 @@
 #include "install_policy.h"
 #include "package_catalog.h"
 #include "platform.h"
+#include "path.h"
 #include "system.h"
 #include "text.h"
+#include "version.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static CupError inspect_regular_file(const char *path, CupAssetStatus *status) {
@@ -130,6 +133,8 @@ static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
 static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
                                             CupAssetsInspection *inspection) {
     CupError err;
+    char binary_hash[SHA256_HEX_LENGTH + 1];
+    char helper_hash[SHA256_HEX_LENGTH + 1];
 
     err = inspect_regular_file(paths->helper, &inspection->helper);
     if (err != CUP_OK || inspection->helper != CUP_ASSET_VALID) {
@@ -146,6 +151,24 @@ static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
         if (!executable) {
             inspection->helper = CUP_ASSET_INVALID;
         }
+    }
+    if (inspection->helper != CUP_ASSET_VALID) {
+        return CUP_OK;
+    }
+    if (inspection->binary != CUP_ASSET_VALID) {
+        inspection->helper = CUP_ASSET_INVALID;
+        return CUP_OK;
+    }
+
+    err = checksum_sha256_file(paths->binary, binary_hash, sizeof(binary_hash));
+    if (err == CUP_OK) {
+        err = checksum_sha256_file(paths->helper, helper_hash, sizeof(helper_hash));
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (strcmp(binary_hash, helper_hash) != 0) {
+        inspection->helper = CUP_ASSET_INVALID;
     }
     return CUP_OK;
 }
@@ -299,6 +322,7 @@ static CupError inspect_installed_assets(CupAssetsInspection *inspection) {
     return err;
 }
 
+#if !CUP_VERSION_OFFICIAL
 /* Development fallback inspection. Repository assets are accepted only when no official installed
  * generation is being claimed. */
 static CupError inspect_development_assets(CupAssetsInspection *inspection) {
@@ -340,6 +364,7 @@ static CupError inspect_development_assets(CupAssetsInspection *inspection) {
     }
     return CUP_OK;
 }
+#endif
 
 /* Public inspection and lookup API. These functions expose observations without performing repair
  * or download policy. */
@@ -355,7 +380,11 @@ CupError cup_assets_inspect(CupAssetsInspection *inspection) {
     if (err != CUP_OK) {
         return err;
     }
+#if CUP_VERSION_OFFICIAL
+    return CUP_OK;
+#else
     return inspect_development_assets(inspection);
+#endif
 }
 
 int cup_assets_has_installed_assets(const CupAssetsInspection *inspection) {
@@ -401,48 +430,13 @@ CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *sou
         *source = CUP_ASSETS_SOURCE_INSTALLED;
         return layout_get_uninstall_path(path, size);
     }
+#if !CUP_VERSION_OFFICIAL
     if (inspection.development_uninstall_valid) {
         *source = CUP_ASSETS_SOURCE_DEVELOPMENT;
         return text_copy(path, size, CUP_DEVELOPMENT_UNINSTALL_PATH);
     }
+#endif
     return CUP_ERR_FILESYSTEM;
-}
-
-CupError cup_assets_uninstall_is_pending(int *pending) {
-    SystemPathKind kind;
-    CupError err;
-    char marker[MAX_PATH_LEN];
-
-    if (pending == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *pending = 0;
-
-    err = layout_get_uninstall_marker_path(marker, sizeof(marker));
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = system_get_path_kind(marker, &kind);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    *pending = kind != SYSTEM_PATH_MISSING;
-    return CUP_OK;
-}
-
-CupError cup_assets_require_no_pending_uninstall(void) {
-    int pending;
-    CupError err = cup_assets_uninstall_is_pending(&pending);
-
-    if (err != CUP_OK || !pending) {
-        return err;
-    }
-
-    fprintf(stderr,
-            "Error: cup uninstall is in progress or did not finish. "
-            "Run the installer again if the marker is stale.\n");
-    return CUP_ERR_LOCK;
 }
 
 CupError cup_assets_binary_asset_name(char *name, size_t size) {

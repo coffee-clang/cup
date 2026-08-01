@@ -277,6 +277,7 @@ $server = Start-Process -FilePath $helper `
     -PassThru `
     -WindowStyle Hidden
 $testProfile = Join-Path $env:RUNNER_TEMP "cup-installer-profile-$PID"
+$foreignProfile = Join-Path $env:RUNNER_TEMP "cup-installer-foreign-profile-$PID"
 $originalEnvironment = @{}
 foreach ($name in @(
     "USERPROFILE",
@@ -392,6 +393,129 @@ try {
     if ($doctorText -notlike "*Doctor found no issues.*") {
         throw "Installed cup doctor did not report a healthy release installation"
     }
+
+    # Preserve an unrelated .cup and validate the complete release lifecycle from
+    # the stable .coffee-cup fallback.
+    Remove-Item -LiteralPath $foreignProfile -Recurse -Force -ErrorAction SilentlyContinue
+    $foreignPrimary = Join-Path $foreignProfile ".cup"
+    New-Item -ItemType Directory -Path $foreignPrimary -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $foreignPrimary "foreign.txt") `
+        -Value "unrelated" -Encoding Ascii
+    $env:USERPROFILE = $foreignProfile
+    $foreignInstall = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $foreignProfile
+    if ($foreignInstall.ExitCode -ne 0) {
+        throw (
+            "Fallback-root installer failed with exit code $($foreignInstall.ExitCode)`n" +
+            ($foreignInstall.Output -join [Environment]::NewLine))
+    }
+    $foreignRoot = Join-Path $foreignProfile ".coffee-cup"
+    $foreignInstalled = Join-Path $foreignRoot "bin\cup.exe"
+    $foreignMarker = @(Get-Content -LiteralPath (Join-Path $foreignRoot "root.txt"))
+    if ($foreignMarker.Count -ne 3 -or
+        $foreignMarker[0] -cne "format=1" -or
+        $foreignMarker[1] -cne "product=coffee-clang/cup" -or
+        $foreignMarker[2] -cne "layout=1") {
+        throw "Fallback-root marker is invalid"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $foreignPrimary "foreign.txt") -PathType Leaf)) {
+        throw "Installer modified the unrelated .cup directory"
+    }
+    $foreignVersion = & $foreignInstalled --version
+    if ($LASTEXITCODE -ne 0 -or $foreignVersion -ne "cup $Version") {
+        throw "Fallback-root cup was not usable"
+    }
+    $foreignDoctor = @(& $foreignInstalled doctor 2>&1)
+    if ($LASTEXITCODE -ne 0 -or
+        ($foreignDoctor -join [Environment]::NewLine) -notlike "*Doctor found no issues.*") {
+        throw "Fallback-root cup doctor did not report a healthy installation"
+    }
+    $foreignUninstall = @(& $foreignInstalled uninstall --yes 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fallback-root uninstall failed`n$($foreignUninstall -join "`n")"
+    }
+    $foreignDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $foreignResidues = @(Get-ChildItem -LiteralPath $foreignProfile -Force `
+            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+        if (-not (Test-Path -LiteralPath $foreignRoot) -and $foreignResidues.Count -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $foreignDeadline)
+    if ((Test-Path -LiteralPath $foreignRoot) -or $foreignResidues.Count -ne 0) {
+        throw "Fallback-root uninstall did not complete cleanly"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $foreignPrimary "foreign.txt") -PathType Leaf)) {
+        throw "Fallback-root uninstall modified the unrelated .cup directory"
+    }
+    # A recognizable root with a corrupt ownership marker must block the installer
+    # without selecting or creating the alternative root.
+    $corruptProfile = Join-Path $testRoot "corrupt-root-profile"
+    $corruptRoot = Join-Path $corruptProfile ".cup"
+    foreach ($directory in @("components", "staging", "cache")) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $corruptRoot $directory) |
+            Out-Null
+    }
+    Set-Content -LiteralPath (Join-Path $corruptRoot "state.txt") `
+        -Value "format=1" -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $corruptRoot "root.txt") `
+        -Value "corrupt" -Encoding Ascii
+    $corruptStateHash = (Get-FileHash -LiteralPath (Join-Path $corruptRoot "state.txt") `
+        -Algorithm SHA256).Hash
+    $corruptMarkerHash = (Get-FileHash -LiteralPath (Join-Path $corruptRoot "root.txt") `
+        -Algorithm SHA256).Hash
+    $env:USERPROFILE = $corruptProfile
+    $corruptInstall = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $corruptProfile
+    if ($corruptInstall.ExitCode -eq 0 -or
+        ($corruptInstall.Output -join [Environment]::NewLine) -notlike `
+            "*cup root marker is invalid for the recognized root*") {
+        throw "Windows installer accepted a recognized root with a corrupt marker"
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $corruptRoot "state.txt") `
+            -Algorithm SHA256).Hash -ne $corruptStateHash -or
+        (Get-FileHash -LiteralPath (Join-Path $corruptRoot "root.txt") `
+            -Algorithm SHA256).Hash -ne $corruptMarkerHash) {
+        throw "Windows installer modified the corrupt root"
+    }
+    if (Test-Path -LiteralPath (Join-Path $corruptProfile ".coffee-cup")) {
+        throw "Windows installer created the alternative root after a corrupt marker"
+    }
+
+    # A superficially shaped uninstall residue is preserved unless its staged root
+    # also contains the CUP ownership marker.
+    $residueProfile = Join-Path $testRoot "unowned-residue-profile"
+    $residueRoot = Join-Path $residueProfile ".cup-uninstall.fixture"
+    New-Item -ItemType Directory -Force -Path (Join-Path $residueRoot "bin") | Out-Null
+    Set-Content -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
+        -Value "binary" -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $residueRoot "transaction.txt") -Encoding Ascii -Value @(
+        "format=1",
+        "operation=uninstall",
+        "phase=failed",
+        "temporary_name=.cup-uninstall.fixture",
+        "token=fixture",
+        "stage=cleanup",
+        "error=1"
+    )
+    $env:USERPROFILE = $residueProfile
+    $residueInstall = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $residueProfile
+    if ($residueInstall.ExitCode -eq 0 -or
+        ($residueInstall.Output -join [Environment]::NewLine) -notlike `
+            "*unrecognized uninstall residue was preserved*") {
+        throw "Windows installer deleted an unowned uninstall residue"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $residueRoot "bin\cup.exe") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $residueRoot "transaction.txt") -PathType Leaf)) {
+        throw "Windows installer modified the unowned uninstall residue"
+    }
+
+    $env:USERPROFILE = $testProfile
 
     # Repair may recreate mutable runtime paths, but it must preserve the installed
     # executable exactly as POSIX repair preserves ~/.cup/bin/cup.
@@ -565,22 +689,27 @@ try {
         throw "cup update cup did not report the scheduled version transition`n$updateText"
     }
 
-    $updateResult = Join-Path $env:USERPROFILE ".cup\cup-update-result.txt"
+    $transactionPath = Join-Path $env:USERPROFILE ".cup\transaction.txt"
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
-    while ([DateTime]::UtcNow -lt $deadline -and
-        -not (Test-Path -LiteralPath $updateResult -PathType Leaf)) {
+    $updatedInstalledVersion = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not (Test-Path -LiteralPath $transactionPath -PathType Leaf)) {
+            try {
+                $candidateVersion = @(& $installed --version 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $candidateVersion -eq "cup $nextVersion") {
+                    $updatedInstalledVersion = $candidateVersion
+                    break
+                }
+            } catch {
+                # The helper may be between atomic replacement steps; retry until the deadline.
+            }
+        }
         Start-Sleep -Milliseconds 100
     }
-    if (-not (Test-Path -LiteralPath $updateResult -PathType Leaf)) {
-        throw "cup update helper did not publish a result"
+    if ($null -eq $updatedInstalledVersion) {
+        throw "cup update helper did not finalize version $nextVersion"
     }
-    $resultText = Get-Content -LiteralPath $updateResult -Raw
-    foreach ($expected in @("status=success", "error=0", "version=$nextVersion")) {
-        if ($resultText -notmatch "(?m)^$([regex]::Escape($expected))`r?$" ) {
-            throw "cup update result is missing '$expected'`n$resultText"
-        }
-    }
-    if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".cup\transaction.txt")) {
+    if (Test-Path -LiteralPath $transactionPath) {
         throw "successful cup update left a transaction journal"
     }
     $installedUpdatedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
@@ -588,8 +717,7 @@ try {
     if ($installedUpdatedHash -ne $fixtureUpdatedHash) {
         throw "installed cup does not match the verified update executable"
     }
-    $updatedInstalledVersion = & $installed --version
-    if ($LASTEXITCODE -ne 0 -or $updatedInstalledVersion -ne "cup $nextVersion") {
+    if ($updatedInstalledVersion -ne "cup $nextVersion") {
         throw "installed cup was not usable after update"
     }
     $updatedDoctorOutput = @(& $installed doctor 2>&1)
@@ -656,4 +784,5 @@ try {
     }
     Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $testProfile -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $foreignProfile -Recurse -Force -ErrorAction SilentlyContinue
 }
