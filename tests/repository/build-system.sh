@@ -408,7 +408,7 @@ assert_contains "$(cat "$graph_build/linux-x64/development/generated/ca_bundle.h
 
 # Deleting a checked-in header changes the header-directory semantic input and must not leave stale objects.
 sleep 1
-rm "$graph_project/include/path.h"
+rm "$graph_project/include/registry.h"
 : > "$graph_trace"
 graph_make
 assert_contains "$(cat "$graph_trace")" 'COMPILE '

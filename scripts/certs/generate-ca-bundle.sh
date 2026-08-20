@@ -44,9 +44,12 @@ for destination in "$OUTPUT_DIR/ca_bundle.h" "$OUTPUT_DIR/ca_bundle.c"; do
     fi
 done
 
-TEMP_BASE=${TMPDIR:-/tmp}
-case "$TEMP_BASE" in /*) ;; *) TEMP_BASE=$(pwd -P)/$TEMP_BASE ;; esac
-cup_path_check_directory_chain "$TEMP_BASE" 0 'CA generator temporary parent' || exit 1
+if [ -n "${CUP_BUILD_ROOT:-}" ]; then
+    TEMP_BASE=$CUP_BUILD_ROOT
+else
+    TEMP_BASE=$(cup_path_resolve_host_temporary_directory \
+        'CA generator temporary parent') || exit 1
+fi
 WORK_DIR=$(cup_path_create_unique_directory \
     "$TEMP_BASE/cup-ca-generate.XXXXXX" 'CA generator work directory' 0700) || exit 1
 HEADER_TMP=$WORK_DIR/ca_bundle.h
@@ -68,7 +71,7 @@ trap 'exit 143' TERM
 
 cup_path_copy_file "$PEM_FILE" "$SNAPSHOT_PEM" 0644 replace || exit 1
 cup_path_copy_file "$META_FILE" "$SNAPSHOT_META" 0644 replace || exit 1
-CUP_CA_CERT_FILE="$SNAPSHOT_PEM" CUP_CA_META_FILE="$SNAPSHOT_META" \
+TMPDIR="$WORK_DIR" CUP_CA_CERT_FILE="$SNAPSHOT_PEM" CUP_CA_META_FILE="$SNAPSHOT_META" \
     "$ROOT_DIR/scripts/certs/check-ca-bundle.sh" --integrity >/dev/null
 PEM_FILE=$SNAPSHOT_PEM
 

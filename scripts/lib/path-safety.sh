@@ -4,10 +4,6 @@
 # Never trust a helper path inherited from the ambient environment. This value
 # is an in-process cache populated only after launcher validation below.
 CUP_PATH_OPS_RESOLVED_HELPER=
-# Optional host anchor is set only through cup_path_set_trusted_anchor().
-# It permits host-managed aliases/mounts before the managed subtree while the
-# helper keeps no-follow traversal strict for every descendant component.
-CUP_PATH_OPS_TRUSTED_ANCHOR=
 
 cup_path_error() {
     printf 'Error: %s\n' "$*" >&2
@@ -81,30 +77,33 @@ cup_path_resolve_ops_helper() {
     fi
 }
 
-cup_path_set_trusted_anchor() {
-    _cup_path_anchor=$1
-    _cup_path_label=${2:-trusted host anchor}
-
-    cup_path_validate_absolute_clean "$_cup_path_anchor" "$_cup_path_label" || return 1
-    if ! (CDPATH= cd -- "$_cup_path_anchor" 2>/dev/null && [ -d . ]); then
-        cup_path_error "$_cup_path_label must be an existing directory: $_cup_path_anchor"
-        return 1
-    fi
-    CUP_PATH_OPS_TRUSTED_ANCHOR=$_cup_path_anchor
-}
-
-cup_path_clear_trusted_anchor() {
-    CUP_PATH_OPS_TRUSTED_ANCHOR=
-}
-
 cup_path_ops() {
     cup_path_resolve_ops_helper || return 1
-    if [ -n "${CUP_PATH_OPS_TRUSTED_ANCHOR:-}" ]; then
-        "$CUP_PATH_OPS_RESOLVED_HELPER" --trusted-anchor \
-            "$CUP_PATH_OPS_TRUSTED_ANCHOR" "$@"
-    else
-        "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+    "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+}
+
+cup_path_resolve_host_temporary_directory() {
+    _cup_temp_label=${1:-host temporary directory}
+    _cup_temp_value=${TMPDIR:-/tmp}
+
+    while [ "$_cup_temp_value" != / ]; do
+        case "$_cup_temp_value" in
+            */) _cup_temp_value=${_cup_temp_value%/} ;;
+            *) break ;;
+        esac
+    done
+    case "$_cup_temp_value" in
+        /*) ;;
+        *) _cup_temp_value=$(pwd -P)/$_cup_temp_value ;;
+    esac
+    cup_path_validate_absolute_clean "$_cup_temp_value" "$_cup_temp_label" || return 1
+    if ! _cup_temp_value=$(CDPATH= cd -- "$_cup_temp_value" 2>/dev/null && pwd -P); then
+        cup_path_error "$_cup_temp_label must be an existing directory: $_cup_temp_value"
+        return 1
     fi
+    cup_path_validate_absolute_clean "$_cup_temp_value" "$_cup_temp_label" || return 1
+    cup_path_check_directory_chain "$_cup_temp_value" 0 "$_cup_temp_label" || return 1
+    printf '%s\n' "$_cup_temp_value"
 }
 
 cup_path_validate_absolute_clean() (

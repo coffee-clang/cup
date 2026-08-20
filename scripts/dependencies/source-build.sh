@@ -35,24 +35,13 @@ download_source() {
         "dependency source archive" || return 1
     case "${OS:-}:$(uname -s 2>/dev/null || true)" in
         Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
-            # Keep download staging below the managed root on MSYS2. The host
-            # mount/alias boundary is handled once by the trusted anchor; all
-            # temporary descendants remain under strict no-follow traversal.
+            # Keep download staging below the managed dependency root on MSYS2
+            # so native Windows filesystem checks cover every temporary descendant.
             temp_base=${BUILD_DIR:-$DEPS_ROOT/build}
             ;;
         *)
-            temp_base=${TMPDIR:-/tmp}
-            case "$temp_base" in
-                /) ;;
-                */) temp_base=${temp_base%/} ;;
-            esac
-            case "$temp_base" in /*) ;; *) temp_base=$(pwd -P)/$temp_base ;; esac
-            cup_path_validate_absolute_clean "$temp_base" \
-                'dependency download temporary parent' || return 1
-            if ! temp_base=$(CDPATH= cd -- "$temp_base" 2>/dev/null && pwd -P); then
-                echo "Error: dependency download temporary parent is not an existing directory: $temp_base" >&2
-                return 1
-            fi
+            temp_base=$(cup_path_resolve_host_temporary_directory \
+                'dependency download temporary parent') || return 1
             ;;
     esac
     cup_path_check_directory_chain "$temp_base" 0 \

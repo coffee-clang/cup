@@ -147,34 +147,6 @@ static int stat_identity_equal(const struct stat *left, const struct stat *right
            (left->st_mode & S_IFMT) == (right->st_mode & S_IFMT);
 }
 
-#if defined(CUP_PATH_OPS_TRUSTED_ANCHOR)
-static const char *trusted_anchor_relative_path(const char *path, const char **anchor_out) {
-    const char *anchor = getenv("CUP_PATH_OPS_TRUSTED_ANCHOR_INTERNAL");
-    size_t length;
-
-    if (anchor_out != NULL) {
-        *anchor_out = NULL;
-    }
-    if (text_is_empty(anchor) || text_is_empty(path) || anchor[0] != '/') {
-        return NULL;
-    }
-    length = strlen(anchor);
-    if (strcmp(path, anchor) == 0) {
-        if (anchor_out != NULL) {
-            *anchor_out = anchor;
-        }
-        return path + length;
-    }
-    if (strncmp(path, anchor, length) != 0 || path[length] != '/') {
-        return NULL;
-    }
-    if (anchor_out != NULL) {
-        *anchor_out = anchor;
-    }
-    return path + length + 1;
-}
-#endif
-
 static CupError open_directory_path_no_follow_options(const char *path,
                                                       int create,
                                                       int *descriptor,
@@ -185,10 +157,6 @@ static CupError open_directory_path_no_follow_options(const char *path,
     char *component_start;
     int current;
     int path_missing = 0;
-#if defined(CUP_PATH_OPS_TRUSTED_ANCHOR)
-    const char *trusted_anchor = NULL;
-    const char *trusted_relative = NULL;
-#endif
 
     if (text_is_empty(path) || descriptor == NULL || (create != 0 && create != 1)) {
         return CUP_ERR_INVALID_INPUT;
@@ -211,32 +179,11 @@ static CupError open_directory_path_no_follow_options(const char *path,
         return CUP_OK;
     }
 
-#if defined(CUP_PATH_OPS_TRUSTED_ANCHOR)
-    trusted_relative = trusted_anchor_relative_path(path, &trusted_anchor);
-    if (trusted_anchor != NULL) {
-        struct stat anchor_info;
-
-        /* The host anchor is the deliberate boundary: aliases or mounts that
-         * belong to the host may be resolved here, while every descendant is
-         * still opened relative to the pinned directory with O_NOFOLLOW. */
-        current = open(trusted_anchor, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (current < 0 || fstat(current, &anchor_info) != 0 ||
-            !S_ISDIR(anchor_info.st_mode)) {
-            if (current >= 0) {
-                close(current);
-            }
-            return CUP_ERR_FILESYSTEM;
-        }
-        component_start = copy + (trusted_relative - path);
-    } else
-#endif
-    {
-        current = open(path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (current < 0) {
-            return CUP_ERR_FILESYSTEM;
-        }
-        component_start = copy + (path[0] == '/' ? 1 : 0);
+    current = open(path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (current < 0) {
+        return CUP_ERR_FILESYSTEM;
     }
+    component_start = copy + (path[0] == '/' ? 1 : 0);
 
     component = strtok_r(component_start, "/", &save);
     while (component != NULL) {

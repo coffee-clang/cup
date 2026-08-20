@@ -888,33 +888,6 @@ leftovers=$(find "$TMP_ROOT" -name '.install.staging' -print)
 [ -z "$leftovers" ] || fail "dependency staging directories were not cleaned: $leftovers"
 printf 'Dependency-prefix transaction tests passed.\n'
 
-printf '==> Testing Windows host-anchor boundary...\n'
-HOST_ANCHOR_REAL="$TMP_ROOT/host-anchor-real"
-HOST_ANCHOR_ALIAS="$TMP_ROOT/host-anchor-alias"
-HOST_ANCHOR_EXTERNAL="$TMP_ROOT/host-anchor-external"
-mkdir "$HOST_ANCHOR_REAL" "$HOST_ANCHOR_EXTERNAL"
-ln -s "$HOST_ANCHOR_REAL" "$HOST_ANCHOR_ALIAS"
-OS=Windows_NT CUP_DEPENDENCY_HOST_ROOT="$HOST_ANCHOR_ALIAS" \
-    bash -eu -o pipefail -c '
-        common=$1
-        root=$2
-        external=$3
-        . "$common"
-        DEPS_ROOT=$root
-        dependency_prepare_root "$DEPS_ROOT"
-        [ -f "$DEPS_ROOT/.cup-dependencies-root" ]
-        cup_path_prepare_child_directory "$DEPS_ROOT" "$DEPS_ROOT/src" \
-            "dependency source directory"
-        ln -s "$external" "$DEPS_ROOT/link"
-        if cup_path_check_directory_chain "$DEPS_ROOT/link" 0 \
-                "managed dependency descendant" >/dev/null 2>&1; then
-            exit 1
-        fi
-    ' sh "$DEPENDENCY_COMMON" "$HOST_ANCHOR_ALIAS/deps" "$HOST_ANCHOR_EXTERNAL"
-[ -d "$HOST_ANCHOR_REAL/deps/src" ] ||
-    fail 'Windows host anchor did not prepare the managed dependency subtree'
-printf 'Windows host-anchor boundary tests passed.\n'
-
 printf '==> Testing failed dependency build cleanup and retry...\n'
 FAILED_DEPENDENCY_ROOT="$TMP_ROOT/failed-dependency-build"
 FAILED_DEPENDENCY_PREFIX="$FAILED_DEPENDENCY_ROOT/install"

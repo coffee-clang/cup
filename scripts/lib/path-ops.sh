@@ -8,9 +8,28 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
 SOURCE=$SCRIPT_DIR/path-ops.c
 SYSTEM_SOURCE=$PROJECT_ROOT/src/system.c
 SYSTEM_POSIX_SOURCE=$PROJECT_ROOT/src/system_posix.c
+SYSTEM_WINDOWS_SOURCE=$PROJECT_ROOT/src/system_windows.c
 PATH_SOURCE=$PROJECT_ROOT/src/path.c
 TEXT_SOURCE=$PROJECT_ROOT/src/text.c
+CONSTANTS_HEADER=$PROJECT_ROOT/include/constants.h
+ERROR_HEADER=$PROJECT_ROOT/include/error.h
+PATH_HEADER=$PROJECT_ROOT/include/path.h
+SYSTEM_HEADER=$PROJECT_ROOT/include/system.h
+TEXT_HEADER=$PROJECT_ROOT/include/text.h
+WINDOWS_UTF_HEADER=$PROJECT_ROOT/include/windows_utf.h
 PROTOCOL=2
+
+HOST_SYSTEM=$(uname -s 2>/dev/null || true)
+case "${OS:-}:$HOST_SYSTEM" in
+    Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
+        HOST_MODE=windows-msys
+        SYSTEM_PLATFORM_SOURCE=$SYSTEM_WINDOWS_SOURCE
+        ;;
+    *)
+        HOST_MODE=posix
+        SYSTEM_PLATFORM_SOURCE=$SYSTEM_POSIX_SOURCE
+        ;;
+esac
 
 fail() {
     printf 'path ops launcher: %s\n' "$*" >&2
@@ -68,11 +87,16 @@ owned_private_helper() {
     [ "$("$_cup_helper_path" protocol 2>/dev/null || true)" = "$PROTOCOL" ]
 }
 
-for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
-        "$PATH_SOURCE" "$TEXT_SOURCE"; do
+for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
+        "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
+        "$PATH_HEADER" "$SYSTEM_HEADER" "$TEXT_HEADER"; do
     [ -f "$source_file" ] && [ ! -L "$source_file" ] ||
         fail "missing helper source: $source_file"
 done
+if [ "$HOST_MODE" = windows-msys ]; then
+    [ -f "$WINDOWS_UTF_HEADER" ] && [ ! -L "$WINDOWS_UTF_HEADER" ] ||
+        fail "missing helper source: $WINDOWS_UTF_HEADER"
+fi
 
 PRINT_HELPER=0
 if [ "${1:-}" = --print-helper ]; then
@@ -101,18 +125,17 @@ if [ -n "${CUP_PATH_OPS_CC:-}" ]; then
 elif [ -n "${CC_FOR_BUILD:-}" ]; then
     COMPILER=$CC_FOR_BUILD
 else
-    case "${OS:-}:$(uname -s 2>/dev/null || true)" in
-        Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*) COMPILER=/usr/bin/gcc ;;
-        *)
-            COMPILER=
-            for candidate in cc gcc clang; do
-                if command -v "$candidate" >/dev/null 2>&1; then
-                    COMPILER=$candidate
-                    break
-                fi
-            done
-            ;;
-    esac
+    if [ "$HOST_MODE" = windows-msys ]; then
+        COMPILER=/usr/bin/gcc
+    else
+        COMPILER=
+        for candidate in cc gcc clang; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+                COMPILER=$candidate
+                break
+            fi
+        done
+    fi
 fi
 [ -n "$COMPILER" ] && command -v "$COMPILER" >/dev/null 2>&1 ||
     fail "a build-host C compiler is required (${COMPILER:-cc, gcc or clang})"
@@ -120,28 +143,38 @@ COMPILER_PATH=$(command -v "$COMPILER") || fail "could not resolve compiler: $CO
 COMPILER_VERSION=$("$COMPILER_PATH" --version 2>&1 | sed -n '1p')
 [ -n "$COMPILER_VERSION" ] || fail "could not identify compiler: $COMPILER_PATH"
 
-HOST_CPPFLAGS=
-case "${OS:-}:$(uname -s 2>/dev/null || true)" in
-    Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
-        HOST_CPPFLAGS=-D_POSIX_C_SOURCE=200809L
-        ;;
-esac
+if [ "$HOST_MODE" = windows-msys ]; then
+    HOST_FLAGS='posix-tu=-D_POSIX_C_SOURCE=200809L;windows-tu=-mwin32,-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
+    HOST_LIBS=-ladvapi32
+else
+    HOST_FLAGS=-U_WIN32
+    HOST_LIBS=
+fi
 
 CURRENT_UID=$(id -u 2>/dev/null) || fail 'could not determine the current user id'
 SOURCE_ID=$(
-    for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
-            "$PATH_SOURCE" "$TEXT_SOURCE"; do
-        printf '%s=%s\n' "$source_file" "$(file_sha256 "$source_file")"
-    done | stream_sha256
+    {
+        for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
+                "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
+                "$PATH_HEADER" "$SYSTEM_HEADER" "$TEXT_HEADER"; do
+            printf '%s=%s\n' "$source_file" "$(file_sha256 "$source_file")"
+        done
+        if [ "$HOST_MODE" = windows-msys ]; then
+            printf '%s=%s\n' "$WINDOWS_UTF_HEADER" "$(file_sha256 "$WINDOWS_UTF_HEADER")"
+        fi
+    } | stream_sha256
 )
 BUILD_ID=$(printf '%s\n' \
     "protocol=$PROTOCOL" \
+    "host_mode=$HOST_MODE" \
     "sources=$SOURCE_ID" \
     "compiler=$COMPILER_PATH" \
     "compiler_version=$COMPILER_VERSION" \
-    "host_cppflags=$HOST_CPPFLAGS" \
-    'flags=-std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 -DCUP_PATH_OPS_TRUSTED_ANCHOR' | stream_sha256)
-HOST_ID=$(uname -s 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
+    "host_flags=$HOST_FLAGS" \
+    "host_libs=$HOST_LIBS" \
+    'flags=-std=c11 -O2 -Wall -Wextra -Werror' | stream_sha256)
+
+HOST_ID=$(printf '%s' "$HOST_SYSTEM" | tr -cd 'A-Za-z0-9_.-' || true)
 MACHINE_ID=$(uname -m 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
 [ -n "$HOST_ID" ] || HOST_ID=unknown
 [ -n "$MACHINE_ID" ] || MACHINE_ID=unknown
@@ -169,13 +202,47 @@ else
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    "$COMPILER_PATH" ${HOST_CPPFLAGS:+"$HOST_CPPFLAGS"} \
-        -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
-        -DCUP_PATH_OPS_TRUSTED_ANCHOR \
-        -I"$PROJECT_ROOT/include" \
-        "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
-        "$PATH_SOURCE" "$TEXT_SOURCE" -o "$TEMPORARY" ||
-        fail 'could not build filesystem helper'
+    if [ "$HOST_MODE" = windows-msys ]; then
+        # Keep path-ops itself in the MSYS/POSIX compilation environment so
+        # fork/exec/wait and the shell-facing protocol retain their native MSYS
+        # semantics. Compile only the filesystem backend with the Win32 view;
+        # all objects still target the same MSYS/Cygwin runtime and are linked
+        # together by the build-host compiler.
+        OBJECT_DIR=$(mktemp -d "$CACHE_ROOT/.path-ops-build.XXXXXX") ||
+            fail 'could not allocate filesystem-helper object directory'
+        cleanup() { rm -f -- "$TEMPORARY"; rm -rf -- "$OBJECT_DIR"; }
+        for source_spec in \
+            "$SOURCE:path-ops.o" \
+            "$SYSTEM_SOURCE:system.o" \
+            "$PATH_SOURCE:path.o" \
+            "$TEXT_SOURCE:text.o"; do
+            source_path=${source_spec%:*}
+            object_name=${source_spec##*:}
+            "$COMPILER_PATH" -D_POSIX_C_SOURCE=200809L \
+                -std=c11 -O2 -Wall -Wextra -Werror \
+                -I"$PROJECT_ROOT/include" -c "$source_path" \
+                -o "$OBJECT_DIR/$object_name" ||
+                fail "could not compile filesystem-helper source: $source_path"
+        done
+        "$COMPILER_PATH" -mwin32 -D_POSIX_C_SOURCE=200809L \
+            -DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND \
+            -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$PROJECT_ROOT/include" -c "$SYSTEM_WINDOWS_SOURCE" \
+            -o "$OBJECT_DIR/system-windows.o" ||
+            fail 'could not compile native Windows filesystem backend'
+        "$COMPILER_PATH" \
+            "$OBJECT_DIR/path-ops.o" "$OBJECT_DIR/system.o" \
+            "$OBJECT_DIR/system-windows.o" "$OBJECT_DIR/path.o" \
+            "$OBJECT_DIR/text.o" -ladvapi32 -o "$TEMPORARY" ||
+            fail 'could not link native Windows filesystem helper'
+        rm -rf -- "$OBJECT_DIR"
+    else
+        "$COMPILER_PATH" -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
+            -I"$PROJECT_ROOT/include" \
+            "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
+            "$PATH_SOURCE" "$TEXT_SOURCE" -o "$TEMPORARY" ||
+            fail 'could not build filesystem helper'
+    fi
     chmod 0700 "$TEMPORARY"
     owned_private_helper "$TEMPORARY" || fail 'new filesystem helper failed validation'
     if ln "$TEMPORARY" "$HELPER" 2>/dev/null; then

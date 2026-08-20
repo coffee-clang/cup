@@ -35,7 +35,7 @@ assert_contains "$(cat "$TMP_ROOT/backslash.out")" 'must use forward slashes'
 
 helper=$TMP_ROOT/path-ops-testing
 cc -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
-    -DCUP_PATH_OPS_TESTING -DCUP_SYSTEM_TESTING -DCUP_PATH_OPS_TRUSTED_ANCHOR \
+    -DCUP_PATH_OPS_TESTING -DCUP_SYSTEM_TESTING \
     -I"$PROJECT_ROOT/include" \
     "$PROJECT_ROOT/scripts/lib/path-ops.c" \
     "$PROJECT_ROOT/src/system.c" \
@@ -73,42 +73,64 @@ resolved_protocol=$(CUP_PATH_OPS_RESOLVED_HELPER="$ambient_resolved" sh -c \
 assert_equals "$resolved_protocol" 2
 assert_missing "$TMP_ROOT/ambient-resolved-used"
 
-# Host-managed aliases may be admitted only as an explicit outer anchor. The
-# helper follows that one boundary, pins the resulting directory, and keeps
-# O_NOFOLLOW semantics for every managed descendant.
-anchor_real=$TMP_ROOT/anchor-real
-anchor_alias=$TMP_ROOT/anchor-alias
-anchor_external=$TMP_ROOT/anchor-external
-mkdir "$anchor_real" "$anchor_external"
-ln -s "$anchor_real" "$anchor_alias"
-if CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
-        "$PROJECT_ROOT/scripts/lib/path-ops.sh" ensure-dir \
-        "$anchor_alias/managed" >"$TMP_ROOT/anchor-untrusted.out" 2>&1; then
-    fail 'untrusted host alias was followed without an explicit anchor'
+# The MSYS launcher must select the native Windows filesystem backend while
+# retaining the MSYS build-host compiler/process environment. A fake compiler
+# makes the routing contract testable on POSIX hosts without claiming native
+# Windows execution evidence.
+fake_cc=$TMP_ROOT/fake-msys-cc
+fake_log=$TMP_ROOT/fake-msys-cc.args
+cat > "$fake_cc" <<'EOF_FAKE_CC'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = --version ]; then
+    printf '%s\n' 'fake-msys-gcc 1.0'
+    exit 0
 fi
-(
-    CUP_PATH_OPS_TESTING=1
-    CUP_PATH_OPS_HELPER=$helper
-    export CUP_PATH_OPS_TESTING CUP_PATH_OPS_HELPER
-    cup_path_set_trusted_anchor "$anchor_alias" 'test host anchor'
-    cup_path_prepare_directory_chain "$anchor_alias/managed/child" \
-        'anchored managed directory'
-    [ -d "$anchor_real/managed/child" ] ||
-        fail 'trusted host anchor did not create the managed descendant'
-    ln -s "$anchor_external" "$anchor_real/managed/link"
-    if cup_path_check_directory_chain "$anchor_alias/managed/link" 0 \
-            'anchored descendant' >"$TMP_ROOT/anchor-descendant.out" 2>&1; then
-        fail 'trusted host anchor allowed a symlink inside the managed subtree'
+printf '%s\n' '-- invocation --' "$@" >> "$CUP_FAKE_CC_LOG"
+out=
+compile=0
+while [ "$#" -gt 0 ]; do
+    [ "$1" = -c ] && compile=1
+    if [ "$1" = -o ]; then
+        shift
+        out=${1:-}
+        break
     fi
-    assert_contains "$(cat "$TMP_ROOT/anchor-descendant.out")" \
-        'unsafe or invalid anchored descendant'
-)
-if CUP_PATH_OPS_TRUSTED_ANCHOR_INTERNAL="$anchor_alias" \
-        CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
-        "$PROJECT_ROOT/scripts/lib/path-ops.sh" ensure-dir \
-        "$anchor_alias/ambient-managed" >"$TMP_ROOT/anchor-ambient.out" 2>&1; then
-    fail 'ambient trusted-anchor state bypassed explicit anchor configuration'
+    shift
+done
+[ -n "$out" ] || exit 2
+if [ "$compile" -eq 1 ]; then
+    : > "$out"
+else
+    cat > "$out" <<'EOF_FAKE_HELPER'
+#!/bin/sh
+[ "${1:-}" = protocol ] || exit 2
+printf '%s\n' 2
+EOF_FAKE_HELPER
 fi
+exit 0
+EOF_FAKE_CC
+chmod 0700 "$fake_cc"
+windows_helper=$(OS=Windows_NT CUP_PATH_OPS_TESTING=1 \
+    CUP_PATH_OPS_CC="$fake_cc" CUP_FAKE_CC_LOG="$fake_log" \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper)
+[ -x "$windows_helper" ] || fail 'simulated MSYS launcher did not publish its helper'
+assert_contains "$(cat "$fake_log")" '-mwin32'
+assert_contains "$(cat "$fake_log")" '-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
+assert_contains "$(cat "$fake_log")" "$PROJECT_ROOT/src/system_windows.c"
+assert_contains "$(cat "$fake_log")" '-ladvapi32'
+if grep -F -- "$PROJECT_ROOT/src/system_posix.c" "$fake_log" >/dev/null; then
+    fail 'simulated MSYS launcher selected the POSIX filesystem backend'
+fi
+if grep -F -- '-U_WIN32' "$fake_log" >/dev/null; then
+    fail 'simulated MSYS launcher retained the POSIX-only feature mode'
+fi
+path_ops_invocation=$(awk '/-- invocation --/{block=""; next} {block=block $0 "\n"} /path-ops\.c/{print block; exit}' "$fake_log")
+assert_contains "$path_ops_invocation" '-D_POSIX_C_SOURCE=200809L'
+assert_not_contains "$path_ops_invocation" '-mwin32'
+windows_invocation=$(awk '/-- invocation --/{block=""; next} {block=block $0 "\n"} /system_windows\.c/{print block; exit}' "$fake_log")
+assert_contains "$windows_invocation" '-mwin32'
+assert_contains "$windows_invocation" '-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
 
 # A regular-file check must reject a symlink in any parent component, not only
 # a symlink in the final component.

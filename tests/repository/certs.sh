@@ -62,6 +62,34 @@ cmp "$generated/ca_bundle.c" \
 
 printf '%s\n' 'CA bundle generation tests passed.'
 
+# macOS supplies TMPDIR with a trailing slash and may expose it through a
+# host-managed alias such as /var -> /private/var. The shared resolver must
+# canonicalize that outer host representation before strict path validation.
+temp_real=$TMP_ROOT/ca-temp-real
+temp_alias=$TMP_ROOT/ca-temp-alias
+mkdir "$temp_real"
+ln -s "$temp_real" "$temp_alias"
+alias_generated=$TMP_ROOT/generated-through-temp-alias
+TMPDIR="$temp_alias/" "$PROJECT_ROOT/scripts/certs/generate-ca-bundle.sh" \
+    "$PROJECT_ROOT/certs/cacert.pem" "$alias_generated"
+cmp "$generated/ca_bundle.h" "$alias_generated/ca_bundle.h" >/dev/null ||
+    fail 'CA generation changed through a canonicalized host temporary alias'
+cmp "$generated/ca_bundle.c" "$alias_generated/ca_bundle.c" >/dev/null ||
+    fail 'CA generation changed through a canonicalized host temporary alias'
+
+# Build-time CA generation owns scratch space below the managed build root and
+# therefore must not depend on an ambient TMPDIR representation.
+build_generated=$test_build_root/$TEST_PLATFORM/development/generated-ca-temp-regression
+CUP_BUILD_ROOT=$test_build_root TMPDIR="$TMP_ROOT/nonexistent/../bad/" \
+    "$PROJECT_ROOT/scripts/certs/generate-ca-bundle.sh" \
+    "$PROJECT_ROOT/certs/cacert.pem" "$build_generated"
+cmp "$generated/ca_bundle.h" "$build_generated/ca_bundle.h" >/dev/null ||
+    fail 'managed build-root CA generation changed with an unusable ambient TMPDIR'
+cmp "$generated/ca_bundle.c" "$build_generated/ca_bundle.c" >/dev/null ||
+    fail 'managed build-root CA generation changed with an unusable ambient TMPDIR'
+
+printf '%s\n' 'CA temporary-path regression tests passed.'
+
 checker="$PROJECT_ROOT/scripts/certs/check-ca-bundle.sh"
 meta_copy="$TMP_ROOT/cacert.meta"
 pem_copy="$TMP_ROOT/cacert.pem"

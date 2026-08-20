@@ -52,6 +52,8 @@ cup_path_require_regular_file "$META" 'CA metadata' || exit 1
 [ -s "$META" ] || fail "metadata is empty: $META"
 reject_nul_or_cr "$PEM" 'CA bundle'
 reject_nul_or_cr "$META" 'CA metadata'
+TEMP_BASE=$(cup_path_resolve_host_temporary_directory \
+    'CA validation temporary parent') || exit 1
 command -v perl >/dev/null 2>&1 || fail 'Perl is required for date validation'
 perl -MTime::Piece -e 1 >/dev/null 2>&1 || fail 'Perl Time::Piece is required for date validation'
 
@@ -138,7 +140,7 @@ case "$max_age" in
 esac
 [ "$max_age" -le 365 ] || fail 'max_age_days exceeds the repository safety ceiling'
 
-canonical_meta=$(mktemp "${TMPDIR:-/tmp}/cup-ca-meta.XXXXXX") ||
+canonical_meta=$(mktemp "$TEMP_BASE/cup-ca-meta.XXXXXX") ||
     fail 'could not create metadata comparison file'
 {
     printf 'format=1\n'
@@ -160,7 +162,7 @@ rm -f -- "$canonical_meta"
 openssl_command=${CUP_OPENSSL:-openssl}
 command -v "$openssl_command" >/dev/null 2>&1 ||
     fail "OpenSSL command is required for X.509 validation: $openssl_command"
-validation_dir=$(mktemp -d "${TMPDIR:-/tmp}/cup-ca-check.XXXXXX")
+validation_dir=$(mktemp -d "$TEMP_BASE/cup-ca-check.XXXXXX")
 validation_pkcs7=$validation_dir/cacert.p7b
 cleanup_validation() {
     if [ -d "$validation_dir" ] && [ ! -L "$validation_dir" ]; then

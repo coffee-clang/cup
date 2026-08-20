@@ -44,9 +44,8 @@ case "$CACERT_URL" in
     *) fail "CA bundle URL must use HTTPS: $CACERT_URL" ;;
 esac
 
-TEMP_BASE=${TMPDIR:-/tmp}
-case "$TEMP_BASE" in /*) ;; *) TEMP_BASE=$(pwd -P)/$TEMP_BASE ;; esac
-cup_path_check_directory_chain "$TEMP_BASE" 0 'CA update temporary parent' || exit 1
+TEMP_BASE=$(cup_path_resolve_host_temporary_directory \
+    'CA update temporary parent') || exit 1
 WORK_DIR=$(cup_path_create_unique_directory \
     "$TEMP_BASE/cup-ca-update.XXXXXX" 'CA update work directory' 0700) || exit 1
 PEM_TMP=$WORK_DIR/cacert.pem

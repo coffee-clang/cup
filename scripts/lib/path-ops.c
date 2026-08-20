@@ -22,7 +22,6 @@
 #include <unistd.h>
 
 #define CUP_PATH_OPS_PROTOCOL 2
-#define CUP_PATH_OPS_TRUSTED_ANCHOR_ENV "CUP_PATH_OPS_TRUSTED_ANCHOR_INTERNAL"
 #define CUP_PATH_OPS_MAX_DEPTH 128u
 #define CUP_PATH_OPS_UNIQUE_ATTEMPTS 256u
 #define CUP_PATH_OPS_UNIQUE_CHARS 6u
@@ -139,19 +138,6 @@ static void require_clean_path(const char *path) {
     if (!path_is_clean_absolute(path)) {
         fail_message("path is not an absolute clean POSIX path: %s",
                      path == NULL ? "(null)" : path);
-    }
-}
-
-static void configure_trusted_anchor(const char *anchor) {
-    if (unsetenv(CUP_PATH_OPS_TRUSTED_ANCHOR_ENV) != 0) {
-        fail_message("could not clear inherited trusted host anchor");
-    }
-    if (anchor == NULL) {
-        return;
-    }
-    require_clean_path(anchor);
-    if (setenv(CUP_PATH_OPS_TRUSTED_ANCHOR_ENV, anchor, 1) != 0) {
-        fail_message("could not configure trusted host anchor: %s", anchor);
     }
 }
 
@@ -1153,15 +1139,6 @@ static _Noreturn void usage(void) {
 
 int main(int argc, char **argv) {
     const char *command;
-    const char *trusted_anchor = NULL;
-
-    configure_trusted_anchor(NULL);
-    if (argc >= 4 && strcmp(argv[1], "--trusted-anchor") == 0) {
-        trusted_anchor = argv[2];
-        configure_trusted_anchor(trusted_anchor);
-        argv += 2;
-        argc -= 2;
-    }
     if (argc < 2) {
         usage();
     }

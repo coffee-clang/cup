@@ -40,43 +40,6 @@ dependency_read_canonical_owner() {
 }
 
 
-dependency_configure_host_anchor() {
-    local root="$1"
-    local anchor="${CUP_DEPENDENCY_HOST_ROOT:-}"
-
-    case "${OS:-}:$(uname -s 2>/dev/null || true)" in
-        Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
-            if [ -z "$anchor" ] && [ -n "${HOME:-}" ]; then
-                case "$root" in
-                    "$HOME"|"$HOME"/*) anchor=$HOME ;;
-                esac
-            fi
-            if [ -z "$anchor" ]; then
-                case "$root" in
-                    /tmp|/tmp/*) anchor=/tmp ;;
-                    *)
-                        echo "Error: Windows dependency roots outside HOME or /tmp require CUP_DEPENDENCY_HOST_ROOT." >&2
-                        return 1
-                        ;;
-                esac
-            fi
-            dependency_require_whitespace_free_path "dependency host root" "$anchor" || return 1
-            cup_path_validate_absolute_clean "$anchor" "dependency host root" || return 1
-            case "$root" in
-                "$anchor"|"$anchor"/*) ;;
-                *)
-                    echo "Error: dependency root must stay inside dependency host root: $anchor" >&2
-                    return 1
-                    ;;
-            esac
-            cup_path_set_trusted_anchor "$anchor" "dependency host root" || return 1
-            ;;
-        *)
-            cup_path_clear_trusted_anchor
-            ;;
-    esac
-}
-
 dependency_validate_root_path() {
     local root="$1"
 
@@ -88,7 +51,6 @@ dependency_validate_root_path() {
             return 1
             ;;
     esac
-    dependency_configure_host_anchor "$root"
 }
 
 dependency_lock_path() {
