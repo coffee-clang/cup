@@ -5,10 +5,13 @@
 
 #include "package_catalog.h"
 
+#include "checksum.h"
 #include "download.h"
+#include "filesystem.h"
 #include "layout.h"
 #include "path.h"
 #include "package_archive.h"
+#include "package_selector.h"
 #include "platform.h"
 #include "registry.h"
 #include "system.h"
@@ -16,7 +19,6 @@
 #include "version.h"
 
 #include <ctype.h>
-#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -298,6 +300,7 @@ static CupError validate_value_list(const char *value, const char *expected, int
 
         part = text_trim(cursor);
         if (!path_is_safe_identifier(part)) {
+            fprintf(stderr, "Error: catalog list contains invalid value '%s'.\n", part);
             return CUP_ERR_CATALOG;
         }
 
@@ -316,6 +319,31 @@ static CupError validate_value_list(const char *value, const char *expected, int
         cursor = separator == NULL ? NULL : separator + 1;
     }
 
+    return CUP_OK;
+}
+
+static CupError validate_concrete_release_list(const char *value) {
+    char copy[MAX_CATALOG_VALUE_LEN];
+    char *cursor;
+
+    if (text_copy(copy, sizeof(copy), value) != CUP_OK) {
+        return CUP_ERR_CATALOG;
+    }
+    cursor = copy;
+    while (cursor != NULL) {
+        char *separator = strchr(cursor, ',');
+        char *part;
+
+        if (separator != NULL) {
+            *separator = '\0';
+        }
+        part = text_trim(cursor);
+        if (package_release_validate_concrete(part) != CUP_OK) {
+            fprintf(stderr, "Error: catalog contains invalid concrete version '%s'.\n", part);
+            return CUP_ERR_CATALOG;
+        }
+        cursor = separator == NULL ? NULL : separator + 1;
+    }
     return CUP_OK;
 }
 
@@ -440,7 +468,7 @@ static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
                 package->target_platform);
         return CUP_ERR_CATALOG;
     }
-    if (!path_is_safe_identifier(package->stable_version) ||
+    if (package_release_validate_concrete(package->stable_version) != CUP_OK ||
         package_archive_parse_format(package->default_format, &default_format) != CUP_OK) {
         fprintf(stderr,
                 "Error: catalog package '%s.%s.%s.%s' contains an "
@@ -454,7 +482,10 @@ static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
 
     if (validate_value_list(package->available_versions, package->stable_version, &contains) !=
             CUP_OK ||
-        !contains) {
+        validate_concrete_release_list(package->available_versions) != CUP_OK) {
+        return CUP_ERR_CATALOG;
+    }
+    if (!contains) {
         fprintf(stderr,
                 "Error: stable_version is not listed in "
                 "available_versions for '%s.%s.%s.%s'.\n",
@@ -466,8 +497,10 @@ static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
     }
 
     if (validate_archive_format_list(package->formats) != CUP_OK ||
-        validate_value_list(package->formats, package->default_format, &contains) != CUP_OK ||
-        !contains) {
+        validate_value_list(package->formats, package->default_format, &contains) != CUP_OK) {
+        return CUP_ERR_CATALOG;
+    }
+    if (!contains) {
         fprintf(stderr,
                 "Error: default_format is not listed in formats for "
                 "'%s.%s.%s.%s'.\n",
@@ -491,69 +524,80 @@ static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
 }
 
 /* Load from installed official assets or the explicit development fallback, never both. */
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source) {
-    FILE *file;
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
+    PersistentFileSnapshot snapshot;
+    TextDocumentReader reader;
     CupError err;
     char line[MAX_CATALOG_LINE_LEN];
-    size_t line_number = 0;
+    char expected_format[16];
     size_t i;
+    int missing;
+    int has_line;
 
-    if (catalog == NULL || text_is_empty(path) ||
-        (source != PACKAGE_CATALOG_SOURCE_INSTALLED &&
-         source != PACKAGE_CATALOG_SOURCE_DEVELOPMENT)) {
+    if (catalog == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    package_catalog_free(catalog);
-    catalog->source = source;
+    {
+        int written = snprintf(
+            expected_format, sizeof(expected_format), "format=%d", CUP_PACKAGE_CATALOG_FORMAT);
 
-    if (text_copy(catalog->path, sizeof(catalog->path), path) != CUP_OK) {
+        if (written < 0 || (size_t)written >= sizeof(expected_format)) {
+            return CUP_ERR_CATALOG;
+        }
+    }
+
+    package_catalog_free(catalog);
+    filesystem_snapshot_init(&snapshot);
+
+    err = filesystem_snapshot_read(
+        path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
+    if (err != CUP_OK || missing) {
+        package_catalog_free(catalog);
+        return err != CUP_OK ? err : CUP_ERR_CATALOG;
+    }
+    err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
+    if (err != CUP_OK) {
+        filesystem_snapshot_release(&snapshot);
         package_catalog_free(catalog);
         return CUP_ERR_CATALOG;
     }
 
-    errno = 0;
-    file = fopen(path, "r");
-    if (file == NULL) {
+    err = text_document_read_raw_line(&reader, line, sizeof(line), &has_line);
+    if (err != CUP_OK || !has_line || strcmp(line, expected_format) != 0) {
+        fprintf(stderr, "Error: package catalog must start with '%s'.\n", expected_format);
+        filesystem_snapshot_release(&snapshot);
         package_catalog_free(catalog);
-        return errno == ENOENT ? CUP_ERR_CATALOG : CUP_ERR_FILESYSTEM;
+        return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_CATALOG;
     }
 
     while (1) {
-        int has_line;
-
-        err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
+        err = text_document_read_line(&reader, line, sizeof(line), &has_line);
         if (err != CUP_OK) {
-            if (err == CUP_ERR_FILESYSTEM) {
-                fprintf(stderr,
-                        "Error: could not read package catalog near line %zu.\n",
-                        line_number + 1);
-            } else {
-                fprintf(stderr, "Error: invalid package catalog line %zu.\n", line_number);
-            }
-            fclose(file);
+            fprintf(stderr, "Error: invalid package catalog line %zu.\n", reader.line_number);
+            filesystem_snapshot_release(&snapshot);
             package_catalog_free(catalog);
             return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_CATALOG;
         }
-
         if (!has_line) {
             break;
         }
 
         err = parse_catalog_line(catalog, line);
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: invalid package catalog line %zu.\n", line_number);
-            fclose(file);
+            fprintf(stderr, "Error: invalid package catalog line %zu.\n", reader.line_number);
+            filesystem_snapshot_release(&snapshot);
             package_catalog_free(catalog);
             return err == CUP_ERR_TEMPORARY ? err : CUP_ERR_CATALOG;
         }
     }
-
-    if (fclose(file) != 0) {
+    catalog->identity = snapshot.identity;
+    err = checksum_sha256_bytes(
+        snapshot.data, snapshot.size, catalog->digest, sizeof(catalog->digest));
+    filesystem_snapshot_release(&snapshot);
+    if (err != CUP_OK) {
         package_catalog_free(catalog);
-        return CUP_ERR_FILESYSTEM;
+        return err;
     }
     if (catalog->count == 0) {
         package_catalog_free(catalog);
@@ -574,17 +618,20 @@ CupError package_catalog_load_installed(PackageCatalog *catalog) {
     char path[MAX_PATH_LEN];
     CupError err;
 
+    if (catalog == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    package_catalog_free(catalog);
     err = layout_get_package_catalog_path(path, sizeof(path));
     if (err != CUP_OK) {
         return err;
     }
 
-    return package_catalog_load_path(catalog, path, PACKAGE_CATALOG_SOURCE_INSTALLED);
+    return package_catalog_load_path(catalog, path);
 }
 
 CupError package_catalog_load_development(PackageCatalog *catalog) {
-    return package_catalog_load_path(
-        catalog, DEVELOPMENT_CATALOG_PATH, PACKAGE_CATALOG_SOURCE_DEVELOPMENT);
+    return package_catalog_load_path(catalog, DEVELOPMENT_CATALOG_PATH);
 }
 
 CupError package_catalog_load(PackageCatalog *catalog) {
@@ -595,6 +642,7 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     if (catalog == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    package_catalog_free(catalog);
 
     err = layout_get_package_catalog_path(installed, sizeof(installed));
     if (err != CUP_OK) {
@@ -606,7 +654,7 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     }
 
     if (exists) {
-        return package_catalog_load_path(catalog, installed, PACKAGE_CATALOG_SOURCE_INSTALLED);
+        return package_catalog_load_path(catalog, installed);
     }
 
 #if !CUP_VERSION_OFFICIAL
@@ -697,7 +745,11 @@ static CupError copy_catalog_value(const PackageCatalog *catalog,
                                    CatalogValue value) {
     const PackageCatalogEntry *package;
 
-    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
+    if (buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    buffer[0] = '\0';
+    if (catalog == NULL || text_is_empty(component) ||
         text_is_empty(tool) || text_is_empty(host) || text_is_empty(target)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -945,8 +997,14 @@ static CupError build_package_url(const PackageCatalog *catalog,
                                   int checksum) {
     const PackageCatalogEntry *package;
     const char *template_value;
+    char expanded[MAX_CATALOG_URL_LEN];
+    CupError err;
 
-    if (catalog == NULL || buffer == NULL || size == 0 || text_is_empty(component) ||
+    if (buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    buffer[0] = '\0';
+    if (catalog == NULL || text_is_empty(component) ||
         text_is_empty(tool) || text_is_empty(host) || text_is_empty(target) ||
         text_is_empty(version) || (!checksum && text_is_empty(format))) {
         return CUP_ERR_INVALID_INPUT;
@@ -958,8 +1016,18 @@ static CupError build_package_url(const PackageCatalog *catalog,
     }
 
     template_value = checksum ? package->checksum_url_template : package->url_template;
-    return expand_package_url(
-        template_value, buffer, size, tool, host, target, version, checksum ? "" : format);
+    err = expand_package_url(template_value,
+                             expanded,
+                             sizeof(expanded),
+                             tool,
+                             host,
+                             target,
+                             version,
+                             checksum ? "" : format);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return text_copy(buffer, size, expanded);
 }
 
 CupError package_catalog_build_url(const PackageCatalog *catalog,

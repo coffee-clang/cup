@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Composes the complete normal POSIX source regression sequence.
+# Composes the complete normal POSIX source regression sequence.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

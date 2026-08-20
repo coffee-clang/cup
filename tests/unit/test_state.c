@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises structured state parsing, semantic validation, scope mutation, capacity
+ * Exercises structured state parsing, semantic validation, scope mutation, capacity
  * limits and atomic persistence.
  */
 
@@ -143,7 +143,8 @@ CupError package_identity_init(PackageIdentity *identity,
     return copy_field(identity->version, sizeof(identity->version), version);
 }
 
-CupError package_identity_validate(const PackageIdentity *identity) {
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
     PackageIdentity validated;
 
     if (identity == NULL) {
@@ -161,7 +162,9 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host_platform,
                                         const char *target_platform,
-                                        const char *entry) {
+                                        const char *entry,
+                                        FILE *diagnostics) {
+    (void)diagnostics;
     const char *at;
     char tool[MAX_IDENTIFIER_LEN];
     size_t tool_length;
@@ -206,7 +209,7 @@ CupError package_identity_format_selector(const PackageIdentity *identity,
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (package_identity_validate(identity) != CUP_OK) {
+    if (package_identity_validate(identity, stderr) != CUP_OK) {
         return CUP_ERR_VALIDATION;
     }
     written = snprintf(buffer, size, "%s@%s", identity->tool, identity->version);
@@ -297,21 +300,25 @@ static void test_mutators(void) {
     TEST_ASSERT_EQUAL_INT(0, state_find_installed(&state, &clang1));
     TEST_ASSERT_EQUAL_INT(-1, state_find_installed(&state, &clang2));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang1));
-    current = state_get_active(&state, &compiler);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang1));
+    current = state_get_default(&state, &compiler);
     TEST_ASSERT_NOT_NULL(current);
     TEST_ASSERT_TRUE(package_identity_equals(&clang1, current));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang2));
-    current = state_get_active(&state, &compiler);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_set_default(&state, &clang2));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &clang2));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang2));
+    current = state_get_default(&state, &compiler);
     TEST_ASSERT_NOT_NULL(current);
     TEST_ASSERT_TRUE(package_identity_equals(&clang2, current));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_matching_active(&state, &clang1));
-    TEST_ASSERT_NOT_NULL(state_get_active(&state, &compiler));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_matching_active(&state, &clang2));
-    TEST_ASSERT_NULL(state_get_active(&state, &compiler));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_active(&state, &compiler));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_matching_default(&state, &clang1));
+    TEST_ASSERT_NOT_NULL(state_get_default(&state, &compiler));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
+                          state_remove_installed(&state, &clang2));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_matching_default(&state, &clang2));
+    TEST_ASSERT_NULL(state_get_default(&state, &compiler));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_default(&state, &compiler));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_remove_installed(&state, &clang1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED, state_remove_installed(&state, &clang1));
@@ -332,11 +339,11 @@ static void test_scope_mutation(void) {
     TEST_ASSERT_EQUAL_STRING("gdb", state.installed[1].tool);
     TEST_ASSERT_EQUAL_STRING("1", state.installed[1].version);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang_linux));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &gdb));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_active(&state, &compiler));
-    TEST_ASSERT_EQUAL_size_t(1, state.active_count);
-    TEST_ASSERT_EQUAL_STRING("debugger", state.active[0].component);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang_linux));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &gdb));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_clear_default(&state, &compiler));
+    TEST_ASSERT_EQUAL_size_t(1, state.default_count);
+    TEST_ASSERT_EQUAL_STRING("debugger", state.defaults[0].component);
 }
 
 static void test_mutator_guards(void) {
@@ -353,33 +360,60 @@ static void test_mutator_guards(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_add_installed(&state, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(NULL, &valid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(&state, &invalid));
-    TEST_ASSERT_NULL(state_get_active(NULL, &valid_scope));
-    TEST_ASSERT_NULL(state_get_active(&state, NULL));
-    TEST_ASSERT_NULL(state_get_active(&state, &invalid_scope));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_active(NULL, &valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_active(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_active(NULL, &valid_scope));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_matching_active(NULL, &valid));
+    TEST_ASSERT_NULL(state_get_default(NULL, &valid_scope));
+    TEST_ASSERT_NULL(state_get_default(&state, NULL));
+    TEST_ASSERT_NULL(state_get_default(&state, &invalid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_default(NULL, &valid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_default(&state, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_default(NULL, &valid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_default(&state, &invalid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_matching_default(NULL, &valid));
 }
 
 static void test_capacity_limits(void) {
     CupState state = {0};
     PackageIdentity valid = identity("compiler", "clang", "linux-x64", "1");
     PackageIdentity invalid = valid;
+    PackageScope valid_scope = scope("compiler", "linux-x64");
 
     state.installed_count = MAX_INSTALLED;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_add_installed(&state, &valid));
 
     memset(&state, 0, sizeof(state));
-    state.active_count = MAX_ACTIVE_PACKAGES;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ACTIVE_FULL, state_set_active(&state, &valid));
+    state.installed[0] = valid;
+    state.installed_count = 1;
+    state.default_count = MAX_STATE_DEFAULTS;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_DEFAULT_FULL, state_set_default(&state, &valid));
 
     memset(invalid.component, 'x', sizeof(invalid.component));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, state_add_installed(&(CupState){0}, &invalid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          state_remove_installed(&(CupState){0}, &invalid));
 
     invalid = valid;
     memset(invalid.host_platform, 'p', sizeof(invalid.host_platform));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, state_set_active(&(CupState){0}, &invalid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, state_set_default(&(CupState){0}, &invalid));
+
+    /* Corrupted in-memory counts are rejected before any array walk. */
+    memset(&state, 0, sizeof(state));
+    state.installed_count = MAX_INSTALLED + 1;
+    TEST_ASSERT_EQUAL_INT(-1, state_find_installed(&state, &valid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_add_installed(&state, &valid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_remove_installed(&state, &valid));
+    TEST_ASSERT_NULL(state_get_default(&state, &valid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_set_default(&state, &valid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_clear_default(&state, &valid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_clear_matching_default(&state, &valid));
+    TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, "linux-x64"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_STATE_FULL, state_validate_current_host(&state, "linux-x64", stderr));
+
+    memset(&state, 0, sizeof(state));
+    state.default_count = MAX_STATE_DEFAULTS + 1;
+    TEST_ASSERT_EQUAL_INT(-1, state_find_installed(&state, &valid));
+    TEST_ASSERT_NULL(state_get_default(&state, &valid_scope));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_set_default(&state, &valid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_clear_default(&state, &valid_scope));
 }
 
 static void test_validation(void) {
@@ -387,49 +421,53 @@ static void test_validation(void) {
     PackageIdentity clang1 = identity("compiler", "clang", "linux-x64", "1");
     PackageIdentity clang2 = identity("compiler", "clang", "linux-x64", "2");
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate(NULL, stderr));
     state.installed_count = MAX_INSTALLED + 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_validate(&state, stderr));
     memset(&state, 0, sizeof(state));
-    state.active_count = MAX_ACTIVE_PACKAGES + 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    state.default_count = MAX_STATE_DEFAULTS + 1;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_validate(&state, stderr));
 
     memset(&state, 0, sizeof(state));
     state.installed[0] = clang1;
     state.installed[1] = clang1;
     state.installed_count = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_validate(&state, stderr));
 
     memset(&state, 0, sizeof(state));
     state.installed[0] = clang1;
     state.installed[0].version[0] = '\0';
     state.installed_count = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_validate(&state, stderr));
 
     memset(&state, 0, sizeof(state));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &clang1));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang2));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    state.defaults[0] = clang2;
+    state.default_count = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_validate(&state, stderr));
 
     memset(&state, 0, sizeof(state));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &clang1));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang1));
-    state.active[1] = state.active[0];
-    state.active_count = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang1));
+    state.defaults[1] = state.defaults[0];
+    state.default_count = 2;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_validate(&state, stderr));
 
     memset(&state, 0, sizeof(state));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &clang1));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang1));
-    state.active[0].version[0] = '\0';
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_validate(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang1));
+    state.defaults[0].version[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, state_validate(&state, stderr));
 }
 
-/* Saving and loading preserves installed entries, active selections, and canonical ordering. */
+/* Saving and loading preserves installed entries, default selections, and canonical ordering. */
 static void test_save_load(void) {
     CupState state = {0};
     CupState loaded;
     StateFileStatus status;
+    SystemPathIdentity loaded_identity = {0};
+    SystemPathIdentity published_identity = {0};
+    SystemPathIdentity stale_identity;
     PackageIdentity clang = identity("compiler", "clang", "linux-x64", "22.1.5");
     PackageIdentity lldb = identity("debugger", "lldb", "linux-x64", "22.1.5");
     char path[1024];
@@ -437,8 +475,13 @@ static void test_save_load(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &clang));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &lldb));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &clang));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_save(&state));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &clang));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_save(&state, NULL, &published_identity));
+    TEST_ASSERT_TRUE(published_identity.valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, published_identity.kind);
+
+    /* Initialization is create-only and never replaces an existing state file. */
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, state_save(&state, NULL, NULL));
 
     serialized = read_state();
     TEST_ASSERT_EQUAL_STRING("format=1\n"
@@ -448,62 +491,114 @@ static void test_save_load(void) {
                              serialized);
     free(serialized);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&loaded, &status));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, state_load(&loaded, &status, &loaded_identity, stderr));
     TEST_ASSERT_EQUAL_INT(STATE_FILE_LOADED, status);
+    TEST_ASSERT_TRUE(system_path_identity_equal(&published_identity, &loaded_identity));
     TEST_ASSERT_EQUAL_size_t(2, loaded.installed_count);
-    TEST_ASSERT_EQUAL_size_t(1, loaded.active_count);
+    TEST_ASSERT_EQUAL_size_t(1, loaded.default_count);
     TEST_ASSERT_EQUAL_STRING("clang", loaded.installed[0].tool);
     TEST_ASSERT_EQUAL_STRING("22.1.5", loaded.installed[0].version);
-    TEST_ASSERT_TRUE(package_identity_equals(&clang, &loaded.active[0]));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate(&loaded));
+    TEST_ASSERT_TRUE(package_identity_equals(&clang, &loaded.defaults[0]));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate(&loaded, stderr));
+
+    stale_identity = loaded_identity;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, state_save(&loaded, &loaded_identity, &published_identity));
+    TEST_ASSERT_TRUE(published_identity.valid);
+    TEST_ASSERT_FALSE(system_path_identity_equal(&stale_identity, &published_identity));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION, state_save(&loaded, &stale_identity, NULL));
+    {
+        SystemPathIdentity stale_alias = stale_identity;
+
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_TRANSACTION, state_save(&loaded, &stale_alias, &stale_alias));
+        TEST_ASSERT_FALSE(stale_alias.valid);
+    }
+    /* Input/output identity aliasing is supported for command contexts. */
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, state_save(&loaded, &published_identity, &published_identity));
+    TEST_ASSERT_TRUE(published_identity.valid);
 
     state_path(path, sizeof(path));
     TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&loaded, &status));
+    published_identity.valid = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, state_load(&loaded, &status, &published_identity, stderr));
     TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
+    TEST_ASSERT_FALSE(published_identity.valid);
     TEST_ASSERT_EQUAL_size_t(0, loaded.installed_count);
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load(NULL, &status));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load(&loaded, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(NULL, &status, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, NULL, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, &status, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_load_path(&loaded, &status, ""));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_save(NULL));
+    status = STATE_FILE_LOADED;
+    published_identity.valid = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, state_load(NULL, &status, &published_identity, stderr));
+    TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
+    TEST_ASSERT_FALSE(published_identity.valid);
+
+    memset(&loaded, 0xA5, sizeof(loaded));
+    published_identity.valid = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, state_load(&loaded, NULL, &published_identity, stderr));
+    TEST_ASSERT_EQUAL_size_t(0, loaded.installed_count);
+    TEST_ASSERT_FALSE(published_identity.valid);
+
+    published_identity.valid = 1;
+    published_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, state_save(NULL, NULL, &published_identity));
+    TEST_ASSERT_FALSE(published_identity.valid);
+
     state_path_error = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, state_load(&loaded, &status));
+    memset(&loaded, 0xA5, sizeof(loaded));
+    status = STATE_FILE_LOADED;
+    published_identity.valid = 1;
+    published_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM, state_load(&loaded, &status, &published_identity, stderr));
+    TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
+    TEST_ASSERT_FALSE(published_identity.valid);
+    TEST_ASSERT_EQUAL_size_t(0, loaded.installed_count);
     state_path_error = CUP_OK;
 
     state_path(path, sizeof(path));
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, state_load(&loaded, &status, NULL, stderr));
     TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
 }
 
 static void test_state_record_errors(void) {
     CupState state;
     StateFileStatus status;
+    SystemPathIdentity source_identity = {0};
 
     write_state("unknown.key=value\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_STATE_LOAD, state_load(&state, &status, &source_identity, stderr));
+    TEST_ASSERT_TRUE(source_identity.valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, source_identity.kind);
+    TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
+    TEST_ASSERT_EQUAL_size_t(0, state.installed_count);
+    TEST_ASSERT_EQUAL_size_t(0, state.default_count);
     write_state("installed.compiler.linux-x64=clang@1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
     write_state("default.compiler.linux-x64=clang@1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
     write_state("installed.compiler.linux-x64.linux-x64\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
     write_state("installed.compiler.linux-x64.linux-x64=bad-entry\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
 
     write_state("installed.compiler.linux-x64.linux-x64=clang@1\n"
                 "installed.compiler.linux-x64.linux-x64=clang@1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
     TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
 
     write_state("installed.compiler.linux-x64.linux-x64=clang@1\n"
                 "default.compiler.linux-x64.linux-x64=clang@1\n"
                 "default.compiler.linux-x64.linux-x64=clang@1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
 }
 
 static void test_state_line_errors(void) {
@@ -518,7 +613,7 @@ static void test_state_line_errors(void) {
         memcpy(prefixed + 9, bad, sizeof(bad));
         write_bytes(prefixed, sizeof(prefixed));
     }
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
 
     memset(long_line, 'x', sizeof(long_line));
     long_line[sizeof(long_line) - 1] = '\n';
@@ -528,15 +623,61 @@ static void test_state_line_errors(void) {
         memcpy(prefixed + 9, long_line, sizeof(long_line));
         write_bytes(prefixed, sizeof(prefixed));
     }
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
 
     write_state("# comment\n\n"
                 "installed.compiler.linux-x64.linux-x64=clang@1\r\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&state, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
+
+    write_state("# comment\n\n"
+                "installed.compiler.linux-x64.linux-x64=clang@1\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&state, &status, NULL, stderr));
     TEST_ASSERT_EQUAL_INT(STATE_FILE_LOADED, status);
     TEST_ASSERT_EQUAL_size_t(1, state.installed_count);
     TEST_ASSERT_EQUAL_STRING("clang", state.installed[0].tool);
     TEST_ASSERT_EQUAL_STRING("1", state.installed[0].version);
+
+    {
+        static const unsigned char nul_state[] =
+            "format=1\ninstalled.compiler.linux-x64.linux-x64=clang@1\0\n";
+        write_bytes(nul_state, sizeof(nul_state) - 1);
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
+
+    write_raw_state("format=1\ninstalled.compiler.linux-x64.linux-x64=clang@1");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&state, &status, NULL, stderr));
+
+    {
+        size_t size = MAX_STATE_FILE_BYTES + 1u;
+        char *oversized = malloc(size);
+        TEST_ASSERT_NOT_NULL(oversized);
+        memset(oversized, '#', size);
+        oversized[size - 1] = '\n';
+        write_bytes(oversized, size);
+        free(oversized);
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_load(&state, &status, NULL, stderr));
+
+    {
+        char path[1024];
+        FILE *file;
+        size_t i;
+
+        state_path(path, sizeof(path));
+        file = fopen(path, "wb");
+        TEST_ASSERT_NOT_NULL(file);
+        TEST_ASSERT_TRUE(fputs("format=1\n", file) >= 0);
+        for (i = 0; i <= MAX_INSTALLED; ++i) {
+            TEST_ASSERT_TRUE(
+                fprintf(file,
+                        "installed.compiler.linux-x64.linux-x64=clang@1.0.%zu\n",
+                        i) > 0);
+        }
+        TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_load(&state, &status, NULL, stderr));
+    TEST_ASSERT_EQUAL_INT(STATE_FILE_MISSING, status);
+    TEST_ASSERT_EQUAL_size_t(0, state.installed_count);
 }
 
 static void test_format_host_policy(void) {
@@ -547,34 +688,34 @@ static void test_format_host_policy(void) {
     PackageIdentity foreign = native;
 
     write_raw_state("installed.compiler.linux-x64.linux-x64=clang@1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status, NULL, stderr));
     write_raw_state("format=2\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status, NULL, stderr));
     write_state("format=1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, state_load(&loaded, &status, NULL, stderr));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &native));
     TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(NULL, "linux-x64"));
     TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, NULL));
     TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, ""));
     TEST_ASSERT_EQUAL_size_t(0, state_count_foreign_hosts(&state, "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate_current_host(&state, "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, ""));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_validate_current_host(&state, "linux-x64", stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, NULL, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(&state, "", stderr));
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         package_identity_init(&foreign, "compiler", "clang", "windows-x64", "windows-x64", "1"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, state_add_installed(&state, &foreign));
     TEST_ASSERT_EQUAL_size_t(1, state_count_foreign_hosts(&state, "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_active(&state, &foreign));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_set_default(&state, &foreign));
     TEST_ASSERT_EQUAL_size_t(2, state_count_foreign_hosts(&state, "linux-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          state_validate_current_host(&state, "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate_current_host(NULL, "linux-x64"));
+                          state_validate_current_host(&state, "linux-x64", stderr));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, state_validate_current_host(NULL, "linux-x64", stderr));
 }
 
-/* Suite registration. */
 
 int main(void) {
     int result;

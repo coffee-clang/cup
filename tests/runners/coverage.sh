@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 
-# Purpose: Collects native C coverage on every supported platform and applies
+# Collects native C coverage on every supported platform and applies
 # line, branch and function gates through the platform-native coverage backend.
 set -euo pipefail
+export LC_ALL=C LANG=C TZ=UTC
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 . "$ROOT/tests/support/environment.sh"
+TESTS_ROOT="$ROOT/tests"
+. "$ROOT/tests/support/common.sh"
+. "$ROOT/tests/support/posix/coverage.sh"
+test_begin coverage-runner
 cup_quality_final_status() {
     local status
 
@@ -22,7 +27,8 @@ cup_quality_final_status() {
 }
 cup_test_prepare_environment
 PLATFORM="$CUP_TEST_PLATFORM"
-REPORT_DIR="${CUP_COVERAGE_DIR:-$ROOT/build/coverage/$PLATFORM}"
+TEST_BUILD_ROOT=$(cup_test_build_root) || exit 2
+REPORT_DIR="${CUP_COVERAGE_DIR:-$TEST_BUILD_ROOT/reports/coverage/$PLATFORM}"
 LINE_THRESHOLD="${CUP_COVERAGE_MIN_LINES:-85}"
 BRANCH_THRESHOLD="${CUP_COVERAGE_MIN_BRANCHES:-70}"
 FUNCTION_THRESHOLD="${CUP_COVERAGE_MIN_FUNCTIONS:-97}"
@@ -92,9 +98,9 @@ if [ "$COVERAGE_BACKEND" = gcov ]; then
             exit 2
             ;;
     esac
-    cup_test_require_tool gcovr coverage || exit 2
     cup_test_require_tool gcov coverage || exit 2
 fi
+cup_test_require_tool gcovr coverage || exit 2
 TIMEOUT_COMMAND=$(cup_test_find_timeout) || exit 2
 if [ "$PLATFORM" = windows-x64 ]; then
     cup_test_require_tool powershell.exe 'Windows coverage integration tests' || exit 2
@@ -102,41 +108,57 @@ if [ "$PLATFORM" = windows-x64 ]; then
 fi
 cup_test_require_dependencies
 
-clean_log=$(mktemp "${TMPDIR:-/tmp}/cup-coverage-clean.XXXXXX")
-trap 'rm -f "$clean_log"' EXIT HUP INT TERM
-cup_test_run_logged 'Cleaning previous build outputs...' "$clean_log" make -C "$ROOT" clean
-mkdir -p "$REPORT_DIR"
-rm -rf "$REPORT_DIR"/*
+clean_log="$TMP_ROOT/clean.log"
+build_log="$TMP_ROOT/build.log"
+unit_build_log="$TMP_ROOT/unit-build.log"
+helper_build_log="$TMP_ROOT/helper-build.log"
+test_build_log="$TMP_ROOT/test-build.log"
+cup_test_run_logged 'Cleaning previous build outputs...' "$clean_log" \
+    make -C "$ROOT" BUILD_DIR="$TEST_BUILD_ROOT" clean
+cup_test_run_logged \
+    "Building the $COVERAGE_BACKEND coverage executable..." \
+    "$build_log" \
+    make -C "$ROOT" BUILD_DIR="$TEST_BUILD_ROOT" PLATFORM="$PLATFORM" \
+        CC="$CC" CUP_INTERNAL_DEPS_TARGET=deps-check coverage -j2
+cup_test_run_logged \
+    'Compiling instrumented unit tests...' \
+    "$unit_build_log" \
+    make -C "$ROOT" BUILD_DIR="$TEST_BUILD_ROOT" PLATFORM="$PLATFORM" \
+        CC="$CC" CUP_INTERNAL_DEPS_TARGET=deps-check \
+        CUP_TEST_CONFIGURATION=coverage test-unit-build
+cup_test_run_logged \
+    'Compiling instrumented test helpers...' \
+    "$helper_build_log" \
+    make -C "$ROOT" BUILD_DIR="$TEST_BUILD_ROOT" PLATFORM="$PLATFORM" \
+        CC="$CC" CUP_INTERNAL_DEPS_TARGET=deps-check \
+        CUP_TEST_CONFIGURATION=coverage test-helpers
+cat "$unit_build_log" "$helper_build_log" >"$test_build_log"
+
+cup_test_reset_output_directory "$REPORT_DIR"
 cp "$clean_log" "$REPORT_DIR/clean.log"
+cp "$build_log" "$REPORT_DIR/build.log"
+cp "$test_build_log" "$REPORT_DIR/test-build.log"
 
 {
     printf 'platform=%s\n' "$PLATFORM"
     printf 'backend=%s\n' "$COVERAGE_BACKEND"
     printf 'compiler=%s\n' "$($CC --version | sed -n '1p')"
+    printf 'gcovr=%s\n' "$(gcovr --version | sed -n '1p')"
     if [ "$COVERAGE_BACKEND" = gcov ]; then
-        printf 'gcovr=%s\n' "$(gcovr --version | sed -n '1p')"
         printf 'gcov=%s\n' "$(gcov --version | sed -n '1p')"
     else
         printf 'sdkroot=%s\n' "$SDKROOT"
         printf 'llvm_profdata=%s\n' "$($LLVM_PROFDATA --version | sed -n '1p')"
         printf 'llvm_cov=%s\n' "$($LLVM_COV --version | sed -n '1p')"
     fi
+    printf 'build_root=%s\n' "$TEST_BUILD_ROOT"
     printf 'unit_timeout_seconds=%s\n' "$UNIT_TIMEOUT"
     printf 'suite_timeout_seconds=%s\n' "$SUITE_TIMEOUT"
     printf 'report_timeout_seconds=%s\n' "$REPORT_TIMEOUT"
 } >"$REPORT_DIR/environment.txt"
 
-cup_test_run_logged \
-    "Building the $COVERAGE_BACKEND coverage executable..." \
-    "$REPORT_DIR/build.log" \
-    make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" coverage -j2
-cup_test_run_logged \
-    'Compiling instrumented unit tests and helpers...' \
-    "$REPORT_DIR/test-build.log" \
-    make -C "$ROOT" PLATFORM="$PLATFORM" CC="$CC" \
-        CUP_TEST_CONFIGURATION=coverage test-unit-build test-helpers
-
-export CUP_TEST_BINARY="$ROOT/build/$PLATFORM/coverage/bin/cup"
+export CUP_TEST_BUILD_ROOT="$TEST_BUILD_ROOT"
+export CUP_TEST_BINARY="$TEST_BUILD_ROOT/$PLATFORM/coverage/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
 if [ "$COVERAGE_BACKEND" = llvm ]; then
     mkdir -p "$REPORT_DIR/profiles"
@@ -151,10 +173,12 @@ cup_test_run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log
 if [ "$PLATFORM" = windows-x64 ]; then
     windows_runner=$(cygpath -w "$ROOT/tests/runners/integration-windows.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
+    windows_build_root=$(cygpath -w "$TEST_BUILD_ROOT")
     cup_test_run_logged \
         'Running instrumented Windows integration tests...' \
         "$REPORT_DIR/integration.log" \
-        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s "$SUITE_TIMEOUT" \
+        env CUP_TEST_BUILD_ROOT="$windows_build_root" \
+            CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
         -CupPath "$windows_binary" -Configuration coverage
 else
@@ -167,12 +191,20 @@ else
             "$ROOT/tests/runners/integration-posix.sh"
 fi
 
+if [ "$COVERAGE_BACKEND" = gcov ]; then
+    printf '==> Verifying GCC test profile ownership...\n'
+    cup_coverage_verify_gcov_profile_owners \
+        "$TEST_BUILD_ROOT/$PLATFORM/coverage/tests" || exit 1
+fi
+
 printf '==> Waiting for coverage counters to become stable...\n'
 case "$COVERAGE_BACKEND" in
     gcov)
+        counter_root="$TEST_BUILD_ROOT/$PLATFORM/coverage"
         counter_pattern='*.gcda'
         ;;
     llvm)
+        counter_root="$REPORT_DIR/profiles"
         counter_pattern='*.profraw'
         ;;
 esac
@@ -180,7 +212,7 @@ previous=
 stable=0
 attempt=1
 while [ "$attempt" -le 15 ]; do
-    current=$(find "$ROOT/build" -type f -name "$counter_pattern" -exec cksum {} \; | sort | cksum)
+    current=$(find "$counter_root" -type f -name "$counter_pattern" -exec cksum {} \; | sort | cksum)
     if [ -n "$previous" ] && [ "$current" = "$previous" ]; then
         stable=$((stable + 1))
         [ "$stable" -ge 2 ] && break
@@ -199,216 +231,96 @@ fi
 generation_status=0
 threshold_status=0
 html_status=0
+coverage_log=$REPORT_DIR/gcovr.log
 
 coverage_reports_complete() {
-    case "$COVERAGE_BACKEND" in
-        gcov)
-            [ -s "$REPORT_DIR/coverage.json" ] &&
-            [ -s "$REPORT_DIR/coverage.xml" ] &&
-            [ -s "$REPORT_DIR/coverage-summary.json" ] &&
-            [ -s "$REPORT_DIR/summary.txt" ]
-            ;;
-        llvm)
-            [ -s "$REPORT_DIR/coverage.profdata" ] &&
-            [ -s "$REPORT_DIR/coverage.json" ] &&
-            [ -s "$REPORT_DIR/coverage-summary.json" ] &&
-            [ -s "$REPORT_DIR/coverage.lcov" ] &&
-            [ -s "$REPORT_DIR/summary.txt" ]
-            ;;
-    esac && grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
+    [ -s "$REPORT_DIR/coverage.json" ] &&
+    [ -s "$REPORT_DIR/coverage.xml" ] &&
+    [ -s "$REPORT_DIR/coverage-summary.json" ] &&
+    [ -s "$REPORT_DIR/summary.txt" ] &&
+    grep -Eq '"files"[[:space:]]*:' "$REPORT_DIR/coverage.json"
 }
 
-if [ "$COVERAGE_BACKEND" = gcov ]; then
-    coverage_log=$REPORT_DIR/gcovr.log
-    common_args=(
-        --root "$ROOT"
-        --merge-mode-functions separate
-        --print-summary
-        --filter 'src/'
-        --filter 'include/'
-        --exclude 'tests/'
-        --exclude 'build/'
-    )
+common_args=(
+    --root "$ROOT"
+    --merge-mode-functions separate
+    --print-summary
+    --filter 'src/'
+    --filter 'include/'
+    --exclude 'tests/'
+    --exclude 'build/'
+)
+backend_args=()
+search_root=$counter_root
 
-    run_gcovr() {
-        jobs=$1
-        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-            gcovr -j "$jobs" "${common_args[@]}" \
-            --txt "$REPORT_DIR/summary.txt" \
-            --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
-            --json "$REPORT_DIR/coverage.json" --json-pretty \
-            --json-summary "$REPORT_DIR/coverage-summary.json" --json-summary-pretty
-    }
-
-    printf '==> Generating gcovr coverage reports...\n'
-    (cd "$ROOT" && run_gcovr "$REPORT_JOBS") >"$coverage_log" 2>&1 || generation_status=$?
-    if [ "$generation_status" -eq 124 ] || [ "$generation_status" -eq 137 ]; then
-        printf 'gcovr timed out; retrying with one worker.\n' >>"$coverage_log"
-        generation_status=0
-        (cd "$ROOT" && run_gcovr 1) >>"$coverage_log" 2>&1 || generation_status=$?
+if [ "$COVERAGE_BACKEND" = llvm ]; then
+    empty_profiles=$(find "$counter_root" -type f -name '*.profraw' ! -size +0c -print)
+    if [ -n "$empty_profiles" ]; then
+        printf 'LLVM coverage produced empty profiles:\n%s\n' "$empty_profiles" >"$coverage_log"
+        generation_status=1
     fi
 
-    if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
-        printf '==> Validating coverage thresholds from the saved tracefile...\n' >>"$coverage_log"
-        (cd "$ROOT" && \
-            "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
-                "$REPORT_TIMEOUT" \
-            gcovr --root "$ROOT" --merge-mode-functions separate \
-            --add-tracefile "$REPORT_DIR/coverage.json" --print-summary \
-            --fail-under-line "$LINE_THRESHOLD" \
-            --fail-under-branch "$BRANCH_THRESHOLD" \
-            --fail-under-function "$FUNCTION_THRESHOLD") \
-            >>"$coverage_log" 2>&1 || threshold_status=$?
-    fi
-
-    if coverage_reports_complete; then
-        printf '==> Rendering HTML coverage report...\n'
-        (cd "$ROOT" && \
-            "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
-                "$HTML_TIMEOUT" \
-            gcovr --root "$ROOT" --merge-mode-functions separate \
-            --add-tracefile "$REPORT_DIR/coverage.json" \
-            --html-details "$REPORT_DIR/index.html" --no-html-syntax-highlighting) \
-            >"$REPORT_DIR/html.log" 2>&1 || html_status=$?
-    else
-        printf 'Coverage reports are incomplete.\n' >"$REPORT_DIR/html.log"
-        [ "$generation_status" -ne 0 ] || generation_status=1
-    fi
-else
-    coverage_log=$REPORT_DIR/llvm-cov.log
-    : >"$coverage_log"
-    profile_files=()
-    llvm_objects=()
-    llvm_sources=()
-    while IFS= read -r profile; do
-        [ -n "$profile" ] && profile_files+=("$profile")
-    done < <(find "$REPORT_DIR/profiles" -type f -name '*.profraw' | sort)
+    llvm_binaries=("$CUP_TEST_BINARY")
     while IFS= read -r binary; do
-        [ -n "$binary" ] && llvm_objects+=(--object "$binary")
-    done < <(find "$ROOT/build/$PLATFORM/coverage/tests" -type f -perm -111 | sort)
-    while IFS= read -r source; do
-        [ -n "$source" ] && llvm_sources+=(--sources "$source")
-    done < <(find "$ROOT/src" "$ROOT/include" -type f \
-        \( -name '*.c' -o -name '*.h' \) | sort)
+        [ -n "$binary" ] && llvm_binaries+=("$binary")
+    done < <(find "$TEST_BUILD_ROOT/$PLATFORM/coverage/tests" \
+        -type f -perm -111 -size +0c | sort)
 
-    if [ "${#profile_files[@]}" -eq 0 ] || [ "${#llvm_sources[@]}" -eq 0 ]; then
-        printf 'LLVM coverage inputs are incomplete.\n' >>"$coverage_log"
-        generation_status=1
-    fi
+    printf '%s\n' "${llvm_binaries[@]}" >"$REPORT_DIR/llvm-binaries.txt"
+    backend_args+=(--llvm-profdata-executable "$LLVM_PROFDATA")
+    for binary in "${llvm_binaries[@]}"; do
+        backend_args+=(--llvm-cov-binary "$binary")
+    done
+fi
 
-    llvm_common=(
-        "$CUP_TEST_BINARY"
-        "${llvm_objects[@]}"
-        -instr-profile="$REPORT_DIR/coverage.profdata"
-        --path-equivalence="/usr/src/cup,$ROOT"
-        --show-branch-summary
-        "${llvm_sources[@]}"
-    )
+run_gcovr() {
+    jobs=$1
+    "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
+        gcovr -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
+        --txt "$REPORT_DIR/summary.txt" \
+        --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
+        --json "$REPORT_DIR/coverage.json" --json-pretty \
+        --json-summary "$REPORT_DIR/coverage-summary.json" --json-summary-pretty \
+        "$search_root"
+}
 
-    run_llvm_step() {
-        label=$1
-        shift
-        printf '==> %s\n' "$label" >>"$coverage_log"
-        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-            "$@" >>"$coverage_log" 2>&1
-    }
-    run_llvm_capture() {
-        label=$1
-        output=$2
-        shift 2
-        printf '==> %s\n' "$label" >>"$coverage_log"
-        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-            "$@" >"$output" 2>>"$coverage_log"
-    }
+if [ "$generation_status" -eq 0 ]; then
+    printf '==> Generating %s coverage reports with gcovr...\n' "$COVERAGE_BACKEND"
+    (cd "$ROOT" && run_gcovr "$REPORT_JOBS") >"$coverage_log" 2>&1 || generation_status=$?
+fi
+if [ "$generation_status" -eq 124 ] || [ "$generation_status" -eq 137 ]; then
+    printf 'gcovr timed out; retrying with one worker.\n' >>"$coverage_log"
+    generation_status=0
+    (cd "$ROOT" && run_gcovr 1) >>"$coverage_log" 2>&1 || generation_status=$?
+fi
 
-    if [ "$generation_status" -eq 0 ]; then
-        run_llvm_step 'Merging LLVM profiles...' \
-            "$LLVM_PROFDATA" merge -sparse "${profile_files[@]}" \
-            -o "$REPORT_DIR/coverage.profdata" || generation_status=$?
-    fi
-    if [ "$generation_status" -eq 0 ]; then
-        run_llvm_capture 'Generating LLVM text report...' "$REPORT_DIR/summary.txt" \
-            "$LLVM_COV" report "${llvm_common[@]}" || generation_status=$?
-    fi
-    if [ "$generation_status" -eq 0 ]; then
-        run_llvm_capture 'Exporting LLVM coverage JSON...' "$REPORT_DIR/coverage.json" \
-            "$LLVM_COV" export "${llvm_common[@]}" || generation_status=$?
-    fi
-    if [ "$generation_status" -eq 0 ]; then
-        run_llvm_capture 'Exporting LLVM coverage summary...' \
-            "$REPORT_DIR/coverage-summary.json" \
-            "$LLVM_COV" export --summary-only "${llvm_common[@]}" || generation_status=$?
-    fi
-    if [ "$generation_status" -eq 0 ]; then
-        run_llvm_capture 'Exporting LCOV tracefile...' "$REPORT_DIR/coverage.lcov" \
-            "$LLVM_COV" export -format=lcov "${llvm_common[@]}" || generation_status=$?
-    fi
+if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
+    printf '==> Validating coverage thresholds from the saved tracefile...\n' >>"$coverage_log"
+    (cd "$ROOT" &&
+        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
+            "$REPORT_TIMEOUT" \
+        gcovr --root "$ROOT" --merge-mode-functions separate \
+        --add-tracefile "$REPORT_DIR/coverage.json" --print-summary \
+        --fail-under-line "$LINE_THRESHOLD" \
+        --fail-under-branch "$BRANCH_THRESHOLD" \
+        --fail-under-function "$FUNCTION_THRESHOLD") \
+        >>"$coverage_log" 2>&1 || threshold_status=$?
+else
+    printf 'Coverage reports are incomplete.\n' >>"$coverage_log"
+    [ "$generation_status" -ne 0 ] || generation_status=1
+fi
 
-    if coverage_reports_complete && [ "$generation_status" -eq 0 ]; then
-        metrics=$(awk '
-            $1 == "TOTAL" {
-                gsub(/%/, "", $7)
-                gsub(/%/, "", $10)
-                gsub(/%/, "", $13)
-                print $10, $13, $7, $8, $11, $5
-                found = 1
-            }
-            END { if (!found) exit 1 }
-        ' "$REPORT_DIR/summary.txt") || generation_status=1
-        if [ "$generation_status" -eq 0 ]; then
-            read -r line_coverage branch_coverage function_coverage \
-                line_total branch_total function_total <<EOF
-$metrics
-EOF
-            if [ "$line_total" -eq 0 ] || [ "$branch_total" -eq 0 ] || \
-                    [ "$function_total" -eq 0 ]; then
-                printf 'LLVM coverage report contains empty metrics.\n' >>"$coverage_log"
-                generation_status=1
-            else
-                {
-                    printf 'coverage_lines=%s%%\n' "$line_coverage"
-                    printf 'coverage_branches=%s%%\n' "$branch_coverage"
-                    printf 'coverage_functions=%s%%\n' "$function_coverage"
-                } >"$REPORT_DIR/coverage-metrics.env"
-                for metric in \
-                        "lines:$line_coverage:$LINE_THRESHOLD" \
-                        "branches:$branch_coverage:$BRANCH_THRESHOLD" \
-                        "functions:$function_coverage:$FUNCTION_THRESHOLD"; do
-                    name=${metric%%:*}
-                    remainder=${metric#*:}
-                    actual=${remainder%%:*}
-                    minimum=${remainder#*:}
-                    if awk -v actual="$actual" -v minimum="$minimum" \
-                            'BEGIN { exit !(actual + 0 < minimum + 0) }'; then
-                        printf 'Coverage for %s is %s%%, below the required %s%%.\n' \
-                            "$name" "$actual" "$minimum" >>"$coverage_log"
-                        threshold_status=1
-                    fi
-                done
-            fi
-        fi
-    elif [ "$generation_status" -eq 0 ]; then
-        printf 'Coverage reports are incomplete.\n' >>"$coverage_log"
-        generation_status=1
-    fi
-
-    if coverage_reports_complete; then
-        printf '==> Rendering LLVM HTML coverage report...\n'
-        mkdir -p "$REPORT_DIR/html"
-        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$HTML_TIMEOUT" \
-            "$LLVM_COV" show "${llvm_common[@]}" -format=html \
-            -output-dir="$REPORT_DIR/html" >"$REPORT_DIR/html.log" 2>&1 || html_status=$?
-    else
-        printf 'Coverage reports are incomplete.\n' >"$REPORT_DIR/html.log"
-        [ "$generation_status" -ne 0 ] || generation_status=1
-    fi
-
-    if grep -Eq 'functions have mismatched data|hash-mismatch' \
-            "$coverage_log" "$REPORT_DIR/html.log"; then
-        printf 'LLVM coverage contains incompatible function profiles.\n' \
-            >>"$coverage_log"
-        generation_status=1
-    fi
+if coverage_reports_complete; then
+    printf '==> Rendering HTML coverage report...\n'
+    (cd "$ROOT" &&
+        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s \
+            "$HTML_TIMEOUT" \
+        gcovr --root "$ROOT" --merge-mode-functions separate \
+        --add-tracefile "$REPORT_DIR/coverage.json" \
+        --html-details "$REPORT_DIR/index.html" --no-html-syntax-highlighting) \
+        >"$REPORT_DIR/html.log" 2>&1 || html_status=$?
+else
+    printf 'Coverage reports are incomplete.\n' >"$REPORT_DIR/html.log"
 fi
 
 cat "$coverage_log"

@@ -2,7 +2,7 @@
 #define CUP_LAYOUT_H
 
 /*
- * Canonical paths below the selected CUP root and creation of asset, runtime, staging,
+ * Canonical paths below the selected cup root and creation of asset, runtime, staging,
  * cache, and recovery directories. Callers must not construct managed paths independently.
  */
 
@@ -14,13 +14,22 @@
 
 typedef enum {
     LAYOUT_RUNTIME_MISSING,
+    /* Required runtime entries have the expected kinds and the selected root is private. */
     LAYOUT_RUNTIME_READY,
     LAYOUT_RUNTIME_INCOMPLETE
 } LayoutRuntimeStatus;
 
+/*
+ * Freeze the selected root for one public command. Nested users share the same snapshot;
+ * the final end releases it. Existing roots are identity-bound immediately. A selected missing
+ * root may only be created exclusively; successful creation pins its new identity.
+ */
+CupError layout_root_snapshot_begin(void);
+CupError layout_root_snapshot_validate(void);
+void layout_root_snapshot_end(void);
+
 /* Canonical paths inside the selected current-user cup root. */
 CupError layout_get_root(char *buffer, size_t size);
-CupError layout_get_root_marker_path(char *buffer, size_t size);
 CupError layout_get_bin_dir(char *buffer, size_t size);
 CupError layout_get_components_dir(char *buffer, size_t size);
 CupError layout_get_staging_dir(char *buffer, size_t size);

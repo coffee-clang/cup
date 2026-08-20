@@ -9,12 +9,13 @@
 #include <stddef.h>
 
 #include "constants.h"
+#include "domain.h"
 #include "error.h"
 #include "state.h"
 
 /* One managed launcher name and its validated package-relative target. */
 typedef struct {
-    char name[MAX_COMMAND_NAME_LEN];
+    PublicCommandName name;
     char target[MAX_PATH_LEN];
 } WrapperSpec;
 
@@ -33,13 +34,13 @@ void wrapper_plan_free(WrapperPlan *plan);
 CupError wrapper_plan_build(WrapperPlan *plan, const CupState *state);
 
 /* Rebuild a plan with launchers from one already selected default package. */
-CupError wrapper_plan_build_active(WrapperPlan *plan, const PackageIdentity *active_identity);
+CupError wrapper_plan_build_default(WrapperPlan *plan, const PackageIdentity *default_identity);
 
 /* Apply one validated plan and remove managed launchers absent from it. */
 CupError wrapper_plan_apply(const WrapperPlan *plan);
 
-/* Compare the managed bin directory with the exact desired launcher set. */
-CupError wrapper_plan_expected_matches(const WrapperPlan *plan, int *matches);
+/* Compare only the destinations named by one plan, ignoring other managed entries. */
+CupError wrapper_plan_entries_match(const WrapperPlan *plan, int *matches);
 
 /* Count missing, invalid, conflicting, or unexpected managed launchers. */
 CupError wrapper_plan_check(const WrapperPlan *plan, size_t *issue_count);

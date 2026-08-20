@@ -5,16 +5,28 @@
 
 #include "state.h"
 
+#include "filesystem.h"
 #include "layout.h"
-#include "system.h"
 #include "text.h"
 
-#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Parse indexed state keys without accepting sparse, duplicated or unknown record families. */
+
+static void state_diagnostic(FILE *diagnostics, const char *format, ...) {
+    va_list args;
+
+    if (diagnostics == NULL) {
+        return;
+    }
+    va_start(args, format);
+    vfprintf(diagnostics, format, args);
+    va_end(args);
+}
+
+/* Parse scoped state keys without accepting malformed or unknown record families. */
 typedef enum {
     STATE_RECORD_UNKNOWN,
     STATE_RECORD_INSTALLED,
@@ -70,27 +82,35 @@ static int identity_matches_scope(const PackageIdentity *identity, const Package
            strcmp(identity->target_platform, scope->target_platform) == 0;
 }
 
+static int find_installed_index(const CupState *state, const PackageIdentity *identity);
 static int find_default_index(const CupState *state, const PackageScope *scope);
+static CupError state_set_default_raw(CupState *state, const PackageIdentity *identity);
 
-static CupError identity_scope(const PackageIdentity *identity, PackageScope *scope) {
+static int state_counts_within_capacity(const CupState *state) {
+    return state != NULL && state->installed_count <= MAX_INSTALLED &&
+           state->default_count <= MAX_STATE_DEFAULTS;
+}
+
+static CupError identity_scope(const PackageIdentity *identity,
+                               PackageScope *scope,
+                               FILE *diagnostics) {
     CupError err;
 
     if (identity == NULL || scope == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = package_identity_validate(identity);
+    err = package_identity_validate(identity, diagnostics);
     if (err != CUP_OK) {
         return err;
     }
 
-    return package_scope_init(
-        scope, identity->component, identity->host_platform, identity->target_platform);
+    return package_identity_get_scope(identity, scope);
 }
 
-/* Validate installed uniqueness and require every active identity to reference an installed
+/* Validate installed uniqueness and require every default identity to reference an installed
  * package. */
-CupError state_validate(const CupState *state) {
+CupError state_validate(const CupState *state, FILE *diagnostics) {
     size_t i;
     size_t j;
 
@@ -98,62 +118,64 @@ CupError state_validate(const CupState *state) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    if (state->installed_count > MAX_INSTALLED || state->active_count > MAX_ACTIVE_PACKAGES) {
-        fprintf(stderr, "Error: state record count exceeds its supported capacity.\n");
-        return CUP_ERR_STATE_LOAD;
+    if (!state_counts_within_capacity(state)) {
+        state_diagnostic(
+            diagnostics, "Error: state record count exceeds its supported capacity.\n");
+        return CUP_ERR_STATE_FULL;
     }
 
     for (i = 0; i < state->installed_count; ++i) {
         const PackageIdentity *installed = &state->installed[i];
 
-        if (package_identity_validate(installed) != CUP_OK) {
-            fprintf(stderr, "Error: installed state identity %zu is invalid.\n", i + 1);
-            return CUP_ERR_STATE_LOAD;
+        if (package_identity_validate(installed, diagnostics) != CUP_OK) {
+            state_diagnostic(
+                diagnostics, "Error: installed state identity %zu is invalid.\n", i + 1);
+            return CUP_ERR_INCONSISTENT_STATE;
         }
 
         for (j = 0; j < i; ++j) {
             if (package_identity_equals(&state->installed[j], installed)) {
-                fprintf(stderr,
+                state_diagnostic(diagnostics,
                         "Error: duplicate installed state identity '%s:%s@%s'.\n",
                         installed->component,
                         installed->tool,
                         installed->version);
-                return CUP_ERR_STATE_LOAD;
+                return CUP_ERR_INCONSISTENT_STATE;
             }
         }
     }
 
-    for (i = 0; i < state->active_count; ++i) {
-        const PackageIdentity *active_identity = &state->active[i];
+    for (i = 0; i < state->default_count; ++i) {
+        const PackageIdentity *default_identity = &state->defaults[i];
         PackageScope scope;
 
-        if (identity_scope(active_identity, &scope) != CUP_OK) {
-            fprintf(stderr, "Error: default state identity %zu is invalid.\n", i + 1);
-            return CUP_ERR_STATE_LOAD;
+        if (identity_scope(default_identity, &scope, diagnostics) != CUP_OK) {
+            state_diagnostic(diagnostics, "Error: default state identity %zu is invalid.\n", i + 1);
+            return CUP_ERR_INCONSISTENT_STATE;
         }
 
         for (j = 0; j < i; ++j) {
-            if (identity_matches_scope(&state->active[j], &scope)) {
-                fprintf(stderr,
+            if (identity_matches_scope(&state->defaults[j], &scope)) {
+                state_diagnostic(diagnostics,
                         "Error: duplicate default scope for component '%s', "
                         "host '%s', target '%s'.\n",
                         scope.component,
                         scope.host_platform,
                         scope.target_platform);
-                return CUP_ERR_STATE_LOAD;
+                return CUP_ERR_INCONSISTENT_STATE;
             }
         }
 
-        if (state_find_installed(state, active_identity) == -1) {
-            fprintf(stderr,
+        if (find_installed_index(state, default_identity) == -1) {
+            state_diagnostic(diagnostics,
                     "Error: default state identity '%s@%s' for component '%s', "
                     "host '%s', target '%s' is not installed.\n",
-                    active_identity->tool,
-                    active_identity->version,
-                    active_identity->component,
-                    active_identity->host_platform,
-                    active_identity->target_platform);
-            return CUP_ERR_STATE_LOAD;
+                    default_identity->tool,
+                    default_identity->version,
+                    default_identity->component,
+                    default_identity->host_platform,
+                    default_identity->target_platform);
+            return CUP_ERR_INCONSISTENT_STATE;
         }
     }
 
@@ -164,7 +186,7 @@ size_t state_count_foreign_hosts(const CupState *state, const char *current_host
     size_t count = 0;
     size_t i;
 
-    if (state == NULL || text_is_empty(current_host)) {
+    if (!state_counts_within_capacity(state) || text_is_empty(current_host)) {
         return 0;
     }
 
@@ -173,8 +195,8 @@ size_t state_count_foreign_hosts(const CupState *state, const char *current_host
             count++;
         }
     }
-    for (i = 0; i < state->active_count; ++i) {
-        if (strcmp(state->active[i].host_platform, current_host) != 0) {
+    for (i = 0; i < state->default_count; ++i) {
+        if (strcmp(state->defaults[i].host_platform, current_host) != 0) {
             count++;
         }
     }
@@ -182,11 +204,18 @@ size_t state_count_foreign_hosts(const CupState *state, const char *current_host
     return count;
 }
 
-CupError state_validate_current_host(const CupState *state, const char *current_host) {
+CupError state_validate_current_host(const CupState *state,
+                                     const char *current_host,
+                                     FILE *diagnostics) {
     size_t foreign_count;
 
     if (state == NULL || text_is_empty(current_host)) {
         return CUP_ERR_INVALID_INPUT;
+    }
+    if (!state_counts_within_capacity(state)) {
+        state_diagnostic(
+            diagnostics, "Error: state record count exceeds its supported capacity.\n");
+        return CUP_ERR_STATE_FULL;
     }
 
     foreign_count = state_count_foreign_hosts(state, current_host);
@@ -194,7 +223,7 @@ CupError state_validate_current_host(const CupState *state, const char *current_
         return CUP_OK;
     }
 
-    fprintf(stderr,
+    state_diagnostic(diagnostics,
             "Error: state.txt contains %zu record(s) for a foreign host; "
             "run 'cup doctor' before using operational commands.\n",
             foreign_count);
@@ -202,7 +231,7 @@ CupError state_validate_current_host(const CupState *state, const char *current_
 }
 
 /* Parse format=1 atomically into a candidate model; malformed files never leak partial state. */
-static CupError parse_state_line(CupState *state, char *line) {
+static CupError parse_state_line(CupState *state, char *line, FILE *diagnostics) {
     PackageIdentity identity;
     PackageScope scope;
     StateRecordType type = STATE_RECORD_UNKNOWN;
@@ -239,17 +268,17 @@ static CupError parse_state_line(CupState *state, char *line) {
         } else if (type == STATE_RECORD_INSTALLED) {
             record_name = "installed";
         }
-        fprintf(stderr, "Error: malformed %s state key '%s'.\n", record_name, key);
+        state_diagnostic(diagnostics, "Error: malformed %s state key '%s'.\n", record_name, key);
         return CUP_ERR_STATE_LOAD;
     }
     if (type == STATE_RECORD_UNKNOWN) {
-        fprintf(stderr, "Error: unknown state key '%s'.\n", key);
+        state_diagnostic(diagnostics, "Error: unknown state key '%s'.\n", key);
         return CUP_ERR_STATE_LOAD;
     }
 
     /* Both installed and default records must resolve to one concrete identity. */
     err = package_identity_from_selector(
-        &identity, component, host_platform, target_platform, selector);
+        &identity, component, host_platform, target_platform, selector, diagnostics);
     if (err != CUP_OK) {
         return CUP_ERR_STATE_LOAD;
     }
@@ -257,8 +286,13 @@ static CupError parse_state_line(CupState *state, char *line) {
     /* Installed records extend the package set; defaults are unique per scope. */
     if (type == STATE_RECORD_INSTALLED) {
         err = state_add_installed(state, &identity);
+        if (err == CUP_ERR_STATE_FULL) {
+            state_diagnostic(diagnostics,
+                             "Error: installed state record capacity was exceeded.\n");
+            return err;
+        }
         if (err == CUP_ERR_ALREADY_INSTALLED) {
-            fprintf(stderr,
+            state_diagnostic(diagnostics,
                     "Error: duplicate installed state record '%s' for "
                     "component '%s', host '%s', target '%s'.\n",
                     selector,
@@ -275,7 +309,7 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_STATE_LOAD;
     }
     if (find_default_index(state, &scope) != -1) {
-        fprintf(stderr,
+        state_diagnostic(diagnostics,
                 "Error: duplicate default for component '%s', host '%s', target '%s'.\n",
                 component,
                 host_platform,
@@ -283,50 +317,78 @@ static CupError parse_state_line(CupState *state, char *line) {
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = state_set_active(state, &identity);
+    err = state_set_default_raw(state, &identity);
+    if (err == CUP_ERR_DEFAULT_FULL || err == CUP_ERR_STATE_FULL) {
+        state_diagnostic(diagnostics, "Error: default state record capacity was exceeded.\n");
+        return err;
+    }
     return err == CUP_OK ? CUP_OK : CUP_ERR_STATE_LOAD;
 }
 
-/* Serialize a canonical ordering so state bytes do not depend on command history. */
+/* Read one bounded state snapshot; parsing failures never expose a partial model. */
 static CupError load_state_path(CupState *state,
                                 StateFileStatus *status,
-                                const char *state_path) {
+                                SystemPathIdentity *source_identity,
+                                const char *state_path,
+                                FILE *diagnostics) {
+    PersistentFileSnapshot snapshot;
+    TextDocumentReader reader;
     CupError err;
-    FILE *file;
     char line[MAX_STATE_LINE_LEN];
-    size_t line_number = 0;
+    char expected_header[32];
+    int written;
     int has_line;
+    int missing;
 
     if (state == NULL || status == NULL || text_is_empty(state_path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    memset(state, 0, sizeof(*state));
-    *status = STATE_FILE_MISSING;
-
-    file = fopen(state_path, "r");
-    if (file == NULL) {
-        if (errno == ENOENT) {
-            return CUP_OK;
+    filesystem_snapshot_init(&snapshot);
+    err = filesystem_snapshot_read(
+        state_path, MAX_STATE_FILE_BYTES, &snapshot, &missing);
+    if (err != CUP_OK) {
+        if (err == CUP_ERR_BUFFER_TOO_SMALL) {
+            state_diagnostic(
+                diagnostics, "Error: state.txt exceeds its bounded document budget.\n");
+            return CUP_ERR_STATE_FULL;
         }
-
-        fprintf(stderr, "Error: could not open state file for reading.\n");
+        state_diagnostic(diagnostics, "Error: could not open state file for reading.\n");
+        return err;
+    }
+    if (missing) {
+        return CUP_OK;
+    }
+    if (source_identity != NULL) {
+        *source_identity = snapshot.identity;
+    }
+    err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
+    if (err != CUP_OK) {
+        state_diagnostic(
+            diagnostics, "Error: state.txt is not canonical LF-terminated ASCII text.\n");
+        filesystem_snapshot_release(&snapshot);
         return CUP_ERR_STATE_LOAD;
     }
 
-    err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
-    if (err != CUP_OK || !has_line || strcmp(line, "format=1") != 0) {
-        fprintf(stderr, "Error: state.txt must start with the supported 'format=1' header.\n");
-        fclose(file);
-        memset(state, 0, sizeof(*state));
+    written = snprintf(expected_header, sizeof(expected_header), "format=%d", CUP_STATE_FORMAT);
+    if (written < 0 || (size_t)written >= sizeof(expected_header)) {
+        filesystem_snapshot_release(&snapshot);
+        return CUP_ERR_STATE_LOAD;
+    }
+    err = text_document_read_line(&reader, line, sizeof(line), &has_line);
+    if (err != CUP_OK || !has_line || strcmp(line, expected_header) != 0) {
+        state_diagnostic(diagnostics,
+                         "Error: state.txt must start with the supported 'format=%d' header.\n",
+                         CUP_STATE_FORMAT);
+        filesystem_snapshot_release(&snapshot);
         return CUP_ERR_STATE_LOAD;
     }
 
     while (1) {
-        err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
+        err = text_document_read_line(&reader, line, sizeof(line), &has_line);
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: could not read state file line.\n");
-            fclose(file);
+            state_diagnostic(diagnostics, "Error: could not read state file line.\n");
+            filesystem_snapshot_release(&snapshot);
             memset(state, 0, sizeof(*state));
             return CUP_ERR_STATE_LOAD;
         }
@@ -334,37 +396,48 @@ static CupError load_state_path(CupState *state,
             break;
         }
 
-        err = parse_state_line(state, line);
+        err = parse_state_line(state, line, diagnostics);
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: invalid state file line %zu.\n", line_number);
-            fclose(file);
+            state_diagnostic(
+                diagnostics, "Error: invalid state file line %zu.\n", reader.line_number);
+            filesystem_snapshot_release(&snapshot);
             memset(state, 0, sizeof(*state));
+            if (err == CUP_ERR_STATE_FULL || err == CUP_ERR_DEFAULT_FULL) {
+                return err;
+            }
             return CUP_ERR_STATE_LOAD;
         }
     }
 
-    if (fclose(file) != 0) {
-        memset(state, 0, sizeof(*state));
-        return CUP_ERR_STATE_LOAD;
-    }
-
+    filesystem_snapshot_release(&snapshot);
     *status = STATE_FILE_LOADED;
     return CUP_OK;
 }
 
-CupError state_load_path(CupState *state, StateFileStatus *status, const char *path) {
-    return load_state_path(state, status, path);
-}
-
-CupError state_load(CupState *state, StateFileStatus *status) {
+CupError state_load(CupState *state,
+                    StateFileStatus *status,
+                    SystemPathIdentity *source_identity,
+                    FILE *diagnostics) {
     char state_path[MAX_PATH_LEN];
     CupError err;
 
+    if (state != NULL) {
+        memset(state, 0, sizeof(*state));
+    }
+    if (status != NULL) {
+        *status = STATE_FILE_MISSING;
+    }
+    if (source_identity != NULL) {
+        memset(source_identity, 0, sizeof(*source_identity));
+    }
     if (state == NULL || status == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+
     err = layout_get_state_path(state_path, sizeof(state_path));
-    return err == CUP_OK ? load_state_path(state, status, state_path) : err;
+    return err == CUP_OK
+               ? load_state_path(state, status, source_identity, state_path, diagnostics)
+               : err;
 }
 
 static int compare_identity_pointers(const void *left, const void *right) {
@@ -388,136 +461,155 @@ static int compare_identity_pointers(const void *left, const void *right) {
     return result;
 }
 
-/* Atomic persistence and commit-state handling. */
-CupError state_save(const CupState *state) {
-    CupError err;
-    FILE *file = NULL;
-    char root[MAX_PATH_LEN];
-    char state_path[MAX_PATH_LEN];
-    char tmp_path[MAX_PATH_LEN];
-    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-    const PackageIdentity *installed[MAX_INSTALLED];
-    const PackageIdentity *active[MAX_ACTIVE_PACKAGES];
-    int write_status;
-    size_t i;
+/* Serialize one canonical installed/default record. */
+static CupError write_state_record(FILE *file,
+                                   const char *kind,
+                                   const PackageIdentity *identity) {
+    char selector[MAX_SELECTOR_LEN];
 
-    if (state == NULL) {
+    if (file == NULL || text_is_empty(kind) || identity == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (package_identity_format_selector(identity, selector, sizeof(selector)) != CUP_OK) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    if (fprintf(file,
+                "%s.%s.%s.%s=%s\n",
+                kind,
+                identity->component,
+                identity->host_platform,
+                identity->target_platform,
+                selector) < 0) {
+        fprintf(stderr, "Error: could not write %s state.\n", kind);
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
 
-    /* Validate first, then create the temporary file in the managed root for atomic replacement. */
-    if (state_validate(state) != CUP_OK || layout_get_root(root, sizeof(root)) != CUP_OK ||
-        layout_get_state_path(state_path, sizeof(state_path)) != CUP_OK ||
-        system_create_temp_file(root, "state", tmp_path, sizeof(tmp_path), &file) != CUP_OK) {
-        return CUP_ERR_STATE_SAVE;
+typedef struct {
+    const CupState *state;
+    const PackageIdentity *installed[MAX_INSTALLED];
+    const PackageIdentity *defaults[MAX_STATE_DEFAULTS];
+} StateWriteContext;
+
+static CupError write_state_file(FILE *file, const void *value) {
+    const StateWriteContext *context = value;
+    CupError err = CUP_OK;
+    size_t i;
+
+    if (file == NULL || context == NULL || context->state == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (fprintf(file, "format=%d\n", CUP_STATE_FORMAT) < 0) {
+        return CUP_ERR_FILESYSTEM;
     }
 
-    if (fprintf(file, "format=%d\n", CUP_STATE_FORMAT) < 0) {
-        fclose(file);
-        system_remove_file(tmp_path);
-        return CUP_ERR_STATE_SAVE;
+    for (i = 0; i < context->state->installed_count && err == CUP_OK; ++i) {
+        err = write_state_record(file, "installed", context->installed[i]);
+    }
+    for (i = 0; i < context->state->default_count && err == CUP_OK; ++i) {
+        err = write_state_record(file, "default", context->defaults[i]);
+    }
+    return err;
+}
+
+/* Validate, serialize and publish the complete state snapshot. */
+CupError state_save(const CupState *state,
+                    const SystemPathIdentity *expected_identity,
+                    SystemPathIdentity *published_identity) {
+    StateWriteContext context;
+    SystemPathIdentity expected_copy;
+    SystemPathIdentity current_identity;
+    const SystemPathIdentity *expected = expected_identity;
+    char root[MAX_PATH_LEN];
+    char state_path[MAX_PATH_LEN];
+    CupError err;
+    size_t i;
+
+    if (expected_identity != NULL && published_identity == expected_identity) {
+        expected_copy = *expected_identity;
+        expected = &expected_copy;
+    }
+    if (published_identity != NULL) {
+        memset(published_identity, 0, sizeof(*published_identity));
+    }
+    if (state == NULL ||
+        (expected != NULL &&
+         (!expected->valid || expected->kind != SYSTEM_PATH_REGULAR_FILE))) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(&context, 0, sizeof(context));
+    context.state = state;
+
+    /* Validate before touching storage so semantic failures are never reported as I/O errors. */
+    err = state_validate(state, stderr);
+    if (err == CUP_OK) {
+        err = layout_get_root(root, sizeof(root));
+    }
+    if (err == CUP_OK) {
+        err = layout_get_state_path(state_path, sizeof(state_path));
+    }
+    if (err != CUP_OK) {
+        return err;
     }
 
     /* Sort pointer views rather than mutating the caller's in-memory ordering. */
     for (i = 0; i < state->installed_count; ++i) {
-        installed[i] = &state->installed[i];
+        context.installed[i] = &state->installed[i];
     }
-    for (i = 0; i < state->active_count; ++i) {
-        active[i] = &state->active[i];
+    for (i = 0; i < state->default_count; ++i) {
+        context.defaults[i] = &state->defaults[i];
     }
-    qsort(installed, state->installed_count, sizeof(installed[0]), compare_identity_pointers);
-    qsort(active, state->active_count, sizeof(active[0]), compare_identity_pointers);
+    qsort(context.installed,
+          state->installed_count,
+          sizeof(context.installed[0]),
+          compare_identity_pointers);
+    qsort(context.defaults,
+          state->default_count,
+          sizeof(context.defaults[0]),
+          compare_identity_pointers);
 
-    /* Serialize concrete installed identities before the active/default records. */
-    for (i = 0; i < state->installed_count; ++i) {
-        const PackageIdentity *installed_identity = installed[i];
-        char selector[MAX_SELECTOR_LEN];
-
-        if (package_identity_format_selector(installed_identity, selector, sizeof(selector)) !=
-            CUP_OK) {
-            fclose(file);
-            system_remove_file(tmp_path);
-            return CUP_ERR_STATE_SAVE;
-        }
-        write_status = fprintf(file,
-                               "installed.%s.%s.%s=%s\n",
-                               installed_identity->component,
-                               installed_identity->host_platform,
-                               installed_identity->target_platform,
-                               selector);
-        if (write_status < 0) {
-            fclose(file);
-            system_remove_file(tmp_path);
-            fprintf(stderr, "Error: could not write installed state.\n");
-            return CUP_ERR_STATE_SAVE;
-        }
+    if (expected == NULL) {
+        err = filesystem_publish_new_file(
+            root, "state", state_path, 0, write_state_file, &context);
+    } else {
+        err = filesystem_replace_file_if_identity(
+            root, "state", state_path, expected, 0, write_state_file, &context);
     }
-
-    for (i = 0; i < state->active_count; ++i) {
-        const PackageIdentity *active_identity = active[i];
-        char selector[MAX_SELECTOR_LEN];
-
-        if (package_identity_format_selector(active_identity, selector, sizeof(selector)) !=
-            CUP_OK) {
-            fclose(file);
-            system_remove_file(tmp_path);
-            return CUP_ERR_STATE_SAVE;
-        }
-        write_status = fprintf(file,
-                               "default.%s.%s.%s=%s\n",
-                               active_identity->component,
-                               active_identity->host_platform,
-                               active_identity->target_platform,
-                               selector);
-        if (write_status < 0) {
-            fclose(file);
-            system_remove_file(tmp_path);
-            fprintf(stderr, "Error: could not write default state.\n");
-            return CUP_ERR_STATE_SAVE;
-        }
-    }
-
-    /* Sync the complete temporary state before crossing the atomic commit point. */
-    err = system_sync_file(file);
-    write_status = fclose(file);
-    if (err != CUP_OK || write_status != 0) {
-        system_remove_file(tmp_path);
-        fprintf(stderr, "Error: could not close temporary state file.\n");
-        return CUP_ERR_STATE_SAVE;
-    }
-
-    err = system_replace_file(tmp_path, state_path, &commit_state);
     if (err != CUP_OK) {
-        if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
-            system_remove_file(tmp_path);
-            fprintf(stderr, "Error: could not replace state file.\n");
-            return CUP_ERR_STATE_SAVE;
-        }
+        return err;
+    }
 
-        fprintf(stderr,
-                "Error: state file was replaced, but its "
-                "durability could not be confirmed.\n");
+    err = system_get_path_identity(state_path, &current_identity);
+    if (err != CUP_OK || !current_identity.valid ||
+        current_identity.kind != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_COMMIT;
     }
-
+    if (published_identity != NULL) {
+        *published_identity = current_identity;
+    }
     return CUP_OK;
 }
 
-/* Bounded installed-identity lookup and mutation. */
-int state_find_installed(const CupState *state, const PackageIdentity *identity) {
+/* Internal lookup for identities already validated by the caller. */
+static int find_installed_index(const CupState *state, const PackageIdentity *identity) {
     size_t i;
-
-    if (state == NULL || package_identity_validate(identity) != CUP_OK) {
-        return -1;
-    }
 
     for (i = 0; i < state->installed_count; ++i) {
         if (package_identity_equals(&state->installed[i], identity)) {
             return (int)i;
         }
     }
-
     return -1;
+}
+
+/* Bounded installed-identity lookup and mutation. */
+int state_find_installed(const CupState *state, const PackageIdentity *identity) {
+    if (!state_counts_within_capacity(state) ||
+        package_identity_validate(identity, stderr) != CUP_OK) {
+        return -1;
+    }
+    return find_installed_index(state, identity);
 }
 
 CupError state_add_installed(CupState *state, const PackageIdentity *identity) {
@@ -526,12 +618,15 @@ CupError state_add_installed(CupState *state, const PackageIdentity *identity) {
     if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
 
-    err = package_identity_validate(identity);
+    err = package_identity_validate(identity, stderr);
     if (err != CUP_OK) {
         return err;
     }
-    if (state_find_installed(state, identity) != -1) {
+    if (find_installed_index(state, identity) != -1) {
         return CUP_ERR_ALREADY_INSTALLED;
     }
     if (state->installed_count >= MAX_INSTALLED) {
@@ -543,16 +638,32 @@ CupError state_add_installed(CupState *state, const PackageIdentity *identity) {
 }
 
 CupError state_remove_installed(CupState *state, const PackageIdentity *identity) {
+    CupError err;
     int index;
     size_t i;
 
-    if (state == NULL || package_identity_validate(identity) != CUP_OK) {
+    if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
+    err = package_identity_validate(identity, stderr);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    index = state_find_installed(state, identity);
+    index = find_installed_index(state, identity);
     if (index == -1) {
         return CUP_ERR_NOT_INSTALLED;
+    }
+    for (i = 0; i < state->default_count; ++i) {
+        if (package_identity_equals(&state->defaults[i], identity)) {
+            fprintf(stderr,
+                    "Error: a package selected as default cannot be removed before the "
+                    "default is cleared.\n");
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
     }
 
     for (i = (size_t)index; i + 1 < state->installed_count; ++i) {
@@ -568,31 +679,30 @@ CupError state_remove_installed(CupState *state, const PackageIdentity *identity
 
 /* One default identity is allowed for each component, host and target scope. */
 static int find_default_index(const CupState *state, const PackageScope *scope) {
-    PackageScope validated;
     size_t i;
 
-    if (state == NULL || scope == NULL ||
-        package_scope_init(
-            &validated, scope->component, scope->host_platform, scope->target_platform) != CUP_OK) {
-        return -1;
-    }
-
-    for (i = 0; i < state->active_count; ++i) {
-        if (identity_matches_scope(&state->active[i], scope)) {
+    for (i = 0; i < state->default_count; ++i) {
+        if (identity_matches_scope(&state->defaults[i], scope)) {
             return (int)i;
         }
     }
-
     return -1;
 }
 
-const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope) {
-    int index = find_default_index(state, scope);
+const PackageIdentity *state_get_default(const CupState *state, const PackageScope *scope) {
+    PackageScope validated;
+    int index;
 
-    return index == -1 ? NULL : &state->active[index];
+    if (!state_counts_within_capacity(state) || scope == NULL ||
+        package_scope_init(
+            &validated, scope->component, scope->host_platform, scope->target_platform) != CUP_OK) {
+        return NULL;
+    }
+    index = find_default_index(state, &validated);
+    return index == -1 ? NULL : &state->defaults[index];
 }
 
-CupError state_set_active(CupState *state, const PackageIdentity *identity) {
+static CupError state_set_default_raw(CupState *state, const PackageIdentity *identity) {
     PackageScope scope;
     CupError err;
     int index;
@@ -600,48 +710,83 @@ CupError state_set_active(CupState *state, const PackageIdentity *identity) {
     if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
 
-    err = identity_scope(identity, &scope);
+    err = identity_scope(identity, &scope, stderr);
     if (err != CUP_OK) {
         return err;
     }
 
     index = find_default_index(state, &scope);
     if (index != -1) {
-        state->active[index] = *identity;
+        state->defaults[index] = *identity;
         return CUP_OK;
     }
-    if (state->active_count >= MAX_ACTIVE_PACKAGES) {
-        return CUP_ERR_ACTIVE_FULL;
+    if (state->default_count >= MAX_STATE_DEFAULTS) {
+        return CUP_ERR_DEFAULT_FULL;
     }
 
-    state->active[state->active_count++] = *identity;
+    state->defaults[state->default_count++] = *identity;
     return CUP_OK;
 }
 
-CupError state_clear_active(CupState *state, const PackageScope *scope) {
+CupError state_set_default(CupState *state, const PackageIdentity *identity) {
+    CupError err;
+
+    if (state == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
+    err = package_identity_validate(identity, stderr);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (find_installed_index(state, identity) == -1) {
+        fprintf(stderr, "Error: a package must be installed before it can become the default.\n");
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    return state_set_default_raw(state, identity);
+}
+
+CupError state_clear_default(CupState *state, const PackageScope *scope) {
+    PackageScope validated;
+    CupError err;
     int index;
     size_t i;
 
     if (state == NULL || scope == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
+    err = package_scope_init(
+        &validated, scope->component, scope->host_platform, scope->target_platform);
+    if (err != CUP_OK) {
+        return err;
+    }
 
-    index = find_default_index(state, scope);
+    index = find_default_index(state, &validated);
     if (index == -1) {
         return CUP_OK;
     }
 
-    for (i = (size_t)index; i + 1 < state->active_count; ++i) {
-        state->active[i] = state->active[i + 1];
+    for (i = (size_t)index; i + 1 < state->default_count; ++i) {
+        state->defaults[i] = state->defaults[i + 1];
     }
 
-    state->active_count--;
-    memset(&state->active[state->active_count], 0, sizeof(state->active[state->active_count]));
+    state->default_count--;
+    memset(&state->defaults[state->default_count],
+           0,
+           sizeof(state->defaults[state->default_count]));
     return CUP_OK;
 }
 
-CupError state_clear_matching_active(CupState *state, const PackageIdentity *identity) {
+CupError state_clear_matching_default(CupState *state, const PackageIdentity *identity) {
     PackageScope scope;
     const PackageIdentity *current;
     CupError err;
@@ -649,16 +794,19 @@ CupError state_clear_matching_active(CupState *state, const PackageIdentity *ide
     if (state == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (!state_counts_within_capacity(state)) {
+        return CUP_ERR_STATE_FULL;
+    }
 
-    err = identity_scope(identity, &scope);
+    err = identity_scope(identity, &scope, stderr);
     if (err != CUP_OK) {
         return err;
     }
 
-    current = state_get_active(state, &scope);
+    current = state_get_default(state, &scope);
     if (current == NULL || !package_identity_equals(current, identity)) {
         return CUP_OK;
     }
 
-    return state_clear_active(state, &scope);
+    return state_clear_default(state, &scope);
 }

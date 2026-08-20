@@ -4,6 +4,7 @@
 /* Test-only compatibility for deterministic filesystem and descriptor fixtures. */
 #include <errno.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,11 +87,17 @@ static inline int test_file_descriptor(FILE *file) {
     return _fileno(file);
 }
 
+static inline unsigned long test_temp_sequence(void) {
+    static LONG sequence = 0;
+
+    return (unsigned long)InterlockedIncrement(&sequence);
+}
+
 static inline char *test_make_temp_directory(char *buffer,
                                              size_t size,
                                              const char *name) {
     const char *base = getenv("RUNNER_TEMP");
-    int written;
+    unsigned int attempt;
 
     if (base == NULL || base[0] == '\0') {
         base = getenv("TEMP");
@@ -102,14 +109,30 @@ static inline char *test_make_temp_directory(char *buffer,
         base = ".";
     }
 
-    written = snprintf(buffer, size, "%s/%s-XXXXXX", base, name);
-    if (written < 0 || (size_t)written >= size) {
-        return NULL;
+    for (attempt = 0; attempt < 128; attempt++) {
+        int written = snprintf(buffer,
+                               size,
+                               "%s/%s-%lu-%llu-%lu",
+                               base,
+                               name,
+                               (unsigned long)GetCurrentProcessId(),
+                               (unsigned long long)GetTickCount64(),
+                               test_temp_sequence());
+
+        if (written < 0 || (size_t)written >= size) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        if (CreateDirectoryA(buffer, NULL)) {
+            return buffer;
+        }
+        if (GetLastError() != ERROR_ALREADY_EXISTS) {
+            errno = EIO;
+            return NULL;
+        }
     }
-    if (_mktemp_s(buffer, size) != 0 || _mkdir(buffer) != 0) {
-        return NULL;
-    }
-    return buffer;
+    errno = EEXIST;
+    return NULL;
 }
 
 static inline int test_create_temp_file(const char *directory,
@@ -117,18 +140,59 @@ static inline int test_create_temp_file(const char *directory,
                                         char *path,
                                         size_t path_size,
                                         FILE **file) {
-    int written;
+    unsigned int attempt;
 
     if (directory == NULL || prefix == NULL || path == NULL || path_size == 0 || file == NULL) {
         errno = EINVAL;
         return -1;
     }
-    written = snprintf(path, path_size, "%s/%s-XXXXXX", directory, prefix);
-    if (written < 0 || (size_t)written >= path_size || _mktemp_s(path, path_size) != 0) {
-        return -1;
+    *file = NULL;
+    for (attempt = 0; attempt < 128; attempt++) {
+        HANDLE handle;
+        int descriptor;
+        int written = snprintf(path,
+                               path_size,
+                               "%s/%s-%lu-%llu-%lu",
+                               directory,
+                               prefix,
+                               (unsigned long)GetCurrentProcessId(),
+                               (unsigned long long)GetTickCount64(),
+                               test_temp_sequence());
+
+        if (written < 0 || (size_t)written >= path_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        handle = CreateFileA(path,
+                             GENERIC_READ | GENERIC_WRITE,
+                             0,
+                             NULL,
+                             CREATE_NEW,
+                             FILE_ATTRIBUTE_NORMAL,
+                             NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) {
+                continue;
+            }
+            errno = EIO;
+            return -1;
+        }
+        descriptor = _open_osfhandle((intptr_t)handle, _O_RDWR | _O_BINARY);
+        if (descriptor < 0) {
+            CloseHandle(handle);
+            DeleteFileA(path);
+            return -1;
+        }
+        *file = _fdopen(descriptor, "w+b");
+        if (*file == NULL) {
+            _close(descriptor);
+            DeleteFileA(path);
+            return -1;
+        }
+        return 0;
     }
-    *file = fopen(path, "w+b");
-    return *file == NULL ? -1 : 0;
+    errno = EEXIST;
+    return -1;
 }
 
 static inline int test_remove_tree(const char *path) {
@@ -162,6 +226,8 @@ static inline int test_remove_tree(const char *path) {
     }
     search = FindFirstFileA(pattern, &data);
     if (search != INVALID_HANDLE_VALUE) {
+        DWORD enumeration_error;
+
         do {
             char child[CUP_TEST_TEMP_PATH_SIZE];
 
@@ -174,7 +240,10 @@ static inline int test_remove_tree(const char *path) {
                 return -1;
             }
         } while (FindNextFileA(search, &data));
-        FindClose(search);
+        enumeration_error = GetLastError();
+        if (!FindClose(search) || enumeration_error != ERROR_NO_MORE_FILES) {
+            return -1;
+        }
     } else if (GetLastError() != ERROR_FILE_NOT_FOUND) {
         return -1;
     }
@@ -301,22 +370,50 @@ static inline int test_create_temp_file(const char *directory,
 }
 
 static inline int test_remove_tree(const char *path) {
-    DIR *directory = opendir(path);
+    struct stat status;
+    DIR *directory;
     struct dirent *entry;
 
-    if (directory == NULL) {
-        return unlink(path) == 0 || errno == ENOENT ? 0 : -1;
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
     }
-    while ((entry = readdir(directory)) != NULL) {
+    if (lstat(path, &status) != 0) {
+        return errno == ENOENT ? 0 : -1;
+    }
+    if (!S_ISDIR(status.st_mode)) {
+        return unlink(path);
+    }
+
+    directory = opendir(path);
+    if (directory == NULL) {
+        return -1;
+    }
+    while (1) {
         char child[CUP_TEST_TEMP_PATH_SIZE];
         int written;
 
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                int saved_errno = errno;
+
+                (void)closedir(directory);
+                errno = saved_errno;
+                return -1;
+            }
+            break;
+        }
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
         written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
         if (written < 0 || (size_t)written >= sizeof(child) || test_remove_tree(child) != 0) {
-            closedir(directory);
+            int saved_errno = errno;
+
+            (void)closedir(directory);
+            errno = saved_errno;
             return -1;
         }
     }

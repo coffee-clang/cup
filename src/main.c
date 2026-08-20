@@ -8,10 +8,15 @@
 #include "error.h"
 #include "exit_status.h"
 #include "interrupt.h"
+#include "layout.h"
 #include "cup_update_helper.h"
-#include "runtime_journal.h"
+#include "cup_bootstrap.h"
 #include "system.h"
 #include "package_selector.h"
+#include "package_archive.h"
+#include "path.h"
+#include "platform.h"
+#include "registry.h"
 #include "text.h"
 #include "version.h"
 
@@ -37,140 +42,143 @@ static const CommandHelp COMMAND_HELP[] = {
      "Options:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Without command, show general help.\n"
      "Examples:\n  cup help\n  cup help install\n"
-     "Effects:\n  Read-only; never initializes the cup runtime."},
+     "Effects:\n  Read-only; never initializes the local cup installation."},
     {"search",
      "search [<component>] [--target <target-platform>]",
      "Search the package catalog.",
-     "Description:\n  Show packages available from the active catalog.\n"
+     "Description:\n  Show packages available from the current catalog.\n"
      "Arguments:\n  component  Optional component filter.\n"
      "Options:\n  --target <target-platform>  Restrict results to one target.\n"
      "  -h, --help                   Show this help.\n"
      "Defaults:\n  Uses the current host and shows every target when --target is omitted.\n"
      "Examples:\n  cup search\n  cup search compiler --target linux-x64\n"
-     "Effects:\n  Read-only; never initializes the cup runtime."},
+     "Effects:\n  Read-only; never initializes the local cup installation."},
     {"list",
      "list [<component>] [--target <target-platform>]",
      "List installed packages.",
-     "Description:\n  Show installed package versions and default/stable annotations.\n"
+     "Description:\n  Show installed package versions with default and stable annotations.\n"
      "Arguments:\n  component  Optional component filter.\n"
      "Options:\n  --target <target-platform>  Restrict results to one target.\n"
      "  -h, --help                   Show this help.\n"
      "Defaults:\n  Uses the current host and all installed targets.\n"
      "Examples:\n  cup list\n  cup list compiler --target linux-x64\n"
-     "Effects:\n  Read-only; missing or invalid package entries produce degraded output and a "
-     "nonzero status."},
+     "Effects:\n  Read-only; invalid package entries are reported and return a nonzero status."},
     {"install",
      "install [<component>] <tool>[@<release>] [--target <target-platform>] "
      "[--format|-f <archive-format>] | install <component> [--target <target-platform>] "
      "[--format|-f <archive-format>] | install <profile|toolchain> <name> "
      "[--target <target-platform>] [--format|-f <archive-format>]",
      "Install one package, profile or toolchain.",
-     "Description:\n  Resolve and install one package or a prevalidated group.\n"
-     "Arguments:\n  component            Optional explicit component or abbreviated component "
-     "install.\n"
-     "  tool[@release]      Tool selection; release defaults to stable.\n"
-     "  profile|toolchain   Group kind followed by its name.\n"
-     "Options:\n  --target <target-platform>  Select the target scope.\n"
+     "Description:\n  Resolve and install one package, profile or toolchain.\n"
+     "Arguments:\n  component          Component to install or explicit component for a tool.\n"
+     "  tool[@release]     Tool selection; release defaults to stable.\n"
+     "  profile|toolchain  Group kind followed by its name.\n"
+     "Options:\n  --target <target-platform>  Select the target platform.\n"
      "  -f, --format <format>       Select tar.xz, tar.gz or zip.\n"
      "  -h, --help                  Show this help.\n"
-     "Defaults:\n  Omitted tool resolves preferred > official default; omitted release means "
-     "stable.\n"
+     "Defaults:\n  An omitted tool uses the preferred tool, then the official default.\n"
+     "  An omitted release means stable.\n"
      "Examples:\n  cup install gcc\n  cup install gcc@stable\n  cup install compiler\n"
      "  cup install compiler gcc@stable\n  cup install profile "
      "standard\n  cup install toolchain llvm\n"
-     "Effects:\n  Downloads, validates and atomically commits packages; an intact installed "
-     "selection is idempotent."},
+     "Effects:\n  Each package is downloaded, validated and committed atomically.\n"
+     "  Group installs are sequential and not atomic as a whole.\n"
+     "  Installing an already valid package leaves it unchanged."},
     {"remove",
      "remove [<component>] <tool>[@<release>] [--target <target-platform>]",
      "Remove one installed release.",
-     "Description:\n  Remove one concrete installed package and update exposed commands.\n"
+     "Description:\n  Remove one installed package version and update its commands.\n"
      "Arguments:\n  component       Optional explicit installed component.\n"
      "  tool[@release]  Installed selection; release may be omitted only when unique.\n"
-     "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
+     "Options:\n  --target <target-platform>  Select the target platform.\n  -h, --help  Show this "
      "help.\n"
-     "Defaults:\n  Uses the current host and target. Without a release, removes the package only "
-     "when exactly one installed version matches; otherwise lists the installed releases and "
-     "requires one explicitly.\n"
+     "Defaults:\n  Uses the current host and target.\n"
+     "  Without a release, removes the package only when exactly one installed version matches.\n"
+     "  Otherwise, lists the installed releases and requires one explicitly.\n"
      "Examples:\n  cup remove clang\n  cup remove clang@22.1.5\n"
      "  cup remove compiler clang@22.1.5\n"
-     "Effects:\n  Removes the selected package and updates defaults and exposed commands."},
+     "Effects:\n  Removes the selected package and updates defaults and provided commands."},
     {"update",
      "update [cup|<tool>|<component>]",
-     "Update cup or installed package scopes.",
-     "Description:\n  Install stable releases for matching installed tool scopes.\n"
+     "Update installed tools or the cup executable.",
+     "Description:\n  Update installed tools, or update the cup executable when cup is selected.\n"
      "Arguments:\n  cup|tool|component  Optional update selector.\n"
      "Options:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Without a selector, updates installed tools only; cup itself is not updated.\n"
      "Examples:\n  cup update\n  cup update clang\n  cup update compiler\n  cup update cup\n"
-     "Effects:\n  Retains old releases; moves a default only when it selected an older release of "
-     "the same tool."},
+     "Effects:\n  Tool updates retain old releases.\n"
+     "  A default moves only from an older release of the same tool.\n"
+     "  cup update cup installs only a newer verified official release."},
     {"config",
      "config [--target <target-platform>] | config set <component> <tool> "
      "[--target <target-platform>] | config reset [<component>] [--target <target-platform>]",
      "Show or modify install preferences.",
-     "Description:\n  Show effective scoped selections or set/reset preferred tools.\n"
+     "Description:\n  Show effective tools or set/reset installation preferences.\n"
      "Arguments:\n  component  Component whose preference is changed.\n  tool  Preferred tool.\n"
-     "Options:\n  --target <target-platform>  Select the preference scope.\n  -h, --help  Show "
+     "Options:\n  --target <target-platform>  Select the target platform.\n  -h, --help  Show "
      "this help.\n"
-     "Defaults:\n  Uses the current host and target; reset without component clears that scope "
-     "only.\n"
+     "Defaults:\n  Uses the current host and target; reset without component clears preferences "
+     "for that target.\n"
      "Examples:\n  cup config\n  cup config set compiler gcc\n  cup config reset compiler --target "
      "linux-x64\n"
      "Effects:\n  The view is read-only; set/reset update installation preferences."},
     {"default",
      "default <component> <tool>@<release> [--target <target-platform>]",
      "Select one installed package as the default.",
-     "Description:\n  Set the public default for one installed component scope.\n"
-     "Arguments:\n  component       Installed component.\n  tool@release    Concrete installed "
-     "selector.\n"
-     "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
+     "Description:\n  Set the default installed package for one component and target.\n"
+     "Arguments:\n  component       Installed component.\n"
+     "  tool@release    Installed selector; stable resolves through the catalog.\n"
+     "Options:\n  --target <target-platform>  Select the target platform.\n  -h, --help  Show this "
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
-     "Examples:\n  cup default compiler clang@22.1.5\n"
-     "Effects:\n  Updates the selected default and exposed commands."},
+     "Examples:\n  cup default compiler clang@stable\n"
+     "  cup default compiler clang@22.1.5\n"
+     "Effects:\n  Resolves an installed package, then updates the default and provided commands.\n"
+     "  It never installs a missing package."},
     {"info",
      "info [<component>] [--target <target-platform>]",
-     "Show defaults and exposed commands.",
-     "Description:\n  Show aggregate installed/default status for the current host.\n"
+     "Show defaults and their provided commands.",
+     "Description:\n  Show defaults and their provided commands for the current host.\n"
      "Arguments:\n  component  Optional component filter.\n"
      "Options:\n  --target <target-platform>  Restrict output to one target.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Shows every target when --target is omitted.\n"
      "Examples:\n  cup info\n  cup info compiler --target linux-x64\n"
-     "Effects:\n  Read-only; invalid defaults or exposed commands produce degraded output and "
-     "a nonzero "
-     "status."},
+     "Effects:\n  Read-only; invalid defaults or provided commands are reported and return a "
+     "nonzero status."},
     {"inspect",
      "inspect <component> <tool>@<release> [--target <target-platform>]",
      "Inspect an installed package.",
      "Description:\n  Validate one installed package and print its metadata.\n"
-     "Arguments:\n  component       Installed component.\n  tool@release    Concrete installed "
-     "selector.\n"
-     "Options:\n  --target <target-platform>  Select the target scope.\n  -h, --help  Show this "
+     "Arguments:\n  component       Installed component.\n"
+     "  tool@release    Installed selector; stable resolves through the catalog.\n"
+     "Options:\n  --target <target-platform>  Select the target platform.\n  -h, --help  Show this "
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
-     "Examples:\n  cup inspect compiler clang@22.1.5\n"
-     "Effects:\n  Read-only; never initializes the cup runtime."},
+     "Examples:\n  cup inspect compiler clang@stable\n"
+     "  cup inspect compiler clang@22.1.5\n"
+     "Effects:\n  Read-only; never installs a missing package or initializes the local cup "
+     "installation."},
     {"doctor",
      "doctor",
      "Diagnose cup without modifying files.",
-     "Description:\n  Check the installation, state, packages and exposed commands.\n"
+     "Description:\n  Check the installation, state, packages and commands provided by defaults.\n"
      "Arguments:\n  None.\nOptions:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Checks the current user's cup installation.\n"
      "Examples:\n  cup doctor\n"
-     "Effects:\n  Strictly read-only; never initializes the cup runtime."},
+     "Effects:\n  Strictly read-only; never initializes the local cup installation."},
     {"repair",
      "repair",
-     "Apply deterministic repairs.",
-     "Description:\n  Recover interrupted operations and rebuild deterministic managed data.\n"
+     "Repair recoverable installation state.",
+     "Description:\n  Recover interrupted operations and rebuild data that can be derived safely.\n"
      "Arguments:\n  None.\nOptions:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Repairs the current user's cup installation.\n"
      "Examples:\n  cup repair\n"
-     "Effects:\n  May repair configuration, state, packages and exposed commands."},
+     "Effects:\n  May repair configuration, state, packages and commands provided by defaults."},
     {"uninstall",
      "uninstall [--yes]",
      "Remove cup and all managed data.",
-     "Description:\n  Remove the canonical cup root without changing PATH.\n"
+     "Description:\n  Remove the selected cup installation without changing PATH.\n"
      "Arguments:\n  None.\nOptions:\n  --yes  Skip the confirmation prompt.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Prompts before removal.\n"
@@ -190,8 +198,10 @@ static CupError normalize_selector(const char *input, char *output, size_t outpu
     if (err == CUP_OK) {
         err = text_copy_lower_ascii(normalized_release, sizeof(normalized_release), release);
     }
-    if (err == CUP_OK && strcmp(normalized_release, "stable") == 0) {
-        err = text_copy(release, sizeof(release), "stable");
+    if (err == CUP_OK) {
+        err = strcmp(normalized_release, "stable") == 0
+                  ? text_copy(release, sizeof(release), "stable")
+                  : package_release_validate_concrete(release);
     }
     return err == CUP_OK ? package_selector_format_parts(output, output_size, tool, release) : err;
 }
@@ -199,13 +209,41 @@ static CupError normalize_selector(const char *input, char *output, size_t outpu
 static CupError normalize_optional_release_selector(const char *input,
                                                     char *output,
                                                     size_t output_size) {
+    CupError err;
+
     if (text_is_empty(input) || output == NULL || output_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (strchr(input, '@') != NULL) {
         return normalize_selector(input, output, output_size);
     }
-    return text_copy_lower_ascii(output, output_size, input);
+    err = text_copy_lower_ascii(output, output_size, input);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return path_is_safe_identifier(output) ? CUP_OK : CUP_ERR_INVALID_TOOL;
+}
+
+static CupError normalize_install_package_selector(const char *input,
+                                                   char *output,
+                                                   size_t output_size) {
+    char tool[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    if (text_is_empty(input) || output == NULL || output_size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (strchr(input, '@') != NULL) {
+        return normalize_selector(input, output, output_size);
+    }
+    err = text_copy_lower_ascii(tool, sizeof(tool), input);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!path_is_safe_identifier(tool)) {
+        return CUP_ERR_INVALID_TOOL;
+    }
+    return package_selector_format_parts(output, output_size, tool, "stable");
 }
 
 static const CommandHelp *find_help(const char *name) {
@@ -294,15 +332,226 @@ static CupError report_parse_error(const char *command,
     return CUP_ERR_INVALID_INPUT;
 }
 
-/* Command-specific Argtable3 schemas. */
+/* Command-specific Argtable3 schemas produce one bounded typed command before runtime preflight. */
+typedef enum {
+    PUBLIC_COMMAND_SEARCH,
+    PUBLIC_COMMAND_LIST,
+    PUBLIC_COMMAND_INSTALL,
+    PUBLIC_COMMAND_REMOVE,
+    PUBLIC_COMMAND_UPDATE,
+    PUBLIC_COMMAND_CONFIG,
+    PUBLIC_COMMAND_DEFAULT,
+    PUBLIC_COMMAND_INFO,
+    PUBLIC_COMMAND_INSPECT,
+    PUBLIC_COMMAND_DOCTOR,
+    PUBLIC_COMMAND_REPAIR,
+    PUBLIC_COMMAND_UNINSTALL
+} PublicCommandKind;
+
+typedef struct {
+    char component[MAX_IDENTIFIER_LEN];
+    char target[MAX_PLATFORM_LEN];
+} OptionalComponentArguments;
+
+typedef struct {
+    char component[MAX_IDENTIFIER_LEN];
+    char selector[MAX_SELECTOR_LEN];
+    char target[MAX_PLATFORM_LEN];
+} ComponentEntryArguments;
+
+typedef struct {
+    char selector[MAX_SELECTOR_LEN];
+    char value[MAX_SELECTOR_LEN];
+    char target[MAX_PLATFORM_LEN];
+    char format[MAX_IDENTIFIER_LEN];
+} InstallArguments;
+
+typedef struct {
+    char component[MAX_IDENTIFIER_LEN];
+    char selector[MAX_SELECTOR_LEN];
+    char target[MAX_PLATFORM_LEN];
+} RemoveArguments;
+
+typedef struct {
+    char selector[MAX_IDENTIFIER_LEN];
+} UpdateArguments;
+
+typedef struct {
+    char action[MAX_IDENTIFIER_LEN];
+    char name[MAX_IDENTIFIER_LEN];
+    char value[MAX_IDENTIFIER_LEN];
+    char target[MAX_PLATFORM_LEN];
+} ConfigArguments;
+
+typedef struct {
+    PublicCommandKind kind;
+    union {
+        OptionalComponentArguments optional_component;
+        ComponentEntryArguments component_entry;
+        InstallArguments install;
+        RemoveArguments remove;
+        UpdateArguments update;
+        ConfigArguments config;
+        int uninstall_assume_yes;
+    } arguments;
+} ParsedCommand;
+
+static const char *optional_value(const char *value) {
+    return text_is_empty(value) ? NULL : value;
+}
+
+static CupError report_value_error(const char *command, CupError error) {
+    const CommandHelp *help = find_help(command);
+
+    if (error == CUP_OK) {
+        return CUP_OK;
+    }
+    if (error == CUP_ERR_BUFFER_TOO_SMALL) {
+        fprintf(stderr, "Error: one or more command arguments exceed their supported length.\n");
+        error = CUP_ERR_INVALID_INPUT;
+    }
+    if (help != NULL) {
+        fprintf(stderr, "Usage:\n");
+        print_command_usage(stderr, help);
+    }
+    return error;
+}
+
+static CupError report_command_shape_error(const char *command, const char *message) {
+    if (!text_is_empty(message)) {
+        fprintf(stderr, "Error: %s\n", message);
+    }
+    return report_value_error(command, CUP_ERR_INVALID_INPUT);
+}
+
+static CupError copy_public_value(const char *command,
+                                  char *buffer,
+                                  size_t size,
+                                  const char *value,
+                                  int lower_ascii) {
+    CupError err;
+
+    if (value == NULL) {
+        if (buffer == NULL || size == 0) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+        buffer[0] = '\0';
+        return CUP_OK;
+    }
+    err = lower_ascii ? text_copy_lower_ascii(buffer, size, value)
+                      : text_copy(buffer, size, value);
+    return report_value_error(command, err);
+}
+
+static CupError validate_public_target(const char *command, const char *target) {
+    return text_is_empty(target) ? CUP_OK : report_value_error(command, platform_validate(target));
+}
+
+static CupError selector_tool_name(const char *selector, char *tool, size_t tool_size) {
+    char release[MAX_IDENTIFIER_LEN];
+
+    if (strchr(selector, '@') == NULL) {
+        return text_copy(tool, tool_size, selector);
+    }
+    return package_selector_parse_parts(selector, tool, tool_size, release, sizeof(release));
+}
+
+static CupError validate_component_selector(const char *command,
+                                            const char *component,
+                                            const char *selector) {
+    char tool[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    err = registry_validate_component(component);
+    if (err == CUP_OK) {
+        err = selector_tool_name(selector, tool, sizeof(tool));
+    }
+    if (err == CUP_OK) {
+        err = registry_validate_tool(component, tool);
+    }
+    return report_value_error(command, err);
+}
+
+static CupError resolve_unscoped_selector_component(const char *command,
+                                                    const char *selector,
+                                                    char *component,
+                                                    size_t component_size) {
+    char tool[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    err = selector_tool_name(selector, tool, sizeof(tool));
+    if (err == CUP_OK) {
+        err = registry_find_tool_component(tool, component, component_size);
+    }
+    return report_value_error(command, err);
+}
+
+static CupError normalize_install_arguments(char *selector,
+                                            size_t selector_size,
+                                            char *value,
+                                            size_t value_size) {
+    char key[MAX_IDENTIFIER_LEN];
+    char normalized[MAX_SELECTOR_LEN];
+    char tool[MAX_IDENTIFIER_LEN];
+    char component[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    err = text_copy_lower_ascii(key, sizeof(key), selector);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (registry_is_component(key)) {
+        err = text_copy(selector, selector_size, key);
+        if (err == CUP_OK && !text_is_empty(value)) {
+            err = normalize_install_package_selector(value, normalized, sizeof(normalized));
+            if (err == CUP_OK) {
+                err = selector_tool_name(normalized, tool, sizeof(tool));
+            }
+            if (err == CUP_OK) {
+                err = registry_validate_tool(key, tool);
+            }
+            if (err == CUP_OK) {
+                err = text_copy(value, value_size, normalized);
+            }
+        }
+        return err;
+    }
+    if (strcmp(key, "profile") == 0 || strcmp(key, "toolchain") == 0) {
+        if (text_is_empty(value)) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+        err = text_copy_lower_ascii(value, value_size, value);
+        if (err == CUP_OK && !path_is_safe_identifier(value)) {
+            err = CUP_ERR_INVALID_INPUT;
+        }
+        if (err == CUP_OK) {
+            err = text_copy(selector, selector_size, key);
+        }
+        return err;
+    }
+    if (!text_is_empty(value)) {
+        return CUP_ERR_UNSUPPORTED_COMPONENT;
+    }
+    err = normalize_install_package_selector(selector, normalized, sizeof(normalized));
+    if (err == CUP_OK) {
+        err = selector_tool_name(normalized, tool, sizeof(tool));
+    }
+    if (err == CUP_OK) {
+        err = registry_find_tool_component(tool, component, sizeof(component));
+    }
+    return err == CUP_OK ? text_copy(selector, selector_size, normalized) : err;
+}
+
 static CupError parse_optional_component(const char *command,
+                                         PublicCommandKind kind,
                                          int argc,
                                          char **argv,
-                                         CupError (*handler)(const char *, const char *)) {
+                                         ParsedCommand *parsed) {
     struct arg_str *component = arg_str0(NULL, NULL, "<component>", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
     struct arg_end *end = arg_end(8);
     void *table[] = {component, target, end};
+    OptionalComponentArguments *arguments = &parsed->arguments.optional_component;
     int errors;
     CupError result;
 
@@ -315,32 +564,46 @@ static CupError parse_optional_component(const char *command,
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
         result = report_parse_error(command, end, errors);
-    } else if (component->count != 0) {
-        char normalized_component[MAX_IDENTIFIER_LEN];
-
-        result = text_copy_lower_ascii(
-            normalized_component, sizeof(normalized_component), component->sval[0]);
-        if (result == CUP_OK) {
-            result = handler(normalized_component, target->count ? target->sval[0] : NULL);
-        }
     } else {
-        result = handler(NULL, target->count ? target->sval[0] : NULL);
+        result = copy_public_value(command,
+                                   arguments->component,
+                                   sizeof(arguments->component),
+                                   component->count ? component->sval[0] : NULL,
+                                   1);
+        if (result == CUP_OK) {
+            result = copy_public_value(command,
+                                       arguments->target,
+                                       sizeof(arguments->target),
+                                       target->count ? target->sval[0] : NULL,
+                                       1);
+        }
+        if (result == CUP_OK && !text_is_empty(arguments->component)) {
+            result = report_value_error(command,
+                                        registry_validate_component(arguments->component));
+        }
+        if (result == CUP_OK) {
+            result = validate_public_target(command, arguments->target);
+        }
+        if (result == CUP_OK) {
+            parsed->kind = kind;
+        }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
 static CupError parse_component_entry(const char *command,
+                                      PublicCommandKind kind,
                                       int argc,
                                       char **argv,
-                                      CupError (*handler)(const char *,
-                                                          const char *,
-                                                          const char *)) {
+                                      ParsedCommand *parsed) {
     struct arg_str *component = arg_str1(NULL, NULL, "<component>", NULL);
     struct arg_str *selector = arg_str1(NULL, NULL, "<tool>@<release>", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
     struct arg_end *end = arg_end(8);
     void *table[] = {component, selector, target, end};
+    ComponentEntryArguments *arguments = &parsed->arguments.component_entry;
     int errors;
     CupError result;
 
@@ -350,29 +613,54 @@ static CupError parse_component_entry(const char *command,
         return CUP_ERR_TEMPORARY;
     }
 
+    if (argc < 4) {
+        fprintf(stderr,
+                "Error: %s requires <component> and <tool>@<release>.\n",
+                command);
+        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+        return report_value_error(command, CUP_ERR_INVALID_INPUT);
+    }
+
     errors = arg_parse(argc - 1, argv + 1, table);
     if (errors != 0) {
         result = report_parse_error(command, end, errors);
     } else {
-        char normalized_component[MAX_IDENTIFIER_LEN];
-        char normalized_selector[MAX_SELECTOR_LEN];
-
-        result = text_copy_lower_ascii(
-            normalized_component, sizeof(normalized_component), component->sval[0]);
+        result = copy_public_value(command,
+                                   arguments->component,
+                                   sizeof(arguments->component),
+                                   component->sval[0],
+                                   1);
         if (result == CUP_OK) {
-            result = normalize_selector(
-                selector->sval[0], normalized_selector, sizeof(normalized_selector));
+            result = report_value_error(
+                command,
+                normalize_selector(selector->sval[0],
+                                   arguments->selector,
+                                   sizeof(arguments->selector)));
         }
         if (result == CUP_OK) {
-            result = handler(
-                normalized_component, normalized_selector, target->count ? target->sval[0] : NULL);
+            result = copy_public_value(command,
+                                       arguments->target,
+                                       sizeof(arguments->target),
+                                       target->count ? target->sval[0] : NULL,
+                                       1);
+        }
+        if (result == CUP_OK) {
+            result = validate_component_selector(
+                command, arguments->component, arguments->selector);
+        }
+        if (result == CUP_OK) {
+            result = validate_public_target(command, arguments->target);
+        }
+        if (result == CUP_OK) {
+            parsed->kind = kind;
         }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_install(int argc, char **argv) {
+static CupError parse_install(int argc, char **argv, ParsedCommand *parsed) {
     struct arg_str *selector =
         arg_str1(NULL, NULL, "<component|tool[@release]|profile|toolchain>", NULL);
     struct arg_str *value = arg_str0(NULL, NULL, "[tool[@release]|name]", NULL);
@@ -380,6 +668,7 @@ static CupError parse_install(int argc, char **argv) {
     struct arg_str *format = arg_str0("f", "format", "<archive-format>", NULL);
     struct arg_end *end = arg_end(8);
     void *table[] = {selector, value, target, format, end};
+    InstallArguments *arguments = &parsed->arguments.install;
     int errors;
     CupError result;
 
@@ -393,25 +682,65 @@ static CupError parse_install(int argc, char **argv) {
     if (errors != 0) {
         result = report_parse_error("install", end, errors);
     } else {
-        result = command_install(selector->sval[0],
-                                 value->count ? value->sval[0] : NULL,
-                                 target->count ? target->sval[0] : NULL,
-                                 format->count ? format->sval[0] : NULL);
+        result = copy_public_value(
+            "install", arguments->selector, sizeof(arguments->selector), selector->sval[0], 0);
+        if (result == CUP_OK) {
+            result = copy_public_value("install",
+                                       arguments->value,
+                                       sizeof(arguments->value),
+                                       value->count ? value->sval[0] : NULL,
+                                       0);
+        }
+        if (result == CUP_OK) {
+            result = copy_public_value("install",
+                                       arguments->target,
+                                       sizeof(arguments->target),
+                                       target->count ? target->sval[0] : NULL,
+                                       1);
+        }
+        if (result == CUP_OK) {
+            result = copy_public_value("install",
+                                       arguments->format,
+                                       sizeof(arguments->format),
+                                       format->count ? format->sval[0] : NULL,
+                                       1);
+        }
+        if (result == CUP_OK) {
+            result = report_value_error(
+                "install",
+                normalize_install_arguments(arguments->selector,
+                                            sizeof(arguments->selector),
+                                            arguments->value,
+                                            sizeof(arguments->value)));
+        }
+        if (result == CUP_OK) {
+            result = validate_public_target("install", arguments->target);
+        }
+        if (result == CUP_OK && !text_is_empty(arguments->format)) {
+            PackageArchiveFormat archive_format;
+
+            result = report_value_error(
+                "install", package_archive_parse_format(arguments->format, &archive_format));
+        }
+        if (result == CUP_OK) {
+            parsed->kind = PUBLIC_COMMAND_INSTALL;
+        }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_remove(int argc, char **argv) {
+static CupError parse_remove(int argc, char **argv, ParsedCommand *parsed) {
     struct arg_str *first = arg_str1(NULL, NULL, "<component|tool[@release]>", NULL);
     struct arg_str *second = arg_str0(NULL, NULL, "[tool[@release]]", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
     struct arg_end *end = arg_end(8);
     void *table[] = {first, second, target, end};
+    RemoveArguments *arguments = &parsed->arguments.remove;
+    const char *selector_input;
     int errors;
     CupError result;
-    char component[MAX_IDENTIFIER_LEN] = "";
-    char selector[MAX_SELECTOR_LEN];
 
     if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
         fprintf(stderr, "Error: not enough memory to parse arguments.\n");
@@ -423,32 +752,55 @@ static CupError parse_remove(int argc, char **argv) {
     if (errors != 0) {
         result = report_parse_error("remove", end, errors);
     } else {
-        const char *selector_input = first->sval[0];
-
+        selector_input = first->sval[0];
         result = CUP_OK;
         if (second->count != 0) {
-            result = text_copy_lower_ascii(
-                component, sizeof(component), first->sval[0]);
+            result = copy_public_value("remove",
+                                       arguments->component,
+                                       sizeof(arguments->component),
+                                       first->sval[0],
+                                       1);
             selector_input = second->sval[0];
         }
         if (result == CUP_OK) {
-            result = normalize_optional_release_selector(
-                selector_input, selector, sizeof(selector));
+            result = report_value_error(
+                "remove",
+                normalize_optional_release_selector(
+                    selector_input, arguments->selector, sizeof(arguments->selector)));
         }
         if (result == CUP_OK) {
-            result = command_remove(text_is_empty(component) ? NULL : component,
-                                    selector,
-                                    target->count ? target->sval[0] : NULL);
+            result = copy_public_value("remove",
+                                       arguments->target,
+                                       sizeof(arguments->target),
+                                       target->count ? target->sval[0] : NULL,
+                                       1);
+        }
+        if (result == CUP_OK) {
+            result = text_is_empty(arguments->component)
+                         ? resolve_unscoped_selector_component("remove",
+                                                               arguments->selector,
+                                                               arguments->component,
+                                                               sizeof(arguments->component))
+                         : validate_component_selector(
+                               "remove", arguments->component, arguments->selector);
+        }
+        if (result == CUP_OK) {
+            result = validate_public_target("remove", arguments->target);
+        }
+        if (result == CUP_OK) {
+            parsed->kind = PUBLIC_COMMAND_REMOVE;
         }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_update(int argc, char **argv) {
+static CupError parse_update(int argc, char **argv, ParsedCommand *parsed) {
     struct arg_str *selector = arg_str0(NULL, NULL, "[cup|tool|component]", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {selector, end};
+    UpdateArguments *arguments = &parsed->arguments.update;
     int errors;
     CupError result;
 
@@ -462,19 +814,106 @@ static CupError parse_update(int argc, char **argv) {
     if (errors != 0) {
         result = report_parse_error("update", end, errors);
     } else {
-        result = command_update(selector->count ? selector->sval[0] : NULL);
+        result = copy_public_value("update",
+                                   arguments->selector,
+                                   sizeof(arguments->selector),
+                                   selector->count ? selector->sval[0] : NULL,
+                                   1);
+        if (result == CUP_OK && !text_is_empty(arguments->selector) &&
+            strcmp(arguments->selector, "cup") != 0 &&
+            !registry_is_component(arguments->selector)) {
+            char component[MAX_IDENTIFIER_LEN];
+
+            result = report_value_error(
+                "update",
+                registry_find_tool_component(
+                    arguments->selector, component, sizeof(component)));
+        }
+        if (result == CUP_OK) {
+            parsed->kind = PUBLIC_COMMAND_UPDATE;
+        }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_config(int argc, char **argv) {
+static CupError copy_config_values(const struct arg_str *action,
+                                   const struct arg_str *name,
+                                   const struct arg_str *value,
+                                   const struct arg_str *target,
+                                   ConfigArguments *arguments) {
+    CupError result;
+
+    result = copy_public_value("config",
+                               arguments->action,
+                               sizeof(arguments->action),
+                               action->count ? action->sval[0] : NULL,
+                               1);
+    if (result == CUP_OK) {
+        result = copy_public_value("config",
+                                   arguments->name,
+                                   sizeof(arguments->name),
+                                   name->count ? name->sval[0] : NULL,
+                                   1);
+    }
+    if (result == CUP_OK) {
+        result = copy_public_value("config",
+                                   arguments->value,
+                                   sizeof(arguments->value),
+                                   value->count ? value->sval[0] : NULL,
+                                   1);
+    }
+    if (result == CUP_OK) {
+        result = copy_public_value("config",
+                                   arguments->target,
+                                   sizeof(arguments->target),
+                                   target->count ? target->sval[0] : NULL,
+                                   1);
+    }
+    return result;
+}
+
+static CupError validate_config_values(const ConfigArguments *arguments) {
+    if (text_is_empty(arguments->action)) {
+        return text_is_empty(arguments->name) && text_is_empty(arguments->value)
+                   ? CUP_OK
+                   : report_command_shape_error(
+                         "config", "config view does not accept positional values");
+    }
+
+    if (strcmp(arguments->action, "set") == 0) {
+        if (text_is_empty(arguments->name) || text_is_empty(arguments->value)) {
+            return report_command_shape_error(
+                "config", "config set requires <component> and <tool>");
+        }
+        return report_value_error(
+            "config", registry_validate_tool(arguments->name, arguments->value));
+    }
+
+    if (strcmp(arguments->action, "reset") == 0) {
+        if (!text_is_empty(arguments->value)) {
+            return report_command_shape_error(
+                "config", "config reset accepts at most one <component>");
+        }
+        return text_is_empty(arguments->name)
+                   ? CUP_OK
+                   : report_value_error("config",
+                                        registry_validate_component(arguments->name));
+    }
+
+    return report_command_shape_error(
+        "config", "config action must be 'set' or 'reset'");
+}
+
+static CupError parse_config(int argc, char **argv, ParsedCommand *parsed) {
     struct arg_str *action = arg_str0(NULL, NULL, "[set|reset]", NULL);
     struct arg_str *name = arg_str0(NULL, NULL, "[component]", NULL);
     struct arg_str *value = arg_str0(NULL, NULL, "[tool]", NULL);
     struct arg_str *target = arg_str0(NULL, "target", "<target-platform>", NULL);
     struct arg_end *end = arg_end(8);
     void *table[] = {action, name, value, target, end};
+    ConfigArguments *arguments = &parsed->arguments.config;
     int errors;
     CupError result;
 
@@ -488,17 +927,27 @@ static CupError parse_config(int argc, char **argv) {
     if (errors != 0) {
         result = report_parse_error("config", end, errors);
     } else {
-        result = command_config(action->count ? action->sval[0] : NULL,
-                                name->count ? name->sval[0] : NULL,
-                                value->count ? value->sval[0] : NULL,
-                                target->count ? target->sval[0] : NULL);
+        result = copy_config_values(action, name, value, target, arguments);
+        if (result == CUP_OK) {
+            result = validate_config_values(arguments);
+        }
+        if (result == CUP_OK) {
+            result = validate_public_target("config", arguments->target);
+        }
+        if (result == CUP_OK) {
+            parsed->kind = PUBLIC_COMMAND_CONFIG;
+        }
     }
+
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_no_arguments(
-    const char *command, int argc, char **argv, CupError (*handler)(void)) {
+static CupError parse_no_arguments(const char *command,
+                                   PublicCommandKind kind,
+                                   int argc,
+                                   char **argv,
+                                   ParsedCommand *parsed) {
     struct arg_end *end = arg_end(4);
     void *table[] = {end};
     int errors;
@@ -511,16 +960,15 @@ static CupError parse_no_arguments(
     }
 
     errors = arg_parse(argc - 1, argv + 1, table);
-    if (errors != 0) {
-        result = report_parse_error(command, end, errors);
-    } else {
-        result = handler();
+    result = errors != 0 ? report_parse_error(command, end, errors) : CUP_OK;
+    if (result == CUP_OK) {
+        parsed->kind = kind;
     }
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
 
-static CupError parse_uninstall(int argc, char **argv) {
+static CupError parse_uninstall(int argc, char **argv, ParsedCommand *parsed) {
     struct arg_lit *yes = arg_lit0(NULL, "yes", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {yes, end};
@@ -532,15 +980,17 @@ static CupError parse_uninstall(int argc, char **argv) {
         arg_freetable(table, sizeof(table) / sizeof(table[0]));
         return CUP_ERR_TEMPORARY;
     }
+
     errors = arg_parse(argc - 1, argv + 1, table);
-    if (errors != 0) {
-        result = report_parse_error("uninstall", end, errors);
-    } else {
-        result = command_uninstall(yes->count != 0);
+    result = errors != 0 ? report_parse_error("uninstall", end, errors) : CUP_OK;
+    if (result == CUP_OK) {
+        parsed->kind = PUBLIC_COMMAND_UNINSTALL;
+        parsed->arguments.uninstall_assume_yes = yes->count != 0;
     }
     arg_freetable(table, sizeof(table) / sizeof(table[0]));
     return result;
 }
+
 
 static CupError parse_help(int argc, char **argv) {
     struct arg_str *command = arg_str0(NULL, NULL, "[command]", NULL);
@@ -568,21 +1018,142 @@ static CupError parse_help(int argc, char **argv) {
     return result;
 }
 
-static int command_uses_interrupt(int argc, char **argv) {
-    const char *command;
+static CupError parse_public_command(const char *command,
+                                     int argc,
+                                     char **argv,
+                                     ParsedCommand *parsed) {
+    if (parsed == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(parsed, 0, sizeof(*parsed));
 
-    if (argc < 2 || argv == NULL) {
+    if (strcmp(command, "search") == 0) {
+        return parse_optional_component(
+            command, PUBLIC_COMMAND_SEARCH, argc, argv, parsed);
+    }
+    if (strcmp(command, "list") == 0) {
+        return parse_optional_component(
+            command, PUBLIC_COMMAND_LIST, argc, argv, parsed);
+    }
+    if (strcmp(command, "install") == 0) {
+        return parse_install(argc, argv, parsed);
+    }
+    if (strcmp(command, "remove") == 0) {
+        return parse_remove(argc, argv, parsed);
+    }
+    if (strcmp(command, "update") == 0) {
+        return parse_update(argc, argv, parsed);
+    }
+    if (strcmp(command, "config") == 0) {
+        return parse_config(argc, argv, parsed);
+    }
+    if (strcmp(command, "default") == 0) {
+        return parse_component_entry(
+            command, PUBLIC_COMMAND_DEFAULT, argc, argv, parsed);
+    }
+    if (strcmp(command, "info") == 0) {
+        return parse_optional_component(
+            command, PUBLIC_COMMAND_INFO, argc, argv, parsed);
+    }
+    if (strcmp(command, "inspect") == 0) {
+        return parse_component_entry(
+            command, PUBLIC_COMMAND_INSPECT, argc, argv, parsed);
+    }
+    if (strcmp(command, "doctor") == 0) {
+        return parse_no_arguments(
+            command, PUBLIC_COMMAND_DOCTOR, argc, argv, parsed);
+    }
+    if (strcmp(command, "repair") == 0) {
+        return parse_no_arguments(
+            command, PUBLIC_COMMAND_REPAIR, argc, argv, parsed);
+    }
+    if (strcmp(command, "uninstall") == 0) {
+        return parse_uninstall(argc, argv, parsed);
+    }
+    return CUP_ERR_INVALID_INPUT;
+}
+
+static CupError execute_public_command(const ParsedCommand *parsed) {
+    const OptionalComponentArguments *optional;
+    const ComponentEntryArguments *entry;
+
+    if (parsed == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    switch (parsed->kind) {
+        case PUBLIC_COMMAND_SEARCH:
+            optional = &parsed->arguments.optional_component;
+            return command_search(optional_value(optional->component),
+                                  optional_value(optional->target));
+        case PUBLIC_COMMAND_LIST:
+            optional = &parsed->arguments.optional_component;
+            return command_list(optional_value(optional->component),
+                                optional_value(optional->target));
+        case PUBLIC_COMMAND_INSTALL:
+            return command_install(parsed->arguments.install.selector,
+                                   optional_value(parsed->arguments.install.value),
+                                   optional_value(parsed->arguments.install.target),
+                                   optional_value(parsed->arguments.install.format));
+        case PUBLIC_COMMAND_REMOVE:
+            return command_remove(optional_value(parsed->arguments.remove.component),
+                                  parsed->arguments.remove.selector,
+                                  optional_value(parsed->arguments.remove.target));
+        case PUBLIC_COMMAND_UPDATE:
+            return command_update(optional_value(parsed->arguments.update.selector));
+        case PUBLIC_COMMAND_CONFIG:
+            return command_config(optional_value(parsed->arguments.config.action),
+                                  optional_value(parsed->arguments.config.name),
+                                  optional_value(parsed->arguments.config.value),
+                                  optional_value(parsed->arguments.config.target));
+        case PUBLIC_COMMAND_DEFAULT:
+            entry = &parsed->arguments.component_entry;
+            return command_default(
+                entry->component, entry->selector, optional_value(entry->target));
+        case PUBLIC_COMMAND_INFO:
+            optional = &parsed->arguments.optional_component;
+            return command_info(optional_value(optional->component),
+                                optional_value(optional->target));
+        case PUBLIC_COMMAND_INSPECT:
+            entry = &parsed->arguments.component_entry;
+            return command_inspect(
+                entry->component, entry->selector, optional_value(entry->target));
+        case PUBLIC_COMMAND_DOCTOR:
+            return command_doctor();
+        case PUBLIC_COMMAND_REPAIR:
+            return command_repair();
+        case PUBLIC_COMMAND_UNINSTALL:
+            return command_uninstall(parsed->arguments.uninstall_assume_yes);
+    }
+
+    return CUP_ERR_INVALID_INPUT;
+}
+
+static int command_uses_interrupt(const ParsedCommand *parsed) {
+    if (parsed == NULL) {
         return 0;
     }
-    /* Resolve help before touching runtime state so every help form remains read-only. */
-    command = argv[1];
-    if (strcmp(command, "install") == 0 || strcmp(command, "remove") == 0 ||
-        strcmp(command, "update") == 0 || strcmp(command, "default") == 0 ||
-        strcmp(command, "repair") == 0 || strcmp(command, "uninstall") == 0) {
-        return 1;
+
+    switch (parsed->kind) {
+        case PUBLIC_COMMAND_INSTALL:
+        case PUBLIC_COMMAND_REMOVE:
+        case PUBLIC_COMMAND_UPDATE:
+        case PUBLIC_COMMAND_DEFAULT:
+        case PUBLIC_COMMAND_REPAIR:
+        case PUBLIC_COMMAND_UNINSTALL:
+            return 1;
+        case PUBLIC_COMMAND_CONFIG:
+            return strcmp(parsed->arguments.config.action, "set") == 0 ||
+                   strcmp(parsed->arguments.config.action, "reset") == 0;
+        case PUBLIC_COMMAND_SEARCH:
+        case PUBLIC_COMMAND_LIST:
+        case PUBLIC_COMMAND_INFO:
+        case PUBLIC_COMMAND_INSPECT:
+        case PUBLIC_COMMAND_DOCTOR:
+            return 0;
+        default:
+            return 0;
     }
-    return strcmp(command, "config") == 0 && argc >= 3 &&
-           (strcmp(argv[2], "set") == 0 || strcmp(argv[2], "reset") == 0);
 }
 
 /* Top-level command dispatch. */
@@ -591,15 +1162,44 @@ static int command_uses_interrupt(int argc, char **argv) {
 #endif
 
 int main(int argc, char *argv[]) {
-    system_set_restrictive_umask();
     const char *command;
     const CommandHelp *help;
+    ParsedCommand parsed;
     CupError result;
     int interrupt_active = 0;
 
+    /* Keep newline-terminated progress ahead of stderr diagnostics in redirected logs. */
+    (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    system_set_restrictive_umask();
+
+    /* Internal bootstrap validates a complete transport directory before entering the canonical
+     * root lock, journal, staging and detached-helper protocol. */
+    if (argc == 3 && strcmp(argv[1], "--internal-bootstrap") == 0) {
+        int status;
+
+        result = layout_root_snapshot_begin();
+        if (result == CUP_OK) {
+            result = interrupt_enable();
+        }
+        if (result == CUP_OK) {
+            result = cup_bootstrap_start(argv[2], argv[0]);
+        }
+        interrupt_disable();
+        status = cup_error_to_exit_status(result);
+        layout_root_snapshot_end();
+        return status;
+    }
+
     /* Internal helper mode bypasses the public CLI and runs only the deferred update protocol. */
     if (argc == 4 && strcmp(argv[1], "--internal-cup-update-helper") == 0) {
-        return cup_error_to_exit_status(cup_update_helper_run(argv[2], argv[3]));
+        int status;
+        result = layout_root_snapshot_begin();
+        if (result == CUP_OK) {
+            result = cup_update_helper_run(argv[2], argv[3]);
+        }
+        status = cup_error_to_exit_status(result);
+        layout_root_snapshot_end();
+        return status;
     }
     if (argc < 2) {
         print_usage(stderr);
@@ -621,61 +1221,45 @@ int main(int argc, char *argv[]) {
         print_detailed_help(command);
         return CUP_STATUS_SUCCESS;
     }
+    if (help == NULL) {
+        fprintf(stderr, "Error: unknown command '%s'.\n", command);
+        print_usage(stderr);
+        return CUP_STATUS_USAGE;
+    }
+    if (strcmp(command, "help") == 0) {
+        return cup_error_to_exit_status(parse_help(argc, argv));
+    }
 
-    if (help != NULL && strcmp(command, "help") != 0 && strcmp(command, "doctor") != 0 &&
-        strcmp(command, "repair") != 0) {
-        result = runtime_journal_require_none();
+    result = parse_public_command(command, argc, argv, &parsed);
+    if (result != CUP_OK) {
+        return cup_error_to_exit_status(result);
+    }
+
+    /* Doctor diagnoses root candidates itself; every other command receives one root snapshot. */
+    if (parsed.kind != PUBLIC_COMMAND_DOCTOR) {
+        result = layout_root_snapshot_begin();
         if (result != CUP_OK) {
             return cup_error_to_exit_status(result);
         }
     }
 
-    /* Install native interrupt handling only for commands that can perform long mutations. */
-    if (command_uses_interrupt(argc, argv)) {
+    /* Install native interrupt handling only after validating the state-changing command form. */
+    if (command_uses_interrupt(&parsed)) {
         result = interrupt_enable();
         if (result != CUP_OK) {
             fprintf(stderr, "Error: native interrupt handling could not be enabled.\n");
+            layout_root_snapshot_end();
             return cup_error_to_exit_status(result);
         }
         interrupt_active = 1;
     }
 
-    /* Public dispatch remains explicit so each parser keeps its typed command contract. */
-    if (strcmp(command, "help") == 0) {
-        result = parse_help(argc, argv);
-    } else if (strcmp(command, "search") == 0) {
-        result = parse_optional_component(command, argc, argv, command_search);
-    } else if (strcmp(command, "list") == 0) {
-        result = parse_optional_component(command, argc, argv, command_list);
-    } else if (strcmp(command, "install") == 0) {
-        result = parse_install(argc, argv);
-    } else if (strcmp(command, "remove") == 0) {
-        result = parse_remove(argc, argv);
-    } else if (strcmp(command, "update") == 0) {
-        result = parse_update(argc, argv);
-    } else if (strcmp(command, "config") == 0) {
-        result = parse_config(argc, argv);
-    } else if (strcmp(command, "default") == 0) {
-        result = parse_component_entry(command, argc, argv, command_default);
-    } else if (strcmp(command, "info") == 0) {
-        result = parse_optional_component(command, argc, argv, command_info);
-    } else if (strcmp(command, "inspect") == 0) {
-        result = parse_component_entry(command, argc, argv, command_inspect);
-    } else if (strcmp(command, "doctor") == 0) {
-        result = parse_no_arguments(command, argc, argv, command_doctor);
-    } else if (strcmp(command, "repair") == 0) {
-        result = parse_no_arguments(command, argc, argv, command_repair);
-    } else if (strcmp(command, "uninstall") == 0) {
-        result = parse_uninstall(argc, argv);
-    } else {
-        fprintf(stderr, "Error: unknown command '%s'.\n", command);
-        print_usage(stderr);
-        result = CUP_ERR_INVALID_INPUT;
-    }
+    result = execute_public_command(&parsed);
 
     if (interrupt_active) {
         interrupt_disable();
     }
+    layout_root_snapshot_end();
     return cup_error_to_exit_status(result);
 }
 

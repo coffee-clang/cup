@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Verifies package download through a local hostname and checksum rejection on POSIX.
+# Verifies package download through a local hostname and checksum rejection on POSIX.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -15,7 +15,8 @@ require_test_binary
 run_cup repair >/dev/null
 
 configuration=${CUP_TEST_CONFIGURATION:-development}
-helper="$ROOT/build/$TEST_PLATFORM/$configuration/tests/helpers/network-helper"
+test_build_root=${CUP_TEST_BUILD_ROOT:-$ROOT/build}
+helper="$test_build_root/$TEST_PLATFORM/$configuration/tests/helpers/network-helper"
 assert_file "$helper"
 
 server_root=$TMP_ROOT/server
@@ -24,14 +25,27 @@ server_log=$TMP_ROOT/server.log
 mkdir -p "$server_root"
 server_pid=
 
-cleanup_network() {
-    if [ -n "$server_pid" ]; then
-        kill "$server_pid" >/dev/null 2>&1 || true
-        wait "$server_pid" >/dev/null 2>&1 || true
-    fi
-    rm -rf "$TMP_ROOT"
+cleanup_network_processes() {
+    test_stop_process "$server_pid"
 }
-trap cleanup_network 0 HUP INT TERM
+network_exit_handler() {
+    status=$?
+    trap - 0 HUP INT TERM
+    cleanup_network_processes
+    test_cleanup_root || status=1
+    exit "$status"
+}
+network_signal_handler() {
+    status=$1
+    trap - 0 HUP INT TERM
+    cleanup_network_processes
+    test_cleanup_root || :
+    exit "$status"
+}
+trap network_exit_handler 0
+trap 'network_signal_handler 129' HUP
+trap 'network_signal_handler 130' INT
+trap 'network_signal_handler 143' TERM
 
 "$helper" http-server --root "$server_root" --port 0 \
     --ready-file "$ready_file" >"$server_log" 2>&1 &
@@ -111,5 +125,13 @@ if run_cup install compiler "clang@$bad_version" \
         >"$TMP_ROOT/checksum-mismatch.out" 2>&1; then
     fail 'package with a mismatched downloaded checksum was accepted'
 fi
+assert_contains "$(cat "$TMP_ROOT/checksum-mismatch.out")" \
+    'downloaded package failed SHA-256 verification'
+bad_cache=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$bad_version
+assert_missing "$bad_cache/clang-$bad_version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz"
+assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
+    "compiler:clang@$bad_version"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_cup_healthy
 
 printf 'POSIX network integration tests passed for %s.\n' "$TEST_PLATFORM"

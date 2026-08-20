@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises wrapper-plan construction and exact bin reconciliation without repeating
+ * Exercises wrapper-plan construction and exact bin reconciliation without repeating
  * the package lifecycle CLI workflow.
  */
 
@@ -18,6 +18,7 @@
 #include <dirent.h>
 #endif
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,10 @@ static CupError list_result;
 static CupError executable_result;
 static CupError is_executable_result;
 static int executable_override;
+static int operation_sequence;
+static int mode_sequence;
+static int sync_sequence;
+static int namespace_case_sensitive;
 
 #if defined(_WIN32)
 #define TEST_HOST "windows-x64"
@@ -80,6 +85,23 @@ static void write_file(const char *path, const char *content) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
+static CupError wrapper_plan_exact_matches(const WrapperPlan *plan, int *matches) {
+    CupError err;
+    size_t issues;
+
+    if (matches == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    err = wrapper_plan_check(plan, &issues);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    *matches = issues == 0;
+    return CUP_OK;
+}
+
 static void reset_scenario(void) {
     char template_path[CUP_TEST_TEMP_PATH_SIZE];
     char bin[MAX_PATH_LEN];
@@ -103,6 +125,10 @@ static void reset_scenario(void) {
     executable_result = CUP_OK;
     is_executable_result = CUP_OK;
     executable_override = -1;
+    operation_sequence = 0;
+    mode_sequence = 0;
+    sync_sequence = 0;
+    namespace_case_sensitive = 1;
 }
 
 void setUp(void) {
@@ -126,7 +152,9 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host_platform,
                                         const char *target_platform,
-                                        const char *entry) {
+                                        const char *entry,
+                                        FILE *diagnostics) {
+    (void)diagnostics;
     const char *separator = strchr(entry, '@');
 
     if (separator == NULL) {
@@ -141,7 +169,8 @@ CupError package_identity_from_selector(PackageIdentity *identity,
     return CUP_OK;
 }
 
-CupError package_identity_validate(const PackageIdentity *identity) {
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
     if (identity == NULL || identity->component[0] == '\0' || identity->tool[0] == '\0' ||
         identity->host_platform[0] == '\0' || identity->target_platform[0] == '\0' ||
         identity->version[0] == '\0') {
@@ -164,10 +193,45 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
         size);
 }
 
-CupError package_validate(const char *base_path, const PackageIdentity *identity) {
-    (void)base_path;
-    (void)identity;
-    return validate_result;
+void validated_package_init(ValidatedPackage *package) {
+    TEST_ASSERT_NOT_NULL(package);
+    memset(package, 0, sizeof(*package));
+    package_metadata_init(&package->metadata);
+}
+
+void validated_package_free(ValidatedPackage *package) {
+    if (package != NULL) {
+        package_metadata_free(&package->metadata);
+        memset(package, 0, sizeof(*package));
+    }
+}
+
+CupError validated_package_load(ValidatedPackage *package,
+                                const char *base_path,
+                                const PackageIdentity *identity,
+                                FILE *diagnostics) {
+    (void)diagnostics;
+    char metadata_path[MAX_PATH_LEN];
+    CupError err;
+
+    TEST_ASSERT_NOT_NULL(package);
+    TEST_ASSERT_NOT_NULL(base_path);
+    TEST_ASSERT_NOT_NULL(identity);
+    if (validate_result != CUP_OK) {
+        return validate_result;
+    }
+    err = path_join(metadata_path, sizeof(metadata_path), base_path, CUP_INFO_FILENAME);
+    if (err == CUP_OK) {
+        err = package_metadata_load(&package->metadata, metadata_path, stderr);
+    }
+    return err;
+}
+
+CupError layout_get_root(char *buffer, size_t size) {
+    if (layout_result != CUP_OK) {
+        return layout_result;
+    }
+    return buffer_write_result(snprintf(buffer, size, "%s", root), size);
 }
 
 CupError layout_get_bin_dir(char *buffer, size_t size) {
@@ -199,7 +263,32 @@ CupError system_create_temp_file(
                : CUP_ERR_TEMPORARY;
 }
 
+CupError system_set_file_executable(FILE *file, int executable) {
+    if (executable_result != CUP_OK) {
+        return executable_result;
+    }
+    if (file == NULL || !executable) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    mode_sequence = ++operation_sequence;
+#if defined(_WIN32)
+    return test_file_descriptor(file) >= 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
+#else
+    {
+        struct stat status;
+        int descriptor = test_file_descriptor(file);
+
+        if (descriptor < 0 || fstat(descriptor, &status) != 0) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        return fchmod(descriptor, status.st_mode | S_IXUSR) == 0 ? CUP_OK
+                                                                 : CUP_ERR_FILESYSTEM;
+    }
+#endif
+}
+
 CupError system_sync_file(FILE *file) {
+    sync_sequence = ++operation_sequence;
     return fflush(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
@@ -245,6 +334,62 @@ CupError system_remove_file(const char *path) {
     return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
+CupError filesystem_replace_file_atomically(const char *directory,
+                                            const char *temporary_prefix,
+                                            const char *destination,
+                                            int executable,
+                                            FilesystemFileWriter writer,
+                                            const void *value) {
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+    char temporary[MAX_PATH_LEN];
+    FILE *file = NULL;
+    CupError err;
+
+    err = system_create_temp_file(
+        directory, temporary_prefix, temporary, sizeof(temporary), &file);
+    if (err == CUP_OK) {
+        err = writer(file, value);
+    }
+    if (err == CUP_OK && executable) {
+        err = system_set_file_executable(file, 1);
+    }
+    if (err == CUP_OK) {
+        err = system_sync_file(file);
+    }
+    if (file != NULL) {
+        if (fclose(file) != 0 && err == CUP_OK) {
+            err = CUP_ERR_FILESYSTEM;
+        }
+        file = NULL;
+    }
+    if (err != CUP_OK) {
+        (void)system_remove_file(temporary);
+        return err;
+    }
+
+    err = system_replace_file(temporary, destination, &commit_state);
+    if (err != CUP_OK && commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+        (void)system_remove_file(temporary);
+    }
+    return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
+}
+
+CupError system_remove_path_if_identity(const char *path,
+                                        const SystemPathIdentity *expected_identity,
+                                        int (*cancelled)(void)) {
+    if (expected_identity == NULL || !expected_identity->valid) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (cancelled != NULL && cancelled()) {
+        return CUP_ERR_INTERRUPT;
+    }
+    if (expected_identity->kind == SYSTEM_PATH_DIRECTORY) {
+        remove_tree_real(path);
+        return CUP_OK;
+    }
+    return system_remove_file(path);
+}
+
 CupError filesystem_remove_tree(const char *path) {
     remove_tree_real(path);
     return CUP_OK;
@@ -264,6 +409,43 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     } else {
         *kind = SYSTEM_PATH_OTHER;
     }
+    return CUP_OK;
+}
+
+CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
+    const char *name;
+    SystemPathKind kind;
+    CupError err;
+
+    if (path == NULL || identity == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(identity, 0, sizeof(*identity));
+    name = path_last_segment(path);
+    if (name != NULL && strcmp(name, CUP_ROOT_MARKER_FILENAME) == 0) {
+        identity->volume = 2u;
+        identity->object = 2u;
+        identity->kind = SYSTEM_PATH_REGULAR_FILE;
+        identity->valid = 1;
+        return CUP_OK;
+    }
+    if (name != NULL && strcmp(name, "ROOT.TXT") == 0) {
+        if (!namespace_case_sensitive) {
+            identity->volume = 2u;
+            identity->object = 2u;
+            identity->kind = SYSTEM_PATH_REGULAR_FILE;
+            identity->valid = 1;
+        }
+        return CUP_OK;
+    }
+    err = system_get_path_kind(path, &kind);
+    if (err != CUP_OK || kind == SYSTEM_PATH_MISSING) {
+        return err;
+    }
+    identity->volume = 1u;
+    identity->object = 1u;
+    identity->kind = kind;
+    identity->valid = 1;
     return CUP_OK;
 }
 
@@ -289,6 +471,8 @@ CupError system_is_executable(const char *path, int *is_executable) {
 }
 
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata) {
+    uint64_t identity_index = 1;
+
     if (list_result != CUP_OK) {
         return list_result;
     }
@@ -314,7 +498,10 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
             join_test_path(child, sizeof(child), path, data.cFileName);
             err = system_get_path_kind(child, &kind);
             if (err == CUP_OK) {
-                err = callback(child, kind, userdata);
+                {
+                    SystemPathIdentity identity = {1u, identity_index++, 0u, kind, 1};
+                    err = callback(child, kind, &identity, userdata);
+                }
             }
             if (err != CUP_OK) {
                 FindClose(handle);
@@ -343,7 +530,10 @@ CupError system_list_directory(const char *path, SystemDirectoryCallback callbac
             join_test_path(child, sizeof(child), path, entry->d_name);
             err = system_get_path_kind(child, &kind);
             if (err == CUP_OK) {
-                err = callback(child, kind, userdata);
+                {
+                    SystemPathIdentity identity = {1u, identity_index++, 0u, kind, 1};
+                    err = callback(child, kind, &identity, userdata);
+                }
             }
             if (err != CUP_OK) {
                 closedir(directory);
@@ -414,13 +604,13 @@ static void test_plan_lifetime(void) {
     TEST_ASSERT_EQUAL_INT(0, (int)plan.count);
 }
 
-static void test_build_active(void) {
+static void test_build_default(void) {
     WrapperPlan plan;
     PackageIdentity entry = default_entry("clang", TEST_HOST);
 
     write_package_info("clang", TEST_HOST, "entry.clang=bin/clang\nentry.clang++=bin/clang++\n");
     wrapper_plan_init(&plan);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_build_active(&plan, &entry));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_build_default(&plan, &entry));
     TEST_ASSERT_EQUAL_INT(2, (int)plan.count);
     {
         char expected[MAX_COMMAND_NAME_LEN];
@@ -435,10 +625,10 @@ static void test_build_scopes(void) {
     WrapperPlan plan;
     CupState state = {0};
 
-    state.active[state.active_count++] = default_entry("clang", TEST_HOST);
-    state.active[state.active_count++] = default_entry("gcc", TEST_OTHER_TARGET);
-    state.active[state.active_count] = default_entry("lld", TEST_HOST);
-    strcpy(state.active[state.active_count++].host_platform, TEST_OTHER_HOST);
+    state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
+    state.defaults[state.default_count++] = default_entry("gcc", TEST_OTHER_TARGET);
+    state.defaults[state.default_count] = default_entry("lld", TEST_HOST);
+    strcpy(state.defaults[state.default_count++].host_platform, TEST_OTHER_HOST);
     write_package_info("clang", TEST_HOST, "entry.clang=bin/clang\n");
     write_package_info("gcc", TEST_OTHER_TARGET, "entry.gcc=bin/gcc\n");
 
@@ -462,8 +652,8 @@ static void test_build_conflicts(void) {
     WrapperPlan plan;
     CupState state = {0};
 
-    state.active[state.active_count++] = default_entry("clang", TEST_HOST);
-    state.active[state.active_count++] = default_entry("clang", TEST_HOST);
+    state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
+    state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
     write_package_info("clang", TEST_HOST, "entry.cc=bin/clang\n");
 
     wrapper_plan_init(&plan);
@@ -471,14 +661,14 @@ static void test_build_conflicts(void) {
     TEST_ASSERT_EQUAL_INT(1, (int)plan.count);
     wrapper_plan_free(&plan);
 
-    state.active_count = 0;
-    state.active[state.active_count++] = default_entry("clang", TEST_HOST);
-    state.active[state.active_count++] = default_entry("gcc", TEST_HOST);
+    state.default_count = 0;
+    state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
+    state.defaults[state.default_count++] = default_entry("gcc", TEST_HOST);
     write_package_info("gcc", TEST_HOST, "entry.cc=bin/gcc\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, wrapper_plan_build(&plan, &state));
     wrapper_plan_free(&plan);
 
-    state.active_count = 1;
+    state.default_count = 1;
     write_package_info("clang", TEST_HOST, "entry.cup=bin/clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, wrapper_plan_build(&plan, &state));
     wrapper_plan_free(&plan);
@@ -490,13 +680,13 @@ static void test_build_failures(void) {
 
     wrapper_plan_init(&plan);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build(&plan, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_active(&plan, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_default(&plan, NULL));
 
-    state.active[state.active_count++] = default_entry("clang", TEST_HOST);
-    state.active[0].version[0] = '\0';
+    state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
+    state.defaults[0].version[0] = '\0';
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build(&plan, &state));
 
-    state.active[0] = default_entry("clang", TEST_HOST);
+    state.defaults[0] = default_entry("clang", TEST_HOST);
     layout_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_build(&plan, &state));
     layout_result = CUP_OK;
@@ -520,8 +710,18 @@ static void test_apply_and_check(void) {
     make_dir(stale);
     join_test_path(stale_child, sizeof(stale_child), stale, "child");
     write_file(stale_child, "stale");
+    {
+        char expected_directory[MAX_PATH_LEN];
+        char name[sizeof(PublicCommandName)];
+        snprintf(name, sizeof(name), "clang%s", TEST_WRAPPER_SUFFIX);
+        join_test_path(expected_directory, sizeof(expected_directory), root, "bin");
+        join_test_path(wrapper, sizeof(wrapper), expected_directory, name);
+        make_dir(wrapper);
+    }
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
+    TEST_ASSERT_TRUE(mode_sequence > 0);
+    TEST_ASSERT_TRUE(sync_sequence > mode_sequence);
     {
         char name[MAX_COMMAND_NAME_LEN];
         snprintf(name, sizeof(name), "bin/clang%s", TEST_WRAPPER_SUFFIX);
@@ -533,26 +733,33 @@ static void test_apply_and_check(void) {
         TEST_ASSERT_TRUE(is_executable);
     }
     TEST_ASSERT_FALSE(test_access_exists(stale));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_TRUE(matches);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_check(&plan, &issues));
     TEST_ASSERT_EQUAL_INT(0, (int)issues);
 
 #if !defined(_WIN32)
     TEST_ASSERT_EQUAL_INT(0, chmod(wrapper, 0600));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_FALSE(matches);
     TEST_ASSERT_EQUAL_INT(0, chmod(wrapper, 0700));
 #endif
     TEST_ASSERT_EQUAL_INT(0, test_unlink(wrapper));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_FALSE(matches);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
 
-    write_file(wrapper, "broken");
     join_test_path(stale, sizeof(stale), root, "bin/other");
     write_file(stale, "stale");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_entries_match(&plan, &matches));
+    TEST_ASSERT_TRUE(matches);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
+    TEST_ASSERT_FALSE(matches);
+
+    write_file(wrapper, "broken");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_entries_match(&plan, &matches));
+    TEST_ASSERT_FALSE(matches);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_FALSE(matches);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_check(&plan, &issues));
     TEST_ASSERT_EQUAL_INT(2, (int)issues);
@@ -571,11 +778,25 @@ static void test_empty_plan_reconciles_bin(void) {
     write_file(binary, "cup");
     join_test_path(stale, sizeof(stale), root, "bin/stale");
     write_file(stale, "stale");
+#if !defined(_WIN32)
+    {
+        char case_alias[MAX_PATH_LEN];
+        join_test_path(case_alias, sizeof(case_alias), root, "bin/CUP");
+        write_file(case_alias, "stale alias");
+    }
+#endif
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_apply(&plan));
     TEST_ASSERT_TRUE(test_access_exists(binary));
     TEST_ASSERT_FALSE(test_access_exists(stale));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_expected_matches(&plan, &matches));
+#if !defined(_WIN32)
+    {
+        char case_alias[MAX_PATH_LEN];
+        join_test_path(case_alias, sizeof(case_alias), root, "bin/CUP");
+        TEST_ASSERT_FALSE(test_access_exists(case_alias));
+    }
+#endif
+    TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_TRUE(matches);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_check(&plan, &issues));
     TEST_ASSERT_EQUAL_size_t(0, issues);
@@ -588,10 +809,12 @@ static void test_apply_failures(void) {
     size_t issues;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build(NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_active(NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_build_default(NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_apply(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_expected_matches(NULL, &matches));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_expected_matches(&plan, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_entries_match(NULL, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_entries_match(&plan, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_exact_matches(NULL, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_exact_matches(&plan, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_check(NULL, &issues));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, wrapper_plan_check(&plan, NULL));
 
@@ -605,7 +828,7 @@ static void test_apply_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, wrapper_plan_apply(&plan));
 
     layout_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_check(&plan, &issues));
     wrapper_plan_free(&plan);
 }
@@ -624,7 +847,7 @@ static void test_scan_failures(void) {
 
 #if !defined(_WIN32)
     is_executable_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_expected_matches(&plan, &matches));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_exact_matches(&plan, &matches));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, wrapper_plan_check(&plan, &issues));
     is_executable_result = CUP_OK;
 #endif
@@ -635,12 +858,11 @@ static void test_scan_failures(void) {
     wrapper_plan_free(&plan);
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_plan_lifetime);
-    RUN_TEST(test_build_active);
+    RUN_TEST(test_build_default);
     RUN_TEST(test_build_scopes);
     RUN_TEST(test_build_conflicts);
     RUN_TEST(test_build_failures);

@@ -3,12 +3,13 @@
 #endif
 
 /*
- * Local network services used by isolated CUP integration tests. Libevent owns
+ * Local network services used by isolated cup integration tests. Libevent owns
  * the portable HTTP parsing, event loop, listeners and buffered socket I/O;
- * this file contains only CUP-specific fixture behavior.
+ * this file contains only cup-specific fixture behavior.
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,9 +27,12 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
+#include <io.h>
+#include <sys/stat.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <unistd.h>
 #endif
 
 #define REQUEST_LIMIT 8192U
@@ -44,6 +48,7 @@ enum {
 typedef struct {
     const char *root;
     const char *ready_file;
+    const char *request_file;
     unsigned short port;
     long delay_ms;
     int has_port;
@@ -109,8 +114,48 @@ static int parse_port_range(const char *text,
     return 1;
 }
 
-static int parse_port(const char *text, unsigned short *port) {
-    return parse_port_range(text, 1, port);
+static FILE *open_exclusive_file(const char *path, const char *mode) {
+    int descriptor;
+    FILE *file;
+#if defined(_WIN32)
+    int flags = _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY;
+
+    descriptor = _open(path, flags, _S_IREAD | _S_IWRITE);
+    if (descriptor < 0) {
+        return NULL;
+    }
+    file = _fdopen(descriptor, mode);
+    if (file == NULL) {
+        (void)_close(descriptor);
+        (void)_unlink(path);
+    }
+#else
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    descriptor = open(path, flags, 0600);
+    if (descriptor < 0) {
+        return NULL;
+    }
+    file = fdopen(descriptor, mode);
+    if (file == NULL) {
+        (void)close(descriptor);
+        (void)unlink(path);
+    }
+#endif
+    return file;
+}
+
+static void remove_owned_file(const char *path) {
+#if defined(_WIN32)
+    (void)_unlink(path);
+#else
+    (void)unlink(path);
+#endif
 }
 
 static int write_ready_file(const char *path, unsigned short port) {
@@ -121,13 +166,17 @@ static int write_ready_file(const char *path, unsigned short port) {
     if (path == NULL) {
         return 1;
     }
-    file = fopen(path, "wb");
+    file = open_exclusive_file(path, "wb");
     if (file == NULL) {
         return 0;
     }
     write_ok = fprintf(file, "%u\n", (unsigned)port) > 0;
     close_ok = fclose(file) == 0;
-    return write_ok && close_ok;
+    if (!write_ok || !close_ok) {
+        remove_owned_file(path);
+        return 0;
+    }
+    return 1;
 }
 
 static void sleep_milliseconds(long delay_ms) {
@@ -180,6 +229,8 @@ static int parse_http_options(int argc, char **argv, HttpOptions *options) {
             options->has_port = 1;
         } else if (strcmp(argv[index], "--ready-file") == 0 && index + 1 < argc) {
             options->ready_file = argv[++index];
+        } else if (strcmp(argv[index], "--request-file") == 0 && index + 1 < argc) {
+            options->request_file = argv[++index];
         } else if (strcmp(argv[index], "--delay-ms") == 0 && index + 1 < argc) {
             if (!parse_long(argv[++index], 0, 600000, &options->delay_ms)) {
                 return 0;
@@ -251,6 +302,13 @@ static void serve_http_request(struct evhttp_request *request, void *context) {
     FILE *file;
     int length;
 
+    if (options->request_file != NULL) {
+        FILE *marker = open_exclusive_file(options->request_file, "wb");
+
+        if (marker != NULL) {
+            (void)fclose(marker);
+        }
+    }
     if (options->delay_ms > 0) {
         sleep_milliseconds(options->delay_ms);
     }
@@ -325,7 +383,7 @@ static int run_http_server(int argc, char **argv) {
     if (!parse_http_options(argc, argv, &options)) {
         fprintf(stderr,
                 "usage: network-helper http-server --root DIR --port PORT "
-                "[--ready-file PATH] [--delay-ms N]\n");
+                "[--ready-file PATH] [--request-file PATH] [--delay-ms N]\n");
         return 2;
     }
     base = event_base_new();
@@ -471,7 +529,7 @@ static void tunnel_event(struct bufferevent *event, short events, void *context)
 }
 
 static const unsigned char *find_header_end(const unsigned char *buffer,
-                                             size_t length) {
+                                            size_t length) {
     size_t index;
 
     if (buffer == NULL || length < 4) {
@@ -527,7 +585,7 @@ static void read_connect_request(struct bufferevent *client, void *context) {
                host,
                port_text,
                version) != 3 ||
-        !parse_port(port_text, &port)) {
+        !parse_port_range(port_text, 1, &port)) {
         free(request);
         tunnel_fail(tunnel, bad_request);
         return;
@@ -601,12 +659,14 @@ static int run_connect_proxy(int argc, char **argv) {
     unsigned short port;
     int status = 1;
 
-    if (argc != 2 || !parse_port(argv[0], &port)) {
-        fprintf(stderr, "usage: network-helper connect-proxy <port> <log-file>\n");
+    if ((argc != 2 && argc != 3) || !parse_port_range(argv[0], 0, &port)) {
+        fprintf(stderr,
+                "usage: network-helper connect-proxy <port> <log-file> "
+                "[ready-file]\n");
         return 2;
     }
     memset(&proxy, 0, sizeof(proxy));
-    proxy.log_file = fopen(argv[1], "a");
+    proxy.log_file = open_exclusive_file(argv[1], "w");
     proxy.base = event_base_new();
     if (proxy.log_file == NULL || proxy.base == NULL) {
         fprintf(stderr, "failed to initialize CONNECT proxy\n");
@@ -626,7 +686,7 @@ static int run_connect_proxy(int argc, char **argv) {
                                        16,
                                        (struct sockaddr *)&address,
                                        sizeof(address));
-    if (listener == NULL) {
+    if (listener == NULL || !bound_socket_port(evconnlistener_get_fd(listener), &port)) {
         fprintf(stderr, "bind/listen failed on port %u\n", (unsigned)port);
         goto cleanup;
     }
@@ -639,6 +699,10 @@ static int run_connect_proxy(int argc, char **argv) {
         goto cleanup;
     }
 #endif
+    if (argc == 3 && !write_ready_file(argv[2], port)) {
+        fprintf(stderr, "failed to create proxy ready file\n");
+        goto cleanup;
+    }
     status = event_base_dispatch(proxy.base) < 0 ? 1 : 0;
 
 cleanup:

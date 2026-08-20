@@ -1,6 +1,5 @@
 /*
- * Validates symbolic or concrete package selectors and preserves the current tool@release
- * boundary representation.
+ * Validates symbolic or concrete package selectors and preserves the public tool@release form.
  */
 
 #include "package_selector.h"
@@ -11,19 +10,33 @@
 
 #include <string.h>
 
+_Static_assert(MAX_SELECTOR_LEN >= 2 * MAX_IDENTIFIER_LEN,
+               "selector capacity must hold two maximum identifiers and '@'");
+
 /* Parse symbolic or concrete tool selectors without consulting the catalog. */
 static CupError selector_init(PackageSelector *selector, const char *tool, const char *release) {
+    const unsigned char *cursor;
+    CupError err;
+
     if (selector == NULL || text_is_empty(tool) || text_is_empty(release)) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (!path_is_safe_identifier(tool)) {
         return CUP_ERR_INVALID_TOOL;
     }
-    if (!path_is_safe_identifier(release)) {
-        return CUP_ERR_INVALID_RELEASE;
+    for (cursor = (const unsigned char *)tool; *cursor != '\0'; ++cursor) {
+        if (*cursor >= 'A' && *cursor <= 'Z') {
+            return CUP_ERR_INVALID_TOOL;
+        }
     }
 
-    memset(selector, 0, sizeof(*selector));
+    if (!package_release_is_stable(release)) {
+        err = package_release_validate_concrete(release);
+        if (err != CUP_OK) {
+            return err;
+        }
+    }
+
     if (text_copy(selector->tool, sizeof(selector->tool), tool) != CUP_OK ||
         text_copy(selector->release, sizeof(selector->release), release) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
@@ -40,6 +53,7 @@ CupError package_selector_parse(PackageSelector *selector, const char *text) {
     if (selector == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    memset(selector, 0, sizeof(*selector));
 
     err = package_selector_parse_parts(text, tool, sizeof(tool), release, sizeof(release));
     if (err != CUP_OK) {
@@ -58,29 +72,56 @@ int package_release_is_stable(const char *release) {
     return strcmp(release, "stable") == 0;
 }
 
+CupError package_release_validate_concrete(const char *release) {
+    char canonical[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    if (text_is_empty(release)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = text_copy_lower_ascii(canonical, sizeof(canonical), release);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (strcmp(canonical, release) != 0 || package_release_is_stable(release) ||
+        !path_is_safe_identifier(release)) {
+        return CUP_ERR_INVALID_RELEASE;
+    }
+    return CUP_OK;
+}
+
 CupError package_selector_parse_parts(
     const char *text, char *tool, size_t tool_size, char *release, size_t release_size) {
-    char buffer[MAX_SELECTOR_LEN];
-    TextBuffer outputs[2];
-    CupError err;
+    const char *separator;
+    size_t release_length;
+    size_t text_length;
+    size_t tool_length;
 
     if (text_is_empty(text) || tool == NULL || tool_size == 0 || release == NULL ||
         release_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_copy(buffer, sizeof(buffer), text);
-    if (err != CUP_OK) {
-        return err;
+    text_length = strlen(text);
+    if (text_length >= MAX_SELECTOR_LEN) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
-    outputs[0] = (TextBuffer){.data = tool, .capacity = tool_size};
-    outputs[1] = (TextBuffer){.data = release, .capacity = release_size};
-
-    err = text_split_exact(buffer, '@', outputs, 2);
-    if (err != CUP_OK || text_is_empty(tool) || text_is_empty(release)) {
+    separator = strchr(text, '@');
+    if (separator == NULL || separator == text || separator[1] == '\0' ||
+        strchr(separator + 1, '@') != NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+
+    tool_length = (size_t)(separator - text);
+    release_length = text_length - tool_length - 1u;
+    if (tool_length >= tool_size || release_length >= release_size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+
+    memmove(tool, text, tool_length);
+    tool[tool_length] = '\0';
+    memmove(release, separator + 1, release_length + 1u);
 
     return CUP_OK;
 }

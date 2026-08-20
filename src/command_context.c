@@ -8,6 +8,7 @@
 #include "cup_assets.h"
 #include "package_selector.h"
 #include "layout.h"
+#include "interrupt.h"
 #include "path.h"
 #include "platform.h"
 #include "registry.h"
@@ -39,6 +40,16 @@ static CupError resolve_platforms(CommandContext *context, const char *target_ov
     return platform_validate(context->target_platform);
 }
 
+static CupError prepare_context(CommandContext *context, const char *target_override) {
+    if (context == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    memset(context, 0, sizeof(*context));
+    package_catalog_init(&context->catalog);
+    return resolve_platforms(context, target_override);
+}
+
 static CupError validate_cup_assets(void) {
     CupAssetsInspection inspection;
     CupError err = cup_assets_inspect(&inspection);
@@ -65,9 +76,8 @@ static CupError initialize_runtime(void) {
     }
 
     memset(&state, 0, sizeof(state));
-    return state_save(&state);
+    return state_save(&state, NULL, NULL);
 }
-
 
 static CupError require_usable_runtime(LayoutRuntimeStatus status) {
     if (status != LAYOUT_RUNTIME_INCOMPLETE) {
@@ -94,21 +104,84 @@ static CupError acquire_runtime_lock(CommandContext *context, SystemLockMode mod
     return err;
 }
 
-/* Lock acquisition may race with another journal owner or runtime deletion, so both are rechecked. */
-static CupError recheck_locked_runtime(CommandContext *context, LayoutRuntimeStatus *status) {
-    CupError err;
+/* Validate every runtime precondition only after the final requested lock is held. */
+static CupError inspect_locked_runtime(LayoutRuntimeStatus *status) {
+    CupError err = layout_root_snapshot_validate();
 
-    err = runtime_journal_require_none();
+    if (err == CUP_OK) {
+        err = runtime_journal_require_none();
+    }
     if (err == CUP_OK) {
         err = layout_get_runtime_status(status);
     }
     if (err == CUP_OK) {
         err = require_usable_runtime(*status);
     }
-    if (err != CUP_OK) {
-        command_context_end(context);
-    }
     return err;
+}
+
+/* A missing root cannot contain cup.lock. Create only that absent bootstrap root, then retry the
+ * canonical exclusive lock. Existing roots are always locked before marker, mode or runtime
+ * repair. */
+static CupError acquire_bootstrap_lock(CommandContext *context) {
+    CupError err = acquire_runtime_lock(context, SYSTEM_LOCK_EXCLUSIVE);
+    SystemPathKind root_kind;
+    char root_path[MAX_PATH_LEN];
+
+    if (err != CUP_ERR_FILESYSTEM) {
+        return err;
+    }
+
+    /* A filesystem error is not proof that the root is absent: cup.lock may be the wrong kind or
+     * an existing root may be inaccessible. Only a no-follow missing-root classification permits
+     * creation before the canonical lock exists. */
+    err = layout_get_root(root_path, sizeof(root_path));
+    if (err == CUP_OK) {
+        err = system_get_path_kind(root_path, &root_kind);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (root_kind != SYSTEM_PATH_MISSING) {
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    err = interrupt_safe_point();
+    if (err == CUP_OK) {
+        err = layout_ensure_root();
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    return acquire_runtime_lock(context, SYSTEM_LOCK_EXCLUSIVE);
+}
+
+static CupError initialize_locked_runtime(LayoutRuntimeStatus runtime_status) {
+    CupError err;
+    char root[MAX_PATH_LEN];
+
+    err = interrupt_safe_point();
+    if (err == CUP_OK) {
+        err = layout_ensure_root();
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (runtime_status != LAYOUT_RUNTIME_MISSING) {
+        return CUP_OK;
+    }
+
+    err = interrupt_safe_point();
+    if (err == CUP_OK) {
+        err = initialize_runtime();
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (layout_get_root(root, sizeof(root)) == CUP_OK) {
+        printf("Initialized cup runtime at '%s'.\n", root);
+    }
+    return CUP_OK;
 }
 
 CupError command_context_begin(CommandContext *context,
@@ -117,30 +190,22 @@ CupError command_context_begin(CommandContext *context,
     LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     SystemLockMode lock_mode = mode;
     CupError err;
-    char root[MAX_PATH_LEN];
 
-    if (context == NULL) {
+    if (context == NULL || (mode != SYSTEM_LOCK_SHARED && mode != SYSTEM_LOCK_EXCLUSIVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    memset(context, 0, sizeof(*context));
-    package_catalog_init(&context->catalog);
-
-    /* Resolve and validate the pre-lock view without creating runtime state. */
-    err = runtime_journal_require_none();
-    if (err == CUP_OK) {
-        err = resolve_platforms(context, target_override);
-    }
+    err = prepare_context(context, target_override);
     if (err == CUP_OK) {
         err = layout_get_runtime_status(&runtime_status);
-    }
-    if (err == CUP_OK) {
-        err = require_usable_runtime(runtime_status);
     }
     if (err != CUP_OK) {
         return err;
     }
 
+    /* The pre-lock status selects only the lock/bootstrap route. It is never authoritative for
+     * readiness: a concurrent repair may complete, or the runtime may degrade, before ownership is
+     * acquired. inspect_locked_runtime() makes the only usable/incomplete decision. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
         err = validate_cup_assets();
         if (err != CUP_OK) {
@@ -149,48 +214,92 @@ CupError command_context_begin(CommandContext *context,
                     "Run the installer or execute cup from the repository root.\n");
             return err;
         }
-        err = layout_ensure_root();
+        lock_mode = SYSTEM_LOCK_EXCLUSIVE;
+        err = interrupt_safe_point();
+        if (err == CUP_OK) {
+            err = acquire_bootstrap_lock(context);
+        }
+    } else {
+        err = acquire_runtime_lock(context, lock_mode);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = inspect_locked_runtime(&runtime_status);
+    if (err != CUP_OK) {
+        command_context_end(context);
+        return err;
+    }
+
+    /* A shared preflight never initializes under a shared lock. Reacquire the exclusive lock and
+     * rebuild the entire locked snapshot when the runtime disappeared concurrently. */
+    if (runtime_status == LAYOUT_RUNTIME_MISSING && lock_mode == SYSTEM_LOCK_SHARED) {
+        command_context_end(context);
+        err = prepare_context(context, target_override);
+        if (err != CUP_OK) {
+            return err;
+        }
+        err = validate_cup_assets();
         if (err != CUP_OK) {
             return err;
         }
         lock_mode = SYSTEM_LOCK_EXCLUSIVE;
+        err = interrupt_safe_point();
+        if (err == CUP_OK) {
+            err = acquire_bootstrap_lock(context);
+        }
+        if (err != CUP_OK) {
+            return err;
+        }
+        err = inspect_locked_runtime(&runtime_status);
+        if (err != CUP_OK) {
+            command_context_end(context);
+            return err;
+        }
     }
 
-    err = acquire_runtime_lock(context, lock_mode);
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = recheck_locked_runtime(context, &runtime_status);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    /*
-     * An exclusive context is a mutating ownership boundary. Adopt a recognized legacy
-     * installation here so every mutation leaves the selected root durably marked.
-     */
     if (lock_mode == SYSTEM_LOCK_EXCLUSIVE) {
-        err = layout_ensure_root();
+        /* The pre-lock asset check only avoids creating an unusable bootstrap root. Installed or
+         * development assets are revalidated under the final exclusive snapshot before they can
+         * authorize runtime initialization. */
+        if (runtime_status == LAYOUT_RUNTIME_MISSING) {
+            err = validate_cup_assets();
+        }
+        if (err == CUP_OK) {
+            err = initialize_locked_runtime(runtime_status);
+        }
         if (err != CUP_OK) {
             command_context_end(context);
             return err;
-        }
-    }
-
-    /* The exclusive lock now protects first-time runtime initialization. */
-    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        err = initialize_runtime();
-        if (err != CUP_OK) {
-            command_context_end(context);
-            return err;
-        }
-        if (layout_get_root(root, sizeof(root)) == CUP_OK) {
-            printf("Initialized cup runtime at '%s'.\n", root);
         }
     }
 
     context->runtime_available = 1;
     return CUP_OK;
+}
+
+static CupError selected_root_is_missing(int *missing) {
+    SystemPathKind kind;
+    CupError err;
+    char root[MAX_PATH_LEN];
+
+    if (missing == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *missing = 0;
+    err = layout_get_root(root, sizeof(root));
+    if (err == CUP_OK) {
+        err = system_get_path_kind(root, &kind);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (kind == SYSTEM_PATH_MISSING) {
+        *missing = 1;
+        return CUP_OK;
+    }
+    return kind == SYSTEM_PATH_DIRECTORY ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
 
 /* Read-only context. Missing roots are treated as an uninitialized installation and are never
@@ -202,40 +311,41 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
     if (context == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    memset(context, 0, sizeof(*context));
-    package_catalog_init(&context->catalog);
-
-    err = resolve_platforms(context, target_override);
-    if (err == CUP_OK) {
-        err = runtime_journal_require_none();
-    }
+    err = prepare_context(context, target_override);
     if (err == CUP_OK) {
         err = layout_get_runtime_status(&runtime_status);
-    }
-    if (err == CUP_OK) {
-        err = require_usable_runtime(runtime_status);
     }
     if (err != CUP_OK) {
         return err;
     }
+    /* As in mutating contexts, the unlocked classification only determines whether a lock path
+     * can exist. Readiness is decided from the shared locked snapshot below. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        context->runtime_available = 0;
-        return CUP_OK;
+        int root_missing;
+
+        err = selected_root_is_missing(&root_missing);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (root_missing) {
+            context->runtime_available = 0;
+            return CUP_OK;
+        }
     }
 
     err = acquire_runtime_lock(context, SYSTEM_LOCK_SHARED);
     if (err != CUP_OK) {
         return err;
     }
-    err = recheck_locked_runtime(context, &runtime_status);
+    err = inspect_locked_runtime(&runtime_status);
     if (err != CUP_OK) {
+        command_context_end(context);
         return err;
     }
 
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        /* command_context_end clears resolved platforms; rebuild the read-only empty view. */
         command_context_end(context);
-        err = resolve_platforms(context, target_override);
+        err = prepare_context(context, target_override);
         if (err == CUP_OK) {
             context->runtime_available = 0;
         }
@@ -266,7 +376,7 @@ CupError command_context_load_state(CommandContext *context) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = state_load(&context->state, &status);
+    err = state_load(&context->state, &status, &context->state_identity, stderr);
     if (err != CUP_OK) {
         return err;
     }
@@ -276,11 +386,11 @@ CupError command_context_load_state(CommandContext *context) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = state_validate(&context->state);
+    err = state_validate(&context->state, stderr);
     if (err != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
-    err = state_validate_current_host(&context->state, context->host_platform);
+    err = state_validate_current_host(&context->state, context->host_platform, stderr);
     if (err != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
@@ -303,15 +413,4 @@ CupError command_context_load_catalog(CommandContext *context) {
 
     context->has_catalog = 1;
     return CUP_OK;
-}
-
-void command_context_try_catalog(CommandContext *context) {
-    if (context == NULL) {
-        return;
-    }
-
-    context->has_catalog = 0;
-    if (package_catalog_load(&context->catalog) == CUP_OK) {
-        context->has_catalog = 1;
-    }
 }

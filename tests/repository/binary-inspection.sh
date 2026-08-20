@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Verifies deterministic ELF, Mach-O and PE reports plus rejection of
+# Verifies deterministic ELF, Mach-O and PE reports plus rejection of
 # wrong architectures, third-party dynamic libraries and unsafe loader metadata.
 set -eu
 
@@ -12,6 +12,7 @@ fake_bin=$TMP_ROOT/bin
 mkdir -p "$fake_bin"
 binary=$TMP_ROOT/cup
 printf 'fixture\n' >"$binary"
+chmod +x "$binary"
 
 cat >"$fake_bin/file" <<'EOF_FILE'
 #!/bin/sh
@@ -41,9 +42,11 @@ ELF Header:
   Data:                              2's complement, little endian
   Type:                              DYN (Position-Independent Executable file)
   Machine:                           ${FAKE_MACHINE:-Advanced Micro Devices X86-64}
+  Entry point address:               0x1000
 EOF_HEADER
         ;;
     -l)
+        printf '%s\n' '  LOAD           0x000000 0x0000000000400000 0x0000000000400000'
         if [ "${FAKE_INTERPRETER:-1}" = 1 ]; then
             printf '%s\n' '      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]'
         fi
@@ -65,6 +68,12 @@ EOF_HEADER
                 ;;
         esac
         ;;
+    -S)
+        printf '%s\n' 'Section Headers:' '  [ 1] .text PROGBITS'
+        ;;
+    -Ws)
+        printf '%s\n' 'Symbol table:'
+        ;;
     *)
         exit 2
         ;;
@@ -80,6 +89,12 @@ EOF_LIPO
 cat >"$fake_bin/otool" <<'EOF_OTOOL'
 #!/bin/sh
 case "${1:-}" in
+    -hv)
+        printf '%s\n' \
+            'Mach header' \
+            '      magic cputype cpusubtype  caps    filetype ncmds sizeofcmds      flags' \
+            'MH_MAGIC_64 X86_64 ALL 0x00 EXECUTE 12 1024 NOUNDEFS DYLDLINK TWOLEVEL PIE'
+        ;;
     -L)
         printf '%s:\n' "$2"
         old_ifs=$IFS
@@ -117,6 +132,11 @@ EOF_RPATH
 esac
 EOF_OTOOL
 
+cat >"$fake_bin/nm" <<'EOF_NM'
+#!/bin/sh
+printf '%s\n' "${FAKE_NM_SYMBOLS:-}"
+EOF_NM
+
 cat >"$fake_bin/x86_64-w64-mingw32-objdump" <<'EOF_OBJDUMP'
 #!/bin/sh
 case "${1:-}" in
@@ -124,7 +144,11 @@ case "${1:-}" in
         cat <<EOF_HEADER
 $2:     file format pei-x86-64
 architecture: ${FAKE_PE_ARCH:-i386:x86-64}, flags 0x0000012f:
+HAS_RELOC, EXEC_P, HAS_LINENO, HAS_DEBUG, HAS_SYMS, HAS_LOCALS, D_PAGED
 EOF_HEADER
+        ;;
+    -h|-t)
+        exit 0
         ;;
     -p)
         printf 'Subsystem\t\t00000003 (%s)\n' "${FAKE_PE_SUBSYSTEM:-Windows CUI}"
@@ -147,7 +171,7 @@ EOF_HEADER
 esac
 EOF_OBJDUMP
 chmod +x "$fake_bin/file" "$fake_bin/readelf" "$fake_bin/lipo" \
-    "$fake_bin/otool" "$fake_bin/x86_64-w64-mingw32-objdump"
+    "$fake_bin/otool" "$fake_bin/nm" "$fake_bin/x86_64-w64-mingw32-objdump"
 
 inspect() {
     PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/inspect-binary.sh" "$@"
@@ -219,7 +243,7 @@ if FAKE_FORMAT=macho FAKE_MAC_LIBS=/opt/homebrew/lib/libcurl.4.dylib inspect \
     fail 'Homebrew Mach-O dependency was accepted'
 fi
 assert_contains "$(cat "$TMP_ROOT/homebrew.out")" \
-    'library is outside the macOS system/framework allowlist'
+    'library is outside the macOS allowlist'
 
 if FAKE_FORMAT=macho FAKE_MAC_ARCH=arm64 inspect macos-x64 development \
         "$binary" "$TMP_ROOT/mac-arch.txt" >"$TMP_ROOT/mac-arch.out" 2>&1; then
@@ -237,7 +261,7 @@ if FAKE_FORMAT=macho FAKE_MAC_MINOS=none inspect macos-x64 development \
         "$binary" "$TMP_ROOT/mac-minos.txt" >"$TMP_ROOT/mac-minos.out" 2>&1; then
     fail 'Mach-O binary without minimum OS was accepted'
 fi
-assert_contains "$(cat "$TMP_ROOT/mac-minos.out")" 'does not declare a minimum macOS version'
+assert_contains "$(cat "$TMP_ROOT/mac-minos.out")" "minimum macOS version 'missing' does not match policy 13.0"
 
 if FAKE_FORMAT=macho FAKE_MAC_MINOS=12.0 inspect macos-x64 development \
         "$binary" "$TMP_ROOT/mac-floor.txt" >"$TMP_ROOT/mac-floor.out" 2>&1; then
@@ -289,9 +313,37 @@ if FAKE_FORMAT=pe FAKE_PE_NX=0 inspect windows-x64 development \
 fi
 assert_contains "$(cat "$TMP_ROOT/pe-nx.out")" 'is missing NX_COMPAT'
 
+
+# Sanitizer inspection requires evidence for both AddressSanitizer and
+# UndefinedBehaviorSanitizer on every supported object format.
+FAKE_FORMAT=macho \
+FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
+FAKE_NM_SYMBOLS='__asan_init __ubsan_handle_type_mismatch_v1' \
+    inspect macos-x64 sanitizers "$binary" "$TMP_ROOT/mac-sanitizers.txt"
+if FAKE_FORMAT=macho \
+        FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
+        FAKE_NM_SYMBOLS='__asan_init' \
+        inspect macos-x64 sanitizers "$binary" "$TMP_ROOT/mac-no-ubsan.txt" \
+        >"$TMP_ROOT/mac-no-ubsan.out" 2>&1; then
+    fail 'Mach-O sanitizer binary without UBSan was accepted'
+fi
+assert_contains "$(cat "$TMP_ROOT/mac-no-ubsan.out")" 'contains no UBSan runtime'
+
+FAKE_FORMAT=pe \
+FAKE_PE_DLLS='KERNEL32.dll,clang_rt.asan_dynamic-x86_64.dll,clang_rt.ubsan_standalone-x86_64.dll' \
+    inspect windows-x64 sanitizers "$binary" "$TMP_ROOT/pe-sanitizers.txt"
+if FAKE_FORMAT=pe \
+        FAKE_PE_DLLS='KERNEL32.dll,clang_rt.asan_dynamic-x86_64.dll' \
+        inspect windows-x64 sanitizers "$binary" "$TMP_ROOT/pe-no-ubsan.txt" \
+        >"$TMP_ROOT/pe-no-ubsan.out" 2>&1; then
+    fail 'PE sanitizer binary without UBSan was accepted'
+fi
+assert_contains "$(cat "$TMP_ROOT/pe-no-ubsan.out")" 'contains no UBSan runtime'
+
 if [ "${CUP_TEST_WITH_BUILD_OUTPUT:-0}" = 1 ] && [ "$(uname -s)" = Linux ]; then
-    real_development="$PROJECT_ROOT/build/linux-x64/development/bin/cup"
-    real_release="$PROJECT_ROOT/build/linux-x64/release/bin/cup"
+    test_build_root=${CUP_TEST_BUILD_ROOT:-$PROJECT_ROOT/build}
+    real_development="$test_build_root/linux-x64/development/bin/cup"
+    real_release="$test_build_root/linux-x64/release/bin/cup"
     [ -x "$real_development" ] &&
         "$PROJECT_ROOT/scripts/build/inspect-binary.sh" linux-x64 development \
             "$real_development" "$TMP_ROOT/real-development.txt"

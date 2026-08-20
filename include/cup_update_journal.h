@@ -2,14 +2,14 @@
 #define CUP_UPDATE_JOURNAL_H
 
 /*
- * Persists the detached CUP-update protocol in transaction.txt. The journal remains the
- * authoritative record until a committed generation is finalized or a failed rollback is
- * explicitly acknowledged by repair.
+ * Persists detached cup-update state in transaction.txt. The journal remains authoritative
+ * until the new generation is finalized or repair acknowledges a failed rollback.
  */
 #include <stddef.h>
 
 #include "constants.h"
 #include "error.h"
+#include "system.h"
 
 typedef enum {
     CUP_UPDATE_JOURNAL_MISSING,
@@ -42,11 +42,12 @@ typedef enum {
 
 typedef struct {
     char temporary_name[MAX_PATH_LEN];
-    char token[MAX_PATH_LEN];
+    char token[MAX_TRANSACTION_TOKEN_LEN];
     char version[MAX_IDENTIFIER_LEN];
     CupUpdatePhase phase;
     CupUpdateFailureRecovery recovery;
     int error_code;
+    SystemPathIdentity file_identity;
 } CupUpdateJournal;
 
 /* In-progress, failed and acknowledged journal lifecycle. */
@@ -55,16 +56,18 @@ const char *cup_update_phase_name(CupUpdatePhase phase);
 const char *cup_update_failure_recovery_name(CupUpdateFailureRecovery recovery);
 CupError cup_update_journal_begin(const char *temporary_path,
                                   const char *token,
-                                  const char *version);
+                                  const char *version,
+                                  CupUpdateJournal *created);
 CupError cup_update_journal_set_phase(CupUpdateJournal *journal,
                                       CupUpdatePhase phase,
                                       int error_code);
-CupError cup_update_journal_set_recovery(CupUpdateJournal *journal,
-                                         CupUpdateFailureRecovery recovery);
 CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStatus *status);
 CupError cup_update_journal_get_staging_path(const CupUpdateJournal *journal,
                                              char *buffer,
                                              size_t size);
+CupError cup_update_write_generation_marker(const char *staging,
+                                            const char *version,
+                                            const char *staged_binary);
 CupError cup_update_journal_recover(const CupUpdateJournal *journal,
                                     CupUpdateRecoveryMode mode,
                                     CupUpdateRecoveryResult *result);

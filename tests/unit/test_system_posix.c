@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises POSIX path kinds, permissions, locks, exclusive temporary objects,
+ * Exercises POSIX path kinds, permissions, locks, exclusive temporary objects,
  * durable moves and detached process helpers.
  */
 
@@ -87,6 +87,16 @@ static void test_home_process(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
     TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/", 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/tmp/cup//home", 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/tmp/cup/./home", 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/tmp/cup/../home", 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/tmp/cup/home/", 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, setenv("HOME", "/tmp/cup\\home", 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_get_home_dir(buffer, sizeof(buffer)));
 
     if (had_home) {
         TEST_ASSERT_EQUAL_INT(0, setenv("HOME", original_home, 1));
@@ -95,16 +105,26 @@ static void test_home_process(void) {
     }
 }
 
-static CupError count_callback(const char *path, SystemPathKind kind, void *userdata) {
+static CupError count_callback(const char *path,
+                               SystemPathKind kind,
+                               const SystemPathIdentity *identity,
+                               void *userdata) {
     size_t *count = userdata;
 
     TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(identity);
+    TEST_ASSERT_TRUE(identity->valid);
+    TEST_ASSERT_EQUAL_INT(kind, identity->kind);
     TEST_ASSERT_TRUE(kind != SYSTEM_PATH_MISSING);
     (*count)++;
     return CUP_OK;
 }
 
-static CupError fail_callback(const char *path, SystemPathKind kind, void *userdata) {
+static CupError fail_callback(const char *path,
+                              SystemPathKind kind,
+                              const SystemPathIdentity *identity,
+                              void *userdata) {
+    (void)identity;
     (void)path;
     (void)kind;
     (void)userdata;
@@ -115,12 +135,25 @@ static int cancellation_requested(void) {
     return 1;
 }
 
+static unsigned int cancellation_checks_remaining;
+
+static int cancellation_after_checks(void) {
+    if (cancellation_checks_remaining == 0) {
+        return 1;
+    }
+    cancellation_checks_remaining--;
+    return 0;
+}
+
 static void test_path_and_walk(void) {
     char directory[1024];
     char nested[1024];
     char file_path[1024];
+    char original_path[1024];
     char link_path[1024];
     SystemPathKind kind;
+    SystemPathIdentity first_identity;
+    SystemPathIdentity second_identity;
     long long size;
     int value;
     size_t count = 0;
@@ -142,6 +175,17 @@ static void test_path_and_walk(void) {
     TEST_ASSERT_TRUE(value);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_file_size(file_path, &size));
     TEST_ASSERT_EQUAL_INT(5, size);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(file_path, &first_identity));
+    TEST_ASSERT_TRUE(first_identity.valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, first_identity.kind);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(file_path, &second_identity));
+    TEST_ASSERT_TRUE(system_path_identity_equal(&first_identity, &second_identity));
+    TEST_ASSERT_TRUE(snprintf(original_path, sizeof(original_path), "%s/original", directory) > 0);
+    TEST_ASSERT_EQUAL_INT(0, rename(file_path, original_path));
+    write_text(file_path, "hello");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(file_path, &second_identity));
+    TEST_ASSERT_FALSE(system_path_identity_equal(&first_identity, &second_identity));
+    TEST_ASSERT_EQUAL_INT(0, unlink(original_path));
 
     /* Read-only and executable attributes can be toggled and observed. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_read_only(file_path, &value));
@@ -186,6 +230,9 @@ static void test_copy_move_temp(void) {
     char copy[1024];
     char moved[1024];
     char replacement[1024];
+    char identity_target[1024];
+    char identity_original[1024];
+    char identity_source[1024];
     char exclusive[1024];
     char temporary[1024];
     char temporary_directory[1024];
@@ -193,13 +240,17 @@ static void test_copy_move_temp(void) {
     char buffer[64];
     FILE *file = NULL;
     SystemCommitState state;
+    SystemPathIdentity expected_identity;
     int exists;
 
     build_path(source, sizeof(source), "source");
     build_path(copy, sizeof(copy), "copy");
     build_path(moved, sizeof(moved), "moved");
     build_path(replacement, sizeof(replacement), "replacement");
-    build_path(exclusive, sizeof(exclusive), "exclusive");
+    build_path(identity_target, sizeof(identity_target), "identity-target");
+    build_path(identity_original, sizeof(identity_original), "identity-original");
+    build_path(identity_source, sizeof(identity_source), "identity-source");
+    build_path(exclusive, sizeof(exclusive), "script-exclusive");
     write_text(source, "source-data");
 
     /* Copies preserve bytes and executable permissions, including self-copy. */
@@ -243,6 +294,115 @@ static void test_copy_move_temp(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_replace_file(replacement, moved, &state));
     TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
 
+    /* Identity-bound mutation preserves a replacement that appeared after the snapshot. */
+    write_text(identity_target, "original");
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_path_identity(identity_target, &expected_identity));
+    TEST_ASSERT_EQUAL_INT(0, rename(identity_target, identity_original));
+
+    write_text(identity_source, "new-value");
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        system_replace_file_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(identity_target, &exists));
+    TEST_ASSERT_FALSE(exists);
+    read_text(identity_source, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("new-value", buffer);
+
+    write_text(identity_target, "foreign");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        system_remove_file_if_identity(identity_target, &expected_identity));
+    read_text(identity_target, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("foreign", buffer);
+
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        system_replace_file_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    read_text(identity_target, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("foreign", buffer);
+    read_text(identity_source, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("new-value", buffer);
+    {
+        SystemPathIdentity wrong_kind = expected_identity;
+
+        wrong_kind.kind = SYSTEM_PATH_LINK;
+        state = SYSTEM_COMMIT_NOT_APPLIED;
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_INVALID_INPUT,
+            system_replace_file_if_identity(
+                identity_source, identity_target, &wrong_kind, &state));
+        TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_INVALID_INPUT, system_remove_file_if_identity(identity_target, &wrong_kind));
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(identity_source));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(identity_target));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(identity_original));
+
+    /* Source-identity-bound moves reject a pathname that no longer names the observed object. */
+    write_text(identity_source, "move-old");
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_path_identity(identity_source, &expected_identity));
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_move_path(identity_source, identity_original, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+    write_text(identity_source, "move-foreign");
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        system_move_path_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    read_text(identity_source, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("move-foreign", buffer);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(identity_target, &exists));
+    TEST_ASSERT_FALSE(exists);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_path_identity(identity_source, &expected_identity));
+    {
+        SystemPathIdentity wrong_kind = expected_identity;
+
+        wrong_kind.kind = SYSTEM_PATH_LINK;
+        state = SYSTEM_COMMIT_NOT_APPLIED;
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_INVALID_INPUT,
+            system_move_path_if_identity(
+                identity_source, identity_target, &wrong_kind, &state));
+        TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    }
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_move_path_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+    read_text(identity_target, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("move-foreign", buffer);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(identity_target));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(identity_original));
+
+    /* Directory sources use the same source-identity contract. */
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(identity_source));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_path_identity(identity_source, &expected_identity));
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_move_path_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(identity_source, &exists));
+    TEST_ASSERT_FALSE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(identity_target));
+
     /* Exclusive and temporary creation return caller-owned handles and unique paths. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_create_file_exclusive(exclusive, &file));
     TEST_ASSERT_NOT_NULL(file);
@@ -255,8 +415,17 @@ static void test_copy_move_temp(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, system_create_temp_file(temp_dir, "file", temporary, sizeof(temporary), &file));
     TEST_ASSERT_NOT_NULL(file);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_file_executable(NULL, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_file_executable(file, 2));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_file_executable(file, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_sync_file(file));
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     file = NULL;
+    {
+        struct stat temporary_info;
+        TEST_ASSERT_EQUAL_INT(0, stat(temporary, &temporary_info));
+        TEST_ASSERT_EQUAL_INT(0700, temporary_info.st_mode & 0777);
+    }
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(temporary, &exists));
     TEST_ASSERT_TRUE(exists);
 
@@ -295,6 +464,9 @@ static void test_lock_contention(void) {
     build_path(lock_path, sizeof(lock_path), "cup.lock");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_TRUE(lock.active);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_TRUE(lock.active);
 
     child = fork();
     TEST_ASSERT_TRUE(child >= 0);
@@ -311,6 +483,28 @@ static void test_lock_contention(void) {
     TEST_ASSERT_TRUE(WIFEXITED(status));
     TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
 
+    /* Closing an independently opened descriptor for cup.lock must not release
+     * the lock held by SystemLock. */
+    {
+        int extra_fd = open(lock_path, O_RDONLY | O_CLOEXEC);
+
+        TEST_ASSERT_TRUE(extra_fd >= 0);
+        TEST_ASSERT_EQUAL_INT(0, close(extra_fd));
+    }
+    child = fork();
+    TEST_ASSERT_TRUE(child >= 0);
+    if (child == 0) {
+        SystemLock child_lock = {0, 0};
+        CupError err = system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+        if (err == CUP_OK) {
+            system_lock_release(&child_lock);
+        }
+        _exit(err == CUP_ERR_LOCK ? 0 : 1);
+    }
+    TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
+    TEST_ASSERT_TRUE(WIFEXITED(status));
+    TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+
     system_lock_release(&lock);
     TEST_ASSERT_FALSE(lock.active);
     system_lock_release(&lock);
@@ -320,6 +514,32 @@ static void test_lock_contention(void) {
                           system_lock_acquire(NULL, lock_path, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_lock_acquire(&lock, lock_path, (SystemLockMode)99));
+
+    {
+        SystemLock first_shared = {0, 0};
+        SystemLock second_shared = {0, 0};
+
+        TEST_ASSERT_EQUAL_INT(CUP_OK,
+                              system_lock_acquire(&first_shared, lock_path, SYSTEM_LOCK_SHARED));
+        TEST_ASSERT_EQUAL_INT(CUP_OK,
+                              system_lock_acquire(&second_shared, lock_path, SYSTEM_LOCK_SHARED));
+        system_lock_release(&first_shared);
+
+        child = fork();
+        TEST_ASSERT_TRUE(child >= 0);
+        if (child == 0) {
+            SystemLock child_lock = {0, 0};
+            CupError err = system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+            if (err == CUP_OK) {
+                system_lock_release(&child_lock);
+            }
+            _exit(err == CUP_ERR_LOCK ? 0 : 1);
+        }
+        TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
+        TEST_ASSERT_TRUE(WIFEXITED(status));
+        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+        system_lock_release(&second_shared);
+    }
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -390,12 +610,15 @@ static void assert_temp_contracts(const char *file_path, char *destination, char
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         system_create_temp_file(temp_dir, NULL, destination, 1024, &file));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        system_create_temp_file(temp_dir, "../escape", destination, 1024, &file));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_file(temp_dir, "x", NULL, 1024, &file));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_file(temp_dir, "x", destination, 0, &file));
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
+        CUP_ERR_BUFFER_TOO_SMALL,
         system_create_temp_file(temp_dir, "long-prefix", tiny, 2, &file));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TEMPORARY,
@@ -404,10 +627,16 @@ static void assert_temp_contracts(const char *file_path, char *destination, char
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         system_create_temp_directory(temp_dir, NULL, destination, 1024));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        system_create_temp_directory(temp_dir, "../escape", destination, 1024));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_directory(temp_dir, "x", NULL, 1024));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_create_temp_directory(temp_dir, "x", destination, 0));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_BUFFER_TOO_SMALL,
+        system_create_temp_directory(temp_dir, "long-prefix", tiny, 2));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TEMPORARY,
         system_create_temp_directory("/missing-parent", "x", destination, 1024));
@@ -441,6 +670,9 @@ static void assert_path_query_contracts(const char *file_path,
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_is_executable(NULL, &value));
     TEST_ASSERT_FALSE(value);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_is_executable(file_path, NULL));
+    value = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_executable(missing, &value));
+    TEST_ASSERT_FALSE(value);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_is_read_only(NULL, &value));
     TEST_ASSERT_FALSE(value);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_is_read_only(file_path, NULL));
@@ -480,7 +712,13 @@ static void test_api_errors(void) {
     char destination[1024];
     char link_path[1024];
     char tiny[2];
+    char overlong[MAX_PATH_LEN + 1];
+    SystemLock overlong_lock = {0, 0};
+    size_t count = 0;
     SystemPathKind kind;
+
+    memset(overlong, 'a', sizeof(overlong) - 1);
+    overlong[sizeof(overlong) - 1] = '\0';
 
     build_path(file_path, sizeof(file_path), "contracts-file");
     build_path(directory, sizeof(directory), "contracts-directory");
@@ -496,6 +734,18 @@ static void test_api_errors(void) {
     assert_temp_contracts(file_path, destination, tiny);
     assert_path_query_contracts(file_path, directory, missing, link_path);
     assert_walk_lock_contracts(file_path, directory, missing);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, system_make_directory(overlong));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, system_sync_parent_directory(overlong));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          system_list_directory(overlong, count_callback, &count));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          system_walk_directory(overlong, count_callback, &count));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          system_lock_acquire(&overlong_lock,
+                                              overlong,
+                                              SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_FALSE(overlong_lock.active);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(file_path));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(directory));
@@ -532,6 +782,8 @@ static void test_extra_paths(void) {
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_OTHER, kind);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_is_read_only(fifo_path, &read_only));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_set_read_only(fifo_path, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_read_only(destination, 2));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_executable(destination, -1));
 
     TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
     TEST_ASSERT_EQUAL_INT(0, chdir(temp_dir));
@@ -541,9 +793,149 @@ static void test_extra_paths(void) {
     TEST_ASSERT_EQUAL_INT(0, setenv("HOME", temp_dir, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
                           system_get_home_dir(home_buffer, sizeof(home_buffer)));
+    if (had_home) {
+        TEST_ASSERT_EQUAL_INT(0, setenv("HOME", original_home, 1));
+    } else {
+        TEST_ASSERT_EQUAL_INT(0, unsetenv("HOME"));
+    }
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           system_walk_directory(second_dir, fail_callback, &count));
+
+    /* Parent-directory authority, not file-data readability, governs rename and unlink. */
+    {
+        char unreadable[1024];
+        char moved_unreadable[1024];
+        char unreadable_tree[1024];
+        char unreadable_child[1024];
+
+        build_path(unreadable, sizeof(unreadable), "unreadable-file");
+        build_path(moved_unreadable, sizeof(moved_unreadable), "unreadable-moved");
+        write_text(unreadable, "data");
+        TEST_ASSERT_EQUAL_INT(0, chmod(unreadable, 0000));
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_move_path(unreadable, moved_unreadable, &state));
+        TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(moved_unreadable));
+        TEST_ASSERT_NOT_EQUAL(0, access(moved_unreadable, F_OK));
+
+        {
+            char unreadable_directory[1024];
+
+            build_path(unreadable_directory,
+                       sizeof(unreadable_directory),
+                       "unreadable-empty-directory");
+            TEST_ASSERT_EQUAL_INT(0, mkdir(unreadable_directory, 0700));
+            TEST_ASSERT_EQUAL_INT(0, chmod(unreadable_directory, 0000));
+            TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(unreadable_directory));
+            TEST_ASSERT_NOT_EQUAL(0, access(unreadable_directory, F_OK));
+        }
+
+        build_path(unreadable_tree, sizeof(unreadable_tree), "unreadable-tree");
+        TEST_ASSERT_EQUAL_INT(0, mkdir(unreadable_tree, 0700));
+        TEST_ASSERT_TRUE(snprintf(unreadable_child, sizeof(unreadable_child), "%s/file", unreadable_tree) > 0);
+        write_text(unreadable_child, "data");
+        TEST_ASSERT_EQUAL_INT(0, chmod(unreadable_child, 0000));
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(unreadable_tree, NULL));
+        TEST_ASSERT_NOT_EQUAL(0, access(unreadable_tree, F_OK));
+    }
+}
+
+static void test_trusted_operations_reject_symlinked_parent(void) {
+    char real_parent[1024];
+    char linked_parent[1024];
+    char real_file[1024];
+    char linked_file[1024];
+    struct stat before;
+    struct stat after;
+
+    build_path(real_parent, sizeof(real_parent), "permission-real-parent");
+    build_path(linked_parent, sizeof(linked_parent), "permission-linked-parent");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(real_parent, 0755));
+    TEST_ASSERT_TRUE(snprintf(real_file, sizeof(real_file), "%s/value", real_parent) > 0);
+    write_text(real_file, "data");
+    TEST_ASSERT_EQUAL_INT(0, chmod(real_file, 0644));
+    TEST_ASSERT_EQUAL_INT(0, symlink(real_parent, linked_parent));
+    TEST_ASSERT_TRUE(snprintf(linked_file, sizeof(linked_file), "%s/value", linked_parent) > 0);
+    TEST_ASSERT_EQUAL_INT(0, stat(real_file, &before));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_set_read_only(linked_file, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_set_executable(linked_file, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_sync_parent_directory(linked_file));
+
+    {
+        char linked_directory[1024];
+        char linked_exclusive[1024];
+        char linked_copy[1024];
+        char linked_temp[1024];
+        char linked_temp_directory[1024];
+        char linked_unique[1024];
+        char safe_copy[1024];
+        FILE *exclusive_file = NULL;
+        FILE *temporary_file = NULL;
+        SystemLock lock = {0, 0};
+
+        TEST_ASSERT_TRUE(
+            snprintf(linked_directory, sizeof(linked_directory), "%s/new-directory", linked_parent) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(linked_exclusive, sizeof(linked_exclusive), "%s/new-file", linked_parent) > 0);
+        TEST_ASSERT_TRUE(snprintf(linked_copy, sizeof(linked_copy), "%s/value", linked_parent) > 0);
+        build_path(safe_copy, sizeof(safe_copy), "symlink-parent-copy");
+
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_make_directory(linked_directory));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                              system_create_file_exclusive(linked_exclusive, &exclusive_file));
+        TEST_ASSERT_NULL(exclusive_file);
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_copy_file(linked_copy, safe_copy));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_FILESYSTEM,
+            system_create_temp_file(
+                linked_parent, "temp", linked_temp, sizeof(linked_temp), &temporary_file));
+        TEST_ASSERT_NULL(temporary_file);
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_FILESYSTEM,
+            system_create_temp_directory(
+                linked_parent, "temp-dir", linked_temp_directory, sizeof(linked_temp_directory)));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_FILESYSTEM,
+            system_make_unique_temp_path(
+                linked_parent, "unique", linked_unique, sizeof(linked_unique)));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                              system_lock_acquire(&lock, linked_exclusive, SYSTEM_LOCK_EXCLUSIVE));
+        TEST_ASSERT_FALSE(lock.active);
+        {
+            size_t count = 0;
+
+            TEST_ASSERT_EQUAL_INT(
+                CUP_ERR_FILESYSTEM, system_list_directory(linked_directory, count_callback, &count));
+            TEST_ASSERT_EQUAL_INT(
+                CUP_ERR_FILESYSTEM, system_walk_directory(linked_directory, count_callback, &count));
+            TEST_ASSERT_EQUAL_size_t(0, count);
+        }
+        TEST_ASSERT_TRUE(access(safe_copy, F_OK) != 0);
+        TEST_ASSERT_TRUE(access(linked_temp, F_OK) != 0);
+        TEST_ASSERT_TRUE(access(linked_temp_directory, F_OK) != 0);
+        TEST_ASSERT_TRUE(access(linked_unique, F_OK) != 0);
+    }
+
+    {
+        char real_private[1024];
+        char linked_private[1024];
+        int is_private = 0;
+
+        TEST_ASSERT_TRUE(snprintf(real_private, sizeof(real_private), "%s/private", real_parent) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(linked_private, sizeof(linked_private), "%s/private", linked_parent) > 0);
+        TEST_ASSERT_EQUAL_INT(0, mkdir(real_private, 0755));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                              system_directory_is_private(linked_private, &is_private));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                              system_make_private_directory(linked_private));
+        TEST_ASSERT_EQUAL_INT(0, stat(real_private, &after));
+        TEST_ASSERT_EQUAL_INT(0755, after.st_mode & 0777);
+    }
+
+    TEST_ASSERT_EQUAL_INT(0, stat(real_file, &after));
+    TEST_ASSERT_EQUAL_INT(before.st_mode & 0777, after.st_mode & 0777);
 }
 
 static void test_private_directory_contract(void) {
@@ -568,6 +960,27 @@ static void test_private_directory_contract(void) {
     TEST_ASSERT_FALSE(is_private);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_directory_is_private(regular_file, &is_private));
     TEST_ASSERT_FALSE(is_private);
+
+    {
+        SystemCommitState state = SYSTEM_COMMIT_NOT_APPLIED;
+        char exclusive_private[1024];
+
+        build_path(exclusive_private, sizeof(exclusive_private), "exclusive-private");
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_create_private_directory(NULL, &state));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_create_private_directory(exclusive_private, NULL));
+        TEST_ASSERT_EQUAL_INT(CUP_OK,
+                              system_create_private_directory(exclusive_private, &state));
+        TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+        TEST_ASSERT_EQUAL_INT(CUP_OK,
+                              system_directory_is_private(exclusive_private, &is_private));
+        TEST_ASSERT_TRUE(is_private);
+        state = SYSTEM_COMMIT_NOT_APPLIED;
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                              system_create_private_directory(exclusive_private, &state));
+        TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    }
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_make_private_directory(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -625,56 +1038,507 @@ static void test_remove_tree_path_forms(void) {
                           system_remove_tree(absolute, cancellation_requested));
     TEST_ASSERT_TRUE(access(absolute, F_OK) == 0);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(absolute, NULL));
+
+    /* Cancellation is checked again immediately before each unlink/rmdir mutation, not only
+     * when recursive processing first enters an object. */
+    build_path(absolute, sizeof(absolute), "cancel-before-file-unlink");
+    write_text(absolute, "data");
+    cancellation_checks_remaining = 2;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          system_remove_tree(absolute, cancellation_after_checks));
+    TEST_ASSERT_EQUAL_INT(0, access(absolute, F_OK));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(absolute));
+
+    build_path(absolute, sizeof(absolute), "cancel-before-directory-rmdir");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(absolute, 0700));
+    TEST_ASSERT_TRUE(snprintf(child, sizeof(child), "%s/file", absolute) > 0);
+    write_text(child, "data");
+    cancellation_checks_remaining = 4;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          system_remove_tree(absolute, cancellation_after_checks));
+    TEST_ASSERT_NOT_EQUAL(0, access(child, F_OK));
+    TEST_ASSERT_EQUAL_INT(0, access(absolute, F_OK));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(absolute, NULL));
+}
+
+static void test_tree_depth_limit(void) {
+    char root[1024];
+    char current[1024];
+    size_t count = 0;
+    unsigned int depth;
+
+    build_path(root, sizeof(root), "deep-tree");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+    TEST_ASSERT_TRUE(snprintf(current, sizeof(current), "%s", root) > 0);
+
+    for (depth = 0; depth < 130u; ++depth) {
+        size_t length = strlen(current);
+
+        TEST_ASSERT_TRUE(length + 2 < sizeof(current));
+        current[length] = '/';
+        current[length + 1] = 'd';
+        current[length + 2] = '\0';
+        TEST_ASSERT_EQUAL_INT(0, mkdir(current, 0700));
+    }
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_walk_directory(root, count_callback, &count));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_remove_tree(root, NULL));
+
+    for (depth = 0; depth < 130u; ++depth) {
+        char *slash;
+
+        TEST_ASSERT_EQUAL_INT(0, rmdir(current));
+        slash = strrchr(current, '/');
+        TEST_ASSERT_NOT_NULL(slash);
+        *slash = '\0';
+    }
+    TEST_ASSERT_EQUAL_INT(0, rmdir(root));
+}
+
+static void test_identity_bound_path_removal(void) {
+    char target[1024];
+    char original[1024];
+    char child[1024];
+    char link_path[1024];
+    char external[1024];
+    char sentinel[1024];
+    SystemPathIdentity identity;
+    SystemPathIdentity invalid = {0};
+
+    build_path(target, sizeof(target), "identity-tree");
+    build_path(original, sizeof(original), "identity-tree-original");
+    build_path(link_path, sizeof(link_path), "identity-link");
+    build_path(external, sizeof(external), "identity-external");
+
+    TEST_ASSERT_EQUAL_INT(0, mkdir(target, 0700));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(target, &identity));
+    TEST_ASSERT_EQUAL_INT(0, rename(target, original));
+    TEST_ASSERT_EQUAL_INT(0, mkdir(target, 0700));
+    TEST_ASSERT_TRUE(snprintf(child, sizeof(child), "%s/child", target) > 0);
+    write_text(child, "foreign");
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION, system_remove_path_if_identity(target, &identity, NULL));
+    TEST_ASSERT_EQUAL_INT(0, access(child, F_OK));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, system_remove_path_if_identity(target, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, system_remove_path_if_identity(target, &invalid, NULL));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(target, &identity));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INTERRUPT,
+        system_remove_path_if_identity(target, &identity, cancellation_requested));
+    TEST_ASSERT_EQUAL_INT(0, access(target, F_OK));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_path_if_identity(target, &identity, NULL));
+    TEST_ASSERT_NOT_EQUAL(0, access(target, F_OK));
+
+    TEST_ASSERT_EQUAL_INT(0, mkdir(external, 0700));
+    TEST_ASSERT_TRUE(snprintf(sentinel, sizeof(sentinel), "%s/sentinel", external) > 0);
+    write_text(sentinel, "preserve");
+    TEST_ASSERT_EQUAL_INT(0, symlink(external, link_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(link_path, &identity));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_LINK, identity.kind);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_path_if_identity(link_path, &identity, NULL));
+    TEST_ASSERT_NOT_EQUAL(0, access(link_path, F_OK));
+    TEST_ASSERT_EQUAL_INT(0, access(sentinel, F_OK));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(original, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(external, NULL));
+}
+
+static void test_shared_script_primitives(void) {
+    char chain[MAX_PATH_LEN];
+    char parent[MAX_PATH_LEN];
+    char exclusive[MAX_PATH_LEN];
+    char contents[MAX_PATH_LEN];
+    char keep[MAX_PATH_LEN];
+    char remove[MAX_PATH_LEN];
+    char lock_path[MAX_PATH_LEN];
+    char buffer[32];
+    SystemCommitState state;
+    SystemPathIdentity identity;
+    SystemLock lock = {0, 0};
+    SystemPathKind kind;
+    size_t size;
+
+    build_path(parent, sizeof(parent), "chain");
+    TEST_ASSERT_TRUE(snprintf(chain, sizeof(chain), "%s/one/two", parent) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_check_directory_chain(chain, 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_check_directory_chain(chain, 0));
+    {
+        char unsafe_missing[MAX_PATH_LEN];
+        FILE *file = NULL;
+        SystemPathIdentity file_identity;
+        uint64_t file_size = 0;
+        int missing = 0;
+
+        TEST_ASSERT_TRUE(
+            snprintf(unsafe_missing, sizeof(unsafe_missing), "%s/missing/../unsafe", parent) > 0);
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_check_directory_chain(unsafe_missing, 1));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_INVALID_INPUT,
+            system_open_regular_file(
+                unsafe_missing, &file, &file_identity, &file_size, &missing));
+        TEST_ASSERT_NULL(file);
+        TEST_ASSERT_FALSE(file_identity.valid);
+        TEST_ASSERT_EQUAL_UINT64(0, file_size);
+        TEST_ASSERT_FALSE(missing);
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory_chain(chain));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_check_directory_chain(chain, 0));
+
+    build_path(exclusive, sizeof(exclusive), "exclusive");
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_create_directory_exclusive(exclusive, 0700, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_DURABLE, state);
+    state = SYSTEM_COMMIT_DURABLE;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK,
+                          system_create_directory_exclusive(exclusive, 0700, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+
+    build_path(contents, sizeof(contents), "contents");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(contents));
+    TEST_ASSERT_TRUE(snprintf(keep, sizeof(keep), "%s/keep", contents) > 0);
+    TEST_ASSERT_TRUE(snprintf(remove, sizeof(remove), "%s/remove", contents) > 0);
+    write_text(keep, "keep");
+    write_text(remove, "remove");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, system_remove_tree_contents(contents, "keep", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(keep, &kind));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, kind);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(remove, &kind));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_MISSING, kind);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          system_remove_tree_contents(contents, NULL, cancellation_requested));
+
+    build_path(lock_path, sizeof(lock_path), "existing.lock");
+    write_text(lock_path, "format=1\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire_existing(
+                              &lock, lock_path, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_get_identity(&lock, &identity));
+    TEST_ASSERT_TRUE(identity.valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, identity.kind);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_read(&lock, buffer, sizeof(buffer), &size));
+    TEST_ASSERT_EQUAL_size_t(strlen("format=1\n"), size);
+    buffer[size] = '\0';
+    TEST_ASSERT_EQUAL_STRING("format=1\n", buffer);
+    system_lock_release(&lock);
+
+    memset(&identity, 0xff, sizeof(identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_lock_get_identity(&lock, &identity));
+    TEST_ASSERT_FALSE(identity.valid);
+    size = 99;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_lock_read(&lock, buffer, sizeof(buffer), &size));
+    TEST_ASSERT_EQUAL_size_t(0, size);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_lock_acquire_existing(
+                              &lock, "/cup-missing-existing-lock", SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_remove_tree_contents(contents, "../unsafe", NULL));
+}
+
+static void test_update_helper_process_primitives(void) {
+    char script[1024];
+    char marker[1024];
+    char wait_value[32];
+    char contents[4096];
+    char script_text[4096];
+    int signal_fds[2];
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_cup_update_helper(NULL, "token"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_cup_update_helper("/missing-helper", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("invalid"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("0"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("1"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("02"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_sleep_milliseconds(0));
+
+    TEST_ASSERT_EQUAL_INT(0, pipe(signal_fds));
+    TEST_ASSERT_EQUAL_INT(0, close(signal_fds[1]));
+    TEST_ASSERT_TRUE(snprintf(wait_value, sizeof(wait_value), "%d", signal_fds[0]) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_wait_for_parent_exit(wait_value));
+
+    build_path(script, sizeof(script), "cup-update-helper.sh");
+    build_path(marker, sizeof(marker), "cup-update-helper.out");
+    TEST_ASSERT_TRUE(snprintf(script_text,
+                              sizeof(script_text),
+                              "#!/bin/sh\n"
+                              "printf '%%s\\n%%s\\n%%s\\n' \"$1\" \"$2\" \"$3\" > '%s'\n",
+                              marker) > 0);
+    write_text(script, script_text);
+    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0644));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_start_cup_update_helper(script, "token"));
+
+    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0755));
+
+    /* The helper protocol reserves descriptors 0-2. Even when stdin is closed before startup,
+     * the inherited lifetime descriptor must therefore be moved above STDERR_FILENO. */
+    {
+        pid_t child = fork();
+        int status = 0;
+
+        TEST_ASSERT_TRUE(child >= 0);
+        if (child == 0) {
+            CupError err;
+
+            int stdin_closed;
+            int stdout_closed;
+
+            (void)close(STDIN_FILENO);
+            (void)close(STDOUT_FILENO);
+            err = system_start_cup_update_helper(script, "closed-stdin-token");
+            errno = 0;
+            stdin_closed = fcntl(STDIN_FILENO, F_GETFD) < 0 && errno == EBADF;
+            errno = 0;
+            stdout_closed = fcntl(STDOUT_FILENO, F_GETFD) < 0 && errno == EBADF;
+            _exit(err == CUP_OK && stdin_closed && stdout_closed ? 0 : 1);
+        }
+        TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
+        TEST_ASSERT_TRUE(WIFEXITED(status));
+        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+        TEST_ASSERT_TRUE(wait_for_path(marker, 1));
+        read_text(marker, contents, sizeof(contents));
+        TEST_ASSERT_NOT_NULL(strstr(contents, "closed-stdin-token\n"));
+        {
+            char *last_argument = strrchr(contents, '\n');
+            char *previous_newline;
+            unsigned descriptor;
+
+            TEST_ASSERT_NOT_NULL(last_argument);
+            *last_argument = '\0';
+            previous_newline = strrchr(contents, '\n');
+            TEST_ASSERT_NOT_NULL(previous_newline);
+            TEST_ASSERT_TRUE(sscanf(previous_newline + 1, "%u", &descriptor) == 1);
+            TEST_ASSERT_TRUE(descriptor > STDERR_FILENO);
+        }
+        TEST_ASSERT_EQUAL_INT(0, unlink(marker));
+    }
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_start_cup_update_helper(script, "token"));
+    TEST_ASSERT_TRUE(wait_for_path(marker, 1));
+    read_text(marker, contents, sizeof(contents));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-cup-update-helper\n"));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "token\n"));
 }
 
 static void test_uninstall_helper(void) {
     char script[1024];
+    char failure_script[1024];
     char marker[1024];
+    char failure_marker[1024];
     char contents[4096];
     char script_text[4096];
 
     build_path(script, sizeof(script), "uninstall-helper.sh");
+    build_path(failure_script, sizeof(failure_script), "uninstall-helper-failure.sh");
     build_path(marker, sizeof(marker), "uninstall-helper.out");
+    build_path(failure_marker, sizeof(failure_marker), "uninstall-helper-failure.out");
+
+    /* A helper that has acknowledged startup must not leave its copied /tmp script behind when
+     * the parent-side no-replace move is not applied. It waits for EOF so the check occurs only
+     * after system_start_uninstall() has completed its failed handoff cleanup. */
     TEST_ASSERT_TRUE(snprintf(script_text,
                               sizeof(script_text),
                               "#!/bin/sh\n"
-                              "printf '%%s\\n%%s\\n%%s\\n%%s\\n' "
-                              "\"$1\" \"$2\" \"$3\" \"$4\" > '%s'\n"
+                              "printf 'R' >&3\n"
+                              "while IFS= read -r line <&3; do :; done\n"
+                              "if [ -e \"$2\" ]; then state=present; else state=removed; fi\n"
+                              "printf '%%s\\n%%s\\n' \"$2\" \"$state\" > '%s'\n",
+                              failure_marker) > 0);
+    write_text(failure_script, script_text);
+    TEST_ASSERT_EQUAL_INT(0, chmod(failure_script, 0755));
+    {
+        char root[1024];
+        char detached[1024];
+        char lock[1024];
+        CupError err;
+
+        build_path(root, sizeof(root), "uninstall-failed-root");
+        build_path(detached, sizeof(detached), "uninstall-failed-detached");
+        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+        TEST_ASSERT_EQUAL_INT(0, mkdir(detached, 0700));
+        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
+        write_text(lock, "");
+        err = system_start_uninstall(root, failure_script, detached, lock);
+        TEST_ASSERT_TRUE(err != CUP_OK);
+        TEST_ASSERT_TRUE(access(root, F_OK) == 0);
+        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
+        TEST_ASSERT_TRUE(wait_for_path(failure_marker, 1));
+        read_text(failure_marker, contents, sizeof(contents));
+        TEST_ASSERT_NOT_NULL(strstr(contents, "\nremoved\n"));
+    }
+
+    {
+        char lease_script[1024];
+        char lease_ready[1024];
+        char lease_continue[1024];
+        char root[1024];
+        char detached[1024];
+        char lock[1024];
+        char detached_lock[1024];
+        SystemLock competing_lock = {0, 0};
+        pid_t worker;
+        int status = 0;
+
+        build_path(lease_script, sizeof(lease_script), "uninstall-helper-lease.sh");
+        build_path(lease_ready, sizeof(lease_ready), "uninstall-helper-lease.ready");
+        build_path(lease_continue, sizeof(lease_continue), "uninstall-helper-lease.continue");
+        build_path(root, sizeof(root), "uninstall-lease-root");
+        build_path(detached, sizeof(detached), "uninstall-lease-detached");
+        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
+        TEST_ASSERT_TRUE(snprintf(script_text,
+                                  sizeof(script_text),
+                                  "#!/bin/sh\n"
+                                  "printf ready > '%s'\n"
+                                  "while [ ! -e '%s' ]; do :; done\n"
+                                  "printf 'R' >&3\n"
+                                  "while IFS= read -r line <&3; do :; done\n"
+                                  "rm -f \"$2\"\n",
+                                  lease_ready,
+                                  lease_continue) > 0);
+        write_text(lease_script, script_text);
+        TEST_ASSERT_EQUAL_INT(0, chmod(lease_script, 0755));
+        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+        write_text(lock, "");
+
+        worker = fork();
+        TEST_ASSERT_TRUE(worker >= 0);
+        if (worker == 0) {
+            CupError err = system_start_uninstall(root, lease_script, detached, lock);
+
+            _exit(err == CUP_OK ? 0 : 1);
+        }
+
+        TEST_ASSERT_TRUE(wait_for_path(lease_ready, 1));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_LOCK,
+            system_lock_acquire_existing(&competing_lock, lock, SYSTEM_LOCK_EXCLUSIVE));
+        write_text(lease_continue, "continue");
+        TEST_ASSERT_EQUAL_INT(worker, waitpid(worker, &status, 0));
+        TEST_ASSERT_TRUE(WIFEXITED(status));
+        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+        TEST_ASSERT_TRUE(wait_for_path(root, 0));
+        TEST_ASSERT_TRUE(wait_for_path(detached, 1));
+        TEST_ASSERT_TRUE(
+            snprintf(detached_lock, sizeof(detached_lock), "%s/cup.lock", detached) > 0);
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            system_lock_acquire_existing(
+                &competing_lock, detached_lock, SYSTEM_LOCK_EXCLUSIVE));
+        system_lock_release(&competing_lock);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(detached, NULL));
+        TEST_ASSERT_EQUAL_INT(0, unlink(lease_ready));
+        TEST_ASSERT_EQUAL_INT(0, unlink(lease_continue));
+    }
+
+    TEST_ASSERT_TRUE(snprintf(script_text,
+                              sizeof(script_text),
+                              "#!/bin/sh\n"
+                              "printf '%%s\\n%%s\\n%%s\\n' "
+                              "\"$1\" \"$2\" \"$3\" > '%s'\n"
                               "printf 'R' >&3\n"
                               "rm -f \"$2\"\n",
                               marker) > 0);
     write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(0, chmod(script, 0755));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(NULL, script, 1));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(temp_dir, NULL, 1));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_start_uninstall(temp_dir, script, 0));
+    /* A retained parent-lifetime socket must not occupy a standard descriptor that was closed
+     * before CUP started the handoff. Exercise this in a child so the suite's own stdin and the
+     * process-global uninstall lifetime state remain untouched. */
+    {
+        char root[1024];
+        char detached[1024];
+        char lock[1024];
+        pid_t child;
+        int status = 0;
 
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, system_start_uninstall(temp_dir, script, system_get_process_id()));
+        build_path(root, sizeof(root), "uninstall-closed-stdin-root");
+        build_path(detached, sizeof(detached), "uninstall-closed-stdin-detached");
+        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
+        write_text(lock, "");
+        child = fork();
+        TEST_ASSERT_TRUE(child >= 0);
+        if (child == 0) {
+            CupError err;
+            int stdin_closed;
+
+            (void)close(STDIN_FILENO);
+            err = system_start_uninstall(root, script, detached, lock);
+            errno = 0;
+            stdin_closed = fcntl(STDIN_FILENO, F_GETFD) < 0 && errno == EBADF;
+            _exit(err == CUP_OK && stdin_closed ? 0 : 1);
+        }
+        TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
+        TEST_ASSERT_TRUE(WIFEXITED(status));
+        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+        TEST_ASSERT_TRUE(wait_for_path(marker, 1));
+        TEST_ASSERT_TRUE(access(root, F_OK) != 0);
+        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(detached, NULL));
+        TEST_ASSERT_EQUAL_INT(0, unlink(marker));
+    }
+
+    {
+        char root[1024];
+        char detached[1024];
+        char lock[1024];
+        char detached_lock[1024];
+        SystemLock competing_lock = {0, 0};
+
+        build_path(root, sizeof(root), "uninstall-root");
+        build_path(detached, sizeof(detached), "uninstall-detached");
+        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
+        write_text(lock, "");
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_start_uninstall(NULL, script, detached, lock));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_start_uninstall(root, NULL, detached, lock));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_start_uninstall(root, script, NULL, lock));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              system_start_uninstall(root, script, detached, NULL));
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_start_uninstall(root, script, detached, lock));
+        TEST_ASSERT_FALSE(access(root, F_OK) == 0);
+        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
+        TEST_ASSERT_TRUE(
+            snprintf(detached_lock, sizeof(detached_lock), "%s/cup.lock", detached) > 0);
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            system_lock_acquire_existing(
+                &competing_lock, detached_lock, SYSTEM_LOCK_EXCLUSIVE));
+        system_lock_release(&competing_lock);
+    }
     TEST_ASSERT_TRUE(wait_for_path(marker, 1));
     read_text(marker, contents, sizeof(contents));
     TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
-    {
-        char process_id[32];
-
-        TEST_ASSERT_TRUE(snprintf(process_id,
-                                  sizeof(process_id),
-                                  "%lu",
-                                  system_get_process_id()) > 0);
-        TEST_ASSERT_NOT_NULL(strstr(contents, process_id));
-    }
     TEST_ASSERT_NOT_NULL(strstr(contents, "\n3\n"));
 }
 
-/* Suite registration. */
+static void test_suite_cleanup(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(temp_dir, NULL));
+}
+
 
 void register_system_posix_tests(void) {
     const char *home = getenv("HOME");
 
     if (home != NULL) {
+        int written = snprintf(original_home, sizeof(original_home), "%s", home);
+
+        TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(original_home));
         had_home = 1;
-        TEST_ASSERT_TRUE(snprintf(original_home, sizeof(original_home), "%s", home) > 0);
     }
     TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
 
@@ -684,7 +1548,13 @@ void register_system_posix_tests(void) {
     RUN_TEST(test_lock_contention);
     RUN_TEST(test_api_errors);
     RUN_TEST(test_extra_paths);
+    RUN_TEST(test_trusted_operations_reject_symlinked_parent);
     RUN_TEST(test_private_directory_contract);
     RUN_TEST(test_remove_tree_path_forms);
+    RUN_TEST(test_tree_depth_limit);
+    RUN_TEST(test_identity_bound_path_removal);
+    RUN_TEST(test_shared_script_primitives);
     RUN_TEST(test_uninstall_helper);
+    RUN_TEST(test_update_helper_process_primitives);
+    RUN_TEST(test_suite_cleanup);
 }

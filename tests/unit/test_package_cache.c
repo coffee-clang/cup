@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises transfer validation, limits, TLS/timeout mapping, cache refresh and
+ * Exercises transfer validation, limits, TLS/timeout mapping, cache refresh and
  * checksum policy with libcurl/system boundaries simulated.
  */
 
@@ -10,7 +10,6 @@
 #include "error.h"
 #include "filesystem.h"
 #include "layout.h"
-#include "package_archive.h"
 #include "package_catalog.h"
 #include "platform.h"
 #include "install_policy.h"
@@ -57,7 +56,9 @@ static long mock_response_code;
 static int mock_easy_init_null;
 static int mock_interrupt;
 static int mock_too_large;
-static int mock_overflow;
+static int mock_loopback_allowed;
+static long mock_follow_location;
+static long mock_max_redirects;
 static char mock_payload[64];
 static const char *mock_fail_url;
 static char *mock_error_buffer;
@@ -69,23 +70,23 @@ static char mock_redirect_protocols[32];
 static long mock_protocols;
 static long mock_redirect_protocols;
 #endif
-static curl_write_callback mock_write_callback;
 static void *mock_write_userdata;
+static curl_off_t mock_max_filesize;
 static curl_xferinfo_callback mock_progress_callback;
 static void *mock_progress_userdata;
 
-static CupError archive_results[MAX_SEQUENCE];
-static int archive_values[MAX_SEQUENCE];
-static size_t archive_count;
-static size_t archive_index;
-static size_t archive_format_calls;
-static CupError find_results[MAX_SEQUENCE];
-static size_t find_count;
-static size_t find_index;
-static CupError verify_results[MAX_SEQUENCE];
-static int verify_values[MAX_SEQUENCE];
-static size_t verify_count;
-static size_t verify_index;
+static CupError document_load_result;
+static CupError document_find_result;
+static CupError artifact_open_results[MAX_SEQUENCE];
+static ArtifactVerificationStatus artifact_open_statuses[MAX_SEQUENCE];
+static size_t artifact_open_count;
+static size_t artifact_open_index;
+static CupError artifact_revalidate_results[MAX_SEQUENCE];
+static ArtifactVerificationStatus artifact_revalidate_statuses[MAX_SEQUENCE];
+static size_t artifact_revalidate_count;
+static size_t artifact_revalidate_index;
+static CupError artifact_discard_result;
+static size_t artifact_discard_calls;
 
 /* layout.c links its strong markerless-root verifier into this suite. Cache tests never exercise
  * that verifier, so these boundary doubles keep the suite focused on cache behavior. */
@@ -98,12 +99,128 @@ CupError checksum_validate_assets(const char *checksum_path,
     return CUP_ERR_VALIDATION;
 }
 
+CupError checksum_verify_file(const char *checksum_path,
+                              const char *asset_name,
+                              const char *asset_path,
+                              int *matches) {
+    (void)checksum_path;
+    (void)asset_name;
+    (void)asset_path;
+    if (matches != NULL) {
+        *matches = 0;
+    }
+    return CUP_ERR_VALIDATION;
+}
+
 CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
     (void)path;
     if (hex != NULL && size > 0) {
         hex[0] = '\0';
     }
     return CUP_ERR_VALIDATION;
+}
+
+void checksum_document_init(ChecksumDocument *document) {
+    if (document != NULL) {
+        memset(document, 0, sizeof(*document));
+    }
+}
+
+void checksum_document_free(ChecksumDocument *document) {
+    if (document != NULL) {
+        memset(document, 0, sizeof(*document));
+    }
+}
+
+CupError checksum_document_load(ChecksumDocument *document, const char *path) {
+    (void)path;
+    if (document_load_result == CUP_OK && document != NULL) {
+        document->identity.valid = 1;
+    }
+    return document_load_result;
+}
+
+CupError checksum_document_find_expected(const ChecksumDocument *document,
+                                         const char *asset_name,
+                                         char *hex,
+                                         size_t size) {
+    (void)document;
+    (void)asset_name;
+    if (document_find_result == CUP_OK && hex != NULL && size >= CHECKSUM_SHA256_HEX_LENGTH + 1) {
+        memset(hex, 'a', CHECKSUM_SHA256_HEX_LENGTH);
+        hex[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
+    } else if (hex != NULL && size > 0) {
+        hex[0] = '\0';
+    }
+    return document_find_result;
+}
+
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
+    return identity == NULL ? CUP_ERR_INVALID_INPUT : CUP_OK;
+}
+
+void verified_artifact_release(VerifiedArtifact *artifact) {
+    if (artifact != NULL) {
+        memset(artifact, 0, sizeof(*artifact));
+    }
+}
+
+CupError verified_artifact_open(VerifiedArtifact *artifact,
+                                const char *path,
+                                const PackageArtifactSpec *spec,
+                                const char *expected_digest,
+                                ArtifactVerificationStatus *status) {
+    CupError result = CUP_ERR_FILESYSTEM;
+    ArtifactVerificationStatus verification = ARTIFACT_VERIFY_NONE;
+    (void)spec;
+    (void)expected_digest;
+
+    if (artifact_open_index < artifact_open_count) {
+        result = artifact_open_results[artifact_open_index];
+        verification = artifact_open_statuses[artifact_open_index];
+        artifact_open_index++;
+    }
+    if (artifact != NULL && result == CUP_OK &&
+        (verification == ARTIFACT_VERIFY_VALID ||
+         verification == ARTIFACT_VERIFY_DIGEST_MISMATCH)) {
+        artifact->file = (FILE *)(uintptr_t)1;
+        (void)snprintf(artifact->path, sizeof(artifact->path), "%s", path);
+    }
+    if (status != NULL) {
+        *status = verification;
+    }
+    return result;
+}
+
+CupError verified_artifact_verify_expected(VerifiedArtifact *artifact,
+                                           const char *expected_digest,
+                                           ArtifactVerificationStatus *status) {
+    CupError result = CUP_ERR_FILESYSTEM;
+    ArtifactVerificationStatus verification = ARTIFACT_VERIFY_NONE;
+    (void)artifact;
+    (void)expected_digest;
+
+    if (artifact_revalidate_index < artifact_revalidate_count) {
+        result = artifact_revalidate_results[artifact_revalidate_index];
+        verification = artifact_revalidate_statuses[artifact_revalidate_index];
+        artifact_revalidate_index++;
+    }
+    if (status != NULL) {
+        *status = verification;
+    }
+    return result;
+}
+
+CupError verified_artifact_discard(VerifiedArtifact *artifact) {
+    artifact_discard_calls++;
+    if (artifact != NULL) {
+        if (artifact->path[0] != '\0') {
+            (void)remove(artifact->path);
+        }
+        memset(artifact, 0, sizeof(*artifact));
+    }
+    return artifact_discard_result;
 }
 
 void package_catalog_init(PackageCatalog *catalog) {
@@ -116,12 +233,9 @@ void package_catalog_free(PackageCatalog *catalog) {
     (void)catalog;
 }
 
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source) {
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
     (void)catalog;
     (void)path;
-    (void)source;
     return CUP_ERR_CATALOG;
 }
 
@@ -131,16 +245,17 @@ void install_policy_init(InstallPolicy *policy) {
     }
 }
 
-CupError install_policy_load_path(InstallPolicy *policy,
-                                  const char *path,
-                                  InstallPolicySource source) {
+CupError install_policy_load_path(InstallPolicy *policy, const char *path) {
     (void)policy;
     (void)path;
-    (void)source;
     return CUP_ERR_VALIDATION;
 }
 
-CupError state_load_path(CupState *state, StateFileStatus *status, const char *path) {
+CupError state_load_path(CupState *state,
+                         StateFileStatus *status,
+                         const char *path,
+                         FILE *diagnostics) {
+    (void)diagnostics;
     (void)path;
     if (state != NULL) {
         memset(state, 0, sizeof(*state));
@@ -151,9 +266,24 @@ CupError state_load_path(CupState *state, StateFileStatus *status, const char *p
     return CUP_OK;
 }
 
-CupError state_validate(const CupState *state) {
+CupError state_validate(const CupState *state, FILE *diagnostics) {
+    (void)diagnostics;
     (void)state;
     return CUP_OK;
+}
+
+const char *package_archive_format_name(PackageArchiveFormat format) {
+    switch (format) {
+        case PACKAGE_ARCHIVE_FORMAT_TAR_XZ:
+            return "tar.xz";
+        case PACKAGE_ARCHIVE_FORMAT_TAR_GZ:
+            return "tar.gz";
+        case PACKAGE_ARCHIVE_FORMAT_ZIP:
+            return "zip";
+        case PACKAGE_ARCHIVE_FORMAT_ANY:
+        default:
+            return NULL;
+    }
 }
 
 /* Fixture lifecycle and local construction helpers. */
@@ -172,7 +302,9 @@ static void reset_mocks(void) {
     mock_easy_init_null = 0;
     mock_interrupt = 0;
     mock_too_large = 0;
-    mock_overflow = 0;
+    mock_loopback_allowed = 0;
+    mock_follow_location = 0;
+    mock_max_redirects = 0;
     strcpy(mock_payload, "downloaded data\n");
     mock_fail_url = NULL;
     mock_error_buffer = NULL;
@@ -184,17 +316,18 @@ static void reset_mocks(void) {
     mock_protocols = 0;
     mock_redirect_protocols = 0;
 #endif
-    mock_write_callback = NULL;
     mock_write_userdata = NULL;
+    mock_max_filesize = 0;
     mock_progress_callback = NULL;
     mock_progress_userdata = NULL;
-    archive_count = 0;
-    archive_index = 0;
-    archive_format_calls = 0;
-    find_count = 0;
-    find_index = 0;
-    verify_count = 0;
-    verify_index = 0;
+    document_load_result = CUP_ERR_VALIDATION;
+    document_find_result = CUP_ERR_VALIDATION;
+    artifact_open_count = 0;
+    artifact_open_index = 0;
+    artifact_revalidate_count = 0;
+    artifact_revalidate_index = 0;
+    artifact_discard_result = CUP_OK;
+    artifact_discard_calls = 0;
 }
 
 void setUp(void) {
@@ -202,6 +335,7 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+    set_test_environment("CUP_INSTALL_BASE_URL", NULL);
     set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
 }
 
@@ -209,6 +343,11 @@ void tearDown(void) {
  * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
  * state above.
  */
+
+int download_insecure_loopback_is_allowed(const char *url) {
+    (void)url;
+    return mock_loopback_allowed;
+}
 
 CURLcode curl_global_init(long flags) {
     (void)flags;
@@ -270,11 +409,17 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
             mock_redirect_protocols = va_arg(args, long);
             break;
 #endif
-        case CURLOPT_WRITEFUNCTION:
-            mock_write_callback = va_arg(args, curl_write_callback);
+        case CURLOPT_FOLLOWLOCATION:
+            mock_follow_location = va_arg(args, long);
+            break;
+        case CURLOPT_MAXREDIRS:
+            mock_max_redirects = va_arg(args, long);
             break;
         case CURLOPT_WRITEDATA:
             mock_write_userdata = va_arg(args, void *);
+            break;
+        case CURLOPT_MAXFILESIZE_LARGE:
+            mock_max_filesize = va_arg(args, curl_off_t);
             break;
         case CURLOPT_XFERINFOFUNCTION:
             mock_progress_callback = va_arg(args, curl_xferinfo_callback);
@@ -293,7 +438,6 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
 CURLcode curl_easy_perform(CURL *curl) {
     static char checksum_payload[] = "mock checksum metadata\n";
     static char archive_payload[] = "mock package archive\n";
-    char one_byte = 'x';
     char *payload = mock_payload;
     size_t length;
     size_t written;
@@ -311,17 +455,11 @@ CURLcode curl_easy_perform(CURL *curl) {
         mock_progress_callback(mock_progress_userdata, 1, 0, 0, 0) != 0) {
         return CURLE_ABORTED_BY_CALLBACK;
     }
-    if (mock_write_callback == NULL) {
+    if (mock_write_userdata == NULL) {
         return CURLE_WRITE_ERROR;
     }
     if (mock_too_large) {
-        (void)mock_write_callback(
-            &one_byte, 1, (size_t)MAX_METADATA_DOWNLOAD_BYTES + 1, mock_write_userdata);
-        return CURLE_WRITE_ERROR;
-    }
-    if (mock_overflow) {
-        (void)mock_write_callback(&one_byte, SIZE_MAX, 2, mock_write_userdata);
-        return CURLE_WRITE_ERROR;
+        return CURLE_FILESIZE_EXCEEDED;
     }
     if (strstr(mock_url, "checksum") != NULL) {
         payload = checksum_payload;
@@ -329,7 +467,7 @@ CURLcode curl_easy_perform(CURL *curl) {
         payload = archive_payload;
     }
     length = strlen(payload);
-    written = mock_write_callback(payload, 1, length, mock_write_userdata);
+    written = fwrite(payload, 1, length, (FILE *)mock_write_userdata);
     return written == length ? CURLE_OK : CURLE_WRITE_ERROR;
 }
 
@@ -357,84 +495,23 @@ int interrupt_requested(void) {
     return mock_interrupt;
 }
 
-CupError package_archive_is_valid(const char *archive_path,
-                                  const char *expected_format,
-                                  int *is_valid) {
-    CupError result = CUP_OK;
-    int value = test_access_exists(archive_path);
-
-    if (expected_format != NULL) {
-        TEST_ASSERT_EQUAL_STRING("tar.gz", expected_format);
-        archive_format_calls++;
-    }
-
-    if (archive_index < archive_count) {
-        result = archive_results[archive_index];
-        value = archive_values[archive_index];
-        archive_index++;
-    }
-    if (is_valid != NULL) {
-        *is_valid = value;
-    }
-    return result;
+CupError interrupt_safe_point(void) {
+    return mock_interrupt ? CUP_ERR_INTERRUPT : CUP_OK;
 }
 
-CupError checksum_find_expected(const char *checksum_path,
-                                const char *asset_name,
-                                char *hex,
-                                size_t size) {
-    CupError result = CUP_OK;
-    (void)checksum_path;
-    (void)asset_name;
-
-    if (find_index < find_count) {
-        result = find_results[find_index++];
-    }
-    if (result == CUP_OK && hex != NULL && size >= SHA256_HEX_LENGTH + 1) {
-        memset(hex, 'a', SHA256_HEX_LENGTH);
-        hex[SHA256_HEX_LENGTH] = '\0';
-    }
-    return result;
+static void push_artifact(CupError result, ArtifactVerificationStatus status) {
+    TEST_ASSERT_TRUE(artifact_open_count < MAX_SEQUENCE);
+    artifact_open_results[artifact_open_count] = result;
+    artifact_open_statuses[artifact_open_count] = status;
+    artifact_open_count++;
 }
 
-CupError checksum_verify_file(const char *checksum_path,
-                              const char *asset_name,
-                              const char *asset_path,
-                              int *matches) {
-    CupError result = CUP_OK;
-    int value = 1;
-    (void)checksum_path;
-    (void)asset_name;
-    (void)asset_path;
-
-    if (verify_index < verify_count) {
-        result = verify_results[verify_index];
-        value = verify_values[verify_index];
-        verify_index++;
-    }
-    if (matches != NULL) {
-        *matches = value;
-    }
-    return result;
-}
-
-static void push_archive(CupError result, int valid) {
-    TEST_ASSERT_TRUE(archive_count < MAX_SEQUENCE);
-    archive_results[archive_count] = result;
-    archive_values[archive_count] = valid;
-    archive_count++;
-}
-
-static void push_find(CupError result) {
-    TEST_ASSERT_TRUE(find_count < MAX_SEQUENCE);
-    find_results[find_count++] = result;
-}
-
-static void push_verify(CupError result, int matches) {
-    TEST_ASSERT_TRUE(verify_count < MAX_SEQUENCE);
-    verify_results[verify_count] = result;
-    verify_values[verify_count] = matches;
-    verify_count++;
+static void push_artifact_revalidation(CupError result,
+                                       ArtifactVerificationStatus status) {
+    TEST_ASSERT_TRUE(artifact_revalidate_count < MAX_SEQUENCE);
+    artifact_revalidate_results[artifact_revalidate_count] = result;
+    artifact_revalidate_statuses[artifact_revalidate_count] = status;
+    artifact_revalidate_count++;
 }
 
 static void build_path(char *buffer, size_t size, const char *name) {
@@ -492,16 +569,20 @@ static void make_cache_files(const PackageIdentity *identity,
                              char *archive_path,
                              size_t archive_size) {
     char checksum_path[1024];
-    char *slash;
+    char *separator;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(identity));
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, layout_build_cache_archive_path(archive_path, archive_size, identity, "tar.gz"));
-    TEST_ASSERT_TRUE(snprintf(checksum_path, sizeof(checksum_path), "%s", archive_path) > 0);
-    slash = strrchr(checksum_path, '/');
-    TEST_ASSERT_NOT_NULL(slash);
-    TEST_ASSERT_TRUE(snprintf(slash + 1,
-                              sizeof(checksum_path) - (size_t)(slash + 1 - checksum_path),
+        CUP_OK,
+        layout_build_cache_archive_path(
+            archive_path, archive_size, identity, "tar.gz"));
+    TEST_ASSERT_TRUE(snprintf(
+        checksum_path, sizeof(checksum_path), "%s", archive_path) > 0);
+    separator = strrchr(checksum_path, '/');
+    TEST_ASSERT_NOT_NULL(separator);
+    TEST_ASSERT_TRUE(snprintf(separator + 1,
+                              sizeof(checksum_path) -
+                                  (size_t)(separator + 1 - checksum_path),
                               "SHA256SUMS") > 0);
     write_text(checksum_path, "mock checksum metadata\n");
     write_text(archive_path, "mock package archive\n");
@@ -516,9 +597,6 @@ static void test_protocol_policy(void) {
     char destination[1024];
 
     build_path(destination, sizeof(destination), "protocol-policy.out");
-    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
-    TEST_ASSERT_FALSE(
-        download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         download_file("https://example.invalid/resource",
@@ -531,33 +609,30 @@ static void test_protocol_policy(void) {
     TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_protocols);
     TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
 #endif
+    TEST_ASSERT_EQUAL_INT(1, mock_follow_location);
+    TEST_ASSERT_EQUAL_INT(10, mock_max_redirects);
 
     reset_mocks();
-    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", "1");
-    TEST_ASSERT_TRUE(
-        download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
-    TEST_ASSERT_TRUE(download_insecure_loopback_is_allowed("http://localhost:1"));
-    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://localhost:0"));
-    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://localhost:65536"));
-    TEST_ASSERT_FALSE(
-        download_insecure_loopback_is_allowed("http://localhost:18080@evil.invalid/resource"));
+    mock_loopback_allowed = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         download_file("http://127.0.0.1:18080/resource",
                       destination,
                       DOWNLOAD_VALIDATE_NONEMPTY));
 #if LIBCURL_VERSION_NUM >= 0x075500
-    TEST_ASSERT_EQUAL_STRING("http,https", mock_protocols);
-    TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
+    TEST_ASSERT_EQUAL_STRING("http", mock_protocols);
+    TEST_ASSERT_EQUAL_STRING("http", mock_redirect_protocols);
 #else
-    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTP | CURLPROTO_HTTPS, mock_protocols);
-    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTP, mock_protocols);
+    TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTP, mock_redirect_protocols);
 #endif
+    TEST_ASSERT_EQUAL_INT(0, mock_follow_location);
+    TEST_ASSERT_EQUAL_INT(0, mock_max_redirects);
 
     reset_mocks();
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        download_file("http://localhost:18080@evil.invalid/resource",
+        download_file("http://example.invalid/resource",
                       destination,
                       DOWNLOAD_VALIDATE_NONEMPTY));
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -567,7 +642,16 @@ static void test_protocol_policy(void) {
     TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_protocols);
     TEST_ASSERT_EQUAL_INT(CURLPROTO_HTTPS, mock_redirect_protocols);
 #endif
-    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
+    TEST_ASSERT_EQUAL_INT(1, mock_follow_location);
+    TEST_ASSERT_EQUAL_INT(10, mock_max_redirects);
+}
+
+
+static CupError request_interrupt_after_validation(const char *temporary_path, void *userdata) {
+    (void)temporary_path;
+    (void)userdata;
+    mock_interrupt = 1;
+    return CUP_OK;
 }
 
 static void test_file_success(void) {
@@ -583,9 +667,6 @@ static void test_file_success(void) {
     for (i = 0; i < sizeof(validations) / sizeof(validations[0]); ++i) {
         reset_mocks();
         build_path(destination, sizeof(destination), destinations[i]);
-        if (validations[i] == DOWNLOAD_VALIDATE_ARCHIVE) {
-            push_archive(CUP_OK, 1);
-        }
         TEST_ASSERT_EQUAL_INT(
             CUP_OK, download_file("https://example.invalid/resource", destination, validations[i]));
         read_text(destination, content, sizeof(content));
@@ -634,7 +715,7 @@ static void assert_download_setup_failures(const char *destination) {
     reset_mocks();
     build_path(missing_parent, sizeof(missing_parent), "missing/child.out");
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FETCH,
+        CUP_ERR_TEMPORARY,
         download_file("https://example.invalid", missing_parent, DOWNLOAD_VALIDATE_NONEMPTY));
 
     reset_mocks();
@@ -703,11 +784,22 @@ static void assert_download_content_failures(const char *destination) {
         CUP_ERR_DOWNLOAD_TOO_LARGE,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
+    TEST_ASSERT_EQUAL_INT((curl_off_t)MAX_METADATA_DOWNLOAD_BYTES, mock_max_filesize);
+
     reset_mocks();
-    mock_overflow = 1;
+    write_text(destination, "old\n");
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        CUP_ERR_INTERRUPT,
+        download_file_checked("https://example.invalid",
+                              destination,
+                              DOWNLOAD_VALIDATE_NONEMPTY,
+                              request_interrupt_after_validation,
+                              NULL));
+    {
+        char content[32];
+        read_text(destination, content, sizeof(content));
+        TEST_ASSERT_EQUAL_STRING("old\n", content);
+    }
 
     reset_mocks();
     mock_payload[0] = '\0';
@@ -715,16 +807,10 @@ static void assert_download_content_failures(const char *destination) {
         CUP_ERR_FETCH,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
 
+    /* Unauthenticated archive bytes receive only raw bounded/non-empty validation here. */
     reset_mocks();
-    push_archive(CUP_OK, 0);
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_ARCHIVE,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_ARCHIVE));
-
-    reset_mocks();
-    push_archive(CUP_ERR_FILESYSTEM, 0);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM,
+        CUP_OK,
         download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_ARCHIVE));
 
     reset_mocks();
@@ -764,350 +850,148 @@ static void test_file_failures(void) {
     assert_download_destination_failures(destination);
 }
 
-static void test_fetch_cache_refresh(void) {
-    PackageIdentity identity = identity_for("22.1.5-test-cache");
-    PackageCacheSource source;
-    char archive_path[1024];
+static PackageArtifactSpec artifact_spec_for(const char *version) {
+    PackageArtifactSpec spec;
 
-    make_cache_files(&identity, archive_path, sizeof(archive_path));
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
-    TEST_ASSERT_TRUE(archive_format_calls > 0);
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-network");
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 0);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-refresh-entry");
-    make_cache_files(&identity, archive_path, sizeof(archive_path));
-    push_find(CUP_ERR_VALIDATION);
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-forced-refresh");
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_REFRESH,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    memset(&spec, 0, sizeof(spec));
+    spec.identity = identity_for(version);
+    spec.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+    TEST_ASSERT_TRUE(snprintf(spec.package_url,
+                              sizeof(spec.package_url),
+                              "https://example.invalid/archive") > 0);
+    TEST_ASSERT_TRUE(snprintf(spec.checksum_url,
+                              sizeof(spec.checksum_url),
+                              "https://example.invalid/checksum") > 0);
+    return spec;
 }
 
-static void test_stale_cache(void) {
-    PackageIdentity identity;
-    PackageCacheSource source;
-    char archive_path[1024];
+static void test_typed_cache_results(void) {
+    PackageArtifactSpec spec = artifact_spec_for("22.1.5-typed-cache");
+    PackageCacheResult result;
+    VerifiedArtifact artifact;
+    char archive_path[MAX_PATH_LEN];
 
-    identity = identity_for("22.1.5-test-stale-valid");
-    make_cache_files(&identity, archive_path, sizeof(archive_path));
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 0);
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-stale-error");
-    make_cache_files(&identity, archive_path, sizeof(archive_path));
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_ERR_INTERRUPT, 0);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-refresh-fail");
-    make_cache_files(&identity, archive_path, sizeof(archive_path));
-    push_find(CUP_ERR_VALIDATION);
-    mock_fail_url = "checksum";
-    mock_perform_result = CURLE_COULDNT_CONNECT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-
-    reset_mocks();
-    identity = identity_for("22.1.5-test-network-fail");
-    mock_fail_url = "archive";
-    mock_perform_result = CURLE_COULDNT_CONNECT;
-    push_find(CUP_OK);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_REFRESH,
-                                              &source));
-}
-
-static void test_network_recheck(void) {
-    PackageIdentity identity = identity_for("22.1.5-test-recheck");
-    PackageCacheSource source;
-    char archive_path[1024];
-    char checksum_path[1024];
-    char *slash;
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(&identity));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        layout_build_cache_archive_path(archive_path, sizeof(archive_path), &identity, "tar.gz"));
-    TEST_ASSERT_TRUE(snprintf(checksum_path, sizeof(checksum_path), "%s", archive_path) > 0);
-    slash = strrchr(checksum_path, '/');
-    TEST_ASSERT_NOT_NULL(slash);
-    TEST_ASSERT_TRUE(snprintf(slash + 1,
-                              sizeof(checksum_path) - (size_t)(slash + 1 - checksum_path),
-                              "SHA256SUMS") > 0);
-    write_text(checksum_path, "old checksums\n");
-
-    push_find(CUP_OK);
-    push_archive(CUP_ERR_ARCHIVE, 0);
-    push_archive(CUP_OK, 1);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 0);
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 1);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
-}
-
-static void test_package_failures(void) {
-    PackageIdentity identity = identity_for("22.1.5-test-invalid");
-    PackageCacheSource source;
-    char archive_path[1024];
-    char checksum_path[1024];
-    char *slash;
-
+    memset(&artifact, 0, sizeof(artifact));
+    memset(&result, 0x7f, sizeof(result));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_cache_fetch(NULL, 0, "u", "c", &identity, "tar.gz", PACKAGE_CACHE_ALLOW, &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "u",
-                                              "c",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              NULL));
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              0,
-                                              "u",
-                                              "c",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "",
-                                              "c",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "u",
-                                              "",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "u",
-                                              "c",
-                                              NULL,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "u",
-                                              "c",
-                                              &identity,
-                                              "",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = PACKAGE_CACHE_SOURCE_NETWORK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "u",
-                                              "c",
-                                              &identity,
-                                              "tar.gz",
-                                              (PackageCachePolicy)999,
-                                              &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+        package_cache_fetch_artifact(NULL, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    memset(&result, 0x7f, sizeof(result));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_cache_fetch_artifact(&artifact, NULL, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    memset(&result, 0x7f, sizeof(result));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_cache_fetch_artifact(&artifact, &spec, (PackageCachePolicy)999, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
 
     reset_mocks();
-    identity = identity_for("22.1.5-test-no-entry");
-    push_find(CUP_ERR_VALIDATION);
-    push_find(CUP_ERR_VALIDATION);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
+    spec = artifact_spec_for("22.1.5-typed-valid");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, result.source);
 
     reset_mocks();
-    identity = identity_for("22.1.5-test-mismatch");
-    push_find(CUP_OK);
-    push_archive(CUP_OK, 1);
-    push_archive(CUP_OK, 1);
-    push_verify(CUP_OK, 0);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_REFRESH,
-                                              &source));
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-stale-metadata");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
+    push_artifact_revalidation(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, result.source);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_open_index);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_revalidate_index);
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-refresh-failure");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
+    mock_fail_url = "checksum";
+    mock_perform_result = CURLE_COULDNT_CONNECT;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FETCH,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
     TEST_ASSERT_FALSE(test_access_exists(archive_path));
 
     reset_mocks();
-    identity = identity_for("22.1.5-test-checksum-dir");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(&identity));
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-empty-cache");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(archive_path, 1));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_REJECTED);
+    mock_fail_url = "archive";
+    mock_perform_result = CURLE_COULDNT_CONNECT;
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        layout_build_cache_archive_path(archive_path, sizeof(archive_path), &identity, "tar.gz"));
-    TEST_ASSERT_TRUE(snprintf(checksum_path, sizeof(checksum_path), "%s", archive_path) > 0);
-    slash = strrchr(checksum_path, '/');
-    TEST_ASSERT_NOT_NULL(slash);
-    TEST_ASSERT_TRUE(snprintf(slash + 1,
-                              sizeof(checksum_path) - (size_t)(slash + 1 - checksum_path),
-                              "SHA256SUMS") > 0);
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(checksum_path, 0755));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_cache_fetch(archive_path,
-                                              sizeof(archive_path),
-                                              "https://example.invalid/archive",
-                                              "https://example.invalid/checksum",
-                                              &identity,
-                                              "tar.gz",
-                                              PACKAGE_CACHE_ALLOW,
-                                              &source));
+        CUP_ERR_FETCH,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    TEST_ASSERT_EQUAL_size_t(0, artifact_discard_calls);
+    TEST_ASSERT_FALSE(test_access_exists(archive_path));
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-wrong-kind-cache");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(archive_path));
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(archive_path, 0755));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_WRONG_TYPE);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    TEST_ASSERT_EQUAL_size_t(0, artifact_discard_calls);
+    TEST_ASSERT_TRUE(test_access_exists(archive_path));
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-network-reject");
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_REFRESH, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-commit-precedence");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
+    push_artifact_revalidation(CUP_ERR_COMMIT, ARTIFACT_VERIFY_NONE);
+    artifact_discard_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_COMMIT,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
 }
 
-static void test_cache_discard(void) {
-    char path[1024];
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_cache_discard(NULL));
-    build_path(path, sizeof(path), "missing-cache");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_cache_discard(path));
-
-    build_path(path, sizeof(path), "cache-directory");
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_cache_discard(path));
-
-    build_path(path, sizeof(path), "readonly-cache");
-    write_text(path, "archive\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(path, 1));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_cache_discard(path));
-    TEST_ASSERT_FALSE(test_access_exists(path));
-}
-
-/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(
@@ -1119,10 +1003,6 @@ int main(void) {
     RUN_TEST(test_protocol_policy);
     RUN_TEST(test_file_success);
     RUN_TEST(test_file_failures);
-    RUN_TEST(test_fetch_cache_refresh);
-    RUN_TEST(test_stale_cache);
-    RUN_TEST(test_network_recheck);
-    RUN_TEST(test_package_failures);
-    RUN_TEST(test_cache_discard);
+    RUN_TEST(test_typed_cache_results);
     return UNITY_END();
 }

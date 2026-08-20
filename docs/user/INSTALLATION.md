@@ -1,24 +1,7 @@
 # Installation
 
-`cup` is installed for the current user and does not require administrator
-privileges.
-
-The preferred installation root is `~/.cup` on POSIX and
-`%USERPROFILE%\.cup` on Windows. If that path is already an unrelated
-directory, the installer preserves it and uses `.coffee-cup` in the same home
-directory. `root.txt` records which candidate CUP owns; the choice is automatic,
-persistent and not configurable.
-
-An installation created before `root.txt` is adopted only when the installer can
-verify the complete installed CUP generation: canonical executable, matching
-native update helper, uninstall helper, exact checksum sets, configuration
-files and optional state. The installer never executes an unknown discovered
-binary. A markerless directory with the canonical CUP executable but incomplete
-or inconsistent generation evidence is preserved as a probable damaged legacy
-root, and the alternative root is not selected silently. Familiar directory
-names, `state.txt` or checksum files without that executable do not establish
-ownership and leave the directory foreign. Package installation is documented
-in [COMMANDS](COMMANDS.md).
+`cup` is installed for the current user. It does not require administrator
+rights and does not write to system toolchain directories.
 
 ## Supported platforms
 
@@ -30,77 +13,73 @@ macos-arm64
 windows-x64
 ```
 
+The normal installation root is:
+
+```text
+Linux/macOS ~/.cup
+Windows %USERPROFILE%\.cup
+```
+
+If `.cup` already belongs to another application, `cup` leaves it unchanged and
+uses `.coffee-cup` in the same home directory. The selected root is reused by
+later commands and is not configurable through an environment variable.
+
 ## Linux and macOS
 
 ```sh
 curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
-The executable is normally installed as:
+The executable is normally placed at:
 
 ```text
 ~/.cup/bin/cup
 ```
 
-The POSIX bootstrap deliberately uses only the shell plus a small command set
-available on the supported desktop installations:
-
-- the POSIX shell plus `uname`, `mkdir`, `mktemp`, `chmod`, `cp`, `mv` and `rm`;
-- either `curl` with HTTPS protocol restrictions or GNU-compatible `wget`;
-- either `sha256sum` or `shasum -a 256`.
-
-The detached POSIX uninstaller uses the same shell contract plus `chmod`, `mv`,
-`rm` and `rmdir`. The bootstrap and uninstaller do not require `awk`, `grep`, `sed`,
-`find`, `wc`, `tr`, `cat` or `basename`. Required
-commands are checked before the corresponding filesystem operation; downloader
-and SHA-256 alternatives are diagnosed explicitly. Windows installation from
-an MSYS2/Cygwin-like shell additionally requires `cygpath` and a supported
-PowerShell executable. Release and CI scripts have a separate, broader tool
-contract because they run in environments prepared by the workflows.
+The installer downloads the official release over HTTPS, verifies the release
+metadata and checksums, and then runs the verified `cup` executable to complete
+the installation. It reports success only after the installed command can be
+validated.
 
 ## Windows PowerShell
 
 ```powershell
-$installer = Join-Path $env:TEMP "install-cup.ps1"
-try {
-    iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 `
-        -OutFile $installer -ErrorAction Stop
-    powershell -NoProfile -ExecutionPolicy Bypass -File $installer
-    if ($LASTEXITCODE -ne 0) {
-        throw "cup installer failed with exit code $LASTEXITCODE"
-    }
-} finally {
-    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
-}
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"
 ```
 
-The executable is normally installed as:
+The executable is normally placed at:
 
 ```text
 %USERPROFILE%\.cup\bin\cup.exe
 ```
 
+The PowerShell installer applies the same download and verification rules and
+the same checks for choosing and protecting the installation root.
+
 ## Other Windows shells
 
-Git Bash, MSYS2 and Cygwin may start the POSIX installer command. On Windows it
-delegates installation to the native PowerShell installer, so every shell uses
-the same selected native Windows root.
+Git Bash, MSYS2 and Cygwin may start the shell installer (`install.sh`). On
+Windows it hands the installation to PowerShell so the same Windows installation
+root is used.
 
-From `cmd.exe`, run the PowerShell installer explicitly:
+From `cmd.exe`, the PowerShell installer can be started explicitly:
 
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $env:TEMP\install-cup.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass ^
-  -File "%TEMP%\install-cup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"
 ```
 
-## Verification
+## Verification and download limits
 
 Official installers verify release metadata and SHA-256 checksums before
-installing files. Downloads use HTTPS.
+installing executable or configuration data. Remote requests and redirects must
+stay on HTTPS.
 
-After installation, verify the command with:
+Downloads also have time and size limits so a stalled connection or an
+unexpectedly large response cannot run indefinitely. Package archives have a
+larger size limit than release metadata because complete toolchains can be much
+larger.
+
+After installation, check the result with:
 
 ```sh
 cup --version
@@ -109,24 +88,38 @@ cup doctor
 
 ## PATH
 
-The installer can add the selected root's command directory to the user PATH:
+`cup` does **not** edit the system or user PATH automatically.
+
+To run the command without its full path, add the selected directory manually:
 
 ```text
-POSIX   <cup-root>/bin
+Linux/macOS <cup-root>/bin
 Windows <cup-root>\bin
 ```
 
-Open a new shell after changing PATH. `cup uninstall` does not remove the PATH
-entry; a later installation can reuse it.
+Open a new shell after changing PATH. `cup uninstall` leaves that PATH entry in
+place, so remove it manually when it is no longer needed.
+
+## Existing and unrecognized directories
+
+`cup` never takes ownership of an existing directory unless it can verify that
+the directory belongs to a supported `cup` installation.
+
+If an unrecognized cup-like directory blocks installation, move it to a backup
+name outside `.cup` and `.coffee-cup`, then run the current official installer.
+Recover only data accepted by the current formats. Do not copy unknown recovery
+files into the new installation, and do not create `root.txt` manually.
+
 
 ## Reinstallation
 
-Running the official installer again replaces the installed `cup` files only
-after the new release has been verified. Reinstallation is also the supported
-way to recover a missing or altered `cup` or `cup.exe` executable.
+Running the official installer again replaces the `cup` program files only
+after the new release has been verified. Installed component packages,
+preferences and state remain in the selected root.
 
-User preferences, installed packages and state remain under the same selected
-installation root unless `cup uninstall` is used.
+Reinstallation is also the supported recovery method when `cup` or `cup.exe` is
+missing or has been changed. `repair` intentionally does not recreate the main
+executable.
 
 ## Updating cup
 
@@ -134,11 +127,12 @@ installation root unless `cup uninstall` is used.
 cup update cup
 ```
 
-This verifies and schedules a newer official release. A native helper completes
-the replacement after the initiating process exits. Successful completion leaves
-no result sidecar; `cup --version` reports the installed version. A failed update
-remains in `transaction.txt` for read-only diagnosis and explicit recovery with
-`cup repair`. Development builds cannot update themselves as official releases.
+This command checks the official release metadata and installs only a newer
+official version. Development builds cannot update themselves as official
+releases. Equal versions are ignored and downgrades are rejected.
+
+If an interrupted update leaves a recoverable condition, inspect it with
+`cup doctor` and use `cup repair` when instructed.
 
 Package updates are separate:
 
@@ -155,11 +149,13 @@ cup uninstall
 cup uninstall --yes
 ```
 
-The command removes the canonical installation and every package managed by
-`cup`. Without `--yes`, confirmation is required. PATH configuration is left
-unchanged. The detached helper moves the complete root to a uniquely named
-sibling before deleting it; a later installer removes a residue only after
-validating its root marker, canonical binary and uninstall transaction journal.
+Without `--yes`, `cup` asks for confirmation. Uninstall detaches the selected `cup` root from its
+canonical path and arranges cleanup of the detached tree after the running command exits.
+
+PATH is not changed. If cleanup fails after the root has been detached, CUP leaves the
+detached sibling intact rather than guessing at deletion. A later installation does not
+automatically adopt or remove that sibling; inspect its retained ownership evidence before
+removing it manually.
 
 ## Troubleshooting
 
@@ -168,10 +164,12 @@ cup doctor
 cup repair
 ```
 
-`doctor` reports problems without modifying files. `repair` applies only repairs
-that can be determined safely. It never removes or replaces the canonical
-`cup` or `cup.exe` executable; use the official installer when that executable
-must be restored.
+`doctor` only reports problems. `repair` changes files only when it can determine
+a safe recovery result; unknown or ambiguous data is preserved.
 
-See [COMMANDS](COMMANDS.md) for command details and
-[SECURITY](../design/SECURITY.md) for the verification model.
+For more detail, see:
+
+- [Commands](COMMANDS.md)
+- [State](../design/STATE.md)
+- [Transactions](../design/TRANSACTIONS.md)
+- [Security](../design/SECURITY.md)

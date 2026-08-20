@@ -7,19 +7,19 @@
  */
 
 #include <stddef.h>
+#include <stdio.h>
 
 #include "constants.h"
+#include "domain.h"
 #include "error.h"
+#include "package_metadata.h"
+#include "system.h"
 
 #define MAX_SCANNED_PACKAGES 256
 #define MAX_PACKAGE_SCAN_ISSUES 256
 
-/* Component, host and target shared by package selections and identities. */
-typedef struct {
-    char component[MAX_IDENTIFIER_LEN];
-    char host_platform[MAX_PLATFORM_LEN];
-    char target_platform[MAX_PLATFORM_LEN];
-} PackageScope;
+/* Component, host and target scope used by package operations. */
+typedef ScopeKey PackageScope;
 
 /* Complete identity of one concrete package. */
 typedef struct {
@@ -27,8 +27,13 @@ typedef struct {
     char tool[MAX_IDENTIFIER_LEN];
     char host_platform[MAX_PLATFORM_LEN];
     char target_platform[MAX_PLATFORM_LEN];
-    char version[MAX_IDENTIFIER_LEN];
+    ConcreteRelease version;
 } PackageIdentity;
+
+/* One fully validated package generation with owned reusable metadata. */
+typedef struct {
+    PackageMetadata metadata;
+} ValidatedPackage;
 
 /* Reason why an item under components cannot be accepted as a package. */
 typedef enum {
@@ -47,6 +52,7 @@ typedef struct {
     PackageIssueReason reason;
     int can_quarantine;
     PackageIdentity package;
+    SystemPathIdentity path_identity;
 } PackageIssue;
 
 /*
@@ -66,7 +72,7 @@ typedef struct {
     int complete;
 } PackageList;
 
-/* Validate and initialize one component/host/target scope. */
+/* Validate and initialize one component/host/target scope. Output is cleared on failure. */
 CupError package_scope_init(PackageScope *scope,
                             const char *component,
                             const char *host_platform,
@@ -76,9 +82,8 @@ int package_scope_equals(const PackageScope *left, const PackageScope *right);
 /* Copy the scope represented by one concrete identity. */
 CupError package_identity_get_scope(const PackageIdentity *identity, PackageScope *scope);
 
-/* Compare complete concrete identities for equality or deterministic display order. */
+/* Compare complete concrete identities for equality. */
 int package_identity_equals(const PackageIdentity *left, const PackageIdentity *right);
-int package_identity_compare(const PackageIdentity *left, const PackageIdentity *right);
 
 /* Match one identity against an exact host and optional target/component filters. */
 int package_identity_matches(const PackageIdentity *identity,
@@ -89,15 +94,16 @@ int package_identity_matches(const PackageIdentity *identity,
 /* Sort concrete identities by host, target, component, tool and version. */
 void package_identity_sort(PackageIdentity *items, size_t count);
 
-/* Validate an already initialized concrete identity. */
-CupError package_identity_validate(const PackageIdentity *identity);
+/* Validate an already initialized concrete identity; diagnostics may be NULL. */
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics);
 
 /* Format the canonical concrete '<tool>@<version>' selector. */
 CupError package_identity_format_selector(const PackageIdentity *identity,
                                           char *buffer,
                                           size_t size);
 
-/* Validate all fields and initialize one concrete package identity. */
+/* Validate all fields and initialize one concrete package identity.
+ * Output is cleared on failure. */
 CupError package_identity_init(PackageIdentity *identity,
                                const char *component,
                                const char *tool,
@@ -105,32 +111,45 @@ CupError package_identity_init(PackageIdentity *identity,
                                const char *target_platform,
                                const char *version);
 
-/* Build an identity from a canonical concrete '<tool>@<version>' selector. */
+/* Build an identity from a canonical concrete '<tool>@<version>' selector.
+ * Output is cleared on failure. */
 CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host_platform,
                                         const char *target_platform,
-                                        const char *selector);
+                                        const char *selector,
+                                        FILE *diagnostics);
 
 /*
- * Validate the package root, immutable info.txt identity, and every declared
- * executable selector without trusting the directory name alone.
+ * Validate the package root, captured info.txt object identity, semantic metadata
+ * and every declared executable entry without trusting the directory name alone.
+ * Diagnostic output is optional so doctor/repair can aggregate the same validation rules.
  */
-CupError package_validate(const char *base_path, const PackageIdentity *identity);
+void validated_package_init(ValidatedPackage *package);
+void validated_package_free(ValidatedPackage *package);
+/* `package` must have been initialized before the first load and remain owned by the caller. */
+CupError validated_package_load(ValidatedPackage *package,
+                                const char *base_path,
+                                const PackageIdentity *identity,
+                                FILE *diagnostics);
+CupError package_validate(const char *base_path,
+                          const PackageIdentity *identity,
+                          FILE *diagnostics);
 
-/* Inspect or restore the immutable protection applied to info.txt. */
+/* Inspect or restore the managed read-only protection applied to info.txt. */
 CupError package_metadata_is_read_only(const char *base_path, int *is_read_only);
 CupError package_set_metadata_read_only(const char *base_path);
 
 /* Check whether the canonical package path exists, regardless of path type. */
 CupError package_path_exists(const PackageIdentity *identity, int *exists);
 
-/* Scan and validate all paths below the canonical components directory. */
-CupError package_scan(PackageList *packages);
+/* Scan and validate all paths below components; diagnostics may be NULL for aggregation. */
+CupError package_scan(PackageList *packages, FILE *diagnostics);
 int package_list_contains(const PackageList *packages, const PackageIdentity *package);
 const char *package_issue_reason_name(PackageIssueReason reason);
 
-/* Move one quarantinable invalid path into a unique recovery directory. */
+/* Move one quarantinable invalid path into a unique recovery directory if its observed identity
+ * still matches. */
 CupError package_quarantine(const PackageIssue *issue, char *recovery_path, size_t recovery_size);
 
 #endif /* CUP_PACKAGE_H */

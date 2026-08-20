@@ -1,4 +1,4 @@
-# Purpose: Exercises the native Windows install, update, default, inspect, and remove lifecycle.
+# Exercises the native Windows install, update, default, inspect, and remove lifecycle.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -19,6 +19,31 @@ function Initialize-LifecycleFixture {
         -Entries @("clang", "clang++")
     New-TestPackage -Component "debugger" -Tool "gdb" -Version "16.1" -Entries @("gdb")
     New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.1" -Entries @("gdb")
+
+    $catalogPath = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
+    $catalogLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (Get-Content -LiteralPath $catalogPath)) {
+        $catalogLines.Add($line)
+    }
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.stable_version=22.1.5")
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.available_versions=22.1.5")
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.default_format=zip")
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.formats=zip")
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.url_template=" +
+        "https://example.invalid/clang-{version}-{host_platform}-{target_platform}.{format}")
+    $catalogLines.Add(
+        "compiler.clang.windows-x64.linux-x64.checksum_url_template=" +
+        "https://example.invalid/SHA256SUMS")
+    Write-Utf8NoBom -Path $catalogPath -Lines $catalogLines
+    Invoke-Cup -CommandArgs @("repair") | Out-Null
+
+    New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" `
+        -Entries @("clang", "clang++") -TargetPlatform "linux-x64"
 }
 
 function Test-InstallDefaults {
@@ -59,6 +84,36 @@ function Test-DevelopmentCupUpdate {
         $failure = Invoke-Cup -CommandArgs @("update", "cup") -ExpectFailure
         Assert-Contains $failure "available only from an official cup release"
     }
+}
+
+function Test-MissingDefault {
+    $failure = Invoke-Cup -CommandArgs @(
+        "default", "compiler", "clang@20.1.5") -ExpectFailure
+    Assert-Contains $failure "is not installed"
+}
+
+function Test-TargetScopes {
+    Invoke-Cup -CommandArgs @(
+        "install", "compiler", "clang@stable", "--target", "linux-x64") | Out-Null
+
+    $allInstalled = Invoke-Cup -CommandArgs @("list")
+    Assert-Contains $allInstalled "compiler:clang@22.1.5 [target linux-x64]"
+
+    $nativeInstalled = Invoke-Cup -CommandArgs @(
+        "list", "--target", "windows-x64")
+    Assert-Contains $nativeInstalled "compiler:clang@22.1.5"
+    Assert-NotContains $nativeInstalled "[target linux-x64]"
+
+    $crossInstalled = Invoke-Cup -CommandArgs @(
+        "list", "compiler", "--target", "linux-x64")
+    Assert-Contains $crossInstalled "compiler:clang@22.1.5"
+    Assert-NotContains $crossInstalled "compiler:clang@21.1.5"
+
+    $crossInfo = Invoke-Cup -CommandArgs @("info", "--target", "linux-x64")
+    Assert-Contains $crossInfo "compiler [linux-x64]: clang@22.1.5 (stable)"
+    Assert-Contains $crossInfo "commands: linux-x64-clang, linux-x64-clang++"
+    Assert-Equals (Invoke-ManagedCommand -Name "linux-x64-clang") `
+        "clang-22.1.5-linux-x64:clang"
 }
 
 function Test-CatalogViews {
@@ -144,7 +199,9 @@ try {
     Test-InstallDefaults
     Test-DevelopmentCupUpdate
     Test-CatalogViews
+    Test-MissingDefault
     Test-Updates
+    Test-TargetScopes
     Test-RemoveDefaultWithoutPromotion
     Write-Host "Windows package lifecycle tests passed."
 } finally {

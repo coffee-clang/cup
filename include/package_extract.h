@@ -2,16 +2,14 @@
 #define CUP_PACKAGE_EXTRACT_H
 
 /*
- * Safe extraction of one supported package archive into a caller-provided fresh staging
- * directory. Paths are validated for every supported filesystem before any entry can escape
- * or alias another entry.
+ * Extracts one supported package archive into a fresh caller-owned staging directory. Entry paths
+ * are checked against every supported filesystem model so they cannot escape or alias each other.
  */
 
 #include "error.h"
+#include "package_artifact.h"
 
-/* Preflight and extract the complete archive below the fresh staging directory. */
-CupError package_extract_archive(const char *archive_path,
-                                 const char *staging_path,
-                                 const char *format);
+/* Extract only the already authenticated bytes owned by one verified artifact. */
+CupError package_extract_verified(VerifiedArtifact *artifact, const char *staging_path);
 
 #endif /* CUP_PACKAGE_EXTRACT_H */

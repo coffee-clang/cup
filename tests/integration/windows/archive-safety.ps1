@@ -1,4 +1,4 @@
-# Purpose: Exercises ZIP validation and malicious archive rejection on Windows.
+# Exercises ZIP validation and malicious archive rejection on Windows.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -20,9 +20,13 @@ try {
         -Value $caseVersion `
         -Mode "Prepend"
     $casePackage = "clang-$caseVersion-windows-x64-windows-x64"
-    $caseFixture = New-CustomZipPackage -Version $caseVersion -ExtraEntries @{
-        "$casePackage/bin/CLANG.cmd" = "collision`n"
-    }
+    $caseEntries = @(
+        [pscustomobject]@{
+            Name = "$casePackage/bin/CLANG.cmd"
+            Content = "collision`n"
+        }
+    )
+    $caseFixture = New-CustomZipPackage -Version $caseVersion -ExtraEntries $caseEntries
     Assert-ZipContainsExactEntries -Archive $caseFixture.Archive -Names @(
         "$casePackage/bin/clang.cmd",
         "$casePackage/bin/CLANG.cmd")
@@ -36,9 +40,13 @@ try {
         -Value $traversalVersion `
         -Mode "Prepend"
     $traversalPackage = "clang-$traversalVersion-windows-x64-windows-x64"
-    [void](New-CustomZipPackage -Version $traversalVersion -ExtraEntries @{
-        "$traversalPackage/../escape.txt" = "escape`n"
-    })
+    $traversalEntries = @(
+        [pscustomobject]@{
+            Name = "$traversalPackage/../escape.txt"
+            Content = "escape`n"
+        }
+    )
+    [void](New-CustomZipPackage -Version $traversalVersion -ExtraEntries $traversalEntries)
     [void](Assert-InstallRejected $traversalVersion)
     $escapedPath = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\escape.txt")
@@ -78,7 +86,7 @@ try {
         -Field "default_format" `
         -Value "tar.gz" `
         -Mode "Replace"
-    $mismatchFixture = New-CustomZipPackage -Version $mismatchVersion -ExtraEntries @{}
+    $mismatchFixture = New-CustomZipPackage -Version $mismatchVersion -ExtraEntries @()
     $mismatchArchive = Join-Path (Split-Path -Parent $mismatchFixture.Archive) `
         "$($mismatchFixture.PackageName).tar.gz"
     Move-Item -LiteralPath $mismatchFixture.Archive -Destination $mismatchArchive

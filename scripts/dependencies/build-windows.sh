@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Purpose: Builds the complete Windows x64 dependency prefix natively. UCRT64
+# Builds the complete Windows x64 dependency prefix natively. UCRT64
 # is the production GCC graph; CLANG64 is an isolated diagnostic graph used by
 # ASan/UBSan and is never reused for official release binaries.
 set -euo pipefail
@@ -14,7 +14,6 @@ case "${MSYSTEM:-}" in
             echo "Error: UCRT64 requires MINGW_PREFIX=/ucrt64." >&2
             exit 1
         fi
-        RUNTIME_POLICY=msys2-ucrt64
         TOOLCHAIN_LABEL=UCRT64
         CC=gcc
         AR=ar
@@ -28,7 +27,6 @@ case "${MSYSTEM:-}" in
             echo "Error: CLANG64 requires MINGW_PREFIX=/clang64." >&2
             exit 1
         fi
-        RUNTIME_POLICY=msys2-clang64
         TOOLCHAIN_LABEL=CLANG64
         CC=clang
         AR=llvm-ar
@@ -44,7 +42,6 @@ case "${MSYSTEM:-}" in
 esac
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 dependency_normalize_build_environment
 JOBS="$(dependency_resolve_jobs)"
@@ -81,8 +78,9 @@ build_zlib() {
         LOC="${CUP_DEPENDENCY_CFLAGS:-}" \
         -j"$JOBS" libz.a
 
-    cp zlib.h zconf.h "$PREFIX/include/"
-    cp libz.a "$PREFIX/lib/libz.a"
+    cup_path_copy_file "$PWD/zlib.h" "$PREFIX/include/zlib.h" 0644 replace
+    cup_path_copy_file "$PWD/zconf.h" "$PREFIX/include/zconf.h" 0644 replace
+    cup_path_copy_file "$PWD/libz.a" "$PREFIX/lib/libz.a" 0644 replace
 }
 
 build_xz() {
@@ -105,7 +103,13 @@ build_xz() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
-        --disable-nls
+        --disable-nls \
+        --disable-xz \
+        --disable-xzdec \
+        --disable-lzmadec \
+        --disable-lzmainfo \
+        --disable-scripts \
+        --disable-doc
 
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"
@@ -209,71 +213,14 @@ build_libarchive() {
     make install DESTDIR="$DESTDIR"
 }
 
-verify_link_metadata_value() {
-    local label="$1"
-    local value="$2"
-
-    if [ -z "$value" ]; then
-        echo "Error: generated static link metadata is empty for $label." >&2
-        return 1
-    fi
-    if dependency_metadata_contains_staging "$value"; then
-        echo "Error: generated $label link metadata contains the staging path:" >&2
-        printf '  %s\n' "$value" >&2
-        return 1
-    fi
-}
-
-
 # Final prefix and static metadata verification.
 verify() {
-    local cares_flags
-    local curl_flags
-    local archive_flags
-    local event_flags
-
-    echo "==> Verifying generated link metadata"
-
-    if [ ! -x "$PREFIX/bin/curl-config" ]; then
-        echo "Error: curl-config was not installed." >&2
+    echo "==> Verifying generated dependency prefix"
+    dependency_prefix_complete "$PREFIX" 0 "$CUP_DEPS_FINAL_PREFIX" || {
+        echo "Error: generated dependency prefix is incomplete or unsafe." >&2
         exit 1
-    fi
-
-    cares_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libcares)"
-    curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
-    archive_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libarchive)"
-    event_flags="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libevent_extra libevent_core)"
-    verify_link_metadata_value c-ares "$cares_flags" || exit 1
-    verify_link_metadata_value curl "$curl_flags" || exit 1
-    verify_link_metadata_value libarchive "$archive_flags" || exit 1
-    verify_link_metadata_value libevent "$event_flags" || exit 1
-    case " $archive_flags " in
-        *" -liconv "*)
-            echo "Error: libarchive metadata depends on unpinned libiconv." >&2
-            exit 1
-            ;;
-    esac
-
-    if ! dependency_prefix_complete "$PREFIX" 0 "$CUP_DEPS_FINAL_PREFIX"; then
-        echo "Error: generated dependency prefix is incomplete." >&2
-        exit 1
-    fi
-
-    printf '%s\n' "$cares_flags"
-    printf '%s\n' "$curl_flags"
-    printf '%s\n' "$archive_flags"
-    printf '%s\n' "$event_flags"
-
-    echo "==> Windows $TOOLCHAIN_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
+    }
+    echo "==> Windows dependencies verified for $CUP_DEPS_FINAL_PREFIX"
 }
 
 # Ordered Windows x64 bootstrap.
@@ -310,8 +257,6 @@ main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
     require_tool curl
-    require_tool cmp
-    require_tool diff
     require_tool tar
     require_tool make
     require_tool mktemp
@@ -324,7 +269,17 @@ main() {
         "$DEPS_ROOT" "$BUILD_DIR" "$CUP_DEPS_STAGE_ROOT")
     export CUP_DEPENDENCY_CFLAGS
 
-    mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$SRC_DIR" \
+        "dependency source directory"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$BUILD_DIR" \
+        "dependency build directory"
+    cup_path_check_directory_chain "$PREFIX" 0 "dependency build prefix"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$PREFIX/bin" \
+        "dependency binary directory"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$PREFIX/include" \
+        "dependency include directory"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$PREFIX/lib" \
+        "dependency library directory"
 
     build_zlib
     build_xz

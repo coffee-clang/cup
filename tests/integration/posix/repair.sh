@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises deterministic repair, state reconstruction, quarantine,
+# Exercises deterministic repair, state reconstruction, quarantine,
 # and ambiguous-path preservation.
 set -eu
 
@@ -14,8 +14,8 @@ run_cup repair >/dev/null
 state_file=$TEST_HOME/.cup/state.txt
 transaction_file=$TEST_HOME/.cup/transaction.txt
 
-# A valid package found on disk is adopted. Its immutable metadata protection
-# is also restored by repair rather than by a test-specific helper.
+# A valid package found on disk is adopted. Its managed read-only metadata
+# protection is also restored by repair rather than by a test-specific helper.
 make_installed_package compiler clang 22.1.5 "$TEST_PLATFORM" clang
 output=$(run_cup repair)
 assert_contains "$output" "Adopted valid package 'compiler:clang@22.1.5'"
@@ -87,7 +87,7 @@ rm -f "$transaction_file"
 cp "$TMP_ROOT/state.valid" "$state_file"
 rm -f "$state_file.invalid"
 
-# A malformed CUP-update journal must also block preservation or reconstruction
+# A malformed cup update journal must also block preservation or reconstruction
 # of invalid state. The journal is the only evidence describing the detached
 # replacement generation, so repair cannot mutate either file until it parses.
 chmod u+w "$state_file"
@@ -157,7 +157,8 @@ grep -v "installed.compiler.$foreign_host.$foreign_host=" "$state_file" \
 mv "$state_file.tmp" "$state_file"
 rm -rf "$TEST_HOME/.cup/components/compiler/clang/$foreign_host"
 
-# Repair cannot acknowledge an uninstall that is still in its detached handoff.
+# A pre-detach uninstall journal is stale once repair owns cup.lock and no detached sibling
+# exists: no authorized helper can still perform the canonical detach.
 cat > "$transaction_file" <<'JOURNAL'
 format=1
 operation=uninstall
@@ -167,10 +168,10 @@ token=fixture
 stage=parent-wait
 error=0
 JOURNAL
-run_cup_expect_failure "$TMP_ROOT/pending-uninstall.out" repair
-assert_contains "$(cat "$TMP_ROOT/pending-uninstall.out")" \
-    'interrupted operation cannot be repaired safely'
-rm -f "$transaction_file"
+output=$(run_cup repair)
+assert_contains "$output" \
+    "Cancelled interrupted cup uninstall in phase 'scheduled' during 'parent-wait'."
+assert_missing "$transaction_file"
 
 # A failed uninstall whose detached sibling is gone can be explicitly acknowledged by repair.
 cat > "$transaction_file" <<'JOURNAL'

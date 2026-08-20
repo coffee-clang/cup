@@ -1,4 +1,4 @@
-# Purpose: Provides shared Windows integration assertions, isolated roots,
+# Provides shared Windows integration assertions, isolated roots,
 # and native fixture builders.
 
 Set-StrictMode -Version Latest
@@ -6,11 +6,13 @@ $ErrorActionPreference = "Stop"
 
 $Script:CupTestScriptDir = $PSScriptRoot
 $Script:CupTestProjectRoot = (Resolve-Path (Join-Path $Script:CupTestScriptDir "..\..\..")).Path
+$Script:CupTestBuildRoot = $null
 $Script:CupTestExecutable = $null
 $Script:CupTestRoot = $null
 $Script:CupTestHome = $null
 $Script:CupTestDevRoot = $null
 $Script:CupTestOriginalUserProfile = $null
+$Script:CupTestOriginalEnvironment = @{}
 $Script:CupTestCommandProcessor = $null
 
 function Fail-Test {
@@ -80,7 +82,8 @@ function Assert-PathMissing {
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
-    if (Test-Path -LiteralPath $Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item) {
         Fail-Test "expected missing path: $Path"
     }
 }
@@ -99,6 +102,100 @@ function Assert-Equals {
 }
 
 # Isolated paths and native process invocation.
+function Resolve-TestBuildRoot {
+    $candidate = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_BUILD_ROOT)) {
+        Join-Path $Script:CupTestProjectRoot "build"
+    } else {
+        $env:CUP_TEST_BUILD_ROOT
+    }
+    $fullPath = [IO.Path]::GetFullPath($candidate)
+    $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+    if ([string]::IsNullOrWhiteSpace($pathRoot) -or $fullPath -ceq $pathRoot) {
+        Fail-Test "unsafe test build root: $fullPath"
+    }
+
+    $current = $pathRoot
+    $relative = $fullPath.Substring($pathRoot.Length)
+    $separators = [char[]]@(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $components = $relative.Split(
+        $separators,
+        [StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($component in $components) {
+        if ($component -in @(".", "..")) {
+            Fail-Test "unsafe test build root component: $fullPath"
+        }
+        $current = Join-Path $current $component
+        if (-not (Test-Path -LiteralPath $current -PathType Container)) {
+            Fail-Test "test build root is not a real directory: $current"
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail-Test "test build root contains a reparse point: $current"
+        }
+    }
+
+    $marker = Join-Path $fullPath ".cup-build-root"
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        Fail-Test "test build root marker is missing: $marker"
+    }
+    $markerItem = Get-Item -LiteralPath $marker -Force
+    if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail-Test "test build root marker is a reparse point: $marker"
+    }
+    $expected = @(
+        "format=1",
+        "product=coffee-clang/cup",
+        "kind=build-root",
+        "layout=1"
+    )
+    $actual = @(Get-Content -LiteralPath $marker)
+    if ($actual.Count -ne $expected.Count) {
+        Fail-Test "test build root marker is invalid: $marker"
+    }
+    for ($index = 0; $index -lt $expected.Count; $index++) {
+        if ($actual[$index] -cne $expected[$index]) {
+            Fail-Test "test build root marker is invalid: $marker"
+        }
+    }
+    return $fullPath
+}
+
+function New-RealTestDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Parent,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or
+        $Name -in @(".", "..") -or
+        $Name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+        $Name.Contains([string][IO.Path]::DirectorySeparatorChar) -or
+        $Name.Contains([string][IO.Path]::AltDirectorySeparatorChar)) {
+        Fail-Test "invalid test directory name: $Name"
+    }
+    $path = Join-Path $Parent $Name
+    if (Test-Path -LiteralPath $path) {
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+            Fail-Test "test path is not a directory: $path"
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail-Test "test directory is a reparse point: $path"
+        }
+        return $path
+    }
+    $item = New-Item -ItemType Directory -Path $path -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail-Test "created test directory is a reparse point: $path"
+    }
+    return $item.FullName
+}
+
 function New-IsolatedTestRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -113,13 +210,16 @@ function New-IsolatedTestRoot {
     if ($configuration -notin @("development", "debug", "coverage", "sanitizers", "release")) {
         Fail-Test "unsupported CUP_TEST_CONFIGURATION: $configuration"
     }
-    $relativeBase = "build\windows-x64\{0}\tests" -f $configuration
-    $base = Join-Path $Script:CupTestProjectRoot $relativeBase
-    New-Item -ItemType Directory -Force -Path $base | Out-Null
-
-    $root = Join-Path $base ("cup-$Name-tests-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Force -Path $root | Out-Null
-    return (Resolve-Path -LiteralPath $root).Path
+    if ($null -eq $Script:CupTestBuildRoot) {
+        $Script:CupTestBuildRoot = Resolve-TestBuildRoot
+    }
+    $platformRoot = New-RealTestDirectory `
+        -Parent $Script:CupTestBuildRoot -Name "windows-x64"
+    $configurationRoot = New-RealTestDirectory `
+        -Parent $platformRoot -Name $configuration
+    $base = New-RealTestDirectory -Parent $configurationRoot -Name "tests"
+    $rootName = "cup-$Name-tests-" + [guid]::NewGuid().ToString("N")
+    return New-RealTestDirectory -Parent $base -Name $rootName
 }
 
 function Resolve-CommandProcessor {
@@ -205,7 +305,10 @@ function Invoke-NativeProcess {
         [string[]]$Arguments = @(),
 
         [Parameter(Mandatory = $true)]
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+
+        [ValidateRange(1, 86400)]
+        [int]$TimeoutSeconds = 300
     )
 
     if ([string]::IsNullOrWhiteSpace($FilePath)) {
@@ -239,6 +342,19 @@ function Invoke-NativeProcess {
 
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
+            } catch {
+                try {
+                    $process.Kill()
+                } catch {
+                    # Cleanup is best effort.
+                }
+            }
+            [void]$process.WaitForExit(10000)
+            Fail-Test "native process timed out after $TimeoutSeconds seconds: $FilePath"
+        }
         $process.WaitForExit()
         $stdout = $stdoutTask.Result.TrimEnd([char[]]"`r`n")
         $stderr = $stderrTask.Result.TrimEnd([char[]]"`r`n")
@@ -293,6 +409,19 @@ function Initialize-TestEnvironment {
     $Script:CupTestHome = Join-Path $Script:CupTestRoot "home"
     $Script:CupTestDevRoot = Join-Path $Script:CupTestRoot "development-root"
     $Script:CupTestOriginalUserProfile = $env:USERPROFILE
+    $Script:CupTestOriginalEnvironment = @{}
+    foreach ($variable in @(
+        'CUP_INSTALL_BASE_URL', 'CUP_INSTALL_ALLOW_INSECURE',
+        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+        'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')) {
+        $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        $Script:CupTestOriginalEnvironment[$variable] = if ($null -eq $item) {
+            $null
+        } else {
+            $item.Value
+        }
+        Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+    }
 
     New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "config") | Out-Null
@@ -309,6 +438,15 @@ function Initialize-TestEnvironment {
 }
 
 function Remove-TestEnvironment {
+    foreach ($entry in $Script:CupTestOriginalEnvironment.GetEnumerator()) {
+        if ($null -eq $entry.Value) {
+            Remove-Item -LiteralPath "Env:$($entry.Key)" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$($entry.Key)" -Value $entry.Value
+        }
+    }
+    $Script:CupTestOriginalEnvironment = @{}
+
     if ($null -eq $Script:CupTestOriginalUserProfile) {
         Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
     } else {
@@ -404,11 +542,15 @@ function Set-PackageCatalogField {
 
         [Parameter(Mandatory = $true)]
         [ValidateSet("Prepend", "Replace")]
-        [string]$Mode
+        [string]$Mode,
+
+        [string]$HostPlatform = "windows-x64",
+
+        [string]$TargetPlatform = "windows-x64"
     )
 
     $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $key = "$Component.$Tool.windows-x64.windows-x64.$Field="
+    $key = "$Component.$Tool.$HostPlatform.$TargetPlatform.$Field="
     $content = Get-Content -LiteralPath $catalog
     $found = $false
     $updated = foreach ($line in $content) {
@@ -429,6 +571,7 @@ function Set-PackageCatalogField {
     Write-Utf8NoBom -Path $catalog -Lines $updated
 }
 
+
 function New-TestPackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -441,14 +584,17 @@ function New-TestPackage {
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
-        [string[]]$Entries
+        [string[]]$Entries,
+
+        [string]$HostPlatform = "windows-x64",
+
+        [string]$TargetPlatform = "windows-x64"
     )
 
-    $platform = "windows-x64"
-    $packageName = "$Tool-$Version-$platform-$platform"
+    $packageName = "$Tool-$Version-$HostPlatform-$TargetPlatform"
     $packageRoot = Join-Path $Script:CupTestRoot "packages\$packageName"
     $cacheDir = Join-Path $Script:CupTestHome (
-        ".cup\cache\$Component\$Tool\$platform\$platform\$Version")
+        ".cup\cache\$Component\$Tool\$HostPlatform\$TargetPlatform\$Version")
     $archive = Join-Path $cacheDir "$packageName.zip"
 
     Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -459,11 +605,11 @@ function New-TestPackage {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
-    $info.Add("platform.host=$platform")
-    $info.Add("platform.target=$platform")
+    $info.Add("platform.host=$HostPlatform")
+    $info.Add("platform.target=$TargetPlatform")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
-        $body = "@echo off`r`necho $Tool-$Version-${platform}:$entry`r`n"
+        $body = "@echo off`r`necho $Tool-$Version-${TargetPlatform}:$entry`r`n"
         $entryPath = Join-Path $packageRoot "bin\$entry.cmd"
         Set-Content `
             -LiteralPath $entryPath `

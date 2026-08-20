@@ -1,6 +1,6 @@
 /*
- * Test focus: Exercises the closed package-archive format domain and bounded structural
- * preflight with real libarchive files.
+ * Exercises the closed package-archive format domain and detected format/filter matching with
+ * real libarchive streams. Structural and resource admission belongs to the extraction pass.
  */
 
 #include "package_archive.h"
@@ -14,11 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Shared fixture state used by the cases in this suite. */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
 }
@@ -34,11 +30,19 @@ static void build_path(char *out, size_t size, const char *name) {
 
 static void write_bytes(const char *path, const void *data, size_t size) {
     FILE *file = fopen(path, "wb");
+
     TEST_ASSERT_NOT_NULL(file);
     if (size > 0) {
         TEST_ASSERT_EQUAL_size_t(size, fwrite(data, 1, size, file));
     }
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
+}
+
+static FILE *open_fixture(const char *path) {
+    FILE *file = fopen(path, "rb");
+
+    TEST_ASSERT_NOT_NULL(file);
+    return file;
 }
 
 static void configure_writer(struct archive *writer, const char *format) {
@@ -90,7 +94,20 @@ static void create_archive(const char *path, const char *format, int include_pay
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_write_free(writer));
 }
 
-/* Test cases grouped by the public contract they exercise. */
+static void assert_reader_format(const char *path,
+                                 PackageArchiveFormat format,
+                                 int expected) {
+    FILE *file = open_fixture(path);
+    struct archive *reader = NULL;
+    struct archive_entry *entry = NULL;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_open_stream(&reader, file));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_next_header(reader, &entry));
+    TEST_ASSERT_EQUAL_INT(expected, package_archive_reader_matches_format(reader, format));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_close(reader));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_free(reader));
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+}
 
 static void test_format_parser(void) {
     PackageArchiveFormat format = PACKAGE_ARCHIVE_FORMAT_ANY;
@@ -111,28 +128,27 @@ static void test_reader_contract(void) {
     struct archive *reader = (struct archive *)1;
     char valid[512];
     char invalid[512];
+    FILE *valid_file;
+    FILE *invalid_file;
 
     build_path(valid, sizeof(valid), "reader.tar.gz");
     build_path(invalid, sizeof(invalid), "invalid.bin");
     create_archive(valid, "tar.gz", 1);
     write_bytes(invalid, "not an archive", 14);
+    valid_file = open_fixture(valid);
+    invalid_file = open_fixture(invalid);
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_open_reader(NULL, valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_open_reader(&reader, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, package_archive_open_reader(&reader, invalid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_open_stream(NULL, valid_file));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_open_stream(&reader, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, package_archive_open_stream(&reader, invalid_file));
     TEST_ASSERT_NULL(reader);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_open_reader(&reader, valid));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_open_stream(&reader, valid_file));
     TEST_ASSERT_NOT_NULL(reader);
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_close(reader));
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_free(reader));
-}
-
-static void assert_validity(const char *path, const char *format, int expected) {
-    int valid = !expected;
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_is_valid(path, format, &valid));
-    TEST_ASSERT_EQUAL_INT(expected, valid);
+    TEST_ASSERT_EQUAL_INT(0, fclose(valid_file));
+    TEST_ASSERT_EQUAL_INT(0, fclose(invalid_file));
 }
 
 static void test_real_formats(void) {
@@ -147,12 +163,12 @@ static void test_real_formats(void) {
     create_archive(tar_xz, "tar.xz", 1);
     create_archive(zip, "zip", 1);
 
-    assert_validity(tar_gz, "tar.gz", 1);
-    assert_validity(tar_xz, "tar.xz", 1);
-    assert_validity(zip, "zip", 1);
-    assert_validity(tar_gz, NULL, 1);
-    assert_validity(tar_xz, NULL, 1);
-    assert_validity(zip, NULL, 1);
+    assert_reader_format(tar_gz, PACKAGE_ARCHIVE_FORMAT_TAR_GZ, 1);
+    assert_reader_format(tar_xz, PACKAGE_ARCHIVE_FORMAT_TAR_XZ, 1);
+    assert_reader_format(zip, PACKAGE_ARCHIVE_FORMAT_ZIP, 1);
+    assert_reader_format(tar_gz, PACKAGE_ARCHIVE_FORMAT_ANY, 1);
+    assert_reader_format(tar_xz, PACKAGE_ARCHIVE_FORMAT_ANY, 1);
+    assert_reader_format(zip, PACKAGE_ARCHIVE_FORMAT_ANY, 1);
 }
 
 static void test_format_mismatch(void) {
@@ -170,47 +186,12 @@ static void test_format_mismatch(void) {
     create_archive(zip, "zip", 1);
     create_archive(plain_tar, "tar", 1);
 
-    assert_validity(tar_gz, "tar.xz", 0);
-    assert_validity(tar_xz, "zip", 0);
-    assert_validity(zip, "tar.gz", 0);
-    assert_validity(plain_tar, NULL, 0);
+    assert_reader_format(tar_gz, PACKAGE_ARCHIVE_FORMAT_TAR_XZ, 0);
+    assert_reader_format(tar_xz, PACKAGE_ARCHIVE_FORMAT_ZIP, 0);
+    assert_reader_format(zip, PACKAGE_ARCHIVE_FORMAT_TAR_GZ, 0);
+    assert_reader_format(plain_tar, PACKAGE_ARCHIVE_FORMAT_ANY, 0);
 
-    {
-        int valid = 1;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_archive_is_valid(zip, "7z", &valid));
-        TEST_ASSERT_FALSE(valid);
-    }
 }
-
-static void test_payload_required(void) {
-    char missing[512];
-    char empty[512];
-    char invalid[512];
-    char directory[512];
-    char directories_only[512];
-    int valid = 1;
-
-    build_path(missing, sizeof(missing), "missing.tar.gz");
-    build_path(empty, sizeof(empty), "empty.tar.gz");
-    build_path(invalid, sizeof(invalid), "garbage.tar.gz");
-    build_path(directory, sizeof(directory), "directory");
-    build_path(directories_only, sizeof(directories_only), "directories.tar.gz");
-
-    write_bytes(empty, "", 0);
-    write_bytes(invalid, "garbage", 7);
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(directory, 0755));
-    create_archive(directories_only, "tar.gz", 0);
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_is_valid(NULL, "tar.gz", &valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_is_valid(missing, "tar.gz", NULL));
-    assert_validity(missing, "tar.gz", 0);
-    assert_validity(directory, "tar.gz", 0);
-    assert_validity(empty, "tar.gz", 0);
-    assert_validity(invalid, "tar.gz", 0);
-    assert_validity(directories_only, "tar.gz", 0);
-}
-
-/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(
@@ -220,7 +201,6 @@ int main(void) {
     RUN_TEST(test_reader_contract);
     RUN_TEST(test_real_formats);
     RUN_TEST(test_format_mismatch);
-    RUN_TEST(test_payload_required);
     TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
     return UNITY_END();
 }

@@ -1,4 +1,4 @@
-# Purpose: Validates one completed Windows release candidate, native
+# Validates one completed Windows release candidate, native
 # executable, and generated installer.
 
 param(
@@ -16,6 +16,12 @@ Set-StrictMode -Version Latest
 $originalLocation = (Get-Location).Path
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ReleaseDir = (Resolve-Path -LiteralPath $ReleaseDir).Path
+$temporaryParent = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    [System.IO.Path]::GetTempPath()
+} else {
+    $env:RUNNER_TEMP
+}
+$testWorkRoot = $null
 
 # Run child PowerShell scripts while preserving expected stderr and exit status.
 function Invoke-PowerShellScript {
@@ -27,13 +33,8 @@ function Invoke-PowerShellScript {
     )
 
     $id = [Guid]::NewGuid().ToString('N')
-    $temporaryDirectory = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        [System.IO.Path]::GetTempPath()
-    } else {
-        $env:RUNNER_TEMP
-    }
-    $stdoutPath = Join-Path $temporaryDirectory "cup-powershell-$PID-$id.stdout"
-    $stderrPath = Join-Path $temporaryDirectory "cup-powershell-$PID-$id.stderr"
+    $stdoutPath = Join-Path $testWorkRoot "powershell-$id.stdout"
+    $stderrPath = Join-Path $testWorkRoot "powershell-$id.stderr"
 
     $process = $null
     try {
@@ -44,8 +45,16 @@ function Invoke-PowerShellScript {
             -RedirectStandardError $stderrPath `
             -WorkingDirectory $WorkingDirectory `
             -NoNewWindow `
-            -Wait `
             -PassThru
+        if (-not $process.WaitForExit(300000)) {
+            try {
+                & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
+            } catch {
+                # Cleanup is best effort.
+            }
+            [void]$process.WaitForExit(10000)
+            throw "PowerShell release fixture timed out: $ScriptPath"
+        }
 
         $output = @()
         if (Test-Path -LiteralPath $stdoutPath) {
@@ -158,13 +167,12 @@ function Test-InstallerMetadataFailure {
 
     $fixtureName = "metadata-$Name"
     $fixture = Join-Path $root $fixtureName
-    $profile = Join-Path $env:RUNNER_TEMP "cup-installer-$fixtureName-$PID"
+    $profile = Join-Path $testWorkRoot "installer-$fixtureName"
     $saved = @{}
     foreach ($variable in @(
         'USERPROFILE',
         'CUP_INSTALL_ALLOW_INSECURE',
-        'CUP_INSTALL_BASE_URL',
-        'CUP_INSTALL_NO_PATH_PROMPT'
+        'CUP_INSTALL_BASE_URL'
     )) {
         $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
         $saved[$variable] = if ($null -eq $item) { $null } else { $item.Value }
@@ -188,7 +196,7 @@ function Test-InstallerMetadataFailure {
         Set-Content -LiteralPath (Join-Path $fixture 'release.txt') `
             -Value $Lines -Encoding Ascii
 
-        $platformNames = @('cup-windows-x64.exe', 'uninstall.ps1', 'release.txt')
+        $platformNames = @('cup-windows-x64.exe', 'uninstall.ps1', 'release.txt', 'SHA256SUMS.common')
         $checksumLines = foreach ($asset in $platformNames) {
             $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $asset) `
                 -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -200,7 +208,6 @@ function Test-InstallerMetadataFailure {
         $env:USERPROFILE = $profile
         $env:CUP_INSTALL_ALLOW_INSECURE = '1'
         $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/$fixtureName"
-        $env:CUP_INSTALL_NO_PATH_PROMPT = '1'
 
         $result = Invoke-PowerShellScript `
             -ScriptPath (Join-Path $ReleaseDir 'install.ps1') `
@@ -226,11 +233,101 @@ function Test-InstallerMetadataFailure {
     }
 }
 
+# A final partial transfer window must be checked when EOF arrives. Every
+# individual read below completes within the one-second test threshold, so only
+# the accumulated final-window check can reject the response.
+function Test-InstallerFinalLowSpeedWindow {
+    $fixture = Join-Path $testWorkRoot 'final-low-speed'
+    $profile = Join-Path $fixture 'profile'
+    $ready = Join-Path $fixture 'ready.txt'
+    $serverScript = Join-Path $projectRoot 'tests\support\windows\slow-http-server.ps1'
+    $installer = Join-Path $fixture 'install.ps1'
+    $serverProcess = $null
+    $saved = @{}
+
+    if (-not (Test-Path -LiteralPath $serverScript -PathType Leaf)) {
+        throw "Low-speed HTTP fixture is missing: $serverScript"
+    }
+    New-Item -ItemType Directory -Path $profile -Force | Out-Null
+
+    $installerText = [IO.File]::ReadAllText((Join-Path $ReleaseDir 'install.ps1'))
+    $installerText = $installerText.Replace('$LowSpeedSeconds = 30', '$LowSpeedSeconds = 1')
+    if ($installerText -notlike '*$LowSpeedSeconds = 1*') {
+        throw 'Could not prepare the low-speed installer fixture'
+    }
+    [IO.File]::WriteAllText($installer, $installerText, [Text.Encoding]::UTF8)
+
+    foreach ($variable in @(
+        'USERPROFILE',
+        'CUP_INSTALL_ALLOW_INSECURE',
+        'CUP_INSTALL_BASE_URL'
+    )) {
+        $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        $saved[$variable] = if ($null -eq $item) { $null } else { $item.Value }
+    }
+
+    try {
+        $serverArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$serverScript`" " +
+            "-ReadyPath `"$ready`""
+        $serverProcess = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList $serverArguments `
+            -PassThru `
+            -WindowStyle Hidden
+
+        $slowPort = 0
+        for ($attempt = 0; $attempt -lt 50; $attempt++) {
+            if (Test-Path -LiteralPath $ready) {
+                $portText = (Get-Content -LiteralPath $ready -Raw).Trim()
+                if ([int]::TryParse($portText, [ref]$slowPort) -and $slowPort -gt 0) {
+                    break
+                }
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if ($slowPort -le 0) {
+            throw 'Low-speed HTTP fixture did not become ready'
+        }
+
+        $env:USERPROFILE = $profile
+        $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+        $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$slowPort"
+
+        $result = Invoke-PowerShellScript -ScriptPath $installer -WorkingDirectory $profile
+        $text = $result.Output -join [Environment]::NewLine
+        if ($result.ExitCode -eq 0) {
+            throw 'Final low-speed response unexpectedly succeeded'
+        }
+        if ($text -notlike '*remained below the minimum transfer speed*') {
+            throw "Final low-speed response was not rejected by the transfer policy:`n$text"
+        }
+    } finally {
+        foreach ($variable in $saved.Keys) {
+            if ($null -eq $saved[$variable]) {
+                Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -LiteralPath "Env:$variable" -Value $saved[$variable]
+            }
+        }
+        if ($null -ne $serverProcess) {
+            if (-not $serverProcess.HasExited) {
+                try {
+                    & taskkill.exe /PID $serverProcess.Id /T /F 2>&1 | Out-Null
+                } catch {
+                    # Cleanup is best effort.
+                }
+                [void]$serverProcess.WaitForExit(10000)
+            }
+            $serverProcess.Dispose()
+        }
+        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Validate the candidate checksums, metadata and native executable.
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
-    -ExpectedNames @("cup-windows-x64.exe", "uninstall.ps1", "release.txt")
+    -ExpectedNames @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")
 
 $releaseMetadataPath = Join-Path $ReleaseDir "release.txt"
 $releaseMetadata = @(Get-Content -LiteralPath $releaseMetadataPath)
@@ -269,27 +366,31 @@ $helper = Join-Path $projectRoot "build\windows-x64\$configuration\tests\helpers
 if (-not (Test-Path -LiteralPath $helper)) {
     throw "HTTP test helper is not built: $helper"
 }
-$ready = Join-Path $env:RUNNER_TEMP "cup-http-ready-$PID"
-Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
-$serverArgs = @('http-server', '--root', $root, '--port', "$port", '--ready-file', $ready)
-$server = Start-Process -FilePath $helper `
-    -ArgumentList $serverArgs `
-    -PassThru `
-    -WindowStyle Hidden
-$testProfile = Join-Path $env:RUNNER_TEMP "cup-installer-profile-$PID"
-$foreignProfile = Join-Path $env:RUNNER_TEMP "cup-installer-foreign-profile-$PID"
+$server = $null
 $originalEnvironment = @{}
-foreach ($name in @(
-    "USERPROFILE",
-    "CUP_INSTALL_ALLOW_INSECURE",
-    "CUP_INSTALL_BASE_URL",
-    "CUP_INSTALL_NO_PATH_PROMPT"
-)) {
-    $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
-    $originalEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
-}
 
 try {
+    $testWorkRoot = Join-Path $temporaryParent `
+        ("cup-release-test-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $testWorkRoot | Out-Null
+
+    $ready = Join-Path $testWorkRoot "http-ready"
+    $serverArgs = @('http-server', '--root', $root, '--port', "$port", '--ready-file', $ready)
+    $server = Start-Process -FilePath $helper `
+        -ArgumentList $serverArgs `
+        -PassThru `
+        -WindowStyle Hidden
+    $testProfile = Join-Path $testWorkRoot "installer-profile"
+    $foreignProfile = Join-Path $testWorkRoot "foreign-profile"
+    foreach ($name in @(
+        "USERPROFILE",
+        "CUP_INSTALL_ALLOW_INSECURE",
+        "CUP_INSTALL_BASE_URL"
+    )) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        $originalEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
+    }
+
     $serverReady = $false
     for ($i = 0; $i -lt 50; $i++) {
         try {
@@ -314,6 +415,8 @@ try {
     if (-not $serverReady) {
         throw "HTTP test helper did not become ready"
     }
+
+    Test-InstallerFinalLowSpeedWindow
 
     Test-InstallerMetadataFailure -Name 'invalid-version' -Lines @(
         'format=1',
@@ -346,7 +449,6 @@ try {
     $env:USERPROFILE = $testProfile
     $env:CUP_INSTALL_ALLOW_INSECURE = "1"
     $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port"
-    $env:CUP_INSTALL_NO_PATH_PROMPT = "1"
 
     $installResult = Invoke-PowerShellScript `
         -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
@@ -451,7 +553,7 @@ try {
         throw "Fallback-root uninstall modified the unrelated .cup directory"
     }
     # A recognizable root with a corrupt ownership marker must block the installer
-    # without selecting or creating the alternative root.
+    # without selecting or creating the fallback root.
     $corruptProfile = Join-Path $testRoot "corrupt-root-profile"
     $corruptRoot = Join-Path $corruptProfile ".cup"
     foreach ($directory in @("components", "staging", "cache")) {
@@ -482,11 +584,11 @@ try {
         throw "Windows installer modified the corrupt root"
     }
     if (Test-Path -LiteralPath (Join-Path $corruptProfile ".coffee-cup")) {
-        throw "Windows installer created the alternative root after a corrupt marker"
+        throw "Windows installer created the fallback root after a corrupt marker"
     }
 
-    # A superficially shaped uninstall residue is preserved unless its staged root
-    # also contains the CUP ownership marker.
+    # A superficially shaped uninstall sibling is not ownership proof. Installation ignores it
+    # and must not modify it while selecting the normal canonical root.
     $residueProfile = Join-Path $testRoot "unowned-residue-profile"
     $residueRoot = Join-Path $residueProfile ".cup-uninstall.fixture"
     New-Item -ItemType Directory -Force -Path (Join-Path $residueRoot "bin") | Out-Null
@@ -501,18 +603,29 @@ try {
         "stage=cleanup",
         "error=1"
     )
+    $residueBinaryHash = (Get-FileHash -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
+        -Algorithm SHA256).Hash
+    $residueJournalHash = (Get-FileHash -LiteralPath (Join-Path $residueRoot "transaction.txt") `
+        -Algorithm SHA256).Hash
     $env:USERPROFILE = $residueProfile
     $residueInstall = Invoke-PowerShellScript `
         -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
         -WorkingDirectory $residueProfile
-    if ($residueInstall.ExitCode -eq 0 -or
-        ($residueInstall.Output -join [Environment]::NewLine) -notlike `
-            "*unrecognized uninstall residue was preserved*") {
-        throw "Windows installer deleted an unowned uninstall residue"
+    if ($residueInstall.ExitCode -ne 0) {
+        throw (
+            "Windows installer was blocked by an unrelated uninstall sibling`n" +
+            ($residueInstall.Output -join [Environment]::NewLine))
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $residueRoot "bin\cup.exe") -PathType Leaf) -or
-        -not (Test-Path -LiteralPath (Join-Path $residueRoot "transaction.txt") -PathType Leaf)) {
-        throw "Windows installer modified the unowned uninstall residue"
+    if ((Get-FileHash -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
+            -Algorithm SHA256).Hash -ne $residueBinaryHash -or
+        (Get-FileHash -LiteralPath (Join-Path $residueRoot "transaction.txt") `
+            -Algorithm SHA256).Hash -ne $residueJournalHash) {
+        throw "Windows installer modified an unrelated uninstall sibling"
+    }
+    $residueCup = Join-Path $residueProfile ".cup\bin\cup.exe"
+    $residueVersion = & $residueCup --version
+    if ($LASTEXITCODE -ne 0 -or $residueVersion -ne "cup $Version") {
+        throw "Windows installer did not create a usable canonical root beside the unrelated sibling"
     }
 
     $env:USERPROFILE = $testProfile
@@ -571,35 +684,32 @@ try {
         throw "Installed cup asset repair changed cup.exe"
     }
 
-    # A completion marker is accepted only for a complete installed generation. The failed
-    # recovery must preserve both cup.exe and the staging evidence.
-    $bootstrapStaging = Join-Path $env:USERPROFILE ".cup\.bootstrap"
-    $committedMarker = Join-Path $bootstrapStaging "committed"
+    # A malformed canonical journal blocks bootstrap before any managed mutation.
+    # The failed transport preserves the journal evidence and the installed executable.
+    $transaction = Join-Path $env:USERPROFILE ".cup\transaction.txt"
     $updateHelper = Join-Path $env:USERPROFILE ".cup\helpers\cup-update-helper.exe"
-    $savedUpdateHelper = Join-Path $env:USERPROFILE "saved-cup-update-helper.exe"
-    New-Item -ItemType Directory -Path $bootstrapStaging | Out-Null
-    New-Item -ItemType File -Path $committedMarker | Out-Null
-    Move-Item -LiteralPath $updateHelper -Destination $savedUpdateHelper
+    [IO.File]::WriteAllText($transaction, "invalid=1`n", [Text.Encoding]::ASCII)
     $incompleteResult = Invoke-PowerShellScript `
         -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
         -WorkingDirectory $testProfile
     if ($incompleteResult.ExitCode -eq 0) {
-        throw "Incomplete committed Windows bootstrap staging unexpectedly succeeded"
+        throw "Windows bootstrap unexpectedly ignored a malformed canonical transaction"
     }
     if (($incompleteResult.Output -join "`n") -notlike
-        "*completed bootstrap staging does not match a complete installed generation*") {
-        throw "Incomplete committed Windows bootstrap failure was not explained"
+        "*verified cup bootstrap transaction was rejected*") {
+        throw "Malformed canonical transaction failure was not explained"
     }
-    if (-not (Test-Path -LiteralPath $committedMarker -PathType Leaf)) {
-        throw "Incomplete committed Windows bootstrap staging was not preserved"
+    if (-not (Test-Path -LiteralPath $transaction -PathType Leaf) -or
+        [IO.File]::ReadAllText($transaction) -cne "invalid=1`n") {
+        throw "Malformed canonical transaction evidence was not preserved"
     }
     if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
         $binaryHashBeforeRepair) {
-        throw "Incomplete committed Windows bootstrap recovery changed cup.exe"
+        throw "Rejected Windows bootstrap changed cup.exe"
     }
-    Move-Item -LiteralPath $savedUpdateHelper -Destination $updateHelper
+    Remove-Item -LiteralPath $transaction -Force
 
-    # Reinstall the same tested candidate, complete cleanup and keep the executable valid.
+    # Reinstall the same tested candidate without journal or staging residue.
     $reinstallResult = Invoke-PowerShellScript `
         -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
         -WorkingDirectory $testProfile
@@ -610,8 +720,12 @@ try {
     if ($reinstallResult.ExitCode -ne 0) {
         throw "Windows reinstall failed with exit code $($reinstallResult.ExitCode)`n$reinstallText"
     }
-    if (Test-Path -LiteralPath $bootstrapStaging) {
-        throw "Windows reinstall did not remove completed bootstrap staging"
+    if (Test-Path -LiteralPath $transaction) {
+        throw "Windows reinstall left a canonical transaction"
+    }
+    $staging = Join-Path $env:USERPROFILE ".cup\staging"
+    if ((Get-ChildItem -LiteralPath $staging -Force | Measure-Object).Count -ne 0) {
+        throw "Windows reinstall left canonical staging residue"
     }
     $binaryHashAfterReinstall = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
     if ($binaryHashAfterReinstall -ne $candidateHash) {
@@ -620,6 +734,10 @@ try {
     $versionAfterReinstall = & $installed --version
     if ($LASTEXITCODE -ne 0 -or $versionAfterReinstall -ne "cup $Version") {
         throw "Installed cup was not usable after reinstall"
+    }
+    $helperHashBeforeUpdate = (Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash
+    if ($helperHashBeforeUpdate -ne $candidateHash) {
+        throw "Windows reinstall did not derive the update helper from cup.exe"
     }
 
     # A local immutable release fixture exercises the complete detached update path. The binary
@@ -666,7 +784,7 @@ try {
     }
     Set-Content -LiteralPath (Join-Path $versionRoot "SHA256SUMS.common") `
         -Value $commonLines -Encoding ascii
-    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "uninstall.ps1", "release.txt")) {
+    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
             -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $asset"
@@ -716,6 +834,11 @@ try {
     $fixtureUpdatedHash = (Get-FileHash -LiteralPath $updatedBinary -Algorithm SHA256).Hash
     if ($installedUpdatedHash -ne $fixtureUpdatedHash) {
         throw "installed cup does not match the verified update executable"
+    }
+    $helperHashAfterUpdate = (Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash
+    if ($helperHashAfterUpdate -ne $helperHashBeforeUpdate -or
+        $helperHashAfterUpdate -eq $installedUpdatedHash) {
+        throw "derived update helper did not remain the previous runner after update"
     }
     if ($updatedInstalledVersion -ne "cup $nextVersion") {
         throw "installed cup was not usable after update"
@@ -778,11 +901,18 @@ try {
         }
     }
 
-    if ($server -and -not $server.HasExited) {
-        Stop-Process -Id $server.Id -Force
-        $server.WaitForExit()
+    if ($null -ne $server) {
+        if (-not $server.HasExited) {
+            try {
+                & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
+            } catch {
+                # Cleanup is best effort.
+            }
+            [void]$server.WaitForExit(10000)
+        }
+        $server.Dispose()
     }
-    Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $testProfile -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $foreignProfile -Recurse -Force -ErrorAction SilentlyContinue
+    if ($null -ne $testWorkRoot) {
+        Remove-Item -LiteralPath $testWorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

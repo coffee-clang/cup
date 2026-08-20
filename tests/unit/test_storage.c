@@ -1,5 +1,5 @@
 /*
- * Test focus: Provides the shared Unity wrapper for system_posix, filesystem and layout tests
+ * Provides the shared Unity wrapper for system_posix, filesystem and layout tests
  * that require one process-wide storage environment.
  */
 
@@ -17,7 +17,6 @@ void setUp(void) {
 void tearDown(void) {
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

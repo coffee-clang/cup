@@ -5,6 +5,7 @@
 
 #include "install_policy.h"
 
+#include "filesystem.h"
 #include "layout.h"
 #include "path.h"
 #include "platform.h"
@@ -93,8 +94,8 @@ const InstallNamedList *install_policy_find_toolchain(const InstallPolicy *polic
     return NULL;
 }
 
-/* Physical install.cfg parsing. The parser accepts one canonical spelling and rejects duplicate or
- * partially valid records. */
+/* Physical install.cfg parsing. Semantic lines accept trimmed whitespace; the schema marker must be
+ * the first semantic record and duplicate or partially valid records are rejected. */
 static CupError parse_list(char *value,
                            char items[][MAX_IDENTIFIER_LEN],
                            size_t capacity,
@@ -144,8 +145,8 @@ static CupError parse_default(InstallPolicy *policy, char *key, const char *valu
     parts[3] = (TextBuffer){component, sizeof(component)};
     if (text_split_exact(key, '.', parts, 4) != CUP_OK || strcmp(prefix, "default") != 0 ||
         package_scope_init(&scope, component, host, target) != CUP_OK ||
-        registry_validate_tool(component, value) != CUP_OK || !name_is_canonical(value) ||
-        default_index(policy, &scope) >= 0 || policy->default_count >= MAX_INSTALL_DEFAULTS) {
+        registry_validate_tool(component, value) != CUP_OK || default_index(policy, &scope) >= 0 ||
+        policy->default_count >= MAX_INSTALL_DEFAULTS) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -252,30 +253,36 @@ void install_policy_init(InstallPolicy *policy) {
     }
 }
 
-CupError install_policy_load_path(InstallPolicy *policy,
-                                  const char *path,
-                                  InstallPolicySource source) {
-    FILE *file;
+CupError install_policy_load_path(InstallPolicy *policy, const char *path) {
+    PersistentFileSnapshot snapshot;
+    TextDocumentReader reader;
     CupError err;
     char line[MAX_INSTALL_POLICY_LINE_LEN];
-    size_t line_number = 0;
     int has_line;
     int format_seen = 0;
+    int missing;
 
-    if (policy == NULL || text_is_empty(path) || source == INSTALL_POLICY_SOURCE_NONE) {
+    if (policy == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
     install_policy_init(policy);
-    file = fopen(path, "rb");
-    if (file == NULL) {
-        return CUP_ERR_FILESYSTEM;
+    filesystem_snapshot_init(&snapshot);
+    err = filesystem_snapshot_read(
+        path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
+    if (err != CUP_OK || missing) {
+        return err != CUP_OK ? err : CUP_ERR_FILESYSTEM;
+    }
+    err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
+    if (err != CUP_OK) {
+        filesystem_snapshot_release(&snapshot);
+        return CUP_ERR_VALIDATION;
     }
 
     while (1) {
-        char key[MAX_CATALOG_KEY_LEN];
-        char value[MAX_CATALOG_VALUE_LEN];
+        char key[MAX_METADATA_KEY_LEN];
+        char value[MAX_INSTALL_POLICY_LINE_LEN];
 
-        err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
+        err = text_document_read_line(&reader, line, sizeof(line), &has_line);
         if (err != CUP_OK) {
             goto invalid;
         }
@@ -287,6 +294,10 @@ CupError install_policy_load_path(InstallPolicy *policy,
             goto invalid;
         }
 
+        if (!format_seen && strcmp(key, "format") != 0) {
+            err = CUP_ERR_VALIDATION;
+            goto invalid;
+        }
         if (strcmp(key, "format") == 0) {
             if (format_seen || strcmp(value, INSTALL_POLICY_FORMAT) != 0) {
                 err = CUP_ERR_VALIDATION;
@@ -314,38 +325,24 @@ CupError install_policy_load_path(InstallPolicy *policy,
         }
     }
 
-    if (fclose(file) != 0) {
-        install_policy_init(policy);
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (!format_seen || validate_policy(policy) != CUP_OK ||
-        text_copy(policy->path, sizeof(policy->path), path) != CUP_OK) {
+    filesystem_snapshot_release(&snapshot);
+    if (!format_seen || validate_policy(policy) != CUP_OK) {
         install_policy_init(policy);
         return CUP_ERR_VALIDATION;
     }
-    policy->source = source;
     return CUP_OK;
 
 invalid:
-    fprintf(stderr, "Error: invalid installation policy line %zu.\n", line_number);
-    fclose(file);
+    fprintf(stderr, "Error: invalid installation policy line %zu.\n", reader.line_number);
+    filesystem_snapshot_release(&snapshot);
     install_policy_init(policy);
     return err == CUP_ERR_FILESYSTEM || err == CUP_ERR_TEMPORARY ? err : CUP_ERR_VALIDATION;
 }
 
-/* Policy sources. Installed assets are authoritative for official CUP builds, while development
+/* Policy sources. Installed assets are authoritative for official cup builds, while development
  * builds may use the repository copy. */
-CupError install_policy_load_installed(InstallPolicy *policy) {
-    char path[MAX_PATH_LEN];
-    CupError err = layout_get_install_policy_path(path, sizeof(path));
-
-    return err == CUP_OK ? install_policy_load_path(policy, path, INSTALL_POLICY_SOURCE_INSTALLED)
-                         : err;
-}
-
 CupError install_policy_load_development(InstallPolicy *policy) {
-    return install_policy_load_path(
-        policy, CUP_DEVELOPMENT_INSTALL_POLICY_PATH, INSTALL_POLICY_SOURCE_DEVELOPMENT);
+    return install_policy_load_path(policy, CUP_DEVELOPMENT_INSTALL_POLICY_PATH);
 }
 
 CupError install_policy_load(InstallPolicy *policy) {
@@ -366,7 +363,7 @@ CupError install_policy_load(InstallPolicy *policy) {
         return err;
     }
     if (exists) {
-        return install_policy_load_installed(policy);
+        return install_policy_load_path(policy, path);
     }
 #if !CUP_VERSION_OFFICIAL
     err = system_path_exists(CUP_DEVELOPMENT_INSTALL_POLICY_PATH, &exists);

@@ -1,4 +1,4 @@
-# Purpose: Exercises private ACLs, reparse points and long paths on native Windows.
+# Exercises private ACLs, reparse points and long paths on native Windows.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -33,9 +33,13 @@ try {
     $zipLongPath = (
         "clang-$longVersion-windows-x64-windows-x64/" +
         $relativeLongPath.Replace('\', '/'))
-    [void](New-CustomZipPackage -Version $longVersion -ExtraEntries @{
-        $zipLongPath = "long path payload`n"
-    })
+    $extraEntries = @(
+        [pscustomobject]@{
+            Name = $zipLongPath
+            Content = "long path payload`n"
+        }
+    )
+    [void](New-CustomZipPackage -Version $longVersion -ExtraEntries $extraEntries)
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@$longVersion") | Out-Null
     $longPackageRoot = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\$longVersion")

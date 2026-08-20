@@ -1,14 +1,14 @@
 /*
- * Loads immutable package info.txt key/value metadata and provides ordered field lookup without
- * interpreting package policy.
+ * Loads package info.txt key/value metadata and provides ordered field
+ * lookup without interpreting package policy.
  */
 
 #include "package_metadata.h"
 
+#include "filesystem.h"
 #include "path.h"
 #include "text.h"
 
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,21 +131,30 @@ static CupError add_field(PackageMetadata *info, const char *key, const char *va
 }
 
 /* Strict all-or-nothing info.txt parsing. */
-CupError package_metadata_load(PackageMetadata *info, const char *path) {
-    FILE *file;
+CupError package_metadata_load(PackageMetadata *info, const char *path, FILE *diagnostics) {
+    PersistentFileSnapshot snapshot;
+    TextDocumentReader reader;
     CupError err;
     char line[MAX_METADATA_LINE_LEN];
-    size_t line_number = 0;
+    int missing;
 
     if (info == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     package_metadata_free(info);
-
-    file = fopen(path, "r");
-    if (file == NULL) {
-        return errno == ENOENT ? CUP_ERR_VALIDATION : CUP_ERR_FILESYSTEM;
+    filesystem_snapshot_init(&snapshot);
+    err = filesystem_snapshot_read(
+        path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
+    if (err != CUP_OK || missing) {
+        return err != CUP_OK ? err : CUP_ERR_VALIDATION;
+    }
+    info->identity = snapshot.identity;
+    err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
+    if (err != CUP_OK) {
+        filesystem_snapshot_release(&snapshot);
+        package_metadata_free(info);
+        return CUP_ERR_VALIDATION;
     }
 
     while (1) {
@@ -153,9 +162,9 @@ CupError package_metadata_load(PackageMetadata *info, const char *path) {
         char value[MAX_METADATA_VALUE_LEN];
         int has_line;
 
-        err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
+        err = text_document_read_line(&reader, line, sizeof(line), &has_line);
         if (err != CUP_OK) {
-            fclose(file);
+            filesystem_snapshot_release(&snapshot);
             package_metadata_free(info);
             return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_VALIDATION;
         }
@@ -166,8 +175,12 @@ CupError package_metadata_load(PackageMetadata *info, const char *path) {
 
         if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK ||
             !key_is_safe(key) || !value_is_safe(value)) {
-            fprintf(stderr, "Error: invalid package metadata line %zu.\n", line_number);
-            fclose(file);
+            if (diagnostics != NULL) {
+                fprintf(diagnostics,
+                        "Error: invalid package metadata line %zu.\n",
+                        reader.line_number);
+            }
+            filesystem_snapshot_release(&snapshot);
             package_metadata_free(info);
             return CUP_ERR_VALIDATION;
         }
@@ -175,20 +188,19 @@ CupError package_metadata_load(PackageMetadata *info, const char *path) {
         err = add_field(info, key, value);
         if (err != CUP_OK) {
             if (err == CUP_ERR_VALIDATION) {
-                fprintf(
-                    stderr, "Error: duplicate package metadata key on line %zu.\n", line_number);
+                if (diagnostics != NULL) {
+                    fprintf(diagnostics,
+                            "Error: duplicate package metadata key on line %zu.\n",
+                            reader.line_number);
+                }
             }
-            fclose(file);
+            filesystem_snapshot_release(&snapshot);
             package_metadata_free(info);
             return err;
         }
     }
 
-    if (fclose(file) != 0) {
-        package_metadata_free(info);
-        return CUP_ERR_FILESYSTEM;
-    }
-
+    filesystem_snapshot_release(&snapshot);
     return CUP_OK;
 }
 
@@ -196,7 +208,8 @@ CupError package_metadata_load(PackageMetadata *info, const char *path) {
 const char *package_metadata_get(const PackageMetadata *info, const char *key) {
     size_t i;
 
-    if (info == NULL || text_is_empty(key)) {
+    if (info == NULL || text_is_empty(key) || info->count > info->capacity ||
+        (info->count > 0 && info->fields == NULL)) {
         return NULL;
     }
 
@@ -212,7 +225,9 @@ const char *package_metadata_get(const PackageMetadata *info, const char *key) {
 const PackageMetadataField *package_metadata_next(const PackageMetadata *metadata,
                                                   const char *prefix,
                                                   size_t *cursor) {
-    if (metadata == NULL || text_is_empty(prefix) || cursor == NULL) {
+    if (metadata == NULL || text_is_empty(prefix) || cursor == NULL ||
+        metadata->count > metadata->capacity ||
+        (metadata->count > 0 && metadata->fields == NULL)) {
         return NULL;
     }
 
@@ -234,6 +249,9 @@ int package_metadata_next_command(const PackageMetadata *metadata,
     const PackageMetadataField *field;
     static const char prefix[] = "entry.";
 
+    if (command != NULL) {
+        memset(command, 0, sizeof(*command));
+    }
     if (metadata == NULL || command == NULL || cursor == NULL) {
         return 0;
     }
@@ -243,7 +261,6 @@ int package_metadata_next_command(const PackageMetadata *metadata,
         return 0;
     }
 
-    memset(command, 0, sizeof(*command));
     if (text_copy(command->name, sizeof(command->name), field->key + sizeof(prefix) - 1) !=
             CUP_OK ||
         text_copy(command->path, sizeof(command->path), field->value) != CUP_OK) {

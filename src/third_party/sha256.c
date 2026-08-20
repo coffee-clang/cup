@@ -1,5 +1,5 @@
 /*
- * Implements the SHA-256 digest primitive used for public release-file integrity checks.
+ * Adapted third-party SHA-256 digest primitive used for public release-file integrity checks.
  * Checksum-file policy is intentionally kept in checksum.c.
  */
 
@@ -13,7 +13,7 @@
  * compression routine private; the algorithm is unchanged.
  */
 
-#include "sha256.h"
+#include "third_party/sha256.h"
 
 #include <string.h>
 

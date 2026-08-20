@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises public CLI dispatch, help aliases and stable exit statuses.
+# Exercises public CLI dispatch, help aliases and stable exit statuses.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -96,6 +96,52 @@ test_invalid_syntax() {
     assert_missing "$selector_home/.coffee-cup"
 }
 
+test_syntax_precedes_runtime_preflight() {
+    syntax_home=$TMP_ROOT/syntax-before-journal-home
+    mkdir -p "$syntax_home"
+    run_fresh_status 0 "$syntax_home" "$TMP_ROOT/syntax-before-journal-setup.out" repair
+    printf 'invalid journal\n' > "$syntax_home/.cup/transaction.txt"
+
+    for case_name in \
+        'missing-install:install' \
+        'invalid-selector:install compiler @stable' \
+        'missing-profile:install profile' \
+        'invalid-target:list --target windows-arm64' \
+        'invalid-config:config change compiler clang' \
+        'invalid-config-selector:config set compiler clang@stable' \
+        'invalid-inspect-release:inspect compiler clang@RC1' \
+        'invalid-default-release:default compiler clang@../x'; do
+        name=${case_name%%:*}
+        arguments=${case_name#*:}
+        # Intentional splitting: each table entry is fixed test input.
+        run_fresh_status 2 "$syntax_home" "$TMP_ROOT/syntax-before-journal-$name.out" $arguments
+        output=$(cat "$TMP_ROOT/syntax-before-journal-$name.out")
+        assert_contains "$output" 'Usage:'
+        assert_not_contains "$output" 'transaction journal is invalid'
+    done
+
+    long_value=$(awk 'BEGIN { for (i = 0; i < 512; ++i) printf "x" }')
+    run_fresh_status 2 "$syntax_home" "$TMP_ROOT/syntax-before-journal-long.out" \
+        search "$long_value"
+    output=$(cat "$TMP_ROOT/syntax-before-journal-long.out")
+    assert_contains "$output" 'exceed their supported length'
+    assert_contains "$output" 'Usage:'
+    assert_not_contains "$output" 'transaction journal is invalid'
+}
+
+# Case aliases use the same normalized action for parsing, mutation, and interrupt setup.
+test_config_action_normalization() {
+    config_home=$TMP_ROOT/config-action-home
+    mkdir -p "$config_home"
+    run_fresh_status 0 "$config_home" "$TMP_ROOT/config-action-setup.out" repair
+    run_fresh_status 0 "$config_home" "$TMP_ROOT/config-set-uppercase.out" \
+        config SET COMPILER CLANG
+    assert_contains "$(cat "$TMP_ROOT/config-set-uppercase.out")" "set to 'clang'"
+    run_fresh_status 0 "$config_home" "$TMP_ROOT/config-reset-uppercase.out" \
+        config RESET COMPILER
+    assert_contains "$(cat "$TMP_ROOT/config-reset-uppercase.out")" 'was reset'
+}
+
 test_help_aliases() {
     assert_contains "$(run_cup -h)" 'Commands:'
     assert_contains "$(run_cup --help)" 'Commands:'
@@ -130,7 +176,7 @@ test_help_aliases() {
     assert_not_contains "$output" 'toolchain'
     output=$(run_cup help config)
     assert_contains "$output" "cup config set <component> <tool>"
-    assert_contains "$output" 'reset without component clears that scope only.'
+    assert_contains "$output" 'reset without component clears preferences for that target.'
     output=$(run_cup help uninstall)
     assert_contains "$output" '--yes  Skip the confirmation prompt.'
 
@@ -193,34 +239,20 @@ test_root_selection() {
     assert_missing "$legacy_home/.cup/root.txt"
     assert_file "$legacy_home/.coffee-cup/root.txt"
 
-    verified_home=$TMP_ROOT/verified-legacy-root-home
-    verified_root=$verified_home/.cup
-    mkdir -p "$verified_root/bin" "$verified_root/components" \
-        "$verified_root/staging" "$verified_root/cache" \
-        "$verified_root/config" "$verified_root/helpers"
-    cp "$CUP" "$verified_root/bin/cup"
-    cp "$CUP" "$verified_root/helpers/cup-update-helper"
-    cp "$DEV_ROOT/scripts/install/uninstall-cup.sh" "$verified_root/helpers/uninstall.sh"
-    cp "$DEV_ROOT/config/packages.cfg" "$verified_root/config/packages.cfg"
-    cp "$DEV_ROOT/config/install.cfg" "$verified_root/config/install.cfg"
-    chmod +x "$verified_root/bin/cup" "$verified_root/helpers/cup-update-helper" \
-        "$verified_root/helpers/uninstall.sh"
-    printf 'format=1\n' > "$verified_root/state.txt"
-    {
-        printf '%s  packages.cfg\n' "$(hash_file "$verified_root/config/packages.cfg")"
-        printf '%s  install.cfg\n' "$(hash_file "$verified_root/config/install.cfg")"
-        printf '%s  install.sh\n' "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup.sh")"
-        printf '%s  install.ps1\n' "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup-windows.ps1")"
-    } > "$verified_root/config/SHA256SUMS.common"
-    {
-        printf '%s  cup-linux-x64\n' "$(hash_file "$verified_root/bin/cup")"
-        printf '%s  uninstall.sh\n' "$(hash_file "$verified_root/helpers/uninstall.sh")"
-        printf '%s  release.txt\n' \
-            "$(hash_text 'format=1\nversion=0.2.1\ncommit=0000000000000000000000000000000000000000\n')"
-    } > "$verified_root/config/SHA256SUMS.linux-x64"
-    run_fresh_status 0 "$verified_home" "$TMP_ROOT/verified-legacy-root.out" repair
-    assert_file "$verified_root/root.txt"
-    assert_missing "$verified_home/.coffee-cup"
+    unmarked_home=$TMP_ROOT/unmarked-cup-root-home
+    mkdir -p "$unmarked_home/.cup/bin"
+    printf 'unmarked-cup-generation\n' > "$unmarked_home/.cup/bin/cup"
+    binary_hash=$(hash_file "$unmarked_home/.cup/bin/cup")
+    run_fresh_status 4 "$unmarked_home" "$TMP_ROOT/unmarked-root.out" repair
+    assert_contains "$(cat "$TMP_ROOT/unmarked-root.out")" \
+        'unmarked cup-like root'
+    assert_contains "$(cat "$TMP_ROOT/unmarked-root.out")" \
+        'Move the preserved directory to a backup path'
+    assert_contains "$(cat "$TMP_ROOT/unmarked-root.out")" \
+        'do not add root.txt manually'
+    assert_equals "$(hash_file "$unmarked_home/.cup/bin/cup")" "$binary_hash"
+    assert_missing "$unmarked_home/.cup/root.txt"
+    assert_missing "$unmarked_home/.coffee-cup"
 
     lookalike_home=$TMP_ROOT/lookalike-root-home
     mkdir -p "$lookalike_home/.cup/components" "$lookalike_home/.cup/staging" \
@@ -232,27 +264,17 @@ test_root_selection() {
     assert_missing "$lookalike_home/.cup/root.txt"
     assert_file "$lookalike_home/.coffee-cup/root.txt"
 
-    damaged_home=$TMP_ROOT/damaged-legacy-root-home
-    mkdir -p "$damaged_home/.cup/bin"
-    printf 'not-a-verified-cup-generation\n' > "$damaged_home/.cup/bin/cup"
-    binary_hash=$(hash_file "$damaged_home/.cup/bin/cup")
-    run_fresh_status 4 "$damaged_home" "$TMP_ROOT/damaged-root.out" repair
-    assert_contains "$(cat "$TMP_ROOT/damaged-root.out")" \
-        'probable legacy cup root'
-    assert_equals "$(hash_file "$damaged_home/.cup/bin/cup")" "$binary_hash"
-    assert_missing "$damaged_home/.cup/root.txt"
-    assert_missing "$damaged_home/.coffee-cup"
-
     corrupt_home=$TMP_ROOT/corrupt-root-home
     mkdir -p "$corrupt_home"
     run_fresh_status 0 "$corrupt_home" "$TMP_ROOT/corrupt-root-setup.out" repair
     state_hash=$(hash_file "$corrupt_home/.cup/state.txt")
-    printf 'corrupt
-' > "$corrupt_home/.cup/root.txt"
+    printf 'corrupt\n' > "$corrupt_home/.cup/root.txt"
     marker_hash=$(hash_file "$corrupt_home/.cup/root.txt")
     run_fresh_status 4 "$corrupt_home" "$TMP_ROOT/corrupt-root-doctor.out" doctor
-    assert_contains "$(cat "$TMP_ROOT/corrupt-root-doctor.out")"         'cup root marker is invalid for recognized root'
-    assert_contains "$(cat "$TMP_ROOT/corrupt-root-doctor.out")"         'neither cup root candidate was selected or modified'
+    assert_contains "$(cat "$TMP_ROOT/corrupt-root-doctor.out")" \
+        'cup root marker is invalid for recognized root'
+    assert_contains "$(cat "$TMP_ROOT/corrupt-root-doctor.out")" \
+        'neither cup root candidate was selected or modified'
     assert_equals "$(hash_file "$corrupt_home/.cup/state.txt")" "$state_hash"
     assert_equals "$(hash_file "$corrupt_home/.cup/root.txt")" "$marker_hash"
     assert_missing "$corrupt_home/.coffee-cup"
@@ -270,6 +292,8 @@ test_root_home() {
 
 test_dispatch_status
 test_invalid_syntax
+test_syntax_precedes_runtime_preflight
+test_config_action_normalization
 test_help_aliases
 test_read_only_no_init
 test_state_status

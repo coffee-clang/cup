@@ -1,4 +1,4 @@
-# Purpose: Exercises conservative Windows transaction recovery, cup-update
+# Exercises conservative Windows transaction recovery, cup-update
 # executable preservation, and journal blockers.
 
 param(
@@ -56,7 +56,8 @@ function Install-CupAssetsFixture {
     Write-Utf8NoBom -Path $platformChecksums -Lines @(
         "$(Get-Sha256Lower -Path $binary)  cup-windows-x64.exe",
         "$(Get-Sha256Lower -Path $uninstall)  uninstall.ps1",
-        ("{0}  release.txt" -f ("0" * 64))
+        ("{0}  release.txt" -f ("0" * 64)),
+        "$(Get-Sha256Lower -Path $commonChecksums)  SHA256SUMS.common"
     )
 }
 
@@ -195,7 +196,7 @@ try {
     $brokenUninstallHash = Get-Sha256Lower -Path $uninstallPath
     $brokenChecksumsHash = Get-Sha256Lower -Path $platformChecksumsPath
     Write-CupUpdateJournal -Path $transactionPath -TemporaryName $unsafeName `
-        -Token "recovery-cup-update-unsafe-rollback-test"
+        -Token "recovery-cup-update-unsafe-rollback-test" -Phase "committing"
 
     $unsafeRepair = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
     Assert-Contains $unsafeRepair `

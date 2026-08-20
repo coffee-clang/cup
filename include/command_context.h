@@ -14,6 +14,7 @@
 /* Shared state held for the entire execution of a command. */
 typedef struct {
     CupState state;
+    SystemPathIdentity state_identity;
     PackageCatalog catalog;
     int has_catalog;
     char host_platform[MAX_PLATFORM_LEN];
@@ -38,8 +39,5 @@ CupError command_context_load_state(CommandContext *context);
 
 /* Load the catalog, failing when it is unavailable or invalid. */
 CupError command_context_load_catalog(CommandContext *context);
-
-/* Try to load the catalog without failing the command. */
-void command_context_try_catalog(CommandContext *context);
 
 #endif /* CUP_COMMAND_CONTEXT_H */

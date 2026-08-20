@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Purpose: Fetches optional remote mdBook theme assets for an offline
+# Fetches optional remote mdBook theme assets for an offline
 # documentation build. It does not alter application or release artifacts.
 set -euo pipefail
 

@@ -1,5 +1,5 @@
 /*
- * Test focus: Verifies install selector resolution, preference boundaries, complete group
+ * Verifies install selector resolution, preference boundaries, complete group
  * prevalidation and explicit toolchain plans.
  */
 
@@ -35,6 +35,7 @@ static int config_load_calls;
 static int preferences_load_calls;
 static CupError preferences_load_result;
 static CupError context_begin_result;
+static int context_begin_calls;
 static CupError state_load_result;
 static CupError package_catalog_load_result;
 static CupError config_load_result;
@@ -57,24 +58,28 @@ void setUp(void) {
     /* Curated policy fixtures cover component profiles and explicit toolchains. */
     memset(&standard_profile, 0, sizeof(standard_profile));
     strcpy(standard_profile.name, "standard");
-    standard_profile.item_count = 2;
+    standard_profile.item_count = 4;
     strcpy(standard_profile.items[0], "compiler");
     strcpy(standard_profile.items[1], "linker");
+    strcpy(standard_profile.items[2], "debugger");
+    strcpy(standard_profile.items[3], "language-server");
 
     memset(&llvm_toolchain, 0, sizeof(llvm_toolchain));
     strcpy(llvm_toolchain.name, "llvm");
-    llvm_toolchain.item_count = 3;
+    llvm_toolchain.item_count = 6;
     strcpy(llvm_toolchain.items[0], "clang");
     strcpy(llvm_toolchain.items[1], "lldb");
     strcpy(llvm_toolchain.items[2], "lld");
+    strcpy(llvm_toolchain.items[3], "clang-format");
+    strcpy(llvm_toolchain.items[4], "clang-tidy");
+    strcpy(llvm_toolchain.items[5], "clangd");
 
     memset(&gnu_toolchain, 0, sizeof(gnu_toolchain));
     strcpy(gnu_toolchain.name, "gnu");
-    gnu_toolchain.item_count = 4;
+    gnu_toolchain.item_count = 3;
     strcpy(gnu_toolchain.items[0], "gcc");
     strcpy(gnu_toolchain.items[1], "gdb");
     strcpy(gnu_toolchain.items[2], "ld");
-    strcpy(gnu_toolchain.items[3], "valgrind");
 
     /* Boundary outcomes and observations reset independently of the policy fixtures. */
     install_calls = 0;
@@ -83,6 +88,7 @@ void setUp(void) {
     preferences_load_calls = 0;
     preferences_load_result = CUP_OK;
     context_begin_result = CUP_OK;
+    context_begin_calls = 0;
     state_load_result = CUP_OK;
     package_catalog_load_result = CUP_OK;
     config_load_result = CUP_OK;
@@ -115,6 +121,7 @@ CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
     (void)mode;
+    context_begin_calls++;
     memset(context, 0, sizeof(*context));
     strcpy(context->host_platform, "linux-x64");
     strcpy(context->target_platform, target_override == NULL ? "linux-x64" : target_override);
@@ -149,8 +156,7 @@ void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
 
-CupError tool_preferences_load(const InstallPolicy *config, ToolPreferences *preferences) {
-    (void)config;
+CupError tool_preferences_load(ToolPreferences *preferences) {
     (void)preferences;
     preferences_load_calls++;
     return preferences_load_result;
@@ -325,7 +331,9 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host,
                                         const char *target,
-                                        const char *entry) {
+                                        const char *entry,
+                                        FILE *diagnostics) {
+    (void)diagnostics;
     char tool[MAX_IDENTIFIER_LEN];
     char version[MAX_IDENTIFIER_LEN];
     CupError err =
@@ -343,6 +351,16 @@ CupError package_identity_from_selector(PackageIdentity *identity,
     return CUP_OK;
 }
 
+CupError package_identity_format_selector(const PackageIdentity *identity,
+                                          char *buffer,
+                                          size_t size) {
+    if (identity == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return package_selector_format_parts(
+        buffer, size, identity->tool, identity->version);
+}
+
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
     char entry[MAX_SELECTOR_LEN];
 
@@ -353,6 +371,52 @@ int state_find_installed(const CupState *state, const PackageIdentity *identity)
         package_selector_format_parts(entry, sizeof(entry), identity->tool, identity->version));
     return already_installed_entry[0] != '\0' && strcmp(entry, already_installed_entry) == 0 ? 0
                                                                                              : -1;
+}
+
+CupError package_artifact_spec_build(PackageArtifactSpec *spec,
+                                     const PackageCatalog *catalog,
+                                     const PackageIdentity *identity,
+                                     const char *format_name) {
+    (void)catalog;
+    TEST_ASSERT_NOT_NULL(spec);
+    TEST_ASSERT_NOT_NULL(identity);
+    TEST_ASSERT_NOT_NULL(format_name);
+    memset(spec, 0, sizeof(*spec));
+    spec->identity = *identity;
+    if (strcmp(format_name, "tar.gz") == 0) {
+        spec->format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+    } else if (strcmp(format_name, "tar.xz") == 0) {
+        spec->format = PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
+    } else if (strcmp(format_name, "zip") == 0) {
+        spec->format = PACKAGE_ARCHIVE_FORMAT_ZIP;
+    } else {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return CUP_OK;
+}
+
+CupError package_install_artifact(const PackageArtifactSpec *spec) {
+    char entry[MAX_SELECTOR_LEN];
+
+    TEST_ASSERT_NOT_NULL(spec);
+    TEST_ASSERT_TRUE(install_calls < 8);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_selector_format_parts(entry,
+                                      sizeof(entry),
+                                      spec->identity.tool,
+                                      spec->identity.version));
+    strcpy(installed_components[install_calls], spec->identity.component);
+    strcpy(installed_entries[install_calls], entry);
+    strcpy(installed_formats[install_calls],
+           spec->format == PACKAGE_ARCHIVE_FORMAT_TAR_GZ
+               ? "tar.gz"
+               : (spec->format == PACKAGE_ARCHIVE_FORMAT_TAR_XZ ? "tar.xz" : "zip"));
+    install_calls++;
+    if (install_fail_call == install_calls) {
+        return install_fail_result;
+    }
+    return CUP_OK;
 }
 
 CupError package_install(const char *component,
@@ -379,28 +443,28 @@ CupError package_install(const char *component,
 
 static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          command_install("COMPILER", "Clang@Release-X", NULL, NULL));
+                          command_install("compiler", "clang@release-x", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(0, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
-    TEST_ASSERT_EQUAL_STRING("clang@Release-X", installed_entries[0]);
+    TEST_ASSERT_EQUAL_STRING("clang@release-x", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("tar.xz", installed_formats[0]);
 }
 
 static void test_tool_first_selection(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("Clang@Release-X", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("clang@release-x", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(0, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
-    TEST_ASSERT_EQUAL_STRING("clang@Release-X", installed_entries[0]);
+    TEST_ASSERT_EQUAL_STRING("clang@release-x", installed_entries[0]);
 }
 
 static void test_tool_first_stable_selection(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("Clang", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("clang@stable", NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(0, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
@@ -419,24 +483,29 @@ static void test_abbreviated_install(void) {
 }
 
 static void test_profile_preferences(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("PROFILE", "STANDARD", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(2, resolver_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(4, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(1, preferences_load_calls);
-    TEST_ASSERT_EQUAL_INT(2, install_calls);
+    TEST_ASSERT_EQUAL_INT(4, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("lld@1.0.0", installed_entries[1]);
+    TEST_ASSERT_EQUAL_STRING("gdb@1.0.0", installed_entries[2]);
+    TEST_ASSERT_EQUAL_STRING("clangd@1.0.0", installed_entries[3]);
 }
 
 static void test_explicit_toolchain(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("TOOLCHAIN", "LLVM", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("toolchain", "llvm", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
-    TEST_ASSERT_EQUAL_INT(3, install_calls);
+    TEST_ASSERT_EQUAL_INT(6, install_calls);
     TEST_ASSERT_EQUAL_STRING("clang@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("lldb@1.0.0", installed_entries[1]);
     TEST_ASSERT_EQUAL_STRING("lld@1.0.0", installed_entries[2]);
+    TEST_ASSERT_EQUAL_STRING("clang-format@1.0.0", installed_entries[3]);
+    TEST_ASSERT_EQUAL_STRING("clang-tidy@1.0.0", installed_entries[4]);
+    TEST_ASSERT_EQUAL_STRING("clangd@1.0.0", installed_entries[5]);
 }
 
 static void test_toolchain_no_prefs(void) {
@@ -444,7 +513,7 @@ static void test_toolchain_no_prefs(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("toolchain", "llvm", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
-    TEST_ASSERT_EQUAL_INT(3, install_calls);
+    TEST_ASSERT_EQUAL_INT(6, install_calls);
 }
 
 static void test_group_prevalidation(void) {
@@ -457,38 +526,31 @@ static void test_group_prevalidation(void) {
 }
 
 static void test_direct_stable(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", "GCC", "linux-arm64", "zip"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", "gcc@stable", "linux-arm64", "zip"));
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("zip", installed_formats[0]);
 }
 
-static void test_invalid_groups(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install("profile", NULL, NULL, NULL));
+static void test_unknown_groups(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           command_install("profile", "missing", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_install("toolchain", NULL, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           command_install("toolchain", "missing", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_TOOL,
-                          command_install("unknown", NULL, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_install(NULL, NULL, NULL, NULL));
 }
 
 static void test_plan_load_failures(void) {
     context_begin_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_install("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_install("compiler", "gcc@stable", NULL, NULL));
 
     context_begin_result = CUP_OK;
     state_load_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          command_install("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc@stable", NULL, NULL));
 
     state_load_result = CUP_OK;
     package_catalog_load_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, NULL));
 
     package_catalog_load_result = CUP_OK;
     config_load_result = CUP_ERR_VALIDATION;
@@ -509,56 +571,64 @@ static void test_plan_failures(void) {
     resolver_result = CUP_OK;
     resolve_result = CUP_ERR_NOT_AVAILABLE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc@stable", NULL, NULL));
 
     resolve_result = CUP_OK;
     package_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, NULL));
 
     package_result = CUP_OK;
     version_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc@stable", NULL, NULL));
 
     version_available = 1;
     format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, "zip"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, "zip"));
 
     format_result = CUP_OK;
     format_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          command_install("compiler", "gcc", NULL, "zip"));
+                          command_install("compiler", "gcc@stable", NULL, "zip"));
 
     format_available = 1;
     default_format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, NULL));
 }
 
 static void test_invalid_existing(void) {
     strcpy(already_installed_entry, "gcc@1.0.0");
     installed_valid_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          command_install("compiler", "gcc", NULL, NULL));
+                          command_install("compiler", "gcc@stable", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, install_calls);
 }
 
 static void test_group_execution(void) {
+    /* A package seen as installed by the shared plan may disappear before execution. Every
+     * package must therefore be revalidated by package_install under its exclusive context. */
     strcpy(already_installed_entry, "gcc@1.0.0");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(1, install_calls);
-    TEST_ASSERT_EQUAL_STRING("linker", installed_components[0]);
+    TEST_ASSERT_EQUAL_INT(4, install_calls);
+    TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
+    TEST_ASSERT_EQUAL_STRING("linker", installed_components[1]);
 
+    /* The inverse race is also benign: a package installed after planning is skipped only after
+     * package_install observes CUP_ERR_ALREADY_INSTALLED under the exclusive context. */
     setUp();
     install_fail_call = 1;
     install_fail_result = CUP_ERR_ALREADY_INSTALLED;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(2, install_calls);
+    TEST_ASSERT_EQUAL_INT(4, install_calls);
 
     setUp();
     install_fail_call = 2;
     install_fail_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_install("profile", "standard", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(2, install_calls);
+    TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
+    TEST_ASSERT_EQUAL_STRING("lld@1.0.0", installed_entries[1]);
 
     setUp();
     install_fail_call = 1;
@@ -567,7 +637,6 @@ static void test_group_execution(void) {
                           command_install("profile", "standard", NULL, NULL));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
@@ -580,7 +649,7 @@ int main(void) {
     RUN_TEST(test_toolchain_no_prefs);
     RUN_TEST(test_group_prevalidation);
     RUN_TEST(test_direct_stable);
-    RUN_TEST(test_invalid_groups);
+    RUN_TEST(test_unknown_groups);
     RUN_TEST(test_plan_load_failures);
     RUN_TEST(test_plan_failures);
     RUN_TEST(test_invalid_existing);

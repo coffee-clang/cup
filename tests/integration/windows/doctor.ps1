@@ -1,4 +1,4 @@
-# Purpose: Exercises read-only Windows diagnosis and proves doctor never repairs observed damage.
+# Exercises read-only Windows diagnosis and proves doctor never repairs observed damage.
 
 param(
     [Parameter(Mandatory = $true)]

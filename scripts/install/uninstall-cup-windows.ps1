@@ -1,5 +1,5 @@
-# Purpose: Detached Windows helper that removes the canonical CUP root after the parent exits.
-# Inputs: selected root, copied helper path, parent identity and inherited handles.
+# The detached Windows helper waits for the parent, detaches the canonical cup root, then removes the detached tree.
+# It receives the selected root, copied helper path and inherited parent-lifetime handles.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -9,16 +9,16 @@ param(
     [string]$SelfPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidateRange(1, [int]::MaxValue)]
-    [int]$ParentPid,
-
-    [Parameter(Mandatory = $true)]
     [ValidateRange(1, [UInt64]::MaxValue)]
     [UInt64]$ParentHandle,
 
     [Parameter(Mandatory = $true)]
     [ValidateRange(1, [UInt64]::MaxValue)]
-    [UInt64]$ReadyHandle
+    [UInt64]$ReadyHandle,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1, [UInt64]::MaxValue)]
+    [UInt64]$LeaseHandle
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,9 +27,55 @@ $script:JournalRoot = ""
 $script:TemporaryName = ""
 $script:Token = ""
 $script:FailureStage = "handoff"
+$script:Lease = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new(
+    [IntPtr]::new([Int64]$LeaseHandle),
+    $true
+)
+
+function Close-UninstallLease {
+    if ($null -ne $script:Lease -and -not $script:Lease.IsClosed) {
+        $script:Lease.Dispose()
+    }
+}
 
 function Get-FileSystemItemOrNull([string]$Path) {
     return Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+}
+
+function Read-CanonicalAsciiLines(
+    [string]$Path,
+    [int]$MaximumBytes = 65536
+) {
+    $item = Get-FileSystemItemOrNull $Path
+    if ($null -eq $item -or $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "expected a regular non-reparse file: $Path"
+    }
+
+    if ($item.Length -le 0 -or $item.Length -gt $MaximumBytes) {
+        throw "canonical text file has an invalid size: $Path"
+    }
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ne $item.Length -or $bytes[$bytes.Length - 1] -ne 10) {
+        throw "canonical text file must end with exactly represented LF lines: $Path"
+    }
+    foreach ($byte in $bytes) {
+        if ($byte -ne 10 -and ($byte -lt 32 -or $byte -gt 126)) {
+            throw "canonical text file contains a non-printable byte: $Path"
+        }
+    }
+
+    $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $parts = $text.Split([char]10)
+    if ($parts[$parts.Length - 1].Length -ne 0) {
+        throw "canonical text file has an invalid final line: $Path"
+    }
+
+    if ($parts.Length -eq 1) {
+        return @()
+    }
+    return @($parts[0..($parts.Length - 2)])
 }
 
 function Get-NormalizedFullPath([string]$Path) {
@@ -59,6 +105,7 @@ function Write-UninstallJournal(
         ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "uninstall journal root is unavailable"
     }
+
     $journal = Join-Path $Root "transaction.txt"
     $temporary = Join-Path $Root (
         ".uninstall-transaction." + [Guid]::NewGuid().ToString("N")
@@ -73,8 +120,22 @@ function Write-UninstallJournal(
         "error=$ErrorCode"
         ""
     ) -join "`n"
+
     try {
-        [IO.File]::WriteAllText($temporary, $content, [Text.UTF8Encoding]::new($false))
+        $bytes = [Text.Encoding]::ASCII.GetBytes($content)
+        $stream = [IO.FileStream]::new(
+            $temporary,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+
         if (Test-Path -LiteralPath $journal -PathType Leaf) {
             [IO.File]::Replace($temporary, $journal, $null, $true)
         } else {
@@ -102,7 +163,10 @@ function Write-UninstallFailure {
 
 function Remove-TreeNoFollow([string]$Path) {
     $item = Get-FileSystemItemOrNull $Path
-    if ($null -eq $item) { return }
+    if ($null -eq $item) {
+        return
+    }
+
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         if ($item.PSIsContainer) {
             [IO.Directory]::Delete($item.FullName, $false)
@@ -111,16 +175,21 @@ function Remove-TreeNoFollow([string]$Path) {
         }
         return
     }
+
     if (($item.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
         $attributes = $item.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
         [IO.File]::SetAttributes($item.FullName, $attributes)
         $item = Get-FileSystemItemOrNull $Path
-        if ($null -eq $item) { return }
+        if ($null -eq $item) {
+            return
+        }
     }
+
     if (-not $item.PSIsContainer) {
         [IO.File]::Delete($item.FullName)
         return
     }
+
     foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force)) {
         Remove-TreeNoFollow $child.FullName
     }
@@ -129,7 +198,7 @@ function Remove-TreeNoFollow([string]$Path) {
 
 function Remove-DetachedCupRoot([string]$Root) {
     # Preserve the ownership marker, canonical executable and transaction until every unrelated
-    # entry is gone. A failed cleanup then remains recognizable by the installer.
+    # entry is gone. A failed cleanup then retains enough evidence to identify this detached tree.
     foreach ($child in @(Get-ChildItem -LiteralPath $Root -Force)) {
         if ($child.Name.Equals("transaction.txt", [StringComparison]::OrdinalIgnoreCase) -or
             $child.Name.Equals("root.txt", [StringComparison]::OrdinalIgnoreCase) -or
@@ -154,28 +223,33 @@ function Remove-DetachedCupRoot([string]$Root) {
     [IO.Directory]::Delete($Root, $false)
 }
 
-try {
+function Get-UninstallContext(
+    [string]$RequestedCupRoot,
+    [string]$RequestedSelfPath
+) {
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE) -or
         -not [IO.Path]::IsPathRooted($env:USERPROFILE)) {
         throw "USERPROFILE must contain an absolute path"
     }
+
     $userProfile = (Get-NormalizedFullPath $env:USERPROFILE).TrimEnd([char[]]'\/')
     $profileRoot = [IO.Path]::GetPathRoot($userProfile).TrimEnd([char[]]'\/')
     if ($userProfile -ieq $profileRoot) {
         throw "USERPROFILE must not be a volume root"
     }
 
-    $primaryRoot = (Get-NormalizedFullPath (Join-Path $userProfile ".cup")).TrimEnd([char[]]'\/')
-    $alternativeRoot = (
+    $primaryRoot = (
+        Get-NormalizedFullPath (Join-Path $userProfile ".cup")
+    ).TrimEnd([char[]]'\/')
+    $fallbackRoot = (
         Get-NormalizedFullPath (Join-Path $userProfile ".coffee-cup")
     ).TrimEnd([char[]]'\/')
-    $requestedRoot = (Get-NormalizedFullPath $CupRoot).TrimEnd([char[]]'\/')
-    $script:JournalRoot = $requestedRoot
-    $requestedSelf = Get-NormalizedFullPath $SelfPath
+    $requestedRoot = (Get-NormalizedFullPath $RequestedCupRoot).TrimEnd([char[]]'\/')
+    $requestedSelf = Get-NormalizedFullPath $RequestedSelfPath
     $runningSelf = Get-NormalizedFullPath $PSCommandPath
 
     if (-not $requestedRoot.Equals($primaryRoot, [StringComparison]::OrdinalIgnoreCase) -and
-        -not $requestedRoot.Equals($alternativeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        -not $requestedRoot.Equals($fallbackRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw "refusing to remove an unsupported cup root"
     }
     if (-not $requestedSelf.Equals($runningSelf, [StringComparison]::OrdinalIgnoreCase)) {
@@ -187,99 +261,133 @@ try {
         ($selfItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "the running uninstall helper is not a regular file"
     }
+
     $rootItem = Get-FileSystemItemOrNull $requestedRoot
     if ($null -eq $rootItem -or -not $rootItem.PSIsContainer -or
         ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "canonical cup root is not a real directory"
     }
 
-    $rootMarkerPath = Join-Path $requestedRoot "root.txt"
-    $rootMarkerItem = Get-FileSystemItemOrNull $rootMarkerPath
-    if ($null -eq $rootMarkerItem -or $rootMarkerItem.PSIsContainer -or
-        ($rootMarkerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    return [pscustomobject]@{
+        UserProfile = $userProfile
+        Root = $requestedRoot
+        Self = $requestedSelf
+    }
+}
+
+function Assert-CupRootMarker([string]$Root) {
+    $lines = @(Read-CanonicalAsciiLines (Join-Path $Root "root.txt") 1024)
+    if ($lines.Count -ne 3 -or
+        $lines[0] -cne "format=1" -or
+        $lines[1] -cne "product=coffee-clang/cup" -or
+        $lines[2] -cne "layout=1") {
         throw "cup root marker is missing or invalid"
     }
-    $rootMarkerLines = @(Get-Content -LiteralPath $rootMarkerPath)
-    if ($rootMarkerLines.Count -ne 3 -or
-        $rootMarkerLines[0] -cne "format=1" -or
-        $rootMarkerLines[1] -cne "product=coffee-clang/cup" -or
-        $rootMarkerLines[2] -cne "layout=1") {
-        throw "cup root marker is missing or invalid"
+}
+
+function Read-UninstallIdentity([string]$Root) {
+    $lines = @(Read-CanonicalAsciiLines (Join-Path $Root "transaction.txt") 8192)
+    if ($lines.Count -ne 7 -or
+        $lines[0] -cne "format=1" -or
+        $lines[1] -cne "operation=uninstall" -or
+        $lines[2] -cne "phase=scheduled" -or
+        -not $lines[3].StartsWith("temporary_name=", [StringComparison]::Ordinal) -or
+        -not $lines[4].StartsWith("token=", [StringComparison]::Ordinal) -or
+        $lines[5] -cne "stage=handoff" -or
+        $lines[6] -cne "error=0") {
+        throw "uninstall transaction is missing or invalid"
     }
 
-    $journalPath = Join-Path $requestedRoot "transaction.txt"
-    $journalItem = Get-FileSystemItemOrNull $journalPath
-    if ($null -eq $journalItem -or $journalItem.PSIsContainer -or
-        ($journalItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "uninstall transaction is missing or invalid"
-    }
-    $journalLines = @(Get-Content -LiteralPath $journalPath)
-    if ($journalLines.Count -ne 7 -or
-        $journalLines[0] -cne "format=1" -or
-        $journalLines[1] -cne "operation=uninstall" -or
-        $journalLines[2] -cne "phase=scheduled" -or
-        -not $journalLines[3].StartsWith("temporary_name=", [StringComparison]::Ordinal) -or
-        -not $journalLines[4].StartsWith("token=", [StringComparison]::Ordinal) -or
-        $journalLines[5] -cne "stage=handoff" -or
-        $journalLines[6] -cne "error=0") {
-        throw "uninstall transaction is missing or invalid"
-    }
-    $script:TemporaryName = $journalLines[3].Substring("temporary_name=".Length)
-    $script:Token = $journalLines[4].Substring("token=".Length)
-    if ($script:Token -notmatch '^[A-Za-z0-9_-]+$' -or
-        $script:TemporaryName -cne ".cup-uninstall.$($script:Token)") {
+    $temporaryName = $lines[3].Substring("temporary_name=".Length)
+    $token = $lines[4].Substring("token=".Length)
+    if ($token.Length -eq 0 -or $token.Length -ge 256 -or
+        $token -notmatch '^[A-Za-z0-9_.-]+$' -or
+        ($temporaryName -cne ".cup-uninstall.$token" -and
+         $temporaryName -cne ".cup-uninstall-$token")) {
         throw "uninstall transaction identity is invalid"
     }
-    $detachedRoot = Join-Path $userProfile $script:TemporaryName
+
+    return [pscustomobject]@{
+        TemporaryName = $temporaryName
+        Token = $token
+    }
+}
+
+function Signal-UninstallReady([UInt64]$Handle) {
+    $safeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new(
+        [IntPtr]::new([Int64]$Handle),
+        $true
+    )
+    $stream = [IO.FileStream]::new($safeHandle, [IO.FileAccess]::Write)
+    try {
+        $stream.WriteByte([byte][char]'R')
+        $stream.Flush()
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Wait-ForParentExit([UInt64]$Handle) {
+    $safeHandle = [Microsoft.Win32.SafeHandles.SafeWaitHandle]::new(
+        [IntPtr]::new([Int64]$Handle),
+        $true
+    )
+    $wait = [Threading.EventWaitHandle]::new(
+        $false,
+        [Threading.EventResetMode]::AutoReset
+    )
+    $wait.SafeWaitHandle = $safeHandle
+    try {
+        $null = $wait.WaitOne()
+    } finally {
+        $wait.Dispose()
+    }
+}
+
+function Invoke-DetachedUninstall {
+    $context = Get-UninstallContext $CupRoot $SelfPath
+    $script:JournalRoot = $context.Root
+
+    Assert-CupRootMarker $context.Root
+    $identity = Read-UninstallIdentity $context.Root
+    $script:TemporaryName = $identity.TemporaryName
+    $script:Token = $identity.Token
+
+    $detachedRoot = Join-Path $context.UserProfile $script:TemporaryName
     if (Test-Path -LiteralPath $detachedRoot) {
         throw "uninstall destination already exists"
     }
 
-    Write-UninstallJournal $requestedRoot "scheduled" "parent-wait" 0
+    Write-UninstallJournal $context.Root "scheduled" "parent-wait" 0
+    Signal-UninstallReady $ReadyHandle
 
-    $readySafeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new(
-        [IntPtr]::new([Int64]$ReadyHandle),
-        $true
-    )
-    $readyStream = [IO.FileStream]::new($readySafeHandle, [IO.FileAccess]::Write)
-    try {
-        $readyStream.WriteByte([byte][char]'R')
-        $readyStream.Flush()
-    } finally {
-        $readyStream.Dispose()
-    }
     $script:FailureStage = "parent-wait"
+    Wait-ForParentExit $ParentHandle
 
-    $parentSafeHandle = [Microsoft.Win32.SafeHandles.SafeWaitHandle]::new(
-        [IntPtr]::new([Int64]$ParentHandle),
-        $true
-    )
-    $parentWait = [Threading.EventWaitHandle]::new(
-        $false,
-        [Threading.EventResetMode]::AutoReset
-    )
-    $parentWait.SafeWaitHandle = $parentSafeHandle
-    try {
-        $null = $parentWait.WaitOne()
-    } finally {
-        $parentWait.Dispose()
-    }
-
-    Write-UninstallJournal $requestedRoot "detaching" "detach" 0
+    Write-UninstallJournal $context.Root "detaching" "detach" 0
     $script:FailureStage = "detach"
-    [IO.Directory]::Move($requestedRoot, $detachedRoot)
+    [IO.Directory]::Move($context.Root, $detachedRoot)
     $script:JournalRoot = $detachedRoot
+
+    # The canonical root no longer exists. Release cup.lock before deleting the detached tree.
+    Close-UninstallLease
 
     $script:FailureStage = "cleanup"
     Write-UninstallJournal $detachedRoot "failed" "cleanup" 1
     Remove-DetachedCupRoot $detachedRoot
 
-    if (Test-Path -LiteralPath $requestedSelf -PathType Leaf) {
-        Remove-Item -LiteralPath $requestedSelf -Force
+    if (Test-Path -LiteralPath $context.Self -PathType Leaf) {
+        Remove-Item -LiteralPath $context.Self -Force
     }
+}
+
+try {
+    Invoke-DetachedUninstall
     exit 0
 } catch {
     Write-UninstallFailure
     Write-Error $_
     exit 1
+} finally {
+    Close-UninstallLease
 }

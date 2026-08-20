@@ -1,37 +1,42 @@
 # Packages
 
-This document defines the package catalog and the artifact contract between
-`cup` and `cup-components`. Archive security is expanded in
-[SECURITY](SECURITY.md).
+This page describes the package contract shared by `cup` and
+`cup-components`. It covers the catalog, package identity, archive layout,
+metadata, executable entries and cache behavior.
 
-## Repository boundary
+Security checks related to downloads and extraction are collected in
+[Security](SECURITY.md).
 
-`cup-components` provides:
+## Responsibility split
+
+`cup-components` is responsible for:
 
 ```text
 building each tool
-selecting its configured features
-including required runtime files
-creating info.txt
+choosing build features
+including the required runtime files
+generating info.txt
 creating archives
 publishing SHA256SUMS
 ```
 
-`cup` provides:
+`cup` is responsible for:
 
 ```text
-catalog parsing and tuple selection
-download and checksum verification
-archive safety
-metadata and executable validation
-canonical installation paths
-state and default management
+loading the catalog
+selecting one package tuple
+downloading and checking the archive
+validating archive paths and types
+extracting into staging
+validating info.txt and declared executable entries
+installing under the managed root
+updating state and defaults
 ```
 
-The contract is intentionally file-based. `cup` does not need knowledge of the
-component build system, Docker images, MSYS2 packages or Homebrew formulas.
+The two repositories communicate through files. cup does not need to know which
+Docker image, MSYS2 package or build command produced an archive.
 
-## PackageCatalog locations
+## Catalog locations
 
 Installed catalog:
 
@@ -39,26 +44,40 @@ Installed catalog:
 <cup-root>/config/packages.cfg
 ```
 
-Repository development copy:
+Repository copy used by development builds when no installed catalog exists:
 
 ```text
 config/packages.cfg
 ```
 
-A normal installation uses the installed catalog. A development executable may
-fall back to the repository copy only when the installed file is missing.
+An installed release always uses the catalog inside the selected cup root.
 
-## Installation policy and local preferences
+## Registry, policy and preferences
 
-Package availability and install selection are separate contracts. The compiled
-registry remains the sole authority for recognized components, recognized tools
-and each tool's component. A catalog can make one registered pair available for
-a platform, but cannot introduce a new component/tool relationship.
+Three inputs take part in package selection:
 
-The official installation policy is installed at `<cup-root>/config/install.cfg`;
-its repository development copy is `config/install.cfg`. It uses the same
-blank-line and whole-line comment rules as the catalog and otherwise remains a
-strict closed key/value document. It defines:
+```text
+compiled registry     valid components and component/tool relationships
+packages.cfg          packages available for host, target and version
+install.cfg           official defaults, profiles and toolchains
+preferences.txt       optional user choices
+```
+
+The compiled registry is the first check. A catalog cannot introduce an unknown
+component or attach a tool to a different component.
+
+### `install.cfg`
+
+The installed file is:
+
+```text
+<cup-root>/config/install.cfg
+```
+
+Its repository copy is `config/install.cfg`. Blank lines and full-line comments
+are ignored. The first semantic record must be the schema marker `format=1`;
+surrounding whitespace on semantic lines and around keys, values and comma-list
+items is accepted. Supported records after the marker are:
 
 ```text
 default.<host>.<target>.<component>=<tool>
@@ -66,50 +85,67 @@ profile.<name>=<component>,...
 toolchain.<name>=<tool>,...
 ```
 
-Every reference is validated against the compiled registry. Defaults are scoped
-by component, host and target. Profiles contain components and resolve each one
-at install time. Curated toolchains contain explicit tools, with at most one tool
-per component. The file is covered by `SHA256SUMS.common`, protected as an
-official asset and replaced transactionally by `cup update cup`.
+Defaults are scoped by component, host and target. Profiles list components and
+resolve each one when they are installed. Toolchains list explicit tools and may
+contain at most one tool for each component. Names and list items must resolve to
+canonical lowercase registry identifiers; duplicate list items and duplicate
+records are rejected.
 
-Local choices are stored separately at `<cup-root>/config/preferences.txt`:
+The file is part of the official cup assets and is checked by
+`SHA256SUMS.common`.
+
+### `preferences.txt`
+
+User choices are stored at:
 
 ```text
+<cup-root>/config/preferences.txt
+```
+
+The document starts with its schema marker and then contains scoped preferences:
+
+```text
+format=1
 preferred.<host>.<target>.<component>=<tool>
 ```
 
-This mutable file has no official checksum because it contains user-controlled
-preferences. cup parses
-it strictly, serializes entries deterministically and replaces it atomically.
-Selection order for an abbreviated component install is:
+This file is not covered by the official checksum because it belongs to the
+user. cup validates it, writes entries in a stable order and replaces it
+atomically.
+
+For `cup install <component>`, tool selection is:
 
 ```text
 explicit command selector
-scoped user preference
-scoped official default
-error
+user preference for the scope
+official default for the scope
+error when none is available
 ```
 
-The selected tool is then checked against the registry and the exact host/target
-tuple is looked up in `packages.cfg`. Profiles intentionally apply this hierarchy
-to each component. Toolchains never consult local preferences or installed
-execution defaults. Profile, toolchain, component, tool, platform and symbolic
-`stable` values are canonical lowercase; concrete version identifiers remain
-case-sensitive. Updates operate only on installed state and never select new
-tools from these preferences.
+Profiles use this order for every component. Toolchains never use preferences,
+because their tool set is already explicit.
 
-## Catalog record model
+## Catalog format
 
-The catalog is a line-based key/value document. Blank lines and lines whose first
-non-whitespace character is `#` are ignored; every remaining line must be one
-non-empty `key=value` record. Unknown fields, duplicates, partial tuples and
-malformed records are rejected. Keys use:
+`packages.cfg` is a line-based `key=value` file. The first physical line is
+exactly the explicit schema marker:
 
 ```text
-<component>.<tool>.<host_platform>.<target_platform>.<field>=<value>
+format=1
 ```
 
-Every tuple requires:
+The catalog is a release asset and is replaced as a complete authenticated file;
+catalog-schema compatibility is not promised across unsupported formats. After
+the format marker, blank lines and full-line comments are ignored.
+Every other line must contain one non-empty key and value.
+
+Package keys use:
+
+```text
+<component>.<tool>.<host>.<target>.<field>=<value>
+```
+
+Each package tuple contains:
 
 ```text
 stable_version
@@ -127,40 +163,27 @@ compiler.gcc.linux-x64.windows-x64.stable_version=16.1.0-rev1
 compiler.gcc.linux-x64.windows-x64.available_versions=16.1.0-rev1
 compiler.gcc.linux-x64.windows-x64.default_format=tar.gz
 compiler.gcc.linux-x64.windows-x64.formats=tar.xz,tar.gz,zip
-compiler.gcc.linux-x64.windows-x64.url_template=
-  https://github.com/coffee-clang/cup-components/releases/download/
-  gcc-{version}-{host_platform}-{target_platform}/
-  gcc-{version}-{host_platform}-{target_platform}.{format}
-compiler.gcc.linux-x64.windows-x64.checksum_url_template=
-  https://github.com/coffee-clang/cup-components/releases/download/
-  gcc-{version}-{host_platform}-{target_platform}/SHA256SUMS
+compiler.gcc.linux-x64.windows-x64.url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/gcc-{version}-{host_platform}-{target_platform}.{format}
+compiler.gcc.linux-x64.windows-x64.checksum_url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/SHA256SUMS
 ```
 
-## Catalog validation
+Loading fails for:
 
-Loading rejects:
-
-- malformed key/value lines;
-- empty values;
-- unknown or missing fields;
-- duplicate field keys;
-- duplicate values in `available_versions` or `formats`;
-- unsupported component/tool pairs;
-- invalid host or target identifiers;
+- malformed or empty records;
+- unknown or duplicated fields;
+- incomplete tuples;
+- unknown components or tools;
+- invalid host or target platforms;
+- duplicated versions or formats;
+- non-canonical concrete release names (including uppercase forms or `stable` as a real version);
 - unsupported archive formats;
-- a default format absent from `formats`;
-- a stable version absent from `available_versions`;
+- a default format missing from `formats`;
+- a stable version missing from `available_versions`;
 - non-HTTPS templates;
-- unknown placeholders;
-- missing required placeholders;
-- format-dependent checksum templates.
+- unsupported or missing placeholders.
 
-The URL template must distinguish the concrete package by tool, version, host,
-target and format. The checksum template identifies the matching release tuple
-without depending on archive format.
-
-Validation is strict because a malformed catalog can otherwise map different
-identities to the same remote asset or make an installation non-reproducible.
+The archive URL must identify the tool, version, host, target and format. The
+checksum URL identifies the release tuple and does not vary by archive format.
 
 ## URL placeholders
 
@@ -174,31 +197,34 @@ Supported placeholders are:
 {format}
 ```
 
-`{format}` is used by archive URLs but is not required or accepted as a
-checksum-release discriminator. Template expansion occurs only after all
-identity values pass their own validation.
+`{format}` belongs to archive URLs. It is not accepted as part of the checksum
+release identity.
 
-## Stable and available versions
+cup expands a template only after every identity field has passed validation.
 
-`stable_version` is one concrete version from `available_versions`.
+## Stable and concrete versions
 
-A command input such as:
+`stable_version` must also appear in `available_versions`.
+
+`stable` is resolved before a package path, cache name or state entry is
+created. Installed state stores the resulting concrete version.
+
+Version strings are treated as identifiers. cup does not compare component
+package versions using semantic-version precedence; the catalog decides which
+versions are available and which one is stable.
+
+A packaging revision can be part of the version:
 
 ```text
-gcc@stable
+16.1.0-rev1
 ```
 
-is resolved before a package path or state entry is created. Advancing the
-catalog pointer does not mutate existing state. `cup update` explicitly
-installs the new stable version and may move a matching default while retaining
-older versions.
-
-Version strings are identifiers, not values interpreted through semantic
-version precedence. The catalog decides availability and stable selection.
+The whole string is used in catalog lookup, asset names, metadata, state and
+paths.
 
 ## Archive formats
 
-Current supported formats are:
+Supported formats are:
 
 ```text
 tar.xz
@@ -206,16 +232,16 @@ tar.gz
 zip
 ```
 
-The tuple's `default_format` is used when `install` receives no override.
-`--format` or `-f` can select another value only when it appears in that tuple's
-`formats` list.
+The tuple's `default_format` is used unless `install` receives `--format` or
+`-f`. An override must appear in that tuple's `formats` list.
 
-`cup` uses libarchive directly. Runtime installation does not invoke external
-`tar`, `gzip`, `xz` or `unzip` programs. The detected stream must match the
-selected format; file extensions and catalog values are not accepted as proof
-of the actual archive type.
+cup reads archives with libarchive. It does not run external `tar`, `gzip`, `xz`
+or `unzip` commands during installation.
 
-## Package identity
+The detected stream format must match the selected format. A filename extension
+is not enough to prove the archive type.
+
+## Package identity and paths
 
 One package identity contains:
 
@@ -224,34 +250,41 @@ component
 tool
 host platform
 target platform
-version
+concrete version
 ```
 
-Canonical installation path:
+Installed path:
 
 ```text
 <cup-root>/components/<component>/<tool>/<host>/<target>/<version>/
 ```
 
-Canonical cache directory and filename:
+Cache directory and archive name:
 
 ```text
 <cup-root>/cache/<component>/<tool>/<host>/<target>/<version>/
   <tool>-<version>-<host>-<target>.<format>
 ```
 
-The cache filename is built locally from validated identity fields. It is not
-copied from a URL path or response header.
+The cache name is built locally from validated identity fields. It is never
+copied from a response header or remote pathname.
 
-## Archive root
+## Archive root and internal paths
 
-An archive must contain exactly one common top-level directory. Internal names
-use printable portable ASCII segments and cannot collide under ASCII
-case-folding or as file-versus-directory paths. The root name is not used as the
-trusted identity; after extraction, `info.txt` must match the identity selected
-from the command and catalog.
+A package archive contains one top-level directory. cup does not trust that
+directory name as the package identity; `info.txt` must still match the package
+selected from the command and catalog.
 
-The package root can contain tool-specific directories such as:
+Archive paths must use safe portable segments. They cannot:
+
+- be absolute;
+- contain `.` or `..` segments;
+- contain control characters;
+- collide after ASCII case folding;
+- describe the same path as both a file and a directory;
+- contain links or special filesystem objects.
+
+A package may contain tool-specific directories such as:
 
 ```text
 bin/
@@ -262,15 +295,13 @@ share/
 <target-triple>/
 ```
 
-`cup` does not require every package to have the same internal layout. It
-requires valid metadata and declared executable entries.
+cup does not force every tool to use the same internal layout.
 
 ## `info.txt`
 
-Every package root contains a line-based `info.txt` generated by
-`cup-components`.
+Every package also contains a line-based `info.txt`.
 
-Required identity fields:
+Required identity fields are:
 
 ```text
 package.component
@@ -280,10 +311,10 @@ platform.host
 platform.target
 ```
 
-Additional grouped fields can include:
+Every package must declare at least one executable entry using an `entry.*`
+field. Optional groups may include:
 
 ```text
-entry.*
 features.*
 contents.*
 config.*
@@ -304,99 +335,104 @@ contents.self_contained=true
 config.languages=c,c++,lto
 ```
 
-Parsing rejects malformed lines, empty keys or values, duplicate keys and input
-that exceeds defined line, key or value limits.
+The parser rejects malformed lines, duplicate keys, empty values and fields that
+exceed the configured limits.
 
-## Executable entries
+The identity in `info.txt` must match the installed path and the request that
+selected the package.
 
-Each `entry.<name>` value is a safe relative path inside the package. Package
-validation requires the declared object to be a regular executable file.
+## Executable entries and wrappers
 
-The entry name is later used to derive managed commands:
+Each `entry.<name>` value must be a safe relative path inside the package. The
+target must be present, non-empty, a regular file and executable according to the
+platform validation rules.
+
+Wrapper names are derived as follows:
 
 ```text
-native target       <entry>
-cross target        <target>-<entry>
+native target    <entry>
+cross target     <target>-<entry>
 ```
 
-Entry-point planning rejects duplicate names, collisions between defaults and a
-wrapper named `cup`. See [STATE](STATE.md#managed-package-commands).
+Planning rejects duplicate wrapper names and a package entry named `cup`.
+Wrappers are derived from the defaults; they are not part of package
+identity.
 
 ## Package validation
 
-A package is valid only when:
+A package is accepted only when:
 
-- the canonical identity is syntactically valid;
-- the package root is a directory;
-- `info.txt` is a regular file;
-- all required identity fields are present;
-- metadata identity matches the canonical path;
-- every declared entry path is safe and exists as an executable regular file.
+1. its identity fields are valid;
+2. the root is a real directory;
+3. `info.txt` is a bounded regular file that parses successfully;
+4. metadata matches the selected identity;
+5. each declared executable entry is a safe package-relative path to a present
+   regular executable file;
+6. the package root and `info.txt` still name the same filesystem objects
+   observed during validation.
 
-Read-only protection of `info.txt` is a separate managed invariant. Installation
-applies it, `doctor` diagnoses drift and `repair` restores it, but a permission
-change does not alter the package identity or make metadata parsing a different
-command-specific contract.
+`ValidatedPackage` owns the parsed metadata used for the decision. Commands such
+as `inspect`, `default`, `doctor` and wrapper planning all use this same
+validation path.
 
-`inspect`, `default`, `info`, `doctor` and state reconciliation use the same
-package contract rather than implementing command-specific interpretations.
+The read-only protection applied to `info.txt` is a managed permission rule. A
+permission change is reported by `doctor` and can be restored by `repair`, but
+the package still has the same semantic identity.
 
-## Package scan and adoption
+## Scanning and repair
 
-`repair` scans the canonical component hierarchy. A valid package not present in
-state can be adopted because its path and metadata provide a complete identity.
+`repair` scans the component hierarchy. A valid package missing from `state.txt`
+can be adopted because the canonical path and validated metadata provide its
+identity.
 
-An invalid object at the complete version level can be quarantined only when its
-path provides a safe, canonical identity. Ambiguous or unrecognized paths are
+An invalid object is quarantined only when its path gives a safe package identity
+and the regular file or directory still has the native identity observed during
+the scan. Unknown or ambiguous paths, links and special filesystem objects are
 reported and left unchanged.
 
-The scan records both returned entries and total entries. If results were
-truncated by capacity limits, repair stops before changing packages or state.
-This avoids treating an incomplete observation as a complete model.
+The scan records both the returned entries and the real totals. If an internal
+capacity is exceeded, repair stops before changing state instead of acting on a
+partial view.
 
 ## Cache behavior
 
-A cached archive is reused only after its checksum is verified against the
-release `SHA256SUMS`. If extraction or package validation fails for a cached
-archive, `cup` discards it and performs one network refresh. A second failure is
-reported; it is not retried indefinitely.
+A cache entry is reused only after its digest has been checked against the
+release `SHA256SUMS`.
 
-This distinction handles a stale or locally corrupted cache without hiding a
-consistently invalid published package.
+The cache returns a `VerifiedArtifact` that owns the open file. The same stream
+is used for hashing and the single archive validation/extraction pass.
 
-## Version revisions
+When checksum metadata is refreshed, cup compares the new expected digest with
+the digest already calculated for that open file. It does not reopen the path.
 
-A tool release can include a packaging revision in its concrete version, for
-example:
-
-```text
-16.1.0-rev1
-```
-
-The complete string is part of the identity. `cup` does not separate upstream
-version from packaging revision. This keeps catalog, asset tag, archive name,
-metadata, state and path comparison exact.
+If a cached archive fails extraction or package validation, cup removes it only
+when the cache pathname still identifies the same opened object. It then performs
+one network refresh. A second failure is returned to the user instead of being
+retried forever.
 
 ## Limits
 
-Current in-memory package scanning limits are defined in `include/package.h`.
-Archive limits are defined in `include/constants.h`: 262,144 entries, 16 GiB for
-one regular file, 64 GiB total extracted bytes and 64 path segments. These are
-conservative ceilings for complete compiler and debugger packages, not allocation
-targets. Exceeding one produces a failing or incomplete result rather than silent
-truncation. This repository does not contain published `cup-components` package
-artifacts from which to claim a final measured maximum, so final tuning remains
-coordinated with an inventory of those release packages.
+cup limits package scans and archive work to bounded arrays and counters. Important ceilings include:
 
-## Implementation and verification
+```text
+262,144 entries
+256 MiB of stored path-table text
+16 GiB for one regular file
+64 GiB total extracted bytes
+64 path segments
+```
 
-Package-module responsibilities are listed in [ARCHITECTURE](ARCHITECTURE.md). The
-focused and process-level checks for these contracts are listed in
-[TESTING](../development/TESTING.md).
+These values are safety ceilings, not expected package sizes. Exceeding a limit
+causes a failure; it never silently truncates the package.
+
+## Implementation and tests
+
+The responsible C modules are listed in [Architecture](ARCHITECTURE.md). Test
+levels are described in [Testing](../development/TESTING.md).
 
 ## Related documents
 
-- [ARCHITECTURE](ARCHITECTURE.md) — registry and package model;
-- [SECURITY](SECURITY.md) — archive and checksum protections;
-- [STATE](STATE.md) — installed identities and defaults;
-- [COMMANDS](../user/COMMANDS.md) — package-facing CLI behavior.
+- [Architecture](ARCHITECTURE.md)
+- [Security](SECURITY.md)
+- [State](STATE.md)
+- [Commands](../user/COMMANDS.md)

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises read-only diagnosis and verifies doctor never repairs observed damage.
+# Exercises read-only diagnosis and verifies doctor never repairs observed damage.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -21,7 +21,7 @@ state_file=$TEST_HOME/.cup/state.txt
 
 # Create independent diagnostic conditions. The package is deliberately not in
 # state, another state record has no package, one valid package is unprotected
-# and absent from the active catalog, and runtime leftovers are present.
+# and absent from the current catalog, and runtime leftovers are present.
 make_installed_package compiler clang 99.0.0 "$TEST_PLATFORM" clang
 make_installed_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
 invalid_package=$TEST_HOME/.cup/components/linker/lld/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5

@@ -1,21 +1,15 @@
 /*
- * Shows immutable metadata for one concrete installed package.
+ * Shows validated metadata for one selected installed package.
  */
 
 #include "commands.h"
-#include "installed_package.h"
 
 #include "command_context.h"
-#include "package_selector.h"
-#include "package_request.h"
-#include "wrappers.h"
-#include "package_metadata.h"
-#include "layout.h"
-#include "package_catalog.h"
+#include "installed_package.h"
 #include "package.h"
-#include "path.h"
-#include "registry.h"
-#include "state.h"
+#include "package_metadata.h"
+#include "package_request.h"
+#include "package_selector.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -80,17 +74,15 @@ CupError command_inspect(const char *component, const char *selector, const char
     CommandContext context = {0};
     PackageRequest request;
     PackageIdentity package;
-    PackageMetadata metadata;
+    ValidatedPackage validated;
     CupError err;
-    char install_path[MAX_PATH_LEN];
-    char package_metadata_path[MAX_PATH_LEN];
 
     if (component == NULL || selector == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     /* Parse the public selector before opening any runtime resources. */
-    package_metadata_init(&metadata);
+    validated_package_init(&validated);
 
     err = package_request_parse(component, selector, &request);
     if (err != CUP_OK) {
@@ -139,22 +131,8 @@ CupError command_inspect(const char *component, const char *selector, const char
         goto done;
     }
 
-    /* The metadata is trusted only after state and the installed package agree. */
-    err = installed_package_require_valid(&context.state, &package);
-    if (err != CUP_OK) {
-        goto done;
-    }
-
-    err = layout_build_install_path(install_path, sizeof(install_path), &package);
-    if (err != CUP_OK || path_join(package_metadata_path,
-                                   sizeof(package_metadata_path),
-                                   install_path,
-                                   CUP_INFO_FILENAME) != CUP_OK) {
-        err = CUP_ERR_FILESYSTEM;
-        goto done;
-    }
-
-    err = package_metadata_load(&metadata, package_metadata_path);
+    /* State and metadata are consumed from one validated package snapshot. */
+    err = installed_package_load_validated(&context.state, &package, &validated);
     if (err != CUP_OK) {
         goto done;
     }
@@ -163,11 +141,11 @@ CupError command_inspect(const char *component, const char *selector, const char
     printf("Package information for %s ", component);
     package_request_print(stdout, &request);
     printf(" on host '%s', target '%s':\n\n", context.host_platform, context.target_platform);
-    print_package_info(&metadata);
+    print_package_info(&validated.metadata);
     err = CUP_OK;
 
 done:
-    package_metadata_free(&metadata);
+    validated_package_free(&validated);
     command_context_end(&context);
     return err;
 }

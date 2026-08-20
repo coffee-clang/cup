@@ -13,6 +13,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "install_policy.h"
+#include "interrupt.h"
 #include "package_catalog.h"
 #include "path.h"
 #include "system.h"
@@ -20,6 +21,7 @@
 #include "cup_update_journal.h"
 #include "cup_update_helper.h"
 #include "runtime_journal.h"
+#include "release_metadata.h"
 #include "version.h"
 
 #include <stdio.h>
@@ -27,18 +29,6 @@
 #include <string.h>
 
 #if CUP_VERSION_OFFICIAL
-
-/* Parsed official version used only for monotonic update comparison. */
-typedef struct {
-    unsigned major;
-    unsigned minor;
-    unsigned patch;
-} SemanticVersion;
-
-typedef struct {
-    char version[64];
-    char commit[64];
-} ReleaseMetadata;
 
 typedef struct {
     char binary_name[MAX_IDENTIFIER_LEN];
@@ -51,14 +41,6 @@ typedef struct {
     char staged_install_policy[MAX_PATH_LEN];
     char staged_common_checksums[MAX_PATH_LEN];
     char staged_metadata[MAX_PATH_LEN];
-    char installed_binary[MAX_PATH_LEN];
-    char installed_uninstall[MAX_PATH_LEN];
-    char installed_platform_checksums[MAX_PATH_LEN];
-    char installed_catalog[MAX_PATH_LEN];
-    char installed_install_policy[MAX_PATH_LEN];
-    char installed_common_checksums[MAX_PATH_LEN];
-    char lock_path[MAX_PATH_LEN];
-    char journal_path[MAX_PATH_LEN];
 } CupUpdateFiles;
 
 typedef struct {
@@ -71,45 +53,7 @@ typedef struct {
     char metadata[MAX_CATALOG_URL_LEN];
 } CupUpdateUrls;
 
-/* Release metadata parsing. Public versions and commits are validated before monotonic comparison
- * or URL construction. */
-static CupError parse_version(const char *text, SemanticVersion *version) {
-    const char *cursor;
-    char *end;
-    unsigned long parts[3];
-    size_t i;
-
-    if (text_is_empty(text) || version == NULL) {
-        return CUP_ERR_VALIDATION;
-    }
-
-    cursor = text;
-    for (i = 0; i < 3; ++i) {
-        if (*cursor < '0' || *cursor > '9' ||
-            (*cursor == '0' && cursor[1] >= '0' && cursor[1] <= '9')) {
-            return CUP_ERR_VALIDATION;
-        }
-        parts[i] = strtoul(cursor, &end, 10);
-        if (end == cursor || parts[i] > 999999u) {
-            return CUP_ERR_VALIDATION;
-        }
-        if (i < 2) {
-            if (*end != '.') {
-                return CUP_ERR_VALIDATION;
-            }
-            cursor = end + 1;
-        } else if (*end != '\0') {
-            return CUP_ERR_VALIDATION;
-        }
-    }
-
-    version->major = (unsigned)parts[0];
-    version->minor = (unsigned)parts[1];
-    version->patch = (unsigned)parts[2];
-    return CUP_OK;
-}
-
-static int compare_versions(const SemanticVersion *left, const SemanticVersion *right) {
+static int compare_versions(const ReleaseVersion *left, const ReleaseVersion *right) {
     if (left->major != right->major) {
         return left->major < right->major ? -1 : 1;
     }
@@ -120,101 +64,6 @@ static int compare_versions(const SemanticVersion *left, const SemanticVersion *
         return left->patch < right->patch ? -1 : 1;
     }
     return 0;
-}
-
-static int commit_is_valid(const char *value) {
-    size_t i;
-    size_t length;
-
-    if (text_is_empty(value)) {
-        return 0;
-    }
-    length = strlen(value);
-    if (length < 7 || length > 40) {
-        return 0;
-    }
-    for (i = 0; i < length; ++i) {
-        if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static CupError load_release_metadata(const char *path, ReleaseMetadata *metadata) {
-    SemanticVersion parsed_version;
-    FILE *file;
-    CupError err = CUP_OK;
-    char line[256];
-    size_t line_number = 0;
-    unsigned seen = 0;
-
-    if (text_is_empty(path) || metadata == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    memset(metadata, 0, sizeof(*metadata));
-
-    file = fopen(path, "r");
-    if (file == NULL) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    while (err == CUP_OK) {
-        char key[64];
-        char value[128];
-        unsigned bit;
-        int has_line;
-
-        err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
-        if (err != CUP_OK || !has_line) {
-            break;
-        }
-        if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK) {
-            err = CUP_ERR_VALIDATION;
-            break;
-        }
-
-        if (strcmp(key, "format") == 0) {
-            bit = 1u << 0;
-            if (strcmp(value, "1") != 0) {
-                err = CUP_ERR_VALIDATION;
-                break;
-            }
-        } else if (strcmp(key, "version") == 0) {
-            bit = 1u << 1;
-            if (text_copy(metadata->version, sizeof(metadata->version), value) != CUP_OK) {
-                err = CUP_ERR_VALIDATION;
-                break;
-            }
-        } else if (strcmp(key, "commit") == 0) {
-            bit = 1u << 2;
-            if (text_copy(metadata->commit, sizeof(metadata->commit), value) != CUP_OK) {
-                err = CUP_ERR_VALIDATION;
-                break;
-            }
-        } else {
-            err = CUP_ERR_VALIDATION;
-            break;
-        }
-
-        if ((seen & bit) != 0) {
-            err = CUP_ERR_VALIDATION;
-            break;
-        }
-        seen |= bit;
-    }
-
-    if (fclose(file) != 0 && err == CUP_OK) {
-        err = CUP_ERR_FILESYSTEM;
-    }
-    if (err != CUP_OK) {
-        return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_VALIDATION;
-    }
-    if (seen != 0x7u || parse_version(metadata->version, &parsed_version) != CUP_OK ||
-        !commit_is_valid(metadata->commit)) {
-        return CUP_ERR_VALIDATION;
-    }
-    return CUP_OK;
 }
 
 static CupError verify_downloaded_asset(const char *checksums,
@@ -234,36 +83,16 @@ static CupError verify_downloaded_asset(const char *checksums,
     return CUP_OK;
 }
 
-static CupError build_staging_path(const char *staging, const char *name, char *path, size_t size) {
-    return path_join(path, size, staging, name);
-}
-
-static CupError copy_override_release_base(char *base, size_t size) {
-    const char *value = getenv("CUP_INSTALL_BASE_URL");
-    size_t length;
-
-    if (!download_insecure_loopback_is_allowed(value)) {
-        return CUP_ERR_NOT_AVAILABLE;
-    }
-
-    length = strlen(value);
-    while (length > 0 && value[length - 1] == '/') {
-        length--;
-    }
-    if (length == 0 || length >= size) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-
-    memcpy(base, value, length);
-    base[length] = '\0';
-    return CUP_OK;
-}
-
 static CupError build_latest_asset_url(char *url, size_t size, const char *asset) {
     char base[MAX_CATALOG_URL_LEN];
+    CupError err;
 
-    if (copy_override_release_base(base, sizeof(base)) == CUP_OK) {
+    err = download_copy_release_base_override(base, sizeof(base));
+    if (err == CUP_OK) {
         return text_format(url, size, "%s/%s", base, asset);
+    }
+    if (err != CUP_ERR_NOT_AVAILABLE) {
+        return err;
     }
     return text_format(url, size, "%s/%s", CUP_RELEASE_LATEST_URL, asset);
 }
@@ -273,15 +102,20 @@ static CupError build_release_asset_url(char *url,
                                         const char *version,
                                         const char *asset) {
     char base[MAX_CATALOG_URL_LEN];
+    CupError err;
 
-    if (copy_override_release_base(base, sizeof(base)) == CUP_OK) {
+    err = download_copy_release_base_override(base, sizeof(base));
+    if (err == CUP_OK) {
         return text_format(url, size, "%s/%s/%s", base, version, asset);
+    }
+    if (err != CUP_ERR_NOT_AVAILABLE) {
+        return err;
     }
     return text_format(url, size, CUP_RELEASE_VERSIONED_URL_TEMPLATE "/%s", version, asset);
 }
 
 /* The detached helper only replaces a complete current-generation install. */
-static CupError require_replaceable_installed_generation(void) {
+static CupError require_replaceable_generation(void) {
     CupAssetsInspection inspection;
     CupError err = cup_assets_inspect(&inspection);
 
@@ -298,8 +132,59 @@ static CupError require_replaceable_installed_generation(void) {
     return CUP_ERR_VALIDATION;
 }
 
+static CupError resolve_staged_update_paths(CupUpdateFiles *files,
+                                            const char *staging_root) {
+    CupError err;
+
+    err = system_create_temp_directory(
+        staging_root, "cup-update", files->staging, sizeof(files->staging));
+    if (err == CUP_OK) {
+        err = path_join(files->staged_binary,
+                        sizeof(files->staged_binary),
+                        files->staging,
+                        CUP_UPDATE_BINARY_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_uninstall,
+                        sizeof(files->staged_uninstall),
+                        files->staging,
+                        CUP_UPDATE_UNINSTALL_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_platform_checksums,
+                        sizeof(files->staged_platform_checksums),
+                        files->staging,
+                        CUP_UPDATE_PLATFORM_CHECKSUMS_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_catalog,
+                        sizeof(files->staged_catalog),
+                        files->staging,
+                        CUP_UPDATE_PACKAGES_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_install_policy,
+                        sizeof(files->staged_install_policy),
+                        files->staging,
+                        CUP_UPDATE_INSTALL_POLICY_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_common_checksums,
+                        sizeof(files->staged_common_checksums),
+                        files->staging,
+                        CUP_UPDATE_COMMON_CHECKSUMS_NEW);
+    }
+    if (err == CUP_OK) {
+        err = path_join(files->staged_metadata,
+                        sizeof(files->staged_metadata),
+                        files->staging,
+                        CUP_RELEASE_METADATA_FILENAME);
+    }
+    return err;
+}
+
 static CupError prepare_update_files(CupUpdateFiles *files) {
-    char tmp_dir[MAX_PATH_LEN];
+    char staging_root[MAX_PATH_LEN];
     CupError err;
 
     if (files == NULL) {
@@ -307,100 +192,26 @@ static CupError prepare_update_files(CupUpdateFiles *files) {
     }
     memset(files, 0, sizeof(*files));
 
-    /* Resolve canonical installed paths and the names used by the published release. */
     err = cup_assets_binary_asset_name(files->binary_name, sizeof(files->binary_name));
     if (err == CUP_OK) {
         err = cup_assets_platform_checksums_name(files->platform_checksums_name,
                                                  sizeof(files->platform_checksums_name));
     }
     if (err == CUP_OK) {
-        err = layout_get_staging_dir(tmp_dir, sizeof(tmp_dir));
+        err = layout_get_staging_dir(staging_root, sizeof(staging_root));
     }
-    if (err == CUP_OK) {
-        err = layout_get_binary_path(files->installed_binary, sizeof(files->installed_binary));
+    if (err != CUP_OK) {
+        return err;
     }
-    if (err == CUP_OK) {
-        err = layout_get_uninstall_path(files->installed_uninstall,
-                                        sizeof(files->installed_uninstall));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_platform_checksums_path(files->installed_platform_checksums,
-                                                 sizeof(files->installed_platform_checksums));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_package_catalog_path(files->installed_catalog,
-                                              sizeof(files->installed_catalog));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_install_policy_path(files->installed_install_policy,
-                                             sizeof(files->installed_install_policy));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_common_checksums_path(files->installed_common_checksums,
-                                               sizeof(files->installed_common_checksums));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_lock_path(files->lock_path, sizeof(files->lock_path));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_transaction_path(files->journal_path, sizeof(files->journal_path));
-    }
-    /* Allocate one private staging generation, then derive every staged asset path from it. */
-    if (err == CUP_OK) {
-        err = system_create_temp_directory(
-            tmp_dir, "cup-update", files->staging, sizeof(files->staging));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_BINARY_NEW,
-                                 files->staged_binary,
-                                 sizeof(files->staged_binary));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_UNINSTALL_NEW,
-                                 files->staged_uninstall,
-                                 sizeof(files->staged_uninstall));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_PLATFORM_CHECKSUMS_NEW,
-                                 files->staged_platform_checksums,
-                                 sizeof(files->staged_platform_checksums));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_PACKAGES_NEW,
-                                 files->staged_catalog,
-                                 sizeof(files->staged_catalog));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_INSTALL_POLICY_NEW,
-                                 files->staged_install_policy,
-                                 sizeof(files->staged_install_policy));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_UPDATE_COMMON_CHECKSUMS_NEW,
-                                 files->staged_common_checksums,
-                                 sizeof(files->staged_common_checksums));
-    }
-    if (err == CUP_OK) {
-        err = build_staging_path(files->staging,
-                                 CUP_RELEASE_METADATA_FILENAME,
-                                 files->staged_metadata,
-                                 sizeof(files->staged_metadata));
-    }
-    return err;
+    return resolve_staged_update_paths(files, staging_root);
 }
 
 /* Discovery step. The moving latest alias is used only to learn one concrete version and commit. */
 static CupError discover_latest_release(const CupUpdateFiles *files,
                                         ReleaseMetadata *latest,
                                         int *update_available) {
-    SemanticVersion current_version;
-    SemanticVersion remote_version;
+    ReleaseVersion current_version;
+    ReleaseVersion remote_version;
     char url[MAX_CATALOG_URL_LEN];
     CupError err;
     int comparison;
@@ -424,12 +235,12 @@ static CupError discover_latest_release(const CupUpdateFiles *files,
                 CUP_RELEASE_METADATA_FILENAME);
         return err;
     }
-    err = load_release_metadata(files->staged_metadata, latest);
+    err = release_metadata_load(files->staged_metadata, latest);
     if (err == CUP_OK) {
-        err = parse_version(CUP_VERSION_BASE, &current_version);
+        err = release_version_parse(CUP_VERSION_BASE, &current_version);
     }
     if (err == CUP_OK) {
-        err = parse_version(latest->version, &remote_version);
+        err = release_version_parse(latest->version, &remote_version);
     }
     if (err != CUP_OK) {
         fprintf(stderr, "Error: latest cup release metadata is invalid.\n");
@@ -502,7 +313,7 @@ static CupError fetch_verified_release_metadata(const CupUpdateFiles *files,
                                                 const CupUpdateUrls *urls,
                                                 const ReleaseMetadata *latest,
                                                 ReleaseMetadata *versioned) {
-    const char *platform_assets[3];
+    const char *platform_assets[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
     CupError err;
 
     err = download_file(
@@ -521,6 +332,7 @@ static CupError fetch_verified_release_metadata(const CupUpdateFiles *files,
     platform_assets[0] = files->binary_name;
     platform_assets[1] = CUP_UNINSTALL_FILENAME;
     platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
+    platform_assets[3] = CUP_COMMON_CHECKSUMS_FILENAME;
 
     err = checksum_validate_assets(files->staged_platform_checksums,
                                    platform_assets,
@@ -532,11 +344,16 @@ static CupError fetch_verified_release_metadata(const CupUpdateFiles *files,
     }
     if (err == CUP_OK) {
         err = verify_downloaded_asset(files->staged_platform_checksums,
+                                      CUP_COMMON_CHECKSUMS_FILENAME,
+                                      files->staged_common_checksums);
+    }
+    if (err == CUP_OK) {
+        err = verify_downloaded_asset(files->staged_platform_checksums,
                                       CUP_RELEASE_METADATA_FILENAME,
                                       files->staged_metadata);
     }
     if (err == CUP_OK) {
-        err = load_release_metadata(files->staged_metadata, versioned);
+        err = release_metadata_load(files->staged_metadata, versioned);
     }
     if (err != CUP_OK) {
         fprintf(stderr, "Error: versioned cup release metadata is invalid.\n");
@@ -593,11 +410,9 @@ static CupError fetch_verified_generation(const CupUpdateFiles *files, const Cup
 
     package_catalog_init(&catalog);
     install_policy_init(&install_policy);
-    err = package_catalog_load_path(
-        &catalog, files->staged_catalog, PACKAGE_CATALOG_SOURCE_INSTALLED);
+    err = package_catalog_load_path(&catalog, files->staged_catalog);
     if (err == CUP_OK) {
-        err = install_policy_load_path(
-            &install_policy, files->staged_install_policy, INSTALL_POLICY_SOURCE_INSTALLED);
+        err = install_policy_load_path(&install_policy, files->staged_install_policy);
     }
     package_catalog_free(&catalog);
     if (err != CUP_OK) {
@@ -633,6 +448,7 @@ CupError cup_update_start(void) {
     CupUpdateUrls urls;
     ReleaseMetadata latest_metadata;
     ReleaseMetadata versioned_metadata;
+    CupUpdateJournal journal;
     CupError err;
     int update_available = 0;
     int transaction_started = 0;
@@ -640,16 +456,14 @@ CupError cup_update_start(void) {
     char helper_token[MAX_PATH_LEN];
 
     memset(&files, 0, sizeof(files));
+    cup_update_journal_init(&journal);
 
     /* Serialize discovery and handoff so no package operation observes half an update. */
     err = command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
         goto done;
     }
-    err = runtime_journal_require_none();
-    if (err == CUP_OK) {
-        err = require_replaceable_installed_generation();
-    }
+    err = require_replaceable_generation();
     if (err == CUP_OK) {
         err = prepare_update_files(&files);
     }
@@ -688,7 +502,8 @@ CupError cup_update_start(void) {
         err = cup_update_helper_prepare();
     }
     if (err == CUP_OK) {
-        err = cup_update_journal_begin(files.staging, helper_token, versioned_metadata.version);
+        err = cup_update_journal_begin(
+            files.staging, helper_token, versioned_metadata.version, &journal);
     }
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
@@ -698,7 +513,10 @@ CupError cup_update_start(void) {
     }
     transaction_started = 1;
 
-    err = cup_update_helper_start(helper_token);
+    err = interrupt_safe_point();
+    if (err == CUP_OK) {
+        err = cup_update_helper_start(helper_token);
+    }
     if (err != CUP_OK) {
         goto done;
     }
@@ -717,7 +535,9 @@ done:
         CupError cleanup_err = CUP_OK;
 
         if (transaction_started) {
-            cleanup_err = runtime_journal_clear();
+            cleanup_err = journal.file_identity.valid
+                              ? runtime_journal_clear_if_identity(&journal.file_identity)
+                              : CUP_ERR_TRANSACTION;
         }
         if (cleanup_err == CUP_OK) {
             cleanup_err = filesystem_remove_tree(files.staging);

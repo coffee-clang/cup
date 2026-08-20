@@ -9,13 +9,14 @@
 #include <stdio.h>
 
 #include "constants.h"
+#include "domain.h"
 #include "error.h"
 #include "package_catalog.h"
 #include "package_selector.h"
 
 typedef struct {
     PackageSelector selector;
-    char resolved_release[MAX_IDENTIFIER_LEN];
+    ConcreteRelease resolved_release;
     char input_selector[MAX_SELECTOR_LEN];
     char resolved_selector[MAX_SELECTOR_LEN];
 } PackageRequest;

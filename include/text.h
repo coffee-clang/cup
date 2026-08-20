@@ -7,7 +7,6 @@
  */
 
 #include <stddef.h>
-#include <stdio.h>
 
 #include "error.h"
 
@@ -16,6 +15,13 @@ typedef struct {
     char *data;
     size_t capacity;
 } TextBuffer;
+
+typedef struct {
+    const unsigned char *data;
+    size_t size;
+    size_t offset;
+    size_t line_number;
+} TextDocumentReader;
 
 /* Basic non-owning string inspection and in-place trimming. */
 int text_is_empty(const char *value);
@@ -34,15 +40,27 @@ CupError text_format(char *buffer, size_t size, const char *format, ...);
 /* Split into exactly output_count nonempty bounded fields. */
 CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size_t output_count);
 
-/*
- * Read the next nonempty data line, skipping blank and comment lines. The
- * line counter advances for every complete logical line that is consumed,
- * including skipped or rejected lines.
- */
-CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, size_t *line_number);
+/* Parse one canonical unsigned decimal bounded by maximum. */
+int text_parse_uint(const char *value, unsigned maximum, unsigned *result);
+
+/* Canonical persistent text uses printable ASCII and LF, with one final LF. */
+CupError text_document_reader_init(TextDocumentReader *reader,
+                                   const unsigned char *data,
+                                   size_t size);
+CupError text_document_read_raw_line(TextDocumentReader *reader,
+                                     char *buffer,
+                                     size_t size,
+                                     int *has_line);
+CupError text_document_read_line(TextDocumentReader *reader,
+                                 char *buffer,
+                                 size_t size,
+                                 int *has_line);
 
 /* Parse one nonempty key=value line into bounded caller-owned buffers. */
-CupError text_parse_key_value(
-    char *line, char *key, size_t key_size, char *value, size_t value_size);
+CupError text_parse_key_value(char *line,
+                              char *key,
+                              size_t key_size,
+                              char *value,
+                              size_t value_size);
 
 #endif /* CUP_TEXT_H */

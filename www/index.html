@@ -55,9 +55,7 @@
   <div class="instructions" id="platform-instructions-win32">
     <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
-      <pre class="cup-command">$installer = Join-Path $env:TEMP "install-cup.ps1"
-iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $installer
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer</pre>
+      <pre class="cup-command">powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"</pre>
       <button id="copy-button-win32" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
           <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">
@@ -72,9 +70,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $installer</pre>
   <div class="instructions" id="platform-instructions-win64">
     <p>Run the following in your terminal, then follow the onscreen instructions.</p>
     <div class="copy-container">
-      <pre class="cup-command">$installer = Join-Path $env:TEMP "install-cup.ps1"
-iwr https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 -OutFile $installer
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer</pre>
+      <pre class="cup-command">powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"</pre>
       <button id="copy-button-win64" class="copy-button" type="button" title="Copy install command">
         <div class="copy-icon">
           <svg width="24" height="25" viewBox="0 0 24 25" xmlns="http://www.w3.org/2000/svg">

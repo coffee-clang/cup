@@ -1,66 +1,75 @@
 #!/usr/bin/env bash
 
-# Purpose: Compiles the C unit-test binaries selected by the Makefile.
+# Compiles the C unit-test binaries selected by the Makefile.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+PERSISTENT_FILE_FIXTURE="$ROOT/tests/unit/persistent_file_fixture.c"
+
+list_registered_tests() {
+    local platform=$1
+    local name
+    awk '/^[[:space:]]*compile_test[[:space:]]+test_[A-Za-z0-9_]+/ { print $2 }' "$0" |
+        while IFS= read -r name; do
+            case "$platform:$name" in
+                windows-x64:test_storage)
+                    continue
+                    ;;
+                windows-x64:*)
+                    printf '%s.exe\n' "$name"
+                    ;;
+                *:test_system_windows|*:test_storage_windows)
+                    continue
+                    ;;
+                *)
+                    printf '%s\n' "$name"
+                    ;;
+            esac
+        done
+}
+
+if [ "${1:-}" = --list ]; then
+    list_platform=${2:-${CUP_TEST_PLATFORM:-}}
+    case "$list_platform" in
+        linux-x64|linux-arm64|macos-x64|macos-arm64|windows-x64) ;;
+        *)
+            printf 'Usage: %s --list <platform>\n' "$0" >&2
+            exit 2
+            ;;
+    esac
+    list_registered_tests "$list_platform"
+    exit 0
+fi
+
 . "$ROOT/tests/support/environment.sh"
 cup_test_prepare_environment
 cup_test_require_dependencies
 
-# Build configuration and dependency selection.
+# Build configuration and dependency selection. Make owns all platform and
+# configuration flags so unit tests cannot drift from the production policy.
 PLATFORM="$CUP_TEST_PLATFORM"
-case "$PLATFORM" in
-    macos-*)
-        CC="${CC:-clang}"
-        ;;
-    *)
-        CC="${CC:-gcc}"
-        ;;
-esac
+CC="${CC:-}"
+[ -n "$CC" ] || {
+    printf 'CC must be provided by the Makefile.\n' >&2
+    exit 2
+}
 TEST_CONFIGURATION="${CUP_TEST_CONFIGURATION:-development}"
-TEST_CPPFLAGS=
-TEST_CFLAGS="${TEST_CFLAGS:-}"
-TEST_LDFLAGS="${TEST_LDFLAGS:-}"
-case "$PLATFORM" in
-    macos-*)
-        TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE \
-            -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
-        TEST_CFLAGS="$TEST_CFLAGS -mmacosx-version-min=13.0"
-        TEST_LDFLAGS="$TEST_LDFLAGS -mmacosx-version-min=13.0"
-        ;;
-    linux-*)
-        TEST_CPPFLAGS="-D_POSIX_C_SOURCE=200809L \
-            -DCUP_USE_EMBEDDED_CA_BUNDLE -DCUP_USE_OPENSSL_INIT"
-        ;;
-    windows-x64)
-        TEST_CPPFLAGS="-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -DCURL_STATICLIB"
-        ;;
-esac
 case "$TEST_CONFIGURATION" in
-    development) ;;
-    coverage)
-        case "$PLATFORM" in
-            macos-*)
-                TEST_CFLAGS="$TEST_CFLAGS -fprofile-instr-generate -fcoverage-mapping"
-                TEST_LDFLAGS="$TEST_LDFLAGS -fprofile-instr-generate -fcoverage-mapping"
-                ;;
-            *)
-                TEST_CFLAGS="$TEST_CFLAGS --coverage -fprofile-arcs -ftest-coverage -fprofile-abs-path"
-                TEST_LDFLAGS="$TEST_LDFLAGS --coverage"
-                ;;
-        esac
-        ;;
-    sanitizers)
-        TEST_CFLAGS="$TEST_CFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer"
-        TEST_LDFLAGS="$TEST_LDFLAGS -fsanitize=address,undefined"
-        ;;
+    development|debug|coverage|sanitizers|release) ;;
     *)
         printf 'Unsupported unit-test configuration: %s\n' "$TEST_CONFIGURATION" >&2
         exit 2
         ;;
 esac
-TEST_BUILD_DIR="$ROOT/build/$PLATFORM/$TEST_CONFIGURATION/tests/unit"
+: "${CUP_TEST_CPPFLAGS?CUP_TEST_CPPFLAGS must be provided by the Makefile}"
+: "${CUP_TEST_CFLAGS?CUP_TEST_CFLAGS must be provided by the Makefile}"
+: "${CUP_TEST_LDFLAGS?CUP_TEST_LDFLAGS must be provided by the Makefile}"
+read -a TEST_CPPFLAGS <<<"$CUP_TEST_CPPFLAGS"
+read -a TEST_CFLAGS <<<"$CUP_TEST_CFLAGS"
+read -a TEST_LDFLAGS <<<"$CUP_TEST_LDFLAGS"
+TEST_BUILD_ROOT=$(cup_test_build_root) || exit 2
+TEST_BUILD_FINAL="$TEST_BUILD_ROOT/$PLATFORM/$TEST_CONFIGURATION/tests/unit"
+TEST_BUILD_PARENT=${TEST_BUILD_FINAL%/unit}
 COVERAGE_ENTRY_SOURCE=
 case "$PLATFORM:$TEST_CONFIGURATION" in
     macos-*:coverage)
@@ -85,33 +94,78 @@ UNIT_ARCHIVE_LIBS=$(PKG_CONFIG_PATH="$unit_pkg_config_path" \
         "$DEPS_PREFIX" >&2
     exit 1
 }
+UNIT_CURL_LIBS=$("$DEPS_PREFIX/bin/curl-config" --static-libs) || {
+    printf 'Pinned curl metadata was not usable in %s.\n' "$DEPS_PREFIX" >&2
+    exit 1
+}
+[ -n "$UNIT_CURL_LIBS" ] || {
+    printf 'Pinned curl metadata was empty in %s.\n' "$DEPS_PREFIX" >&2
+    exit 1
+}
 
-mkdir -p "$TEST_BUILD_DIR"
+cup_test_load_path_safety || exit 1
+cup_test_build_root_owned || exit 1
+cup_path_prepare_child_directory "$TEST_BUILD_ROOT" "$TEST_BUILD_PARENT" \
+    'unit-test output parent' || exit 1
+TEST_BUILD_DIR=$(cup_path_create_unique_directory \
+    "$TEST_BUILD_PARENT/.unit.XXXXXX" 'unit-test staging' 0755) || exit 1
+GCOV_PROFILE_FLAGS=()
+GCOV_OUTPUT_DIR=
+case "$PLATFORM:$TEST_CONFIGURATION" in
+    linux-*:coverage|windows-x64:coverage)
+        GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$TEST_BUILD_DIR") || exit 1
+        GCOV_PROFILE_FLAGS+=(
+            "-fprofile-dir=$TEST_BUILD_FINAL"
+            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
+        )
+        ;;
+esac
+cleanup_unit_staging() {
+    if [ -n "${TEST_BUILD_DIR:-}" ] &&
+        { [ -e "$TEST_BUILD_DIR" ] || [ -L "$TEST_BUILD_DIR" ]; }; then
+        cup_path_remove_child_tree "$TEST_BUILD_ROOT" "$TEST_BUILD_DIR" \
+            'unit-test staging' >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_unit_staging EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Compile one registered Unity suite with the same project flags and pinned libraries as CUP.
+# Compile one registered Unity suite with the same project flags and pinned libraries as cup.
 compile_test() {
     name=$1
     shift
     output="$TEST_BUILD_DIR/$name"
+    output_arg=$output
+    [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name"
+    compile_args=()
+    for compile_arg in "$@"; do
+        case "$compile_arg" in
+            "$ROOT"/*) compile_args+=("${compile_arg#"$ROOT"/}") ;;
+            *) compile_args+=("$compile_arg") ;;
+        esac
+    done
     printf '==> Compiling C unit test: %s\n' "$name"
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
         coverage_body="cup_coverage_${name}_main"
         coverage_entry="cup_coverage_${name}_entry"
-        "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
-            $TEST_CFLAGS \
+        coverage_entry_source=${COVERAGE_ENTRY_SOURCE#"$ROOT"/}
+        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
+            "${GCOV_PROFILE_FLAGS[@]}" \
             "-Dmain=$coverage_body" \
             "-DCUP_COVERAGE_VOID_ENTRY=$coverage_body" \
             "-DCUP_COVERAGE_ENTRY=$coverage_entry" \
             -I"$ROOT/tests/unit/fixtures" \
             -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
-            "$@" "$COVERAGE_ENTRY_SOURCE" \
-            "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
+            "${compile_args[@]}" "$coverage_entry_source" \
+            "$UNITY_LIB" "${TEST_LDFLAGS[@]}" -o "$output_arg")
     else
-        "$CC" -std=c11 $TEST_CPPFLAGS -Wall -Wextra -Werror \
-            $TEST_CFLAGS \
+        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
+            "${GCOV_PROFILE_FLAGS[@]}" \
             -I"$ROOT/tests/unit/fixtures" \
             -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
-            "$@" "$UNITY_LIB" $TEST_LDFLAGS -o "$output"
+            "${compile_args[@]}" "$UNITY_LIB" "${TEST_LDFLAGS[@]}" -o "$output_arg")
     fi
 }
 
@@ -125,24 +179,24 @@ compile_test test_command_queries \
     "$ROOT/src/command_search.c" \
     "$ROOT/src/command_inspect.c"
 
-compile_test test_archive_faults \
-    "$ROOT/tests/unit/test_archive_faults.c"
-
 compile_test test_package_transaction \
     "$ROOT/tests/unit/test_package_transaction.c" \
     "$ROOT/src/package_transaction.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_cup_update_journal \
     "$ROOT/tests/unit/test_cup_update_journal.c" \
     "$ROOT/src/cup_update_journal.c" \
+    "$ROOT/src/release_metadata.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/checksum.c" \
-    "$ROOT/src/sha256.c" \
+    "$ROOT/src/third_party/sha256.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_cup_update_helper \
     "$ROOT/tests/unit/test_cup_update_helper.c" \
@@ -153,14 +207,16 @@ compile_test test_cup_update_helper \
 compile_test test_runtime_journal \
     "$ROOT/tests/unit/test_runtime_journal.c" \
     "$ROOT/src/runtime_journal.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_uninstall_journal \
     "$ROOT/tests/unit/test_uninstall_journal.c" \
     "$ROOT/src/uninstall_journal.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_command_repair \
     "$ROOT/tests/unit/test_command_repair.c" \
@@ -171,6 +227,12 @@ compile_test test_command_repair \
 compile_test test_exit_status \
     "$ROOT/tests/unit/test_exit_status.c" \
     "$ROOT/src/exit_status.c"
+
+compile_test test_release_metadata \
+    "$ROOT/tests/unit/test_release_metadata.c" \
+    "$ROOT/src/release_metadata.c" \
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_text \
     "$ROOT/tests/unit/test_text.c" \
@@ -187,27 +249,41 @@ compile_test test_package_selector \
     "$ROOT/src/path.c" \
     "$ROOT/src/package_selector.c"
 
+compile_test test_package_request \
+    "$ROOT/tests/unit/test_package_request.c" \
+    "$ROOT/src/package_request.c" \
+    "$ROOT/src/package_selector.c" \
+    "$ROOT/src/registry.c" \
+    "$ROOT/src/text.c" \
+    "$ROOT/src/path.c"
+
 compile_test test_package_metadata \
     "$ROOT/tests/unit/test_package_metadata.c" \
     "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/interrupt.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_checksum \
     "$ROOT/tests/unit/test_checksum.c" \
     "$ROOT/src/checksum.c" \
-    "$ROOT/src/sha256.c" \
+    "$ROOT/src/third_party/sha256.c" \
     "$ROOT/src/text.c" \
-    "$ROOT/src/path.c"
+    "$ROOT/src/path.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_package_catalog \
     "$ROOT/tests/unit/test_package_catalog.c" \
     "$ROOT/src/package_catalog.c" \
+    "$ROOT/src/package_selector.c" \
+    "$ROOT/src/third_party/sha256.c" \
     "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/registry.c" \
     "$ROOT/src/platform.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_install_policy \
     "$ROOT/tests/unit/test_install_policy.c" \
@@ -215,7 +291,8 @@ compile_test test_install_policy \
     "$ROOT/src/tool_preferences.c" \
     "$ROOT/src/registry.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_cup_assets \
     "$ROOT/tests/unit/test_cup_assets.c" \
@@ -238,6 +315,7 @@ compile_test test_package_install \
 compile_test test_command_install \
     "$ROOT/tests/unit/test_command_install.c" \
     "$ROOT/src/command_install.c" \
+    "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/registry.c" \
@@ -284,6 +362,7 @@ esac
 compile_test test_package \
     "$ROOT/tests/unit/test_package.c" \
     "$ROOT/src/package.c" \
+    "$ROOT/src/interrupt.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/package_metadata.c" \
     "$ROOT/src/platform.c" \
@@ -292,7 +371,15 @@ compile_test test_package \
     "$ROOT/src/text.c" \
     "$ROOT/src/system.c" \
     "$PACKAGE_SYSTEM_SOURCE" \
+    -DCUP_PERSISTENT_FIXTURE_NATIVE_SYSTEM \
+    "$PERSISTENT_FILE_FIXTURE" \
     $PACKAGE_SYSTEM_LIBS
+
+compile_test test_package_artifact \
+    "$ROOT/tests/unit/test_package_artifact.c" \
+    "$ROOT/src/package_artifact.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 compile_test test_package_cache \
     "$ROOT/tests/unit/test_package_cache.c" \
@@ -307,6 +394,11 @@ compile_test test_package_cache \
     "$ROOT/src/text.c" \
     $PACKAGE_SYSTEM_LIBS
 
+compile_test test_download_url \
+    "$ROOT/tests/unit/test_download_url.c" \
+    "$ROOT/src/download_url.c" \
+    $UNIT_CURL_LIBS
+
 compile_test test_package_archive \
     "$ROOT/tests/unit/test_package_archive.c" \
     "$ROOT/src/package_archive_format.c" \
@@ -317,6 +409,21 @@ compile_test test_package_archive \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
     $PACKAGE_SYSTEM_LIBS \
+    $UNIT_ARCHIVE_LIBS
+
+compile_test test_package_extract \
+    "$ROOT/tests/unit/test_package_extract.c" \
+    "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/package_extract.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    $UNIT_ARCHIVE_LIBS
+
+compile_test test_package_extract_registration \
+    "$ROOT/tests/unit/test_package_extract_registration.c" \
+    "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
     $UNIT_ARCHIVE_LIBS
 
 if [ "$PLATFORM" != windows-x64 ]; then
@@ -331,7 +438,7 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/system_posix.c" \
         "$ROOT/src/interrupt.c" \
         "$ROOT/src/checksum.c" \
-        "$ROOT/src/sha256.c" \
+        "$ROOT/src/third_party/sha256.c" \
         "$ROOT/src/package_catalog.c" \
         "$ROOT/src/package_archive_format.c" \
         "$ROOT/src/install_policy.c" \
@@ -345,13 +452,6 @@ if [ "$PLATFORM" != windows-x64 ]; then
         "$ROOT/src/path.c" \
         "$ROOT/src/text.c"
 
-    compile_test test_package_extract \
-        "$ROOT/tests/unit/test_package_extract.c" \
-        "$ROOT/src/package_archive_format.c" \
-        "$ROOT/src/package_extract.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c" \
-        $UNIT_ARCHIVE_LIBS
 else
     compile_test test_system_windows \
         "$ROOT/tests/unit/test_system_windows.c" \
@@ -371,7 +471,7 @@ else
         "$ROOT/src/system_windows.c" \
         "$ROOT/src/interrupt.c" \
         "$ROOT/src/checksum.c" \
-        "$ROOT/src/sha256.c" \
+        "$ROOT/src/third_party/sha256.c" \
         "$ROOT/src/package_catalog.c" \
         "$ROOT/src/package_archive_format.c" \
         "$ROOT/src/install_policy.c" \
@@ -392,8 +492,12 @@ compile_test test_wrappers \
     "$ROOT/tests/unit/test_wrappers.c" \
     "$ROOT/src/wrappers.c" \
     "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/third_party/sha256.c" \
+    "$ROOT/src/interrupt.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 case "$PLATFORM" in
     windows-x64)
@@ -408,6 +512,8 @@ esac
 compile_test test_state \
     "$ROOT/tests/unit/test_state.c" \
     "$ROOT/src/state.c" \
+    "$ROOT/src/filesystem.c" \
+    "$ROOT/src/interrupt.c" \
     "$ROOT/src/system.c" \
     "$STATE_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
@@ -417,8 +523,10 @@ compile_test test_state \
 compile_test test_cup_update \
     "$ROOT/tests/unit/test_cup_update.c" \
     "$ROOT/src/cup_update.c" \
+    "$ROOT/src/release_metadata.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c"
+    "$ROOT/src/text.c" \
+    "$PERSISTENT_FILE_FIXTURE"
 
 compile_test test_command_uninstall \
     "$ROOT/tests/unit/test_command_uninstall.c" \
@@ -426,4 +534,39 @@ compile_test test_command_uninstall \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
+expected_list="$TEST_BUILD_DIR/.expected-tests"
+actual_list="$TEST_BUILD_DIR/.actual-tests"
+list_registered_tests "$PLATFORM" | LC_ALL=C sort > "$expected_list"
+: > "$actual_list"
+for test_binary in "$TEST_BUILD_DIR"/test_*; do
+    [ -f "$test_binary" ] || continue
+    case "$test_binary" in
+        *.gcda|*.gcno) continue ;;
+    esac
+    [ -x "$test_binary" ] || {
+        printf 'Compiled unit-test output is not executable: %s\n' "$test_binary" >&2
+        exit 1
+    }
+    basename "$test_binary" >> "$actual_list"
+done
+LC_ALL=C sort -o "$actual_list" "$actual_list"
+if [ "$(cat "$expected_list")" != "$(cat "$actual_list")" ]; then
+    printf 'Expected unit-test binaries:\n' >&2
+    cat "$expected_list" >&2
+    printf 'Compiled unit-test binaries:\n' >&2
+    cat "$actual_list" >&2
+    exit 1
+fi
+rm -f -- "$expected_list" "$actual_list"
+
+if [ -e "$TEST_BUILD_FINAL" ] || [ -L "$TEST_BUILD_FINAL" ]; then
+    cup_path_check_directory_chain "$TEST_BUILD_FINAL" 0 \
+        'previous unit-test output' || exit 1
+    cup_path_remove_child_tree "$TEST_BUILD_ROOT" "$TEST_BUILD_FINAL" \
+        'previous unit-test output' || exit 1
+fi
+cup_path_move_entry "$TEST_BUILD_DIR" "$TEST_BUILD_FINAL" ||
+    { printf 'Could not publish complete unit-test output.\n' >&2; exit 1; }
+TEST_BUILD_DIR=
+trap - EXIT HUP INT TERM
 printf 'All C unit-test binaries compiled for %s (%s).\n' "$PLATFORM" "$TEST_CONFIGURATION"

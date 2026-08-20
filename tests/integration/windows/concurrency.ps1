@@ -1,5 +1,5 @@
-# Purpose: Exercises a synchronized overlapping Windows install and verifies
-# that an active transaction blocks a second mutation without corrupting state.
+# Exercises a synchronized overlapping Windows install and verifies
+# that an active operation blocks a second mutation without corrupting state.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -39,8 +39,12 @@ function Complete-CupCapture {
 
     try {
         if (-not $Capture.Process.WaitForExit(30000)) {
-            try { $Capture.Process.Kill() } catch { }
-            $Capture.Process.WaitForExit()
+            try {
+                & taskkill.exe /PID $Capture.Process.Id /T /F 2>&1 | Out-Null
+            } catch {
+                # Cleanup is best effort.
+            }
+            [void]$Capture.Process.WaitForExit(10000)
             Fail-Test "concurrent cup process did not exit"
         }
         $stdout = $Capture.Stdout.Result.TrimEnd([char[]]"`r`n")
@@ -70,13 +74,14 @@ try {
     } else {
         $env:CUP_TEST_CONFIGURATION
     }
-    $helper = Join-Path $Script:CupTestProjectRoot `
-        "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
+    $helper = Join-Path $Script:CupTestBuildRoot `
+        "windows-x64\$configuration\tests\helpers\network-helper.exe"
     Assert-PathExists $helper
 
     $port = 0
     $serverRoot = Join-Path $Script:CupTestRoot "http-root"
     $ready = Join-Path $Script:CupTestRoot "http-ready"
+    $requestReady = Join-Path $Script:CupTestRoot "http-request-ready"
     $serverLog = Join-Path $Script:CupTestRoot "http-server.log"
     New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
 
@@ -94,7 +99,8 @@ try {
 
     $serverArguments = @(
         "http-server", "--root", $serverRoot, "--port", "$port",
-        "--ready-file", $ready, "--delay-ms", "3000"
+        "--ready-file", $ready, "--request-file", $requestReady,
+        "--delay-ms", "3000"
     )
     $server = Start-Process -FilePath $helper -ArgumentList $serverArguments `
         -RedirectStandardOutput $serverLog -RedirectStandardError "$serverLog.err" `
@@ -149,24 +155,24 @@ try {
     $captureA = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
     $transaction = Join-Path $Script:CupTestHome ".cup\transaction.txt"
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while (-not (Test-Path -LiteralPath $transaction) -and
+    while (-not (Test-Path -LiteralPath $requestReady) -and
            [DateTime]::UtcNow -lt $deadline) {
         if ($captureA.Process.HasExited) {
             $early = Complete-CupCapture -Capture $captureA
             $captureA = $null
-            Fail-Test ("first install exited before publishing its transaction journal`n" +
+            Fail-Test ("first install exited before reaching the synchronized download`n" +
                 "[$($early.ExitCode)] $($early.Output)")
         }
         Start-Sleep -Milliseconds 50
     }
-    if (-not (Test-Path -LiteralPath $transaction)) {
-        Fail-Test "first install did not publish its transaction journal"
+    if (-not (Test-Path -LiteralPath $requestReady)) {
+        Fail-Test "first install did not reach the synchronized download"
     }
 
     $captureB = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
     $resultB = Complete-CupCapture -Capture $captureB
     if ($resultB.ExitCode -eq 0) {
-        Fail-Test ("overlapping install was not blocked while the first transaction was active`n" +
+        Fail-Test ("overlapping install was not blocked while the first operation was active`n" +
             "[$($resultB.ExitCode)] $($resultB.Output)")
     }
 
@@ -202,16 +208,36 @@ try {
 } finally {
     if ($null -ne $captureA) {
         try {
-            if (-not $captureA.Process.HasExited) { $captureA.Process.Kill() }
-            $captureA.Process.WaitForExit()
-        } catch { }
-        try { $captureA.Process.Dispose() } catch { }
+            if (-not $captureA.Process.HasExited) {
+                try {
+                    & taskkill.exe /PID $captureA.Process.Id /T /F 2>&1 | Out-Null
+                } catch {
+                    # Cleanup is best effort.
+                }
+                [void]$captureA.Process.WaitForExit(10000)
+            }
+        } catch {
+            # Cleanup is best effort.
+        }
+        try {
+            $captureA.Process.Dispose()
+        } catch {
+            # Cleanup is best effort.
+        }
     }
     if ($null -ne $server) {
         try {
-            if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-            $server.WaitForExit()
-        } catch { }
+            if (-not $server.HasExited) {
+                try {
+                    & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
+                } catch {
+                    # Cleanup is best effort.
+                }
+                [void]$server.WaitForExit(10000)
+            }
+        } catch {
+            # Cleanup is best effort.
+        }
         $server.Dispose()
     }
     if ($null -eq $originalAllowInsecure) {

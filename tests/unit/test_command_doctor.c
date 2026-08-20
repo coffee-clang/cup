@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises doctor decisions with all external inspections simulated. Integration
+ * Exercises doctor decisions with all external inspections simulated. Integration
  * tests own real filesystem diagnosis.
  */
 
@@ -24,12 +24,16 @@
 
 typedef struct {
     CupError root_candidates_result;
+    CupError root_snapshot_result;
     size_t root_issue_count;
     CupError cup_assets_result;
     CupAssetsInspection cup_assets;
     CupError package_catalog_result;
     LayoutRuntimeStatus runtime_status;
     CupError runtime_result;
+    CupError root_path_result;
+    CupError root_kind_result;
+    SystemPathKind root_kind;
     CupError lock_path_result;
     CupError lock_file_result;
     int lock_exists;
@@ -83,6 +87,9 @@ typedef struct {
  */
 
 static DoctorScenario scenario;
+static int cup_assets_inspect_calls;
+static int root_snapshot_begin_calls;
+static int root_snapshot_end_calls;
 static int lock_release_calls;
 static int plan_free_calls;
 static int runtime_check_calls;
@@ -116,6 +123,7 @@ static void reset_scenario(void) {
     scenario.cup_assets.common_checksums = CUP_ASSET_VALID;
     scenario.cup_assets.platform_checksums = CUP_ASSET_VALID;
     scenario.runtime_status = LAYOUT_RUNTIME_READY;
+    scenario.root_kind = SYSTEM_PATH_DIRECTORY;
     scenario.lock_exists = 1;
     scenario.state_status = STATE_FILE_LOADED;
     scenario.include_state_package = 1;
@@ -135,6 +143,9 @@ static void reset_scenario(void) {
     fill_identity(&scenario.packages.items[0], "22.1.5");
     scenario.packages.count = 1;
     scenario.packages.total_count = 1;
+    cup_assets_inspect_calls = 0;
+    root_snapshot_begin_calls = 0;
+    root_snapshot_end_calls = 0;
     lock_release_calls = 0;
     plan_free_calls = 0;
     runtime_check_calls = 0;
@@ -205,6 +216,7 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
 }
 
 CupError cup_assets_inspect(CupAssetsInspection *inspection) {
+    cup_assets_inspect_calls++;
     if (inspection != NULL) {
         *inspection = scenario.cup_assets;
     }
@@ -249,6 +261,10 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "platform", CUP_OK);
 }
 
+CupError layout_get_root(char *buffer, size_t size) {
+    return copy_path(buffer, size, "root", scenario.root_path_result);
+}
+
 CupError layout_get_lock_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "cup.lock", scenario.lock_path_result);
 }
@@ -266,6 +282,19 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
         *status = scenario.runtime_status;
     }
     return scenario.runtime_result;
+}
+
+CupError layout_root_snapshot_begin(void) {
+    root_snapshot_begin_calls++;
+    return scenario.root_snapshot_result;
+}
+
+void layout_root_snapshot_end(void) {
+    root_snapshot_end_calls++;
+}
+
+CupError layout_root_snapshot_validate(void) {
+    return CUP_OK;
 }
 
 CupError layout_check_root_candidates(size_t *issue_count) {
@@ -286,6 +315,14 @@ CupError layout_check_runtime(size_t *missing_count) {
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     (void)identity;
     return copy_path(buffer, size, "package", scenario.install_path_result);
+}
+
+CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
+    (void)path;
+    if (kind != NULL) {
+        *kind = scenario.root_kind;
+    }
+    return scenario.root_kind_result;
 }
 
 CupError system_is_read_only(const char *path, int *is_read_only) {
@@ -338,7 +375,12 @@ CupError filesystem_count_children(const char *path, const char *excluded, size_
     return scenario.tmp_count_result;
 }
 
-CupError state_load(CupState *state, StateFileStatus *status) {
+CupError state_load(CupState *state,
+                    StateFileStatus *status,
+                    SystemPathIdentity *source_identity,
+                    FILE *diagnostics) {
+    TEST_ASSERT_NULL(source_identity);
+    TEST_ASSERT_NULL(diagnostics);
     memset(state, 0, sizeof(*state));
     *status = scenario.state_status;
     if (scenario.state_result != CUP_OK) {
@@ -360,7 +402,8 @@ CupError state_load(CupState *state, StateFileStatus *status) {
     return CUP_OK;
 }
 
-CupError state_validate(const CupState *state) {
+CupError state_validate(const CupState *state, FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     (void)state;
     return scenario.state_validate_result;
 }
@@ -459,7 +502,9 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host,
                                         const char *target,
-                                        const char *entry) {
+                                        const char *entry,
+                                        FILE *diagnostics) {
+    (void)diagnostics;
     (void)component;
     (void)host;
     (void)target;
@@ -480,7 +525,8 @@ CupError package_identity_format_selector(const PackageIdentity *identity,
         snprintf(buffer, size, "%s@%s", identity->tool, identity->version), size);
 }
 
-CupError package_validate(const char *path, const PackageIdentity *identity) {
+CupError package_validate(const char *path, const PackageIdentity *identity, FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     (void)path;
     (void)identity;
     return scenario.package_result;
@@ -495,7 +541,8 @@ CupError package_metadata_is_read_only(const char *path, int *is_read_only) {
     return scenario.package_metadata_protection_result;
 }
 
-CupError package_scan(PackageList *packages) {
+CupError package_scan(PackageList *packages, FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     if (scenario.scan_result == CUP_OK) {
         *packages = scenario.packages;
     }
@@ -545,6 +592,8 @@ CupError wrapper_plan_check(const WrapperPlan *plan, size_t *issue_count) {
 
 static void test_healthy(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
+    TEST_ASSERT_EQUAL_INT(1, root_snapshot_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, root_snapshot_end_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
@@ -552,6 +601,7 @@ static void test_healthy(void) {
 static void test_cup_assets_modes(void) {
     scenario.cup_assets_result = CUP_ERR_FILESYSTEM;
     scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
@@ -560,11 +610,13 @@ static void test_cup_assets_modes(void) {
     scenario.cup_assets.development_install_policy_valid = 1;
     scenario.cup_assets.development_uninstall_valid = 1;
     scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
 
     reset_scenario();
     memset(&scenario.cup_assets, 0, sizeof(scenario.cup_assets));
     scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
@@ -573,6 +625,10 @@ static void test_asset_issues(void) {
     scenario.cup_assets.uninstall = CUP_ASSET_MISSING;
     scenario.read_only = 0;
     scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+
+    reset_scenario();
+    scenario.cup_assets.helper = CUP_ASSET_INVALID;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
@@ -593,11 +649,27 @@ static void test_runtime_gates(void) {
     reset_scenario();
     scenario.lock_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(0, cup_assets_inspect_calls);
+
+    reset_scenario();
+    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_DIRECTORY;
+    scenario.lock_exists = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(0, cup_assets_inspect_calls);
 }
 
 static void test_root_and_uninstall_journal(void) {
     scenario.root_issue_count = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(0, root_snapshot_begin_calls);
+    TEST_ASSERT_EQUAL_INT(0, runtime_check_calls);
+
+    reset_scenario();
+    scenario.root_snapshot_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(1, root_snapshot_begin_calls);
+    TEST_ASSERT_EQUAL_INT(0, root_snapshot_end_calls);
     TEST_ASSERT_EQUAL_INT(0, runtime_check_calls);
 
     reset_scenario();
@@ -673,6 +745,10 @@ static void test_warning_only(void) {
     TEST_ASSERT_EQUAL_INT(1, package_catalog_check_calls);
 
     reset_scenario();
+    scenario.cup_assets.helper = CUP_ASSET_MISSING;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
+
+    reset_scenario();
     scenario.tmp_count = 2;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
     TEST_ASSERT_EQUAL_INT(1, tmp_count_calls);
@@ -694,7 +770,6 @@ static void test_incomplete_checks(void) {
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

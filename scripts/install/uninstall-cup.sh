@@ -1,16 +1,32 @@
 #!/bin/sh
 
-# Purpose: Detached POSIX helper that removes the canonical CUP root after the parent exits.
-# Inputs: selected root, copied helper path, parent process id and inherited signal descriptor.
+# The POSIX helper validates and acknowledges the handoff, waits for CUP to detach
+# the canonical root and exit, then removes the detached tree.
+# It receives the selected root, copied helper path and parent-lifetime descriptor.
 set -u
+umask 077
 
 CUP_ROOT="${1:-}"
 SELF_PATH="${2:-}"
-PARENT_PID="${3:-}"
-PARENT_SIGNAL_FD="${4:-}"
+PARENT_SIGNAL_FD="${3:-}"
 JOURNAL_ROOT="$CUP_ROOT"
 TEMPORARY_NAME=
 TOKEN=
+MAX_ROOT_MARKER_BYTES=1024
+MAX_UNINSTALL_JOURNAL_BYTES=8192
+
+file_size_at_most() {
+    file=$1
+    maximum=$2
+    size=$(wc -c < "$file") || return 1
+    set -- $size
+    [ "$#" -eq 1 ] || return 1
+    size=$1
+    case "$size" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$size" -le "$maximum" ]
+}
 
 read_exact_three_lines() {
     file=$1
@@ -26,6 +42,8 @@ read_exact_three_lines() {
             return 1
         fi
     } < "$file"
+    printf '%s\n%s\n%s\n' \
+        "$FILE_LINE_1" "$FILE_LINE_2" "$FILE_LINE_3" | cmp -s - "$file"
 }
 
 read_exact_seven_lines() {
@@ -50,6 +68,9 @@ read_exact_seven_lines() {
             return 1
         fi
     } < "$file"
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+        "$FILE_LINE_1" "$FILE_LINE_2" "$FILE_LINE_3" "$FILE_LINE_4" \
+        "$FILE_LINE_5" "$FILE_LINE_6" "$FILE_LINE_7" | cmp -s - "$file"
 }
 
 write_journal() {
@@ -57,9 +78,8 @@ write_journal() {
     phase=$2
     stage=$3
     error=$4
-    temporary="$root/.uninstall-transaction-$PARENT_PID"
-
     [ -d "$root" ] && [ ! -L "$root" ] || return 1
+    temporary=$(mktemp "$root/.uninstall-transaction.XXXXXX") || return 1
     if ! printf 'format=1\noperation=uninstall\nphase=%s\ntemporary_name=%s\ntoken=%s\nstage=%s\nerror=%s\n' \
         "$phase" "$TEMPORARY_NAME" "$TOKEN" "$stage" "$error" > "$temporary"; then
         rm -f "$temporary" 2>/dev/null || true
@@ -92,7 +112,7 @@ need_command() {
     }
 }
 
-for required_command in chmod mv rm rmdir; do
+for required_command in chmod cmp find mktemp mv rm rmdir wc; do
     need_command "$required_command"
 done
 
@@ -106,10 +126,6 @@ case "$CUP_ROOT" in
     "$HOME/.cup"|"$HOME/.coffee-cup") ;;
     *) fail handoff "refusing to remove an unsupported cup root" ;;
 esac
-case "$PARENT_PID" in
-    ''|*[!0-9]*) fail handoff "invalid parent process id" ;;
-esac
-[ "$PARENT_PID" -gt 0 ] || fail handoff "invalid parent process id"
 [ "$PARENT_SIGNAL_FD" = 3 ] || fail handoff "invalid parent lifetime signal"
 [ -n "$SELF_PATH" ] && [ "$SELF_PATH" = "$0" ] ||
     fail handoff "self path does not match the running uninstall helper"
@@ -121,6 +137,8 @@ esac
 ROOT_MARKER="$CUP_ROOT/root.txt"
 [ -f "$ROOT_MARKER" ] && [ ! -L "$ROOT_MARKER" ] ||
     fail handoff "cup root marker is missing or invalid"
+file_size_at_most "$ROOT_MARKER" "$MAX_ROOT_MARKER_BYTES" ||
+    fail handoff "cup root marker is missing or invalid"
 read_exact_three_lines "$ROOT_MARKER" &&
     [ "$FILE_LINE_1" = "format=1" ] &&
     [ "$FILE_LINE_2" = "product=coffee-clang/cup" ] &&
@@ -129,6 +147,8 @@ read_exact_three_lines "$ROOT_MARKER" &&
 
 JOURNAL="$CUP_ROOT/transaction.txt"
 [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] ||
+    fail handoff "uninstall transaction is missing or invalid"
+file_size_at_most "$JOURNAL" "$MAX_UNINSTALL_JOURNAL_BYTES" ||
     fail handoff "uninstall transaction is missing or invalid"
 read_exact_seven_lines "$JOURNAL" ||
     fail handoff "uninstall transaction is missing or invalid"
@@ -143,10 +163,13 @@ read_exact_seven_lines "$JOURNAL" ||
 TEMPORARY_NAME=${FILE_LINE_4#temporary_name=}
 TOKEN=${FILE_LINE_5#token=}
 case "$TOKEN" in
-    ''|*[!A-Za-z0-9_-]*) fail handoff "uninstall token is invalid" ;;
+    ''|*[!A-Za-z0-9_.-]*) fail handoff "uninstall token is invalid" ;;
 esac
-[ "$TEMPORARY_NAME" = ".cup-uninstall.$TOKEN" ] ||
+[ "${#TOKEN}" -lt 256 ] || fail handoff "uninstall token is invalid"
+if [ "$TEMPORARY_NAME" != ".cup-uninstall.$TOKEN" ] &&
+    [ "$TEMPORARY_NAME" != ".cup-uninstall-$TOKEN" ]; then
     fail handoff "uninstall transaction identity is invalid"
+fi
 DETACHED_ROOT="$HOME/$TEMPORARY_NAME"
 [ ! -e "$DETACHED_ROOT" ] && [ ! -L "$DETACHED_ROOT" ] ||
     fail handoff "uninstall destination already exists"
@@ -161,30 +184,55 @@ while IFS= read -r parent_message <&3; do
 done
 exec 3<&-
 
-write_journal "$CUP_ROOT" detaching detach 0 ||
-    fail parent-wait "could not persist uninstall detach stage"
-if ! mv "$CUP_ROOT" "$DETACHED_ROOT"; then
+# CUP performs the POSIX rename before it exits, using its descriptor-anchored no-replace move.
+# After EOF, trust only that exact handoff: the canonical root must be gone and the detached root
+# must be a real directory. A failed parent-side move leaves the journal at the canonical root.
+if [ -e "$CUP_ROOT" ] || [ -L "$CUP_ROOT" ] ||
+    [ ! -d "$DETACHED_ROOT" ] || [ -L "$DETACHED_ROOT" ]; then
     fail detach "could not detach $CUP_ROOT"
 fi
 JOURNAL_ROOT="$DETACHED_ROOT"
+write_journal "$DETACHED_ROOT" detaching detach 0 ||
+    fail detach "could not persist uninstall detach stage"
 
-# Keep the three ownership proofs required by the installer until every unrelated payload entry
-# is gone. A cleanup failure must leave a residue that can still be recognized and retried.
+# Keep the root marker, canonical executable and transaction until every unrelated payload entry
+# is gone. A cleanup failure then leaves enough evidence to identify the detached tree as CUP-owned.
 write_journal "$DETACHED_ROOT" failed cleanup 1 ||
     fail cleanup "could not persist uninstall cleanup state"
+remove_tree_no_follow() {
+    target=$1
+    if [ -L "$target" ] || [ -f "$target" ]; then
+        rm -f "$target"
+        return
+    fi
+    [ -d "$target" ] || return 1
+    find -P "$target" -xdev -depth -exec sh -c '''
+        for path do
+            if [ -d "$path" ] && [ ! -L "$path" ]; then
+                rmdir "$path"
+            else
+                chmod u+w "$path" 2>/dev/null || :
+                rm -f "$path"
+            fi || exit 1
+        done
+    ''' sh {} +
+}
+
 for detached_entry in \
     "$DETACHED_ROOT"/* "$DETACHED_ROOT"/.[!.]* "$DETACHED_ROOT"/..?*; do
     [ -e "$detached_entry" ] || [ -L "$detached_entry" ] || continue
     case "${detached_entry##*/}" in
         transaction.txt|root.txt|bin) continue ;;
     esac
-    rm -rf "$detached_entry" || fail cleanup "could not remove detached cup installation"
+    remove_tree_no_follow "$detached_entry" ||
+        fail cleanup "could not remove detached cup installation"
 done
 for binary_entry in \
     "$DETACHED_ROOT/bin"/* "$DETACHED_ROOT/bin"/.[!.]* "$DETACHED_ROOT/bin"/..?*; do
     [ -e "$binary_entry" ] || [ -L "$binary_entry" ] || continue
     [ "${binary_entry##*/}" = cup ] && continue
-    rm -rf "$binary_entry" || fail cleanup "could not remove detached cup binaries"
+    remove_tree_no_follow "$binary_entry" ||
+        fail cleanup "could not remove detached cup binaries"
 done
 
 # Only the final, already-minimal residue loses its ownership evidence.

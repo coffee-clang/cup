@@ -1,159 +1,367 @@
 # Testing
 
-The test system separates behavioral verification from repository and release
-checks. Each scenario belongs to the narrowest layer that can verify it without
-repeating the same workflow elsewhere.
+The test layout follows the part of the project that is being checked. A parser
+rule belongs in a unit test, a command workflow belongs in integration, and a
+release archive belongs in the release suite. Keeping these levels separate
+makes failures easier to understand and avoids running the same scenario in
+several places.
 
-## Principles
-
-Tests verify observable `cup` behavior, errors and filesystem effects. They do
-not require production-only branches, private command modes or source-text
-patterns merely to increase coverage.
-
-The suite avoids:
-
-- duplicate end-to-end scenarios across layers;
-- micro-suites for single assertions;
-- tests that freeze private function names or source layout;
-- fault cases that are equivalent to cases already covered;
-- changes to production code whose only purpose is testing.
-
-Coverage is evidence of useful scenarios, not a target to maximize artificially.
-
-## Layers
+## Test levels
 
 ```text
-unit         deterministic C behavior
-integration  native command workflows
-portability  platform-specific release properties
-repository   build, dependency and release contracts
-release      verification of assembled release candidates
+unit         C modules and decisions
+integration  public CLI and visible filesystem effects
+portability  properties tied to one platform family
+repository   build, scripts, workflows and repository rules
+release      already assembled release candidates
 ```
 
-### Unit tests
+The same behavior may still be run in a normal, sanitizer and coverage build.
+Those executions are not duplicates: they check different compiler/runtime
+properties while keeping the scenario owner unchanged.
 
-Unit tests use Unity and focus on parsers, state transitions, package selection,
-metadata, checksums, transaction decisions and error propagation. Platform-
-specific behavior is tested only where the native implementation can be built
-and exercised reliably.
+## General rules
 
-### Integration tests
+Tests are expected to:
 
-Integration tests run the real `cup` executable in an isolated user directory.
-They cover public commands, persistent effects, package lifecycle, diagnosis,
-repair, recovery, concurrency and uninstall.
+- check an intended behavior or failure;
+- use the narrowest suitable level;
+- avoid changing production code only to make a line executable;
+- avoid depending on private function names or source ordering;
+- avoid freezing the name of a helper script unless that name is public;
+- keep POSIX and Windows scenarios aligned where the user-visible behavior is
+  the same;
+- keep native differences in native tests rather than simulating them on another
+  operating system.
 
-Linux and macOS use the POSIX suites. Windows uses the native PowerShell suites.
-Equivalent user-visible behavior uses matching suite names on both platform
-families, while platform-specific filesystem and process semantics remain
-native. Each runner discovers the scripts in its native integration directory,
-so adding a scenario does not require a separate suite manifest.
+A percentage by itself is not enough to decide that two tests are equivalent.
+Two scenarios may report the same aggregate coverage while reaching different
+branches or checking different effects.
 
-Local-hostname download and rejection of a downloaded checksum mismatch belong
-to integration because they exercise the public network boundary. Package
-lifecycle, extraction, wrappers and `doctor` remain owned by their dedicated
-suites. The fixture is fully local and does not depend on an external service.
+## Unit tests
 
-### Portability tests
+Unit tests are C executables built with Unity. Each test binary links the module
+under test and the smallest useful set of collaborators or mocks.
 
-Portability tests cover properties that are meaningful only for a particular
-release family. The Linux static-runtime test verifies binary policy,
-embedded-CA behavior, HTTPS validation and proxy tunnelling without pretending
-that the same implementation contract applies to Windows or macOS.
+They cover areas such as:
 
-### Repository tests
+- command argument validation and command decisions;
+- domain, platform and package selection;
+- catalog and metadata parsing;
+- state and tool-preference persistence;
+- checksum and archive-format validation;
+- package cache and verified-artifact handling;
+- package, update and uninstall journal state transitions;
+- doctor and repair decisions;
+- native filesystem error mapping;
+- wrapper planning and reconciliation.
 
-Repository checks exercise operational contracts that are not CLI behavior,
-such as dependency preparation, public Make targets, version generation,
-release publication recovery and minimal source-package hygiene.
+The `VerifiedArtifact` tests are especially important because the program must
+consume the same open file that passed size, digest and archive checks. Journal
+tests keep physical file handling in `runtime_journal` and test the separate
+schema/recovery rules in their own modules.
 
-The public POSIX scripts are parsed by the available `/bin/sh`, Dash and BusyBox
-shells as a supplemental compatibility check. Their portability is verified
-behaviorally by executing the generated installer in a restricted environment
-where optional host text utilities fail, then checking the installed files,
-permissions, ownership marker and cleanup results.
+Unit binaries are declared in `tests/build/unit.sh`. The runner compares the
+built directory against that declaration before execution, so stale or missing
+binaries cannot be silently ignored.
 
-Repository checks do not freeze private function names, implementation order,
-script inventories or test-harness organization. Structural assertions are kept
-only where the structure itself is part of a published build, package or release
-contract.
+Build and run them with:
 
-### Release tests
+```sh
+make PLATFORM=<platform> test-unit
+```
 
-Release tests consume already assembled candidates. They verify the exact files
-that would be published, including checksums, version identity, startup,
-installation, repair preservation and uninstall. They do not rebuild the
-candidate or repeat detailed unit fault injection.
+The build-only target is:
 
-## Local commands
+```sh
+make PLATFORM=<platform> test-unit-build
+```
+
+## Integration tests
+
+Integration tests execute the real `cup` binary in an isolated home directory.
+They verify command output together with the files and directories left behind.
+
+The shared POSIX and Windows suite families cover:
+
+```text
+archive-safety
+cli-contract
+concurrency
+doctor
+install-policy
+network
+package-catalog
+package-lifecycle
+recovery
+repair
+state
+uninstall
+wrappers
+```
+
+POSIX also has the initial bootstrap scenario. Windows has additional native
+filesystem/reparse-point coverage. These differences are intentional because
+shell modes, signals, process handling and reparse points do not have one common
+implementation.
+
+The integration layer covers:
+
+- public command syntax and exit status;
+- install, remove, default and update behavior;
+- target-specific state and wrapper changes;
+- catalog resolution and package selection;
+- archive and path-safety failures visible to the command;
+- local HTTP/HTTPS download behavior;
+- lock contention and interrupted operations;
+- malformed or incomplete transactions;
+- `doctor`, `repair` and uninstall effects.
+
+Network scenarios use local fixtures. They do not depend on a public server.
+The helper is built from the test dependency prefix and keeps the tests
+repeatable.
+
+Run integration tests with:
+
+```sh
+make PLATFORM=<platform> test-integration
+```
+
+On POSIX, `tests/runners/integration-posix.sh` discovers the scripts in
+`tests/integration/posix/`. On Windows, the PowerShell runner discovers the
+native suites in `tests/integration/windows/`. There is no separate persistent
+suite manifest.
+
+## Combined behavioral tests
 
 ```sh
 make PLATFORM=<platform> test
-make PLATFORM=<platform> test-unit
-make PLATFORM=<platform> test-integration
-make quality
-make PLATFORM=<platform> check
 ```
 
-The Linux static runtime portability test is explicit:
+For Linux and macOS this builds cup, the unit binaries and the test helpers, then
+runs the POSIX unit and integration runners. For Windows it uses the UCRT64 build
+and the native PowerShell integration runner.
+
+The focused build target is:
+
+```sh
+make PLATFORM=<platform> test-build
+```
+
+## Repository tests
+
+Repository tests check contracts that are not public CLI behavior. They run
+through:
+
+```sh
+make quality
+```
+
+or directly:
+
+```sh
+./tests/runners/repository.sh
+```
+
+The runner reports every independent failure instead of stopping after the first
+one. Its checks cover:
+
+- repository structure and unsupported tooling;
+- controlled test environments;
+- safe build/dependency path handling and deterministic race fixtures;
+- dependency lock, build recipes and prefix compatibility;
+- CA-bundle metadata and generation;
+- Make targets and build configuration;
+- immutable GitHub Action commit refs and workflow permissions;
+- dependency, source and evidence-index formats;
+- native binary inspection rules;
+- version generation and official-version policy;
+- installer behavior and supported shell syntax;
+- release publication, resume and failure recovery.
+
+A repository assertion is kept only when it protects a current build,
+dependency, workflow, installer or release rule. Project-process metadata is not
+a test input.
+
+Some repository scenarios need generated build output. `make check` enables them
+with `CUP_TEST_WITH_BUILD_OUTPUT=1` after the normal build and behavioral tests
+have completed.
+
+## Installer portability checks
+
+The public POSIX installer and uninstall script run on machines that the project
+does not control. Their tests therefore do more than parse them with Bash.
+
+Where available, the repository suite checks syntax with:
+
+- `/bin/sh`;
+- Dash;
+- BusyBox `sh`.
+
+It also runs the generated installer while optional text-processing utilities
+are blocked. The scenarios check canonical release versions and checksum text,
+bounded curl transport, the explicit curl prerequisite, signal exit status, the
+exact root reported by the bootstrap, the exact installed version, permissions,
+marker and cleanup results. Commands that the installer requires are
+declared and checked before the installation starts.
+
+Windows installer and uninstall behavior is exercised by the native PowerShell
+release and integration tests.
+
+Linux sanitizer unit and integration tests enable LeakSanitizer together with
+AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may
+spawn descendants use a test-only process-group boundary so timeout cleanup
+terminates the whole fixture tree rather than weakening leak coverage.
+
+## Coverage
+
+Coverage is run explicitly:
+
+```sh
+make PLATFORM=<platform> test-coverage
+```
+
+Reports are written below:
+
+```text
+build/reports/coverage/<platform>/
+```
+
+All platforms use the same `gcovr` report, saved-tracefile and threshold flow.
+Linux and Windows feed it GCC/gcov `.gcda` data. macOS feeds it Clang `.profraw`
+profiles together with matching `llvm-profdata`, `llvm-cov` and every
+instrumented executable resolved from the current build.
+
+On macOS, the product, unit tests and helpers share one external coverage entry
+wrapper but keep distinct internal entry symbols. This lets the LLVM backend
+consume all current objects without treating unrelated `main` functions as the
+same function. Profile or object incompatibility is detected by report
+generation itself rather than by matching warning text.
+
+Thresholds are applied independently to each platform. A missing branch on
+Windows should not be hidden by a higher Linux result. Coverage filters include
+production sources rather than test fixtures. Profile, object and report inputs
+come only from the current isolated coverage build.
+
+A new test should come from a missing behavior or error contract, not from the
+goal of executing an otherwise meaningless line.
+
+## Sanitizers
+
+```sh
+make PLATFORM=<platform> test-sanitizers
+```
+
+The sanitizer configuration uses Clang/Compiler-RT and runs the normal unit and
+integration owners. AddressSanitizer and UndefinedBehaviorSanitizer are enabled.
+Leak detection is enabled on Linux and disabled where the native platform/tool
+combination does not provide a reliable equivalent.
+
+Sanitizer objects and reports remain separate from development and coverage
+output. The produced executable is also passed through binary inspection.
+
+## Linux static-runtime portability
 
 ```sh
 make PLATFORM=linux-x64 test-portability-linux
 ```
 
-Coverage and sanitizer runs are explicit:
+This is not a general integration suite. It verifies properties specific to the
+fully static Linux release:
 
-```sh
-make PLATFORM=<platform> test-coverage
-make PLATFORM=<platform> test-sanitizers
-```
+- no unexpected dynamic runtime requirement;
+- embedded CA validation;
+- rejection of an unknown CA;
+- direct HTTPS transfer;
+- HTTP CONNECT proxy tunnelling.
 
-An already assembled release candidate is checked with:
+All servers and certificates are local to the test.
+
+## Release tests
+
+Release tests receive an already assembled candidate:
 
 ```sh
 make PLATFORM=<platform> test-release RELEASE_DIR=<candidate-directory>
 ```
 
-## Dependencies
+They do not rebuild cup. They check the bytes that would be published:
 
-`make test` prepares or reuses the compatible dependency prefix. `DEPS_PREFIX`
-may select an existing native prefix, and `make deps-check` validates it without
-rebuilding.
+- exact public file set;
+- checksum membership and digest values;
+- version and source identity;
+- native startup;
+- installation into a fresh home;
+- `doctor` after installation;
+- preservation and cleanup behavior needed by repair/uninstall.
 
-Dependency compatibility is based on the platform, build profile, recipe and
-semantic source lock. Unrelated comments or formatting changes do not invalidate
-the prefix.
+POSIX and Windows have native release runners. A candidate is accepted for
+publication only after all five platform jobs have checked their matching files.
 
-## Platform matrix
+## Local full check
 
-Source tests, coverage and sanitizers run natively for the supported platform
-matrix. Linux and Windows coverage use GCC/gcov; macOS uses Clang source-based
-coverage. Sanitizers use Clang/Compiler-RT.
+The broad local entry point is:
 
-A POSIX simulation does not replace native Windows testing, and Windows results
-do not stand in for POSIX mode, signal or shell behavior.
-
-## Coverage
-
-Reports are written below:
-
-```text
-build/coverage/<platform>/
+```sh
+make PLATFORM=<platform> check
 ```
 
-Thresholds are platform-specific so native branches remain visible. Coverage
-improvements come from a missing behavior or failure contract, not from
-executing an otherwise redundant defensive line.
+It prepares or validates dependencies, runs unit and integration behavior, then
+runs repository quality with the build-dependent checks enabled.
 
-## Continuous integration
+This command is useful before pushing, but it cannot replace native CI for the
+other operating systems.
 
-The dependency workflow prepares reusable native prefixes. The tests workflow
-runs repository checks, source tests, coverage and sanitizers. The release
-workflow requires a successful test result for the selected commit, builds
-release candidates and verifies those exact candidates before publication.
+## CI organization
 
-## Related documents
+The workflows have separate responsibilities:
 
-- [BUILD](BUILD.md) — build and dependency configuration;
-- [RELEASES](RELEASES.md) — release candidates and publication;
-- [PLATFORMS](../design/PLATFORMS.md) — native platform differences.
+- `dependencies.yml` prepares or restores each native dependency prefix;
+- `tests.yml` runs repository checks, source tests, evidence indexing, coverage
+  and sanitizers;
+- `release.yml` accepts evidence from one successful Tests run, builds official
+  candidates, tests those candidates natively and publishes them;
+- `debug.yml` creates diagnostic artifacts;
+- `static.yml` belongs to the existing website/Pages surface and is not part of
+  cup source or release validation.
+
+The Tests workflow runs on pushes to `main`, pull requests and manual dispatch.
+The final gate checks the result of every required job directly.
+
+### Evidence used by releases
+
+A successful Tests run produces dependency evidence for the six dependency
+profiles and source evidence for the five supported platform identifiers. The
+single inventory in `scripts/ci/tests-evidence-artifacts.sh` defines those eleven
+release-authorizing artifact names.
+
+After those jobs succeed, the evidence-index job records the GitHub artifact ID,
+name and SHA-256 digest for the current run attempt. Release later selects one
+successful Tests run for the exact commit and downloads the listed artifacts by
+ID. Repository, commit, run ID, run attempt, artifact name and local file schema
+are checked before any official candidate is built.
+
+When Release supplies its candidate build config, the verifier also requires
+the tested compiler command, normalized target and numeric version, plus the
+dependency source lock and toolchain fingerprint. Raw targets, executable paths
+and full vendor version lines are retained for diagnostics but are not compared
+across native runners. Windows applies the same rule to the resource compiler.
+
+A rerun attempt is a different evidence generation. Files from two attempts are
+not combined.
+
+## Timeouts
+
+Unit, integration and repository runners support positive timeout environment
+variables. When a timeout is requested, GNU `timeout` or `gtimeout` must be
+available. Long-running concurrency and child-process scenarios also contain
+bounded waits and cleanup paths.
+
+The default local run does not invent a timeout when none was requested.
+
+## Related chapters
+
+- [Build](BUILD.md)
+- [Releases](RELEASES.md)
+- [Platforms](../design/PLATFORMS.md)
+- [Security](../design/SECURITY.md)

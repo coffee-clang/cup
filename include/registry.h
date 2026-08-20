@@ -16,6 +16,7 @@ CupError registry_validate_tool(const char *component, const char *tool);
 
 /* Return whether a selector is the exact name of a registered component. */
 int registry_is_component(const char *component);
+int registry_is_tool(const char *component, const char *tool);
 size_t registry_component_count(void);
 const char *registry_component_at(size_t index);
 

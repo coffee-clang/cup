@@ -1,7 +1,8 @@
 /*
  * Extracts one bounded package archive below an anchored staging directory. Archive paths use a
- * portable ASCII grammar, case-folded and file/directory aliases are rejected, links are
- * constrained, and permissions are normalized rather than trusted from the archive.
+ * portable ASCII grammar, case-fold collisions and file/directory aliases are rejected, only
+ * directories and regular files are admitted, and permissions are normalized rather than trusted
+ * from the archive.
  */
 
 #include "package_extract.h"
@@ -20,9 +21,13 @@
 #include <string.h>
 #include <sys/types.h>
 
+#define HASH_NONFATAL_OOM 1
+#define uthash_nonfatal_oom(element) ((element)->hash_oom = 1)
 #include "uthash.h"
 
 #if defined(_WIN32)
+#include "windows_utf.h"
+
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -30,21 +35,22 @@
 #include <unistd.h>
 #endif
 
+typedef enum {
+    PATH_STATE_ANCESTOR_ONLY,
+    PATH_STATE_EXPLICIT_DIRECTORY,
+    PATH_STATE_EXPLICIT_FILE
+} ExtractedPathState;
+
 typedef struct ExtractedPath {
-    char *key;
-    char *path;
-    mode_t type;
+    ExtractedPathState state;
+    int hash_oom;
     UT_hash_handle hh;
+    char key[];
 } ExtractedPath;
 
-typedef struct ExtractedAncestor {
-    char *key;
-    UT_hash_handle hh;
-} ExtractedAncestor;
-
 typedef struct {
-    ExtractedPath *entries;
-    ExtractedAncestor *ancestors;
+    ExtractedPath *paths;
+    uint64_t allocated_bytes;
 } ExtractedPathTable;
 
 typedef struct {
@@ -57,226 +63,151 @@ typedef struct {
     int active;
 } ExtractionRoot;
 
-/* Portable path table. Case-folded keys detect collisions that would alias on Windows or default
- * macOS filesystems. */
-static CupError lowercase_path(const char *path, char **key) {
+/* Portable path state. One case-folded table represents both explicit entries and prefixes that
+ * already own descendants, so file/directory alias policy has one mutation owner. */
+static CupError lowercase_path(const char *path, char *key, size_t size) {
     size_t length;
     size_t i;
 
-    if (text_is_empty(path) || key == NULL) {
+    if (text_is_empty(path) || key == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-
     length = strlen(path);
-    *key = malloc(length + 1);
-    if (*key == NULL) {
-        return CUP_ERR_EXTRACT;
+    if (length >= size) {
+        return CUP_ERR_ARCHIVE_UNSAFE;
     }
-
     for (i = 0; i < length; ++i) {
         unsigned char value = (unsigned char)path[i];
-        (*key)[i] = value >= 'A' && value <= 'Z' ? (char)(value - 'A' + 'a') : (char)value;
+        key[i] = value >= 'A' && value <= 'Z' ? (char)(value - 'A' + 'a') : (char)value;
     }
-    (*key)[length] = '\0';
+    key[length] = '\0';
     return CUP_OK;
 }
 
 static void path_table_free(ExtractedPathTable *table) {
-    ExtractedAncestor *ancestor;
-    ExtractedAncestor *next_ancestor;
     ExtractedPath *entry;
     ExtractedPath *next;
 
     if (table == NULL) {
         return;
     }
-
-    ancestor = table->ancestors;
-    HASH_CLEAR(hh, table->ancestors);
-    while (ancestor != NULL) {
-        next_ancestor = (ExtractedAncestor *)ancestor->hh.next;
-        free(ancestor->key);
-        free(ancestor);
-        ancestor = next_ancestor;
-    }
-
-    entry = table->entries;
-    HASH_CLEAR(hh, table->entries);
+    entry = table->paths;
+    HASH_CLEAR(hh, table->paths);
     while (entry != NULL) {
         next = (ExtractedPath *)entry->hh.next;
-        free(entry->key);
-        free(entry->path);
         free(entry);
         entry = next;
     }
+    table->allocated_bytes = 0;
 }
 
-static const ExtractedPath *path_table_find_key(const ExtractedPathTable *table, const char *key) {
+static ExtractedPath *path_table_find(const ExtractedPathTable *table, const char *key) {
     ExtractedPath *entry = NULL;
 
     if (table == NULL || key == NULL) {
         return NULL;
     }
-
-    HASH_FIND_STR(table->entries, key, entry);
+    HASH_FIND_STR(table->paths, key, entry);
     return entry;
 }
 
-static CupError path_table_find(const ExtractedPathTable *table,
-                                const char *path,
-                                const ExtractedPath **found) {
-    char *key = NULL;
-    CupError err;
+static CupError path_table_add(ExtractedPathTable *table,
+                               const char *key,
+                               ExtractedPathState state) {
+    ExtractedPath *entry;
+    size_t length;
+    uint64_t allocation_size;
 
-    if (found == NULL) {
-        return CUP_ERR_INVALID_INPUT;
+    length = strlen(key) + 1;
+    allocation_size = (uint64_t)sizeof(*entry) + length;
+    if (allocation_size > MAX_PACKAGE_PATH_TABLE_BYTES - table->allocated_bytes) {
+        fprintf(stderr, "Error: archive path state exceeds the resource limit.\n");
+        return CUP_ERR_ARCHIVE_UNSAFE;
     }
-    *found = NULL;
-
-    err = lowercase_path(path, &key);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *found = path_table_find_key(table, key);
-    free(key);
-    return CUP_OK;
-}
-
-static int path_table_has_descendant(const ExtractedPathTable *table, const char *key) {
-    ExtractedAncestor *ancestor = NULL;
-
-    if (table == NULL || key == NULL) {
-        return 0;
-    }
-    HASH_FIND_STR(table->ancestors, key, ancestor);
-    return ancestor != NULL;
-}
-
-static CupError path_table_record_ancestors(ExtractedPathTable *table, const char *key) {
-    char *copy;
-    char *slash;
-    size_t length = strlen(key) + 1;
-
-    copy = malloc(length);
-    if (copy == NULL) {
+    entry = calloc(1, (size_t)allocation_size);
+    if (entry == NULL) {
+        fprintf(stderr, "Error: failed to allocate archive path state.\n");
         return CUP_ERR_EXTRACT;
     }
-    memcpy(copy, key, length);
-
-    slash = copy;
-    while ((slash = strchr(slash, '/')) != NULL) {
-        ExtractedAncestor *ancestor = NULL;
-        char saved = *slash;
-
-        *slash = '\0';
-        HASH_FIND_STR(table->ancestors, copy, ancestor);
-        if (ancestor == NULL) {
-            ancestor = calloc(1, sizeof(*ancestor));
-            if (ancestor == NULL) {
-                free(copy);
-                return CUP_ERR_EXTRACT;
-            }
-            length = strlen(copy) + 1;
-            ancestor->key = malloc(length);
-            if (ancestor->key == NULL) {
-                free(ancestor);
-                free(copy);
-                return CUP_ERR_EXTRACT;
-            }
-            memcpy(ancestor->key, copy, length);
-            HASH_ADD_KEYPTR(hh,
-                            table->ancestors,
-                            ancestor->key,
-                            strlen(ancestor->key),
-                            ancestor);
-        }
-        *slash = saved;
-        slash++;
+    entry->state = state;
+    memcpy(entry->key, key, length);
+    HASH_ADD_KEYPTR(hh, table->paths, entry->key, strlen(entry->key), entry);
+    if (entry->hash_oom) {
+        free(entry);
+        fprintf(stderr, "Error: failed to allocate archive path state.\n");
+        return CUP_ERR_EXTRACT;
     }
-
-    free(copy);
+    table->allocated_bytes += allocation_size;
     return CUP_OK;
 }
 
-static CupError path_table_validate_new(const ExtractedPathTable *table,
-                                        const char *path,
-                                        mode_t type,
-                                        char **key) {
-    const ExtractedPath *entry;
+/* Register one path before any disk write. Mutation failure is terminal for the extraction attempt,
+ * so partial in-memory registration needs no rollback and the whole table is freed on exit. */
+static CupError path_table_register(ExtractedPathTable *table, const char *path, mode_t type) {
+    char key[MAX_PATH_LEN];
     char *slash;
+    ExtractedPath *entry;
+    ExtractedPathState explicit_state;
     CupError err;
 
-    err = lowercase_path(path, key);
+    if (table == NULL || (type != AE_IFDIR && type != AE_IFREG)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = lowercase_path(path, key, sizeof(key));
     if (err != CUP_OK) {
         return err;
     }
 
-    if (path_table_find_key(table, *key) != NULL) {
-        free(*key);
-        *key = NULL;
+    entry = path_table_find(table, key);
+    if (entry != NULL &&
+        !(entry->state == PATH_STATE_ANCESTOR_ONLY && type == AE_IFDIR)) {
+        fprintf(stderr,
+                "Error: archive contains a duplicate, case-colliding, or "
+                "file/directory-colliding path.\n");
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
-    slash = *key;
+    slash = key;
     while ((slash = strchr(slash, '/')) != NULL) {
         char saved = *slash;
         *slash = '\0';
-        entry = path_table_find_key(table, *key);
+        entry = path_table_find(table, key);
         *slash = saved;
-        if (entry != NULL && entry->type != AE_IFDIR) {
-            free(*key);
-            *key = NULL;
+        if (entry != NULL && entry->state == PATH_STATE_EXPLICIT_FILE) {
+            fprintf(stderr,
+                    "Error: archive contains a duplicate, case-colliding, or "
+                    "file/directory-colliding path.\n");
             return CUP_ERR_ARCHIVE_UNSAFE;
         }
         slash++;
     }
 
-    if (type != AE_IFDIR && path_table_has_descendant(table, *key)) {
-        free(*key);
-        *key = NULL;
-        return CUP_ERR_ARCHIVE_UNSAFE;
+    slash = key;
+    while ((slash = strchr(slash, '/')) != NULL) {
+        char saved = *slash;
+        *slash = '\0';
+        if (path_table_find(table, key) == NULL) {
+            err = path_table_add(table, key, PATH_STATE_ANCESTOR_ONLY);
+            if (err != CUP_OK) {
+                *slash = saved;
+                return err;
+            }
+        }
+        *slash = saved;
+        slash++;
     }
 
-    return CUP_OK;
+    entry = path_table_find(table, key);
+    if (entry != NULL) {
+        entry->state = PATH_STATE_EXPLICIT_DIRECTORY;
+        return CUP_OK;
+    }
+
+    explicit_state = type == AE_IFDIR ? PATH_STATE_EXPLICIT_DIRECTORY : PATH_STATE_EXPLICIT_FILE;
+    return path_table_add(table, key, explicit_state);
 }
 
-static CupError path_table_add(ExtractedPathTable *table, const char *path, mode_t type) {
-    ExtractedPath *entry;
-    char *key = NULL;
-    size_t length;
-    CupError err;
-
-    if (table == NULL || path == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = path_table_validate_new(table, path, type, &key);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    entry = calloc(1, sizeof(*entry));
-    if (entry == NULL) {
-        free(key);
-        return CUP_ERR_EXTRACT;
-    }
-
-    length = strlen(path) + 1;
-    entry->path = malloc(length);
-    if (entry->path == NULL) {
-        free(key);
-        free(entry);
-        return CUP_ERR_EXTRACT;
-    }
-
-    memcpy(entry->path, path, length);
-    entry->key = key;
-    entry->type = type;
-    HASH_ADD_KEYPTR(hh, table->entries, entry->key, strlen(entry->key), entry);
-    return path_table_record_ancestors(table, entry->key);
-}
-
-/* Entry-path and link validation. Archive names are normalized before any destination path is
+/* Entry-path validation. Archive names are normalized before any destination path is
  * constructed. */
 static CupError split_archive_path(const char *path,
                                    char *root,
@@ -340,73 +271,13 @@ static CupError normalize_entry_path(const char *input, char *output, size_t siz
     return CUP_OK;
 }
 
-static int symlink_target_is_internal(const char *entry_path, const char *target) {
-    char combined[MAX_PATH_LEN];
-    char parent[MAX_PATH_LEN];
-    size_t count = 0;
-    char *cursor;
-
-    if (text_is_empty(entry_path) || text_is_empty(target) || target[0] == '/' ||
-        target[0] == '\\' || strchr(target, '\\') != NULL || strchr(target, ':') != NULL ||
-        text_copy(parent, sizeof(parent), entry_path) != CUP_OK) {
-        return 0;
-    }
-
-    {
-        char *slash = strrchr(parent, '/');
-        if (slash == NULL) {
-            parent[0] = '\0';
-        } else {
-            *slash = '\0';
-        }
-    }
-
-    if (parent[0] == '\0') {
-        if (text_copy(combined, sizeof(combined), target) != CUP_OK) {
-            return 0;
-        }
-    } else if (text_format(combined, sizeof(combined), "%s/%s", parent, target) != CUP_OK) {
-        return 0;
-    }
-
-    cursor = combined;
-    while (cursor != NULL) {
-        char *slash = strchr(cursor, '/');
-
-        if (slash != NULL) {
-            *slash = '\0';
-        }
-
-        if (cursor[0] == '\0' || strcmp(cursor, ".") == 0) {
-            /* Empty and "." segments leave the normalized depth unchanged. */
-        } else if (strcmp(cursor, "..") == 0) {
-            if (count == 0) {
-                return 0;
-            }
-            count--;
-        } else {
-            if (!path_is_safe_segment(cursor) || count >= MAX_PACKAGE_PATH_DEPTH) {
-                return 0;
-            }
-            count++;
-        }
-
-        cursor = slash == NULL ? NULL : slash + 1;
-    }
-
-    return count > 0;
-}
-
-/* Entry policy and accounting. Only supported file types, bounded sizes and safe link relationships
- * are admitted. */
+/* Entry policy and accounting. Only directories and regular files with bounded sizes are
+ * admitted. */
 static CupError validate_entry_type(struct archive_entry *entry) {
     mode_t type = archive_entry_filetype(entry);
 
-    if (archive_entry_hardlink(entry) != NULL) {
-        archive_entry_set_filetype(entry, AE_IFREG);
-        return CUP_OK;
-    }
-    if (type == AE_IFREG || type == AE_IFDIR || type == AE_IFLNK) {
+    if (archive_entry_hardlink(entry) == NULL && archive_entry_symlink(entry) == NULL &&
+        (type == AE_IFREG || type == AE_IFDIR)) {
         return CUP_OK;
     }
 
@@ -422,8 +293,6 @@ static void normalize_entry_metadata(struct archive_entry *entry) {
 
     if (type == AE_IFDIR) {
         permissions = 0755;
-    } else if (type == AE_IFLNK) {
-        permissions = 0777;
     } else {
         permissions = (archive_entry_perm(entry) & 0111) != 0 ? 0755 : 0644;
     }
@@ -442,7 +311,7 @@ static void normalize_entry_metadata(struct archive_entry *entry) {
 static CupError validate_entry_size(struct archive_entry *entry, uint64_t *declared_total) {
     la_int64_t size;
 
-    if (archive_entry_filetype(entry) != AE_IFREG || archive_entry_hardlink(entry) != NULL) {
+    if (archive_entry_filetype(entry) != AE_IFREG) {
         return CUP_OK;
     }
 
@@ -457,54 +326,19 @@ static CupError validate_entry_size(struct archive_entry *entry, uint64_t *decla
     return CUP_OK;
 }
 
-static CupError prepare_hardlink(struct archive_entry *entry,
-                                 const ExtractedPathTable *paths,
-                                 const char *expected_root) {
-    const ExtractedPath *target_entry;
-    const char *hardlink = archive_entry_hardlink(entry);
-    const char *relative;
-    char root[MAX_PATH_LEN];
-    char normalized[MAX_PATH_LEN];
-    CupError err;
-
-    if (hardlink == NULL) {
-        return CUP_OK;
-    }
-
-    if (split_archive_path(hardlink, root, sizeof(root), &relative) != CUP_OK ||
-        strcmp(root, expected_root) != 0 || relative == NULL ||
-        normalize_entry_path(relative, normalized, sizeof(normalized)) != CUP_OK) {
-        return CUP_ERR_ARCHIVE_UNSAFE;
-    }
-
-    err = path_table_find(paths, normalized, &target_entry);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (target_entry == NULL || target_entry->type != AE_IFREG ||
-        strcmp(target_entry->path, normalized) != 0) {
-        fprintf(stderr,
-                "Error: archive hardlink '%s' has no previous exact regular-file target.\n",
-                archive_entry_pathname(entry));
-        return CUP_ERR_ARCHIVE_UNSAFE;
-    }
-
-    archive_entry_set_hardlink(entry, normalized);
-    return CUP_OK;
-}
-
 static CupError prepare_archive_entry(const char *expected_root,
                                       struct archive_entry *entry,
-                                      const ExtractedPathTable *paths,
                                       char *relative_path,
                                       size_t relative_size,
+                                      int *root_entry_seen,
                                       int *skip) {
     CupError err;
     const char *relative;
-    const char *symlink;
     char root[MAX_PATH_LEN];
-    char *key = NULL;
 
+    if (root_entry_seen == NULL || skip == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     *skip = 0;
     relative_path[0] = '\0';
 
@@ -515,11 +349,16 @@ static CupError prepare_archive_entry(const char *expected_root,
     }
 
     if (relative == NULL) {
+        if (*root_entry_seen) {
+            fprintf(stderr, "Error: archive repeats its explicit top-level root.\n");
+            return CUP_ERR_ARCHIVE_UNSAFE;
+        }
         if (archive_entry_filetype(entry) != AE_IFDIR || archive_entry_hardlink(entry) != NULL ||
             archive_entry_symlink(entry) != NULL) {
             fprintf(stderr, "Error: archive top-level root is not a directory.\n");
             return CUP_ERR_ARCHIVE_UNSAFE;
         }
+        *root_entry_seen = 1;
         *skip = 1;
         return CUP_OK;
     }
@@ -533,26 +372,6 @@ static CupError prepare_archive_entry(const char *expected_root,
     err = validate_entry_type(entry);
     if (err != CUP_OK) {
         return err;
-    }
-
-    err = path_table_validate_new(paths, relative_path, archive_entry_filetype(entry), &key);
-    free(key);
-    if (err != CUP_OK) {
-        fprintf(stderr,
-                "Error: archive contains a duplicate, case-colliding, or file/directory-colliding "
-                "path.\n");
-        return CUP_ERR_ARCHIVE_UNSAFE;
-    }
-
-    err = prepare_hardlink(entry, paths, expected_root);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    symlink = archive_entry_symlink(entry);
-    if (symlink != NULL && !symlink_target_is_internal(relative_path, symlink)) {
-        fprintf(stderr, "Error: archive symlink '%s' points outside the package.\n", relative_path);
-        return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
     normalize_entry_metadata(entry);
@@ -627,59 +446,6 @@ static CupError close_archives(struct archive *reader, struct archive *writer) {
 }
 
 #if defined(_WIN32)
-static CupError extraction_wide_path(const char *path, wchar_t *wide_path, size_t wide_path_count) {
-    wchar_t converted[MAX_PATH_LEN];
-    wchar_t absolute[MAX_PATH_LEN];
-    DWORD length;
-    size_t i;
-    size_t required;
-
-    if (text_is_empty(path) || wide_path == NULL || wide_path_count == 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, converted, MAX_PATH_LEN) ==
-            0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    for (i = 0; converted[i] != L'\0'; ++i) {
-        if (converted[i] == L'/') {
-            converted[i] = L'\\';
-        }
-    }
-
-    if (wcsncmp(converted, L"\\\\?\\", 4) == 0) {
-        required = wcslen(converted) + 1;
-        if (required > wide_path_count) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        memcpy(wide_path, converted, required * sizeof(*wide_path));
-        return CUP_OK;
-    }
-    if (wcsncmp(converted, L"\\\\.\\", 4) == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    length = GetFullPathNameW(converted, MAX_PATH_LEN, absolute, NULL);
-    if (length == 0 || length >= MAX_PATH_LEN) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if (absolute[0] == L'\\' && absolute[1] == L'\\') {
-        required = 8 + wcslen(absolute + 2) + 1;
-        if (required > wide_path_count) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        wcscpy(wide_path, L"\\\\?\\UNC\\");
-        wcscat(wide_path, absolute + 2);
-    } else {
-        required = 4 + wcslen(absolute) + 1;
-        if (required > wide_path_count) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        wcscpy(wide_path, L"\\\\?\\");
-        wcscat(wide_path, absolute);
-    }
-    return CUP_OK;
-}
-
 /* Anchored extraction root. Platform-specific setup prevents archive entries from redirecting later
  * writes outside staging. */
 static CupError enter_extraction_root(const char *path, ExtractionRoot *root) {
@@ -688,7 +454,7 @@ static CupError enter_extraction_root(const char *path, ExtractionRoot *root) {
 
     previous_length = GetCurrentDirectoryW(MAX_PATH_LEN, root->previous);
     if (previous_length == 0 || previous_length >= MAX_PATH_LEN ||
-        extraction_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
+        windows_utf8_to_wide_path(path, wide_path, MAX_PATH_LEN) != CUP_OK ||
         !SetCurrentDirectoryW(wide_path)) {
         return CUP_ERR_FILESYSTEM;
     }
@@ -753,15 +519,14 @@ static CupError leave_extraction_root(ExtractionRoot *root) {
 
 /* Extraction transaction. Every entry is validated before it is written. The caller owns the
  * staging transaction and removes partial output when this function reports a failure. */
-CupError package_extract_archive(const char *archive_path,
-                                 const char *staging_path,
-                                 const char *format_value) {
-    struct archive *reader = NULL;
+static CupError package_extract_reader(struct archive *reader,
+                                       const char *staging_path,
+                                       PackageArchiveFormat expected_format,
+                                       const char *format_value) {
     struct archive *writer = NULL;
     struct archive_entry *entry;
     ExtractedPathTable paths = {0};
     ExtractionRoot extraction_root = {0};
-    PackageArchiveFormat expected_format;
     CupError err;
     CupError close_err;
     CupError leave_err;
@@ -773,18 +538,15 @@ CupError package_extract_archive(const char *archive_path,
     size_t entry_count = 0;
     size_t extracted_count = 0;
     int format_checked = 0;
+    int root_entry_seen = 0;
     int status;
     int skip;
 
-    /* Validate the declared format before opening either archive or staging state. */
-    if (text_is_empty(archive_path) || text_is_empty(staging_path) ||
-        package_archive_parse_format(format_value, &expected_format) != CUP_OK) {
+    if (reader == NULL || text_is_empty(staging_path) || text_is_empty(format_value)) {
+        if (reader != NULL) {
+            close_archives(reader, NULL);
+        }
         return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = package_archive_open_reader(&reader, archive_path);
-    if (err != CUP_OK) {
-        return CUP_ERR_ARCHIVE;
     }
 
     err = enter_extraction_root(staging_path, &extraction_root);
@@ -815,7 +577,7 @@ CupError package_extract_archive(const char *archive_path,
         return CUP_ERR_EXTRACT;
     }
 
-    /* Validate, write, and register one entry before advancing to the next header. */
+    /* Validate and register one entry before writing it and advancing to the next header. */
     while (1) {
         mode_t entry_type;
         la_int64_t declared_size;
@@ -861,7 +623,12 @@ CupError package_extract_archive(const char *archive_path,
         }
 
         err =
-            prepare_archive_entry(root, entry, &paths, relative_path, sizeof(relative_path), &skip);
+            prepare_archive_entry(root,
+                                  entry,
+                                  relative_path,
+                                  sizeof(relative_path),
+                                  &root_entry_seen,
+                                  &skip);
         if (err != CUP_OK) {
             break;
         }
@@ -870,6 +637,12 @@ CupError package_extract_archive(const char *archive_path,
         }
 
         err = validate_entry_size(entry, &declared_total);
+        if (err != CUP_OK) {
+            break;
+        }
+
+        entry_type = archive_entry_filetype(entry);
+        err = path_table_register(&paths, relative_path, entry_type);
         if (err != CUP_OK) {
             break;
         }
@@ -898,11 +671,6 @@ CupError package_extract_archive(const char *archive_path,
             break;
         }
 
-        entry_type = archive_entry_filetype(entry);
-        err = path_table_add(&paths, relative_path, entry_type);
-        if (err != CUP_OK) {
-            break;
-        }
         extracted_count++;
     }
 
@@ -921,4 +689,23 @@ CupError package_extract_archive(const char *archive_path,
     }
 
     return err;
+}
+
+CupError package_extract_verified(VerifiedArtifact *artifact, const char *staging_path) {
+    struct archive *reader = NULL;
+    const char *format_name;
+    CupError err;
+
+    if (artifact == NULL || artifact->file == NULL || text_is_empty(staging_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    format_name = package_archive_format_name(artifact->format);
+    if (format_name == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = package_archive_open_stream(&reader, artifact->file);
+    if (err != CUP_OK) {
+        return CUP_ERR_ARCHIVE;
+    }
+    return package_extract_reader(reader, staging_path, artifact->format, format_name);
 }

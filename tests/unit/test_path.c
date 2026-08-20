@@ -1,5 +1,6 @@
-/* Test focus: Exercises normalized paths and portable package-path validation. */
+/* Exercises normalized paths and portable package-path validation. */
 
+#include "constants.h"
 #include "error.h"
 #include "path.h"
 #include "text.h"
@@ -13,10 +14,19 @@ void tearDown(void) {}
 static void test_path_segments(void) {
     static const char *const reserved[] = {
         "CON", "prn.txt", "Aux", "nul", "COM1", "com9.log", "LPT1", "lpt9.tmp"};
+    char maximum_segment[MAX_PATH_SEGMENT_LEN];
+    char long_segment[MAX_PATH_SEGMENT_LEN + 1];
     size_t i;
+
+    memset(maximum_segment, 'a', sizeof(maximum_segment) - 1);
+    maximum_segment[sizeof(maximum_segment) - 1] = '\0';
+    memset(long_segment, 'a', sizeof(long_segment) - 1);
+    long_segment[sizeof(long_segment) - 1] = '\0';
 
     TEST_ASSERT_TRUE(path_is_safe_segment("clang-22.1.5"));
     TEST_ASSERT_TRUE(path_is_safe_identifier("clang-format_22.1.5+rev1"));
+    TEST_ASSERT_TRUE(path_is_safe_segment(maximum_segment));
+    TEST_ASSERT_FALSE(path_is_safe_segment(long_segment));
     TEST_ASSERT_FALSE(path_is_safe_segment(NULL));
     TEST_ASSERT_FALSE(path_is_safe_segment(""));
     TEST_ASSERT_FALSE(path_is_safe_segment("."));
@@ -51,8 +61,11 @@ static void test_path_segments(void) {
 }
 
 static void test_relative_paths(void) {
-    char long_segment[257];
+    char maximum_segment[MAX_PATH_SEGMENT_LEN];
+    char long_segment[MAX_PATH_SEGMENT_LEN + 1];
 
+    memset(maximum_segment, 'a', sizeof(maximum_segment) - 1);
+    maximum_segment[sizeof(maximum_segment) - 1] = '\0';
     memset(long_segment, 'a', sizeof(long_segment) - 1);
     long_segment[sizeof(long_segment) - 1] = '\0';
 
@@ -68,6 +81,7 @@ static void test_relative_paths(void) {
     TEST_ASSERT_FALSE(path_is_safe_relative("../escape"));
     TEST_ASSERT_FALSE(path_is_safe_relative("root//bin"));
     TEST_ASSERT_FALSE(path_is_safe_relative("root/"));
+    TEST_ASSERT_TRUE(path_is_safe_relative(maximum_segment));
     TEST_ASSERT_FALSE(path_is_safe_relative(long_segment));
 }
 
@@ -95,6 +109,18 @@ static void test_path_normalization(void) {
         CUP_OK, text_copy(path, sizeof(path), "\\\\?\\UNC\\server\\share\\cup"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(path));
     TEST_ASSERT_EQUAL_STRING("//server/share/cup", path);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(path, sizeof(path), "\\\\?\\C:relative"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, text_copy(path, sizeof(path), "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(path, sizeof(path), "\\\\.\\PhysicalDrive0"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(path, sizeof(path), "C:relative"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(path, sizeof(path), "C:/root/file:stream"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, path_normalize(path));
 
     TEST_ASSERT_TRUE(path_equal("C:/Users/Test/.cup", "c:\\users\\test\\.cup\\"));
     TEST_ASSERT_TRUE(path_equal("//server/share/cup", "\\\\?\\UNC\\SERVER\\share\\cup"));

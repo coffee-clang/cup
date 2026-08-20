@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises state persistence, duplicate/invalid records and state-to-package consistency.
+# Exercises state persistence, duplicate/invalid records and state-to-package consistency.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -25,9 +25,9 @@ state_file=$TEST_HOME/.cup/state.txt
 assert_file "$state_file"
 assert_equals "$(sed -n '1p' "$state_file")" 'format=1'
 installed_count=$(grep -c '^installed\.' "$state_file")
-active_count=$(grep -c '^default\.' "$state_file")
+default_count=$(grep -c '^default\.' "$state_file")
 assert_equals "$installed_count" '4'
-assert_equals "$active_count" '3'
+assert_equals "$default_count" '3'
 
 state_text=$(cat "$state_file")
 assert_contains "$state_text" \

@@ -2,7 +2,7 @@
 #define CUP_INTERRUPT_H
 
 /*
- * Process-wide interrupt observation for one mutating command. Native handlers only record
+ * Process-wide interrupt observation for one state-changing command. Native handlers only record
  * intent; transactional code decides where cancellation is safe.
  */
 
@@ -14,9 +14,10 @@ CupError interrupt_enable(void);
 /* Restore the native dispositions saved by interrupt_enable(). */
 void interrupt_disable(void);
 
-/* Clear an observed request at a known command boundary. */
-
 /* Return nonzero after SIGINT/SIGTERM or a supported console event. */
 int interrupt_requested(void);
+
+/* Convert a pending request into the canonical command error at a declared safe point. */
+CupError interrupt_safe_point(void);
 
 #endif /* CUP_INTERRUPT_H */

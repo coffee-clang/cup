@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
-# Purpose: Builds one complete transactional dependency prefix on native Linux
+# Builds one complete transactional dependency prefix on native Linux
 # or macOS. Platform-specific settings are selected here instead of through
 # thin wrapper scripts.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 PLATFORM="${PLATFORM:-}"
 REQUESTED_MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-}"
 
@@ -39,7 +38,6 @@ case "$PLATFORM" in
         OPENSSL_TARGET=linux-x86_64
         CUP_POSIX_BOOTSTRAP_LABEL=Linux
         CUP_POSIX_BOOTSTRAP_LIB64=1
-        CUP_POSIX_PLATFORM_POLICY=glibc-native
         ;;
     linux-arm64)
         CC=gcc
@@ -48,7 +46,6 @@ case "$PLATFORM" in
         OPENSSL_TARGET=linux-aarch64
         CUP_POSIX_BOOTSTRAP_LABEL=Linux
         CUP_POSIX_BOOTSTRAP_LIB64=1
-        CUP_POSIX_PLATFORM_POLICY=glibc-native
         ;;
     macos-x64)
         CC=clang
@@ -57,7 +54,6 @@ case "$PLATFORM" in
         OPENSSL_TARGET=darwin64-x86_64-cc
         CUP_POSIX_BOOTSTRAP_LABEL=macOS
         CUP_POSIX_BOOTSTRAP_LIB64=0
-        CUP_POSIX_PLATFORM_POLICY=macos-deployment-13.0
         ;;
     macos-arm64)
         CC=clang
@@ -66,13 +62,31 @@ case "$PLATFORM" in
         OPENSSL_TARGET=darwin64-arm64-cc
         CUP_POSIX_BOOTSTRAP_LABEL=macOS
         CUP_POSIX_BOOTSTRAP_LIB64=0
-        CUP_POSIX_PLATFORM_POLICY=macos-deployment-13.0
         ;;
     *)
         echo "Error: unsupported POSIX dependency platform '$PLATFORM'." >&2
         exit 1
         ;;
 esac
+
+detect_native_platform() {
+    case "$(uname -s):$(uname -m)" in
+        Linux:x86_64|Linux:amd64) printf '%s\n' linux-x64 ;;
+        Linux:aarch64|Linux:arm64) printf '%s\n' linux-arm64 ;;
+        Darwin:x86_64|Darwin:amd64) printf '%s\n' macos-x64 ;;
+        Darwin:arm64|Darwin:aarch64) printf '%s\n' macos-arm64 ;;
+        *) return 1 ;;
+    esac
+}
+
+native_platform=$(detect_native_platform) || {
+    echo "Error: unable to identify a supported native dependency platform." >&2
+    exit 1
+}
+[ "$PLATFORM" = "$native_platform" ] || {
+    echo "Error: dependency platform '$PLATFORM' does not match native host '$native_platform'." >&2
+    exit 1
+}
 
 case "$CUP_POSIX_BOOTSTRAP_LIB64" in
     0 | 1)
@@ -165,7 +179,13 @@ build_xz() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
-        --disable-nls
+        --disable-nls \
+        --disable-xz \
+        --disable-xzdec \
+        --disable-lzmadec \
+        --disable-lzmainfo \
+        --disable-scripts \
+        --disable-doc
 
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"
@@ -186,7 +206,10 @@ build_openssl() {
 
     download_source openssl "$archive"
     extract_archive "$archive" "$source"
-    rm -rf "$install_root"
+    if [ -e "$install_root" ] || [ -L "$install_root" ]; then
+        cup_path_remove_child_tree "$BUILD_DIR" "$install_root" \
+            'OpenSSL install root' || return 1
+    fi
 
     echo "==> Building OpenSSL ${OPENSSL_VERSION} for ${OPENSSL_TARGET}"
     cd "$source"
@@ -200,14 +223,14 @@ build_openssl() {
         ./Configure "$OPENSSL_TARGET" \
             --prefix="$neutral_prefix" \
             --openssldir="$neutral_prefix" \
-            no-shared no-tests no-autoload-config no-dso
-    make -j"$JOBS"
-    make install_sw DESTDIR="$install_root"
+            no-shared no-tests no-apps no-docs no-autoload-config no-dso
+    make -j"$JOBS" build_libs
+    make install_dev DESTDIR="$install_root"
     [ -d "$payload" ] || {
         echo "Error: OpenSSL neutral installation payload was not produced." >&2
         return 1
     }
-    cp -R "$payload"/. "$PREFIX"/
+    cup_path_copy_tree "$payload" "$PREFIX"
     normalize_dependency_metadata "$PREFIX" "$neutral_prefix" "$INSTALL_PREFIX"
 }
 
@@ -307,67 +330,32 @@ build_libarchive() {
 
 # Final prefix and static metadata verification.
 verify() {
-    local pkg_dirs
-    local cares_flags
-    local curl_flags
-    local archive_flags
-    local event_flags
-
-    pkg_dirs="$(pkg_config_dirs)"
-
-    echo "==> Verifying generated link metadata"
-    if [ ! -x "$PREFIX/bin/curl-config" ]; then
-        echo "Error: curl-config was not installed." >&2
+    echo "==> Verifying generated dependency prefix"
+    dependency_prefix_complete "$PREFIX" 1 "$CUP_DEPS_FINAL_PREFIX" || {
+        echo "Error: generated dependency prefix is incomplete or unsafe." >&2
         exit 1
-    fi
-
-    cares_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
-        PKG_CONFIG_LIBDIR="$pkg_dirs" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libcares)"
-    curl_flags="$("$PREFIX/bin/curl-config" --static-libs)"
-    archive_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
-        PKG_CONFIG_LIBDIR="$pkg_dirs" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libarchive)"
-    event_flags="$(PKG_CONFIG_PATH="$pkg_dirs" \
-        PKG_CONFIG_LIBDIR="$pkg_dirs" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --static --libs libevent_extra libevent_core)"
-    if [ -z "$cares_flags" ] || [ -z "$curl_flags" ] || \
-        [ -z "$archive_flags" ] || [ -z "$event_flags" ]; then
-        echo "Error: generated static link metadata is empty." >&2
-        exit 1
-    fi
-    if [ -n "$CUP_DEPS_STAGE_ROOT" ]; then
-        case "$cares_flags $curl_flags $archive_flags $event_flags" in
-            *"$CUP_DEPS_STAGE_ROOT"*)
-                echo "Error: generated link metadata contains the staging path." >&2
-                exit 1
-                ;;
-        esac
-    fi
-
-    if ! dependency_prefix_complete "$PREFIX" 1 "$CUP_DEPS_FINAL_PREFIX"; then
-        echo "Error: generated dependency prefix is incomplete." >&2
-        exit 1
-    fi
-
-    printf '%s\n' "$cares_flags"
-    printf '%s\n' "$curl_flags"
-    printf '%s\n' "$archive_flags"
-    printf '%s\n' "$event_flags"
+    }
     echo "==> $CUP_POSIX_BOOTSTRAP_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
 }
 
 main() {
     local profile
     local metadata
+    local compiler_target
 
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
     require_sha256_tool
+    compiler_target=$("$CC" -dumpmachine 2>/dev/null || "$CC" -print-target-triple 2>/dev/null)
+    case "$PLATFORM:$compiler_target" in
+        linux-x64:*x86_64*|linux-arm64:*aarch64*|linux-arm64:*arm64*|\
+        macos-x64:*x86_64*apple*|macos-arm64:*arm64*apple*|macos-arm64:*aarch64*apple*) ;;
+        *)
+            echo "Error: compiler target '$compiler_target' does not match $PLATFORM." >&2
+            exit 1
+            ;;
+    esac
     profile=$(dependency_profile "$PLATFORM")
     metadata=$(dependency_metadata "$PLATFORM" "$profile")
     dependency_acquire_build_lock "$DEPS_ROOT"
@@ -394,7 +382,11 @@ main() {
         "$DEPS_ROOT" "$BUILD_DIR" "$CUP_DEPS_STAGE_ROOT")
     export CUP_DEPENDENCY_CFLAGS
 
-    mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$SRC_DIR" \
+        "dependency source directory"
+    cup_path_prepare_child_directory "$DEPS_ROOT" "$BUILD_DIR" \
+        "dependency build directory"
+    cup_path_check_directory_chain "$PREFIX" 0 "dependency build prefix"
 
     build_zlib
     build_xz

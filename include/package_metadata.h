@@ -2,14 +2,16 @@
 #define CUP_PACKAGE_METADATA_H
 
 /*
- * Immutable info.txt key/value storage with ordered field iteration. Package identity policy is
+ * Loaded info.txt key/value storage with ordered field iteration. Package identity policy is
  * enforced by package.c.
  */
 
 #include <stddef.h>
+#include <stdio.h>
 
 #include "constants.h"
 #include "error.h"
+#include "system.h"
 
 /* One validated key/value field loaded from info.txt. */
 typedef struct {
@@ -22,6 +24,7 @@ typedef struct {
     PackageMetadataField *fields;
     size_t count;
     size_t capacity;
+    SystemPathIdentity identity;
 } PackageMetadata;
 
 /* One package command decoded from the external entry.<name> boundary. */
@@ -34,8 +37,8 @@ typedef struct {
 void package_metadata_init(PackageMetadata *metadata);
 void package_metadata_free(PackageMetadata *metadata);
 
-/* Load the complete file, rejecting malformed, duplicate, or unsafe fields. */
-CupError package_metadata_load(PackageMetadata *metadata, const char *path);
+/* Load the complete file; diagnostics may be NULL when the caller owns reporting. */
+CupError package_metadata_load(PackageMetadata *metadata, const char *path, FILE *diagnostics);
 
 /* Return one exact value, or NULL when the key is absent. */
 const char *package_metadata_get(const PackageMetadata *metadata, const char *key);
@@ -48,7 +51,8 @@ const PackageMetadataField *package_metadata_next(const PackageMetadata *metadat
                                                   const char *prefix,
                                                   size_t *cursor);
 
-/* Decode the next package command while keeping entry.* at this boundary. */
+/* Decode the next package command while keeping entry.* at this boundary. Output is cleared when
+ * no command is returned. */
 int package_metadata_next_command(const PackageMetadata *metadata,
                                   PackageCommand *command,
                                   size_t *cursor);

@@ -5,7 +5,6 @@
 
 #include "package_request.h"
 
-#include "path.h"
 #include "registry.h"
 #include "text.h"
 
@@ -16,22 +15,27 @@
 CupError package_request_parse(const char *component,
                                const char *selector_text,
                                PackageRequest *request) {
+    PackageRequest parsed;
     CupError err;
 
-    if (request == NULL || text_is_empty(component) || text_is_empty(selector_text)) {
+    if (request == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(request, 0, sizeof(*request));
+    if (text_is_empty(component) || text_is_empty(selector_text)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    memset(request, 0, sizeof(*request));
+    memset(&parsed, 0, sizeof(parsed));
     err = registry_validate_component(component);
     if (err != CUP_OK) {
         return err;
     }
-    err = text_copy(request->input_selector, sizeof(request->input_selector), selector_text);
+    err = text_copy(parsed.input_selector, sizeof(parsed.input_selector), selector_text);
     if (err != CUP_OK) {
         return err;
     }
-    err = package_selector_parse(&request->selector, selector_text);
+    err = package_selector_parse(&parsed.selector, selector_text);
     if (err != CUP_OK) {
         if (err == CUP_ERR_INVALID_RELEASE) {
             fprintf(stderr, "Error: invalid release identifier in '%s'.\n", selector_text);
@@ -41,20 +45,19 @@ CupError package_request_parse(const char *component,
             fprintf(stderr, "Error: invalid tool identifier in '%s'.\n", selector_text);
             return err;
         }
+        if (err == CUP_ERR_BUFFER_TOO_SMALL) {
+            return err;
+        }
         fprintf(stderr,
                 "Error: invalid package selector '%s'. Expected '<tool>@<release>'.\n",
                 selector_text);
         return CUP_ERR_INVALID_INPUT;
     }
-    err = registry_validate_tool(component, request->selector.tool);
+    err = registry_validate_tool(component, parsed.selector.tool);
     if (err != CUP_OK) {
         return err;
     }
-    if (!package_release_is_stable(request->selector.release) &&
-        !path_is_safe_identifier(request->selector.release)) {
-        fprintf(stderr, "Error: invalid release identifier '%s'.\n", request->selector.release);
-        return CUP_ERR_INVALID_RELEASE;
-    }
+    *request = parsed;
     return CUP_OK;
 }
 
@@ -64,18 +67,22 @@ CupError package_request_resolve(const PackageCatalog *catalog,
                                  const char *host_platform,
                                  const char *target_platform,
                                  PackageRequest *request) {
+    ConcreteRelease resolved_release = "";
+    char resolved_selector[MAX_SELECTOR_LEN] = "";
     CupError err;
 
     if (request == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    request->resolved_release[0] = '\0';
+    request->resolved_selector[0] = '\0';
     if (package_release_is_stable(request->selector.release)) {
         if (catalog == NULL) {
             return CUP_ERR_CATALOG;
         }
         err = package_catalog_resolve_stable(catalog,
-                                             request->resolved_release,
-                                             sizeof(request->resolved_release),
+                                             resolved_release,
+                                             sizeof(resolved_release),
                                              component,
                                              request->selector.tool,
                                              host_platform,
@@ -84,20 +91,25 @@ CupError package_request_resolve(const PackageCatalog *catalog,
             return err;
         }
     } else {
-        err = text_copy(request->resolved_release,
-                        sizeof(request->resolved_release),
-                        request->selector.release);
+        err = text_copy(resolved_release, sizeof(resolved_release), request->selector.release);
         if (err != CUP_OK) {
             return err;
         }
     }
-    if (!path_is_safe_identifier(request->resolved_release)) {
-        return CUP_ERR_INVALID_RELEASE;
+    err = package_release_validate_concrete(resolved_release);
+    if (err != CUP_OK) {
+        return err;
     }
-    return package_selector_format_parts(request->resolved_selector,
-                                         sizeof(request->resolved_selector),
-                                         request->selector.tool,
-                                         request->resolved_release);
+    err = package_selector_format_parts(resolved_selector,
+                                        sizeof(resolved_selector),
+                                        request->selector.tool,
+                                        resolved_release);
+    if (err != CUP_OK) {
+        return err;
+    }
+    memcpy(request->resolved_release, resolved_release, sizeof(resolved_release));
+    memcpy(request->resolved_selector, resolved_selector, sizeof(resolved_selector));
+    return CUP_OK;
 }
 
 void package_request_print(FILE *stream, const PackageRequest *request) {

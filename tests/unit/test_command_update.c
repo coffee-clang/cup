@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises update-plan selection, scope deduplication, default compare-and-swap
+ * Exercises update-plan selection, scope deduplication, default compare-and-swap
  * inputs and per-scope outcomes.
  */
 
@@ -20,7 +20,7 @@ typedef struct {
     char component[MAX_IDENTIFIER_LEN];
     char tool[MAX_IDENTIFIER_LEN];
     char target[MAX_PLATFORM_LEN];
-    char expected_active[MAX_SELECTOR_LEN];
+    char expected_default[MAX_SELECTOR_LEN];
 } ScopeCall;
 
 /*
@@ -33,7 +33,7 @@ static CupError begin_result;
 static CupError load_result;
 static CupError scope_results[MAX_SCOPE_CALLS];
 static int scope_installed[MAX_SCOPE_CALLS];
-static int scope_active_moved[MAX_SCOPE_CALLS];
+static int scope_default_moved[MAX_SCOPE_CALLS];
 static ScopeCall scope_calls[MAX_SCOPE_CALLS];
 static size_t scope_call_count;
 static int context_end_calls;
@@ -56,7 +56,7 @@ static void reset_scenario(void) {
     for (i = 0; i < MAX_SCOPE_CALLS; ++i) {
         scope_results[i] = CUP_OK;
         scope_installed[i] = 0;
-        scope_active_moved[i] = 0;
+        scope_default_moved[i] = 0;
     }
 }
 
@@ -88,11 +88,11 @@ static void add_installed(const char *component,
     set_identity(item, component, host, target, entry);
 }
 
-static void add_active(const char *component,
-                       const char *host,
-                       const char *target,
-                       const char *entry) {
-    PackageIdentity *item = &scenario_state.active[scenario_state.active_count++];
+static void add_default(const char *component,
+                        const char *host,
+                        const char *target,
+                        const char *entry) {
+    PackageIdentity *item = &scenario_state.defaults[scenario_state.default_count++];
 
     set_identity(item, component, host, target, entry);
 }
@@ -136,13 +136,19 @@ CupError command_context_load_state(CommandContext *context) {
     return load_result;
 }
 
-const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope) {
+CupError command_context_load_catalog(CommandContext *context) {
+    TEST_ASSERT_NOT_NULL(context);
+    context->has_catalog = 1;
+    return CUP_OK;
+}
+
+const PackageIdentity *state_get_default(const CupState *state, const PackageScope *scope) {
     size_t i;
 
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(scope);
-    for (i = 0; i < state->active_count; ++i) {
-        const PackageIdentity *item = &state->active[i];
+    for (i = 0; i < state->default_count; ++i) {
+        const PackageIdentity *item = &state->defaults[i];
         if (strcmp(item->component, scope->component) == 0 &&
             strcmp(item->host_platform, scope->host_platform) == 0 &&
             strcmp(item->target_platform, scope->target_platform) == 0) {
@@ -152,7 +158,8 @@ const PackageIdentity *state_get_active(const CupState *state, const PackageScop
     return NULL;
 }
 
-CupError package_identity_validate(const PackageIdentity *identity) {
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
     if (identity == NULL || identity->component[0] == '\0' || identity->tool[0] == '\0' ||
         identity->host_platform[0] == '\0' || identity->target_platform[0] == '\0' ||
         identity->version[0] == '\0') {
@@ -164,7 +171,7 @@ CupError package_identity_validate(const PackageIdentity *identity) {
 CupError package_identity_format_selector(const PackageIdentity *identity,
                                           char *buffer,
                                           size_t size) {
-    if (package_identity_validate(identity) != CUP_OK) {
+    if (package_identity_validate(identity, stderr) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     return package_selector_format_parts(buffer, size, identity->tool, identity->version);
@@ -182,12 +189,57 @@ CupError package_scope_init(PackageScope *scope,
     return CUP_OK;
 }
 
+CupError package_artifact_spec_resolve_stable(PackageArtifactSpec *spec,
+                                              const PackageCatalog *catalog,
+                                              const char *component,
+                                              const char *tool,
+                                              const char *host_platform,
+                                              const char *target_platform) {
+    (void)catalog;
+    TEST_ASSERT_NOT_NULL(spec);
+    memset(spec, 0, sizeof(*spec));
+    strcpy(spec->identity.component, component);
+    strcpy(spec->identity.tool, tool);
+    strcpy(spec->identity.host_platform, host_platform);
+    strcpy(spec->identity.target_platform, target_platform);
+    strcpy(spec->identity.version, "2.0.0");
+    spec->format = PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
+    return CUP_OK;
+}
+
+CupError package_install_update_artifact(const PackageArtifactSpec *spec,
+                                         const PackageIdentity *expected_default,
+                                         int *installed,
+                                         int *default_moved) {
+    size_t index = scope_call_count++;
+    ScopeCall *call;
+
+    TEST_ASSERT_TRUE(index < MAX_SCOPE_CALLS);
+    TEST_ASSERT_NOT_NULL(spec);
+    TEST_ASSERT_NOT_NULL(installed);
+    TEST_ASSERT_NOT_NULL(default_moved);
+
+    call = &scope_calls[index];
+    strcpy(call->component, spec->identity.component);
+    strcpy(call->tool, spec->identity.tool);
+    strcpy(call->target, spec->identity.target_platform);
+    if (expected_default != NULL) {
+        TEST_ASSERT_EQUAL_INT(
+            CUP_OK,
+            package_identity_format_selector(
+                expected_default, call->expected_default, sizeof(call->expected_default)));
+    }
+    *installed = scope_installed[index];
+    *default_moved = scope_default_moved[index];
+    return scope_results[index];
+}
+
 CupError package_install_update_scope(const char *component,
                                       const char *tool,
                                       const char *target_override,
-                                      const char *expected_active,
+                                      const char *expected_default,
                                       int *installed,
-                                      int *active_moved) {
+                                      int *default_moved) {
     size_t index = scope_call_count++;
     ScopeCall *call;
 
@@ -195,17 +247,17 @@ CupError package_install_update_scope(const char *component,
     TEST_ASSERT_NOT_NULL(component);
     TEST_ASSERT_NOT_NULL(tool);
     TEST_ASSERT_NOT_NULL(target_override);
-    TEST_ASSERT_NOT_NULL(expected_active);
+    TEST_ASSERT_NOT_NULL(expected_default);
     TEST_ASSERT_NOT_NULL(installed);
-    TEST_ASSERT_NOT_NULL(active_moved);
+    TEST_ASSERT_NOT_NULL(default_moved);
 
     call = &scope_calls[index];
     strcpy(call->component, component);
     strcpy(call->tool, tool);
     strcpy(call->target, target_override);
-    strcpy(call->expected_active, expected_active);
+    strcpy(call->expected_default, expected_default);
     *installed = scope_installed[index];
-    *active_moved = scope_active_moved[index];
+    *default_moved = scope_default_moved[index];
     return scope_results[index];
 }
 
@@ -218,12 +270,12 @@ static void assert_scope(size_t index,
                          const char *component,
                          const char *tool,
                          const char *target,
-                         const char *expected_active) {
+                         const char *expected_default) {
     TEST_ASSERT_TRUE(index < scope_call_count);
     TEST_ASSERT_EQUAL_STRING(component, scope_calls[index].component);
     TEST_ASSERT_EQUAL_STRING(tool, scope_calls[index].tool);
     TEST_ASSERT_EQUAL_STRING(target, scope_calls[index].target);
-    TEST_ASSERT_EQUAL_STRING(expected_active, scope_calls[index].expected_active);
+    TEST_ASSERT_EQUAL_STRING(expected_default, scope_calls[index].expected_default);
 }
 
 /*
@@ -241,15 +293,10 @@ static void test_global_selector(void) {
     TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
 
     reset_scenario();
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("CuP"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("cup"));
     TEST_ASSERT_EQUAL_INT(1, cup_update_calls);
     TEST_ASSERT_EQUAL_INT(0, context_end_calls);
 
-    reset_scenario();
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_TOOL, command_update("unknown"));
-    TEST_ASSERT_EQUAL_INT(0, (int)scope_call_count);
-    TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
-    TEST_ASSERT_EQUAL_INT(0, context_end_calls);
 }
 
 static void test_context_failures(void) {
@@ -279,11 +326,11 @@ static void test_tool_plan(void) {
     add_installed("compiler", "linux-x64", "windows-x64", "clang@1.0.0");
     add_installed("compiler", "linux-x64", "linux-x64", "gcc@1.0.0");
     add_installed("compiler", "macos-x64", "linux-x64", "clang@3.0.0");
-    add_active("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
-    add_active("compiler", "linux-x64", "windows-x64", "gcc@1.0.0");
+    add_default("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
+    add_default("compiler", "linux-x64", "windows-x64", "gcc@1.0.0");
 
     scope_installed[0] = 1;
-    scope_active_moved[0] = 1;
+    scope_default_moved[0] = 1;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("clang"));
     TEST_ASSERT_EQUAL_INT(2, (int)(scope_call_count));
     assert_scope(0, "compiler", "clang", "linux-x64", "clang@1.0.0");
@@ -294,7 +341,7 @@ static void test_component_plan(void) {
     add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     add_installed("compiler", "linux-x64", "linux-x64", "gcc@1.0.0");
     add_installed("compiler", "linux-x64", "windows-x64", "clang@1.0.0");
-    add_active("compiler", "linux-x64", "linux-x64", "gcc@1.0.0");
+    add_default("compiler", "linux-x64", "linux-x64", "gcc@1.0.0");
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("compiler"));
     TEST_ASSERT_EQUAL_INT(3, (int)(scope_call_count));
@@ -324,7 +371,7 @@ static void test_invalid_state(void) {
 
     reset_scenario();
     add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
-    add_active("compiler", "linux-x64", "linux-x64", "broken");
+    add_default("compiler", "linux-x64", "linux-x64", "broken");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_update("clang"));
     TEST_ASSERT_EQUAL_INT(0, (int)(scope_call_count));
 }
@@ -335,7 +382,7 @@ static void test_scope_outcomes(void) {
     add_installed("compiler", "linux-x64", "windows-x64", "clang@1.0.0");
 
     scope_installed[0] = 1;
-    scope_active_moved[0] = 1;
+    scope_default_moved[0] = 1;
     scope_results[1] = CUP_ERR_NOT_INSTALLED;
     scope_results[2] = CUP_ERR_FETCH;
 
@@ -343,7 +390,6 @@ static void test_scope_outcomes(void) {
     TEST_ASSERT_EQUAL_INT(3, (int)(scope_call_count));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

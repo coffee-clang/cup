@@ -96,6 +96,30 @@ CupError text_split_exact(char *input, char separator, TextBuffer *outputs, size
     return CUP_OK;
 }
 
+int text_parse_uint(const char *value, unsigned maximum, unsigned *result) {
+    unsigned parsed = 0;
+    size_t i;
+
+    if (text_is_empty(value) || result == NULL ||
+        (value[0] == '0' && value[1] != '\0')) {
+        return 0;
+    }
+    for (i = 0; value[i] != '\0'; ++i) {
+        unsigned digit;
+
+        if (value[i] < '0' || value[i] > '9') {
+            return 0;
+        }
+        digit = (unsigned)(value[i] - '0');
+        if (digit > maximum || parsed > (maximum - digit) / 10u) {
+            return 0;
+        }
+        parsed = parsed * 10u + digit;
+    }
+    *result = parsed;
+    return 1;
+}
+
 /* Copy and format helpers always terminate successful outputs and report truncation. */
 CupError text_copy(char *buffer, size_t size, const char *source) {
     size_t length;
@@ -154,88 +178,99 @@ CupError text_format(char *buffer, size_t size, const char *format, ...) {
     return CUP_OK;
 }
 
-/* Line reader distinguishes EOF, overlong records and underlying I/O failure. */
-static int is_allowed_text_byte(unsigned char byte) {
-    return byte == '\t' || byte >= 32;
-}
+/* Canonical in-memory document readers own persistent text parsing. */
+CupError text_document_reader_init(TextDocumentReader *reader,
+                                   const unsigned char *data,
+                                   size_t size) {
+    size_t i;
 
-CupError text_read_line(FILE *file, char *buffer, size_t size, int *has_line, size_t *line_number) {
-    size_t length;
-    int byte;
-    int line_too_long;
-
-    if (file == NULL || buffer == NULL || size < 2 || has_line == NULL || line_number == NULL) {
+    if (reader == NULL || data == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
+    if (data[size - 1] != '\n') {
+        return CUP_ERR_VALIDATION;
+    }
+    for (i = 0; i < size; ++i) {
+        unsigned char byte = data[i];
+        if (byte != '\n' && (byte < 0x20u || byte > 0x7eu)) {
+            return CUP_ERR_VALIDATION;
+        }
+    }
+    reader->data = data;
+    reader->size = size;
+    reader->offset = 0;
+    reader->line_number = 0;
+    return CUP_OK;
+}
 
+CupError text_document_read_raw_line(TextDocumentReader *reader,
+                                     char *buffer,
+                                     size_t size,
+                                     int *has_line) {
+    size_t start;
+    size_t length;
+
+    if (reader == NULL || buffer == NULL || size < 2 || has_line == NULL ||
+        reader->data == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     *has_line = 0;
+    if (reader->offset >= reader->size) {
+        return CUP_OK;
+    }
+    start = reader->offset;
+    while (reader->offset < reader->size && reader->data[reader->offset] != '\n') {
+        reader->offset++;
+    }
+    if (reader->offset >= reader->size) {
+        return CUP_ERR_VALIDATION;
+    }
+    length = reader->offset - start;
+    reader->offset++;
+    reader->line_number++;
+    if (length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(buffer, reader->data + start, length);
+    buffer[length] = '\0';
+    *has_line = 1;
+    return CUP_OK;
+}
 
+CupError text_document_read_line(TextDocumentReader *reader,
+                                 char *buffer,
+                                 size_t size,
+                                 int *has_line) {
+    CupError err;
+
+    if (reader == NULL || buffer == NULL || size < 2 || has_line == NULL ||
+        reader->data == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     while (1) {
-        length = 0;
-        line_too_long = 0;
+        char *trimmed;
 
-        while ((byte = fgetc(file)) != EOF) {
-            unsigned char value = (unsigned char)byte;
-
-            if (value == '\n') {
-                break;
-            }
-            if (value == '\r') {
-                int next = fgetc(file);
-                if (next != '\n' && next != EOF) {
-                    ungetc(next, file);
-                }
-                break;
-            }
-            if (value == '\0' || !is_allowed_text_byte(value)) {
-                while ((byte = fgetc(file)) != EOF && byte != '\n') {
-                }
-                (*line_number)++;
-                return CUP_ERR_INVALID_INPUT;
-            }
-            if (length + 1 < size) {
-                buffer[length++] = (char)value;
-            } else {
-                line_too_long = 1;
-            }
+        err = text_document_read_raw_line(reader, buffer, size, has_line);
+        if (err != CUP_OK || !*has_line) {
+            return err;
         }
-
-        if (byte == EOF && ferror(file)) {
-            return CUP_ERR_FILESYSTEM;
+        trimmed = text_trim(buffer);
+        if (trimmed[0] == '\0' || trimmed[0] == '#') {
+            continue;
         }
-        if (byte == EOF && length == 0 && !line_too_long) {
-            return CUP_OK;
+        if (trimmed != buffer) {
+            memmove(buffer, trimmed, strlen(trimmed) + 1);
         }
-
-        (*line_number)++;
-        if (line_too_long) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-
-        buffer[length] = '\0';
-        {
-            char *text = text_trim(buffer);
-
-            if (text[0] == '\0' || text[0] == '#') {
-                if (byte == EOF) {
-                    return CUP_OK;
-                }
-                continue;
-            }
-
-            if (text != buffer) {
-                memmove(buffer, text, strlen(text) + 1);
-            }
-        }
-
-        *has_line = 1;
         return CUP_OK;
     }
 }
 
-/* Strict key/value parsing rejects empty sides, embedded whitespace and trailing data. */
-CupError text_parse_key_value(
-    char *line, char *key, size_t key_size, char *value, size_t value_size) {
+/* Key/value parsing trims surrounding whitespace and rejects empty keys or values. */
+CupError text_parse_key_value(char *line,
+                              char *key,
+                              size_t key_size,
+                              char *value,
+                              size_t value_size) {
     CupError err;
     char *separator;
     char *trimmed_key;

@@ -29,12 +29,16 @@ typedef enum {
     TOOL_PREFERENCE_OFFICIAL_DEFAULT
 } ToolPreferenceSource;
 
-/* Load or atomically save the complete preferences document. */
+/* Load or atomically save the complete preferences document. Persistent mutation is serialized by
+ * the caller's exclusive cup-root lock; unlike transactional state.txt, preferences have no
+ * multi-phase recovery protocol that requires an expected-identity commit. */
 void tool_preferences_init(ToolPreferences *preferences);
-CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *preferences);
-CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences);
+CupError tool_preferences_load(ToolPreferences *preferences);
+CupError tool_preferences_save(const ToolPreferences *preferences);
 
-/* Mutate one scope in memory; callers persist only after all validation succeeds. */
+/* Update one scope in memory; callers persist only after all validation succeeds. The model must
+ * originate from tool_preferences_init(), tool_preferences_load() or these mutation functions; the
+ * bounded count is still checked defensively before any array traversal. */
 CupError tool_preferences_set(ToolPreferences *preferences,
                               const char *host_platform,
                               const char *target_platform,

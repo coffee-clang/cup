@@ -1,10 +1,11 @@
 /*
- * Test focus: Exercises remove preparation, state commit, rollback uncertainty and entry-point
+ * Exercises remove preparation, state commit, rollback uncertainty and entry-point
  * reconciliation without duplicating the real command state machine.
  */
 
 #include "command_context.h"
 #include "installed_package.h"
+#include "interrupt.h"
 #include "commands.h"
 #include "package_selector.h"
 #include "package_request.h"
@@ -31,7 +32,7 @@
 
 static CupError parse_result;
 static CupError context_result;
-static CupError transaction_check_result;
+static int context_begin_calls;
 static CupError load_state_result;
 static CupError load_catalog_result;
 static CupError resolve_result;
@@ -44,12 +45,13 @@ static CupError initial_move_result;
 static SystemCommitState initial_move_state;
 static CupError rollback_move_result;
 static const char *default_entry;
-static CupError clear_active_result;
+static CupError clear_default_result;
 static CupError remove_installed_result;
 static CupError plan_build_result;
 static CupError state_save_result;
 static CupError remove_tree_result;
 static CupError transaction_clear_result;
+static CupError interrupt_results[2];
 static CupError plan_apply_result;
 static int stable_request;
 static int context_end_calls;
@@ -59,6 +61,7 @@ static int transaction_clear_calls;
 static int remove_tree_calls;
 static int plan_build_calls;
 static int plan_apply_calls;
+static int interrupt_calls;
 static size_t installed_match_count;
 
 /* Fixture lifecycle and local construction helpers. */
@@ -70,7 +73,7 @@ static CupError buffer_write_result(int written, size_t size) {
 static void reset_scenario(void) {
     parse_result = CUP_OK;
     context_result = CUP_OK;
-    transaction_check_result = CUP_OK;
+    context_begin_calls = 0;
     load_state_result = CUP_OK;
     load_catalog_result = CUP_OK;
     resolve_result = CUP_OK;
@@ -83,12 +86,14 @@ static void reset_scenario(void) {
     initial_move_state = SYSTEM_COMMIT_DURABLE;
     rollback_move_result = CUP_OK;
     default_entry = NULL;
-    clear_active_result = CUP_OK;
+    clear_default_result = CUP_OK;
     remove_installed_result = CUP_OK;
     plan_build_result = CUP_OK;
     state_save_result = CUP_OK;
     remove_tree_result = CUP_OK;
     transaction_clear_result = CUP_OK;
+    interrupt_results[0] = CUP_OK;
+    interrupt_results[1] = CUP_OK;
     plan_apply_result = CUP_OK;
     stable_request = 0;
     context_end_calls = 0;
@@ -98,6 +103,7 @@ static void reset_scenario(void) {
     remove_tree_calls = 0;
     plan_build_calls = 0;
     plan_apply_calls = 0;
+    interrupt_calls = 0;
     installed_match_count = 0;
 }
 
@@ -181,6 +187,20 @@ CupError package_selector_format_parts(char *buffer,
     return buffer_write_result(snprintf(buffer, size, "%s@%s", tool, release), size);
 }
 
+CupError package_release_validate_concrete(const char *release) {
+    size_t i;
+
+    if (release == NULL || release[0] == '\0' || strcmp(release, "stable") == 0) {
+        return CUP_ERR_INVALID_RELEASE;
+    }
+    for (i = 0; release[i] != '\0'; ++i) {
+        if (release[i] >= 'A' && release[i] <= 'Z') {
+            return CUP_ERR_INVALID_RELEASE;
+        }
+    }
+    return CUP_OK;
+}
+
 CupError registry_validate_tool(const char *component, const char *tool) {
     return strcmp(component, "compiler") == 0 && strcmp(tool, "clang") == 0
                ? CUP_OK
@@ -198,6 +218,7 @@ CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
     (void)target_override;
+    context_begin_calls++;
     TEST_ASSERT_NOT_NULL(context);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, mode);
     memset(context, 0, sizeof(*context));
@@ -213,14 +234,20 @@ void command_context_end(CommandContext *context) {
     context_end_calls++;
 }
 
-CupError runtime_journal_require_none(void) {
-    return transaction_check_result;
+CupError interrupt_safe_point(void) {
+    int index = interrupt_calls++;
+
+    return index < 2 ? interrupt_results[index] : CUP_OK;
 }
 
 CupError command_context_load_state(CommandContext *context) {
     size_t i;
 
     TEST_ASSERT_NOT_NULL(context);
+    context->state_identity.valid = 1;
+    context->state_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    context->state_identity.volume = 1;
+    context->state_identity.object = 1;
     for (i = 0; i < installed_match_count; ++i) {
         PackageIdentity *identity = &context->state.installed[i];
 
@@ -311,10 +338,18 @@ CupError layout_make_staging_path(char *buffer,
 
 CupError package_transaction_begin(PackageOperation operation,
                                    const PackageIdentity *package,
-                                   const char *temporary_path) {
+                                   const char *temporary_path,
+                                   PackageTransaction *created) {
     TEST_ASSERT_EQUAL_INT(PACKAGE_OPERATION_REMOVE, operation);
     TEST_ASSERT_NOT_NULL(package);
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", temporary_path);
+    TEST_ASSERT_NOT_NULL(created);
+
+    memset(created, 0, sizeof(*created));
+    if (transaction_begin_result == CUP_OK || transaction_begin_result == CUP_ERR_COMMIT) {
+        created->file_identity.valid = 1;
+        created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    }
     return transaction_begin_result;
 }
 
@@ -334,7 +369,7 @@ CupError system_move_path(const char *source,
     return rollback_move_result;
 }
 
-const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope) {
+const PackageIdentity *state_get_default(const CupState *state, const PackageScope *scope) {
     static PackageIdentity identity;
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(scope);
@@ -351,12 +386,12 @@ const PackageIdentity *state_get_active(const CupState *state, const PackageScop
     return &identity;
 }
 
-CupError state_clear_matching_active(CupState *state, const PackageIdentity *identity) {
+CupError state_clear_matching_default(CupState *state, const PackageIdentity *identity) {
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_EQUAL_STRING("clang", identity->tool);
     TEST_ASSERT_EQUAL_STRING("22.1.5", identity->version);
-    return clear_active_result;
+    return clear_default_result;
 }
 
 CupError state_remove_installed(CupState *state, const PackageIdentity *identity) {
@@ -392,8 +427,16 @@ CupError wrapper_plan_build(WrapperPlan *plan, const CupState *state) {
     return plan_build_result;
 }
 
-CupError state_save(const CupState *state) {
+CupError state_save(const CupState *state,
+                    const SystemPathIdentity *expected_identity,
+                    SystemPathIdentity *published_identity) {
     TEST_ASSERT_NOT_NULL(state);
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
+    if (published_identity != NULL) {
+        *published_identity = *expected_identity;
+    }
     return state_save_result;
 }
 
@@ -403,7 +446,12 @@ CupError filesystem_remove_tree(const char *path) {
     return remove_tree_result;
 }
 
-CupError runtime_journal_clear(void) {
+
+
+CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
     transaction_clear_calls++;
     return transaction_clear_result;
 }
@@ -445,7 +493,7 @@ static char *capture_ambiguous_remove(CupError *result) {
     TEST_ASSERT_TRUE(saved >= 0);
     TEST_ASSERT_TRUE(test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDERR_FD) >= 0);
 
-    *result = command_remove(NULL, "clang", NULL);
+    *result = command_remove("compiler", "clang", NULL);
 
     capture_flush_result = fflush(stderr);
     restore_result = test_dup2_fd(saved, TEST_PLATFORM_STDERR_FD);
@@ -482,7 +530,7 @@ static void test_remove_prepare_fail(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_remove("compiler", "clang@22.1.5", NULL));
 
     reset_scenario();
-    transaction_check_result = CUP_ERR_TRANSACTION;
+    context_result = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_remove("compiler", "clang@22.1.5", NULL));
 
     reset_scenario();
@@ -526,6 +574,23 @@ static void test_remove_prepare_fail(void) {
     TEST_ASSERT_EQUAL_INT(0, move_calls);
 }
 
+static void test_interrupt_safe_points(void) {
+    interrupt_results[0] = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          command_remove("compiler", "clang@22.1.5", NULL));
+    TEST_ASSERT_EQUAL_INT(1, interrupt_calls);
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
+
+    reset_scenario();
+    interrupt_results[1] = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          command_remove("compiler", "clang@22.1.5", NULL));
+    TEST_ASSERT_EQUAL_INT(2, interrupt_calls);
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
+}
+
 static void test_staging_rollback(void) {
     initial_move_result = CUP_ERR_FILESYSTEM;
     initial_move_state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -544,7 +609,7 @@ static void test_uncertain_staging(void) {
 }
 
 static void test_safe_rollback(void) {
-    clear_active_result = CUP_ERR_INCONSISTENT_STATE;
+    clear_default_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
                           command_remove("compiler", "clang@22.1.5", NULL));
     TEST_ASSERT_EQUAL_INT(2, move_calls);
@@ -563,13 +628,20 @@ static void test_safe_rollback(void) {
     TEST_ASSERT_EQUAL_INT(2, move_calls);
 
     reset_scenario();
-    state_save_result = CUP_ERR_STATE_SAVE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_SAVE, command_remove("compiler", "clang@22.1.5", NULL));
+    state_save_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_remove("compiler", "clang@22.1.5", NULL));
     TEST_ASSERT_EQUAL_INT(2, move_calls);
+
+    reset_scenario();
+    state_save_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION, command_remove("compiler", "clang@22.1.5", NULL));
+    TEST_ASSERT_EQUAL_INT(2, move_calls);
+    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
 }
 
 static void test_rollback_failure(void) {
-    clear_active_result = CUP_ERR_INCONSISTENT_STATE;
+    clear_default_result = CUP_ERR_INCONSISTENT_STATE;
     rollback_move_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, command_remove("compiler", "clang@22.1.5", NULL));
 
@@ -627,11 +699,11 @@ static void test_inferred_remove_selection(void) {
     const char *second_release;
     const char *instruction;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove(NULL, "clang@22.1.5", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove("compiler", "clang@22.1.5", NULL));
 
     reset_scenario();
     installed_match_count = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove(NULL, "clang", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove("compiler", "clang", NULL));
 
     reset_scenario();
     installed_match_count = 2;
@@ -657,14 +729,14 @@ static void test_inferred_remove_selection(void) {
     free(output);
 
     reset_scenario();
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED, command_remove(NULL, "clang", NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED, command_remove("compiler", "clang", NULL));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_remove_prepare_fail);
+    RUN_TEST(test_interrupt_safe_points);
     RUN_TEST(test_staging_rollback);
     RUN_TEST(test_uncertain_staging);
     RUN_TEST(test_safe_rollback);

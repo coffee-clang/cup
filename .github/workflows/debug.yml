@@ -20,23 +20,15 @@ concurrency:
 
 jobs:
   dependencies:
-    name: Dependencies (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - linux-x64-gcc
-          - linux-arm64-gcc
-          - macos-x64-apple-clang
-          - macos-arm64-apple-clang
-          - windows-x64-ucrt64
+    name: Prepare pinned dependencies
     uses: ./.github/workflows/dependencies.yml
     with:
-      target: ${{ matrix.target }}
+      target: all
 
   posix:
     name: Debug build (${{ matrix.platform }})
     needs: dependencies
+    if: always()
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -44,20 +36,29 @@ jobs:
       matrix:
         include:
           - platform: linux-x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             family: linux
+            profile: gcc
+            dependency_target: linux-x64-gcc
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             family: linux
+            profile: gcc
+            dependency_target: linux-arm64-gcc
           - platform: macos-x64
             runner: macos-15-intel
             family: macos
+            profile: apple-clang
+            dependency_target: macos-x64-apple-clang
           - platform: macos-arm64
             runner: macos-15
             family: macos
+            profile: apple-clang
+            dependency_target: macos-arm64-apple-clang
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Prepare POSIX debug toolchain
         env:
@@ -65,88 +66,74 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: scripts/ci/prepare-posix.sh debug
       - id: cache
+        env:
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          prefix="$HOME/deps/${{ matrix.platform }}/install"
-          key=$(scripts/dependencies/verify.sh \
-            '${{ matrix.platform }}' --print-cache-key)
-          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          root="$HOME/deps/${{ matrix.platform }}"
+          key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v5
+      - uses: actions/cache@v5.0.5
         with:
-          path: ${{ steps.cache.outputs.prefix }}
+          path: |
+            ${{ steps.cache.outputs.root }}/.cup-dependencies-root
+            ${{ steps.cache.outputs.prefix }}
           key: ${{ steps.cache.outputs.key }}
           fail-on-cache-miss: true
-      - name: Build diagnostic executable
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-${{ github.run_attempt }}
+          path: build/dependency-evidence/${{ matrix.dependency_target }}
+      - name: Build and package debug artifact
         env:
-          DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
-        run: |
-          make PLATFORM=${{ matrix.platform }} DEPS_PREFIX="$DEPS_PREFIX" debug
-          make PLATFORM=${{ matrix.platform }} DEPS_PREFIX="$DEPS_PREFIX" \
-            CUP_BUILD_CONFIGURATION=debug check-binary
-      - name: Package debug information
-        shell: bash
-        env:
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
         run: |
           set -euo pipefail
-          out="dist/debug/${{ matrix.platform }}"
-          binary="build/${{ matrix.platform }}/debug/bin/cup"
-          generated="build/${{ matrix.platform }}/debug/generated"
-          mkdir -p "$out"
-          cp "$binary" "$out/cup"
-          cp "$generated/release.txt" "$out/release.txt"
-          cp "build/${{ matrix.platform }}/debug/binary-inspection.txt" \
-            "$out/binary-inspection.txt"
-          if [ "${{ matrix.family }}" = macos ]; then
-            compiler=clang
-          else
-            compiler=gcc
-          fi
-          make -B -n PLATFORM=${{ matrix.platform }} \
-            DEPS_PREFIX="$DEPS_PREFIX" debug > "$out/rebuild-commands.txt"
-          {
-            echo "platform=${{ matrix.platform }}"
-            echo "compiler=$($compiler --version | head -n 1)"
-            echo "configuration=debug"
-            echo "commit=${GITHUB_SHA}"
-          } > "$out/build-info.txt"
-          if [ "${{ matrix.family }}" = linux ]; then
-            objcopy --only-keep-debug "$binary" "$out/cup.debug"
-            readelf --debug-dump=info "$binary" >/dev/null
-          else
-            dsymutil "$binary" -o "$out/cup.dSYM"
-            dwarfdump --verify "$out/cup.dSYM"
-          fi
-          file "$binary" > "$out/file.txt"
-          tar -czf "dist/debug/cup-debug-${{ matrix.platform }}.tar.gz" \
-            -C "$out" .
-      - uses: actions/upload-artifact@v7
+          scripts/ci/verify-dependency-evidence.sh \
+            build/dependency-evidence/${{ matrix.dependency_target }}/evidence.txt \
+            '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
+            '${{ matrix.profile }}' "$DEPS_PREFIX"
+          make PLATFORM='${{ matrix.platform }}' DEPS_ROOT="$DEPS_ROOT" \
+            DEPS_PREFIX="$DEPS_PREFIX" debug-artifact
+          root=build/finalized/${{ matrix.platform }}/debug
+          "$root/bin/cup" --version
+          "$root/bin/cup" help >/dev/null
+          mkdir -p build/debug-artifacts
+          tar -czf build/debug-artifacts/cup-debug-${{ matrix.platform }}.tar.gz \
+            -C "$root" .
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: cup-debug-${{ matrix.platform }}
-          path: dist/debug/cup-debug-${{ matrix.platform }}.tar.gz
+          path: build/debug-artifacts/cup-debug-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 30
 
   windows:
     name: Debug build (windows-x64)
     needs: dependencies
-    runs-on: windows-latest
+    if: always()
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@v2.32.0
         with:
           msystem: UCRT64
           update: true
           install: >-
             ca-certificates
             curl
-            diffutils
             file
             git
+            gcc
             make
+            openssl
             perl
             tar
             xz
@@ -159,48 +146,45 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          prefix="$HOME/deps/windows-x64/install"
+          root="$HOME/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
-          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "path=$(cygpath -m "$prefix")" >> "$GITHUB_OUTPUT"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
+          echo "cache_root=$(cygpath -m "$root")" >> "$GITHUB_OUTPUT"
+          echo "cache_prefix=$(cygpath -m "$root/install")" >> "$GITHUB_OUTPUT"
           echo "key=$key" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v5
+      - uses: actions/cache@v5.0.5
         with:
-          path: ${{ steps.cache.outputs.path }}
+          path: |
+            ${{ steps.cache.outputs.cache_root }}/.cup-dependencies-root
+            ${{ steps.cache.outputs.cache_prefix }}
           key: ${{ steps.cache.outputs.key }}
           fail-on-cache-miss: true
-      - name: Build and package diagnostic executable
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-dependency-evidence-windows-x64-ucrt64-attempt-${{ github.run_attempt }}
+          path: build/dependency-evidence/windows-x64-ucrt64
+      - name: Build and package debug artifact
         shell: msys2 {0}
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
+          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
         run: |
           set -euo pipefail
-          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" debug
-          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
-            CUP_BUILD_CONFIGURATION=debug check-binary
-          out=dist/debug/windows-x64
-          binary=build/windows-x64/debug/bin/cup.exe
-          generated=build/windows-x64/debug/generated
-          mkdir -p "$out"
-          cp "$binary" "$out/cup.exe"
-          cp "$generated/release.txt" "$out/release.txt"
-          cp build/windows-x64/debug/binary-inspection.txt \
-            "$out/binary-inspection.txt"
-          objcopy --only-keep-debug "$binary" "$out/cup.debug"
-          objdump -h "$binary" > "$out/sections.txt"
-          file "$binary" > "$out/file.txt"
-          make -B -n PLATFORM=windows-x64 debug > "$out/rebuild-commands.txt"
-          {
-            echo "platform=windows-x64"
-            echo "compiler=$(gcc --version | head -n 1)"
-            echo "configuration=debug"
-            echo "commit=${GITHUB_SHA}"
-          } > "$out/build-info.txt"
-          tar -czf dist/debug/cup-debug-windows-x64.tar.gz -C "$out" .
-      - uses: actions/upload-artifact@v7
+          scripts/ci/verify-dependency-evidence.sh \
+            build/dependency-evidence/windows-x64-ucrt64/evidence.txt \
+            windows-x64-ucrt64 windows-x64 ucrt64-gcc "$DEPS_PREFIX"
+          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" \
+            DEPS_PREFIX="$DEPS_PREFIX" debug-artifact
+          root=build/finalized/windows-x64/debug
+          "$root/bin/cup.exe" --version
+          "$root/bin/cup.exe" help >/dev/null
+          mkdir -p build/debug-artifacts
+          tar -czf build/debug-artifacts/cup-debug-windows-x64.tar.gz -C "$root" .
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: cup-debug-windows-x64
-          path: dist/debug/cup-debug-windows-x64.tar.gz
+          path: build/debug-artifacts/cup-debug-windows-x64.tar.gz
           if-no-files-found: error
           retention-days: 30

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises native and cross-target wrapper planning, collisions,
+# Exercises native and cross-target wrapper planning, collisions,
 # drift detection, and rebuilding.
 set -eu
 

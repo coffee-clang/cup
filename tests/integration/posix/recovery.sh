@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises interrupted install, remove, and cup-update recovery at
+# Exercises interrupted install, remove, and cup update recovery at
 # their persistent commit boundaries.
 set -eu
 
@@ -44,7 +44,7 @@ install_cup_assets_fixture() {
     base_version=$(sed -n '1p' "$PROJECT_ROOT/VERSION" | tr -d '\r')
     metadata="format=1
 version=$base_version
-commit=abcdef0
+commit=abcdef0123456789abcdef0123456789abcdef01
 "
     metadata_hash=$(hash_text "$metadata")
 
@@ -56,6 +56,8 @@ commit=abcdef0
         printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
         printf '%s  uninstall.sh\n' "$uninstall_hash"
         printf '%s  release.txt\n' "$metadata_hash"
+        printf '%s  SHA256SUMS.common\n' \
+            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.common")"
     } > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
     chmod 0444 "$TEST_HOME/.cup/config/packages.cfg" \
         "$TEST_HOME/.cup/config/install.cfg" \
@@ -64,6 +66,27 @@ commit=abcdef0
 }
 
 install_cup_assets_fixture
+
+write_generation_marker() {
+    staging_path=$1
+    version=$2
+
+    {
+        printf 'format=1\n'
+        printf 'version=%s\n' "$version"
+        printf 'binary_sha256=%s\n' "$(hash_file "$TEST_HOME/.cup/bin/cup")"
+        printf 'uninstall_sha256=%s\n' \
+            "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")"
+        printf 'platform_checksums_sha256=%s\n' \
+            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")"
+        printf 'packages_sha256=%s\n' \
+            "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")"
+        printf 'install_policy_sha256=%s\n' \
+            "$(hash_file "$TEST_HOME/.cup/config/install.cfg")"
+        printf 'common_checksums_sha256=%s\n' \
+            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.common")"
+    } > "$staging_path/committed"
+}
 
 write_package_journal() {
     operation=$1
@@ -142,15 +165,25 @@ assert_missing "$conflict_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
+
+copy_update_backups() {
+    destination=$1
+    cp "$TEST_HOME/.cup/bin/cup" "$destination/binary.old"
+    cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$destination/uninstall.old"
+    cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
+        "$destination/platform-checksums.old"
+    cp "$TEST_HOME/.cup/config/packages.cfg" "$destination/package-catalog.old"
+    cp "$TEST_HOME/.cup/config/install.cfg" "$destination/install-config.old"
+    cp "$TEST_HOME/.cup/config/SHA256SUMS.common" "$destination/common-checksums.old"
+}
+
 # A crash after the marker but before binary replacement leaves the old
 # executable with partially installed support assets. Repair may roll those
 # assets back only when the executable already equals its backup.
 staging=$TEST_HOME/.cup/staging/cup-update-safe-rollback-test
 mkdir -p "$staging"
-cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
-cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
-cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
-: > "$staging/committed"
+copy_update_backups "$staging"
+write_generation_marker "$staging" 0.0.0
 expected_binary_hash=$(hash_file "$staging/binary.old")
 expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
 expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
@@ -185,9 +218,7 @@ assert_cup_healthy
 # changing any canonical asset and retain the complete transaction evidence.
 staging=$TEST_HOME/.cup/staging/cup-update-unsafe-rollback-test
 mkdir -p "$staging"
-cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
-cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
-cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
+copy_update_backups "$staging"
 expected_binary_hash=$(hash_file "$staging/binary.old")
 expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
 expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
@@ -203,7 +234,7 @@ broken_checksums_hash=$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATF
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
 operation=cup-update
-phase=scheduled
+phase=committing
 temporary_name=cup-update-unsafe-rollback-test
 token=recovery-cup-update-unsafe-rollback-test
 version=0.0.0
@@ -239,10 +270,8 @@ assert_cup_healthy
 
 staging=$TEST_HOME/.cup/staging/cup-update-committed-test
 mkdir -p "$staging"
-cp "$TEST_HOME/.cup/bin/cup" "$staging/binary.old"
-cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$staging/uninstall.old"
-cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" "$staging/platform-checksums.old"
-: > "$staging/committed"
+copy_update_backups "$staging"
+write_generation_marker "$staging" 0.0.0
 committed_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1

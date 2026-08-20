@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# Purpose: Exercises installed and development catalog selection, plus
-# invalid-catalog behavior through the real CLI.
+# Exercises development-catalog fallback, checksum schema and secure-URL validation
+# through the real CLI. Installed-source precedence is covered by the catalog unit suite.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -34,4 +34,4 @@ run_cup_expect_failure "$TMP_ROOT/insecure-checksum.out" search
 assert_contains "$(cat "$TMP_ROOT/insecure-checksum.out")" \
     'catalog URL templates must use HTTPS'
 
-printf '%s\n' 'PackageCatalog checksum schema tests passed.'
+printf '%s\n' 'Package catalog checksum schema tests passed.'

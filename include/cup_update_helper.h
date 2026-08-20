@@ -2,15 +2,15 @@
 #define CUP_UPDATE_HELPER_H
 
 /*
- * Coordinates the native helper used when CUP must replace its own executable after the
- * parent process exits. The parent prepares and starts a managed copy; only that copy may
- * enter cup_update_helper_run().
+ * Coordinates the native helper that replaces cup after the parent process exits. The parent
+ * prepares and starts a managed copy; only that copy may enter cup_update_helper_run().
  */
 
 #include "error.h"
 
 /* Parent-side preparation and handoff. */
 CupError cup_update_helper_prepare(void);
+CupError cup_update_helper_prepare_from(const char *source_binary);
 CupError cup_update_helper_start(const char *token);
 
 /* Detached helper entry point. */

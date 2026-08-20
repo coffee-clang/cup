@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises scoped install preferences, profiles and explicit toolchains.
+# Exercises scoped install preferences, profiles and explicit toolchains.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -38,6 +38,8 @@ test_defaults_profile() {
         "Install selections for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
     assert_contains "$output" \
         'compiler           clang              clang              official default'
+    assert_contains "$(run_cup config --target windows-x64)" \
+        'debugger           -                  -                  unavailable'
     assert_contains "$output" 'Profiles:'
     assert_contains "$output" 'minimal      compiler, linker'
     assert_contains "$output" 'Toolchains:'
@@ -68,6 +70,12 @@ test_scoped_preferences() {
         "preferred.$TEST_PLATFORM.$TEST_PLATFORM.compiler=gcc"
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
         "preferred.$TEST_PLATFORM.windows-x64.compiler=gcc"
+
+    printf '# preserve on no-op reset\n' >> "$TEST_HOME/.cup/config/preferences.txt"
+    assert_contains "$(run_cup config reset debugger --target windows-x64)" \
+        "No preference was set for 'debugger' on target 'windows-x64'."
+    assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
+        '# preserve on no-op reset'
 
     assert_contains "$(run_cup config reset compiler)" \
         "Preference for 'compiler' on target '$TEST_PLATFORM' was reset."

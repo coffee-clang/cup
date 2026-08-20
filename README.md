@@ -1,66 +1,45 @@
 # cup
 
-`cup` is a user-space manager for prebuilt C development tools. It installs,
-updates and selects compilers, linkers, debuggers and related tools without
-requiring administrator privileges or modifying system toolchain directories.
+`cup` is a command-line tool for installing and managing prebuilt C development
+tools in the current user's home directory. It follows a `rustup`-like model for
+C toolchains, while keeping package production in the separate
+[`cup-components`](https://github.com/coffee-clang/cup-components) repository.
 
-## What cup provides
+`cup` works without administrator privileges, does not modify PATH, and verifies
+downloaded packages before installing them.
 
-- verified package downloads over HTTPS;
-- per-host and per-target tool selections;
-- profiles and curated LLVM/GNU toolchains;
-- transactional install, update and removal;
-- local diagnosis and recovery through `doctor` and `repair`;
-- native support for Linux, macOS and Windows.
+## Installation
 
-Tool packages are produced separately by
-[`cup-components`](https://github.com/coffee-clang/cup-components). This
-repository contains the cup CLI, installers, local state management and release
-assets.
-
-## Install
-
-### Linux and macOS
+Linux and macOS:
 
 ```sh
 curl -fsSL https://github.com/coffee-clang/cup/releases/latest/download/install.sh | sh
 ```
 
-### Windows PowerShell
+Windows PowerShell:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command '$installer = Join-Path $env:TEMP "install-cup.ps1"; iwr "https://github.com/coffee-clang/cup/releases/latest/download/install.ps1" -OutFile $installer; & $installer'
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"
 ```
 
-The installer normally uses `~/.cup` or `%USERPROFILE%\.cup`. If that name is
-already occupied by an unrelated directory, it preserves the directory and uses
-`.coffee-cup` instead. A strict `root.txt` marker makes the selected root
-stable across later commands and updates.
+The normal installation root is `~/.cup` on Linux and macOS and
+`%USERPROFILE%\.cup` on Windows. If that name already belongs to another
+application, `cup` uses `.coffee-cup` instead.
 
-## Quick start
+## Getting started
 
 ```sh
 cup search
 cup install gcc
-cup install compiler
-cup install profile standard
 cup list
+cup default compiler gcc@stable
 cup info
-cup config
-cup update
-cup doctor
 ```
 
-Use `cup help` for the command list and `cup help <command>` for detailed usage.
+Use `cup help` for the command list and `cup help <command>` for command-specific
+syntax.
 
 ## Documentation
 
-- [Project website and rendered documentation](https://coffee-clang.github.io/cup/)
-- [Documentation index](docs/INDEX.md)
-- [Installation](docs/user/INSTALLATION.md)
-- [Commands](docs/user/COMMANDS.md)
-- [Architecture](docs/design/ARCHITECTURE.md)
-- [Platforms and portability](docs/design/PLATFORMS.md)
-- [Build](docs/development/BUILD.md)
-- [Testing](docs/development/TESTING.md)
-- [Releases](docs/development/RELEASES.md)
+The complete user and developer documentation starts at
+[docs/INDEX.md](docs/INDEX.md).

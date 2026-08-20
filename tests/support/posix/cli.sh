@@ -1,6 +1,6 @@
 
-# Purpose: Sourced POSIX integration library for isolated cup homes, catalogs,
-# package fixtures and generated wrappers. This file is sourced, not executed.
+# Provides isolated cup homes, catalogs, package fixtures and generated wrappers to POSIX integration tests.
+# This file is sourced, not executed.
 
 : "${TESTS_ROOT:?TESTS_ROOT must be set before sourcing tests/support/posix/cli.sh}"
 . "$TESTS_ROOT/support/common.sh"
@@ -8,10 +8,19 @@
 . "$TESTS_ROOT/support/environment.sh"
 cup_test_prepare_environment
 TEST_PLATFORM=$CUP_TEST_PLATFORM
-TEST_BINARY=${CUP_TEST_BINARY:-$PROJECT_ROOT/build/$TEST_PLATFORM/development/bin/cup}
-export PROJECT_ROOT TEST_PLATFORM TEST_BINARY
+TEST_CONFIGURATION=${CUP_TEST_CONFIGURATION:-development}
+TEST_BUILD_ROOT=$(cup_test_build_root) || exit 2
+TEST_BINARY=${CUP_TEST_BINARY:-$TEST_BUILD_ROOT/$TEST_PLATFORM/$TEST_CONFIGURATION/bin/cup}
+export PROJECT_ROOT TEST_PLATFORM TEST_CONFIGURATION TEST_BUILD_ROOT TEST_BINARY
 
 prepare_command_environment() {
+    for variable in \
+        CUP_INSTALL_BASE_URL CUP_INSTALL_ALLOW_INSECURE \
+        HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+        http_proxy https_proxy all_proxy no_proxy; do
+        unset "$variable"
+    done
+
     TEST_HOME=$TMP_ROOT/home
     DEV_ROOT=$TMP_ROOT/development-root
     CUP=$TEST_BINARY
@@ -168,10 +177,9 @@ SCRIPT
             tar -cJf "$archive" -C "$TMP_ROOT/packages" "$package_name"
             ;;
         zip)
-            need_zip=${CUP_TEST_ZIP_COMMAND:-zip}
-            command -v "$need_zip" >/dev/null 2>&1 ||
+            command -v zip >/dev/null 2>&1 ||
                 fail "zip utility is required for ZIP package fixtures"
-            (cd "$TMP_ROOT/packages" && "$need_zip" -qr "$archive" "$package_name")
+            (cd "$TMP_ROOT/packages" && zip -qr "$archive" "$package_name")
             ;;
         *)
             fail "unsupported package fixture format: $format"

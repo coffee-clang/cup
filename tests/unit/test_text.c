@@ -1,4 +1,4 @@
-/* Test focus: Exercises bounded text parsing, formatting and line-reading contracts. */
+/* Exercises bounded text parsing, formatting and line-reading contracts. */
 
 #include "error.h"
 #include "text.h"
@@ -9,17 +9,6 @@
 
 void setUp(void) {}
 void tearDown(void) {}
-
-static FILE *open_bytes(const void *data, size_t size) {
-    FILE *file = tmpfile();
-
-    TEST_ASSERT_NOT_NULL(file);
-    if (size > 0) {
-        TEST_ASSERT_EQUAL_size_t(size, fwrite(data, 1, size, file));
-    }
-    rewind(file);
-    return file;
-}
 
 static void test_text_basics(void) {
     char left[] = "  cup\t ";
@@ -40,6 +29,8 @@ static void test_copy_format(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(buffer, sizeof(buffer), "cup"));
     TEST_ASSERT_EQUAL_STRING("cup", buffer);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(buffer, sizeof(buffer), "1234567"));
+    TEST_ASSERT_EQUAL_STRING("1234567", buffer);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_copy(NULL, sizeof(buffer), "cup"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_copy(buffer, 0, "cup"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_copy(buffer, sizeof(buffer), NULL));
@@ -52,6 +43,8 @@ static void test_copy_format(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_format(buffer, sizeof(buffer), "%s", "0.2.0"));
     TEST_ASSERT_EQUAL_STRING("0.2.0", buffer);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_format(buffer, sizeof(buffer), "%s", "1234567"));
+    TEST_ASSERT_EQUAL_STRING("1234567", buffer);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_format(NULL, sizeof(buffer), "%s", "cup"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_format(buffer, 0, "%s", "cup"));
     {
@@ -105,7 +98,6 @@ static void test_split_values(void) {
 }
 
 static void test_split_guards(void) {
-    char input[] = "a.b";
     char first[8];
     char second[8];
     TextBuffer parts[2] = {
@@ -115,95 +107,112 @@ static void test_split_guards(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(NULL, '.', parts, 2));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact("", '.', parts, 2));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '\0', parts, 2));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', NULL, 2));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 0));
+    {
+        char input[] = "a.b";
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '\0', parts, 2));
+    }
+    {
+        char input[] = "a.b";
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', NULL, 2));
+    }
+    {
+        char input[] = "a.b";
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 0));
+    }
 
     parts[0].data = NULL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
+    {
+        char input[] = "a.b";
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
+    }
     parts[0].data = first;
     parts[0].capacity = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
+    {
+        char input[] = "a.b";
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
+    }
 }
 
-static void test_line_formats(void) {
-    static const char data[] = "  # comment\r\n"
-                               "\t\r\n"
-                               " key = value \r"
-                               "last=value";
-    FILE *file = open_bytes(data, sizeof(data) - 1);
+static void test_parse_uint(void) {
+    unsigned value = 999u;
+
+    TEST_ASSERT_TRUE(text_parse_uint("0", 255u, &value));
+    TEST_ASSERT_EQUAL_UINT(0u, value);
+    TEST_ASSERT_TRUE(text_parse_uint("255", 255u, &value));
+    TEST_ASSERT_EQUAL_UINT(255u, value);
+    TEST_ASSERT_TRUE(text_parse_uint("0", 0u, &value));
+    TEST_ASSERT_EQUAL_UINT(0u, value);
+    TEST_ASSERT_FALSE(text_parse_uint("1", 0u, &value));
+
+    TEST_ASSERT_FALSE(text_parse_uint(NULL, 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("+1", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("-1", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint(" 1", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("1 ", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("01", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("256", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("1x", 255u, &value));
+    TEST_ASSERT_FALSE(text_parse_uint("1", 255u, NULL));
+}
+
+static void test_document_reader(void) {
+    static const unsigned char valid[] =
+        "# comment\n\n key = value \nlast=value\n";
+    static const unsigned char missing_lf[] = "key=value";
+    static const unsigned char carriage[] = "key=value\r\n";
+    static const unsigned char tab[] = "key=\tvalue\n";
+    static const unsigned char nul[] = {'k', 'e', 'y', '=', 'v', 0, '\n'};
+    TextDocumentReader reader;
     char line[32];
-    size_t number = 0;
     int has_line = 0;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_read_line(file, line, sizeof(line), &has_line, &number));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_reader_init(&reader, valid, sizeof(valid) - 1));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_raw_line(&reader, line, sizeof(line), &has_line));
     TEST_ASSERT_TRUE(has_line);
-    TEST_ASSERT_EQUAL_size_t(3, number);
+    TEST_ASSERT_EQUAL_STRING("# comment", line);
+    TEST_ASSERT_EQUAL_size_t(1, reader.line_number);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_raw_line(&reader, line, sizeof(line), &has_line));
+    TEST_ASSERT_TRUE(has_line);
+    TEST_ASSERT_EQUAL_STRING("", line);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_raw_line(&reader, line, sizeof(line), &has_line));
+    TEST_ASSERT_TRUE(has_line);
+    TEST_ASSERT_EQUAL_STRING(" key = value ", line);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_reader_init(&reader, valid, sizeof(valid) - 1));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_line(&reader, line, sizeof(line), &has_line));
+    TEST_ASSERT_TRUE(has_line);
     TEST_ASSERT_EQUAL_STRING("key = value", line);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_read_line(file, line, sizeof(line), &has_line, &number));
+    TEST_ASSERT_EQUAL_size_t(3, reader.line_number);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_line(&reader, line, sizeof(line), &has_line));
     TEST_ASSERT_TRUE(has_line);
-    TEST_ASSERT_EQUAL_size_t(4, number);
     TEST_ASSERT_EQUAL_STRING("last=value", line);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_read_line(file, line, sizeof(line), &has_line, &number));
+    TEST_ASSERT_EQUAL_size_t(4, reader.line_number);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          text_document_read_line(&reader, line, sizeof(line), &has_line));
     TEST_ASSERT_FALSE(has_line);
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-
-    number = 0;
-    file = open_bytes("# trailing comment", 18);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_read_line(file, line, sizeof(line), &has_line, &number));
-    TEST_ASSERT_FALSE(has_line);
-    TEST_ASSERT_EQUAL_size_t(1, number);
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-
-    number = 0;
-    file = open_bytes("value\r", 6);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_read_line(file, line, sizeof(line), &has_line, &number));
-    TEST_ASSERT_TRUE(has_line);
-    TEST_ASSERT_EQUAL_STRING("value", line);
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-}
-
-static void test_line_errors(void) {
-    static const unsigned char control[] = {'a', 1, 'b', '\n'};
-    static const unsigned char nul[] = {'a', 0, 'b', '\n'};
-    static const char long_line[] = "123456789\n";
-    char line[8];
-    size_t number;
-    int has_line;
-    FILE *file;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(NULL, line, sizeof(line), &has_line, &number));
-    file = open_bytes("a\n", 2);
+                          text_document_reader_init(NULL, valid, sizeof(valid) - 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(file, NULL, sizeof(line), &has_line, &number));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_read_line(file, line, 1, &has_line, &number));
+                          text_document_reader_init(&reader, NULL, sizeof(valid) - 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(file, line, sizeof(line), NULL, &number));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(file, line, sizeof(line), &has_line, NULL));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-
-    number = 0;
-    file = open_bytes(control, sizeof(control));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(file, line, sizeof(line), &has_line, &number));
-    TEST_ASSERT_EQUAL_size_t(1, number);
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-
-    number = 0;
-    file = open_bytes(nul, sizeof(nul));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          text_read_line(file, line, sizeof(line), &has_line, &number));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-
-    number = 0;
-    file = open_bytes(long_line, sizeof(long_line) - 1);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          text_read_line(file, line, sizeof(line), &has_line, &number));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+                          text_document_reader_init(&reader, valid, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          text_document_reader_init(&reader, missing_lf, sizeof(missing_lf) - 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          text_document_reader_init(&reader, carriage, sizeof(carriage) - 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          text_document_reader_init(&reader, tab, sizeof(tab) - 1));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          text_document_reader_init(&reader, nul, sizeof(nul)));
 }
 
 static void test_key_value(void) {
@@ -254,6 +263,8 @@ static void test_key_value(void) {
                               text_parse_key_value(valid, key, 0, value, sizeof(value)));
         TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                               text_parse_key_value(valid, key, sizeof(key), NULL, sizeof(value)));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                              text_parse_key_value(valid, key, sizeof(key), value, 0));
     }
 }
 
@@ -263,8 +274,8 @@ int main(void) {
     RUN_TEST(test_copy_format);
     RUN_TEST(test_split_values);
     RUN_TEST(test_split_guards);
-    RUN_TEST(test_line_formats);
-    RUN_TEST(test_line_errors);
+    RUN_TEST(test_parse_uint);
+    RUN_TEST(test_document_reader);
     RUN_TEST(test_key_value);
     return UNITY_END();
 }

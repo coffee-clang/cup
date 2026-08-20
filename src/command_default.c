@@ -1,25 +1,19 @@
 /*
- * Selects one validated installed package as the default of its scope.
+ * Selects one validated installed package as the default for its component, host and target.
  */
 
 #include "commands.h"
 #include "installed_package.h"
+#include "interrupt.h"
 
 #include "command_context.h"
-#include "layout.h"
 #include "package.h"
-#include "package_catalog.h"
-#include "package_metadata.h"
 #include "package_request.h"
 #include "package_selector.h"
-#include "path.h"
-#include "registry.h"
-#include "runtime_journal.h"
 #include "state.h"
 #include "wrappers.h"
 
 #include <stdio.h>
-#include <string.h>
 
 /* Load only the catalog data required to resolve a symbolic release. */
 static CupError load_default_context(CommandContext *context,
@@ -28,9 +22,6 @@ static CupError load_default_context(CommandContext *context,
     CupError err;
 
     err = command_context_begin(context, target_override, SYSTEM_LOCK_EXCLUSIVE);
-    if (err == CUP_OK) {
-        err = runtime_journal_require_none();
-    }
     if (err == CUP_OK) {
         err = command_context_load_state(context);
     }
@@ -75,7 +66,7 @@ static CupError commit_default(CommandContext *context,
     CupState candidate = context->state;
     CupError err;
 
-    err = state_set_active(&candidate, package);
+    err = state_set_default(&candidate, package);
     if (err == CUP_OK) {
         err = wrapper_plan_build(wrappers, &candidate);
     }
@@ -84,8 +75,13 @@ static CupError commit_default(CommandContext *context,
     }
 
     /* state.txt is the commit point; a later wrapper failure is a partial commit. */
+    err = interrupt_safe_point();
+    if (err != CUP_OK) {
+        return err;
+    }
     context->state = candidate;
-    err = state_save(&context->state);
+    err = state_save(
+        &context->state, &context->state_identity, &context->state_identity);
     if (err != CUP_OK) {
         return err;
     }

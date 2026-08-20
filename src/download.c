@@ -6,12 +6,9 @@
 #include "download.h"
 
 #include "ca_bundle.h"
-#include "checksum.h"
 #include "constants.h"
-#include "path.h"
 #include "interrupt.h"
-#include "layout.h"
-#include "package_archive.h"
+#include "path.h"
 #include "system.h"
 #include "text.h"
 
@@ -22,10 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(CUP_USE_EMBEDDED_CA_BUNDLE) && LIBCURL_VERSION_NUM < 0x074D00
-#error "CUP_USE_EMBEDDED_CA_BUNDLE requires libcurl >= 7.77.0"
-#endif
 
 /* TLS initialization and transfer limits. */
 static CupError initialize_tls_runtime(void) {
@@ -63,41 +56,6 @@ static CupError configure_tls_trust(CURL *curl) {
     return CUP_OK;
 }
 
-typedef struct {
-    FILE *file;
-    curl_off_t limit;
-    curl_off_t written;
-    int too_large;
-    int write_failed;
-} DownloadWriter;
-
-/* Transfer callbacks. Limits and interrupt checks are enforced while bytes are arriving, before
- * they reach the destination. */
-static size_t write_file_callback(char *data, size_t size, size_t count, void *userdata) {
-    DownloadWriter *writer = userdata;
-    size_t bytes;
-
-    if (writer == NULL || writer->file == NULL) {
-        return 0;
-    }
-    if (size != 0 && count > (size_t)-1 / size) {
-        writer->write_failed = 1;
-        return 0;
-    }
-
-    bytes = size * count;
-    if ((curl_off_t)bytes > writer->limit - writer->written) {
-        writer->too_large = 1;
-        return 0;
-    }
-    if (fwrite(data, 1, bytes, writer->file) != bytes) {
-        writer->write_failed = 1;
-        return 0;
-    }
-    writer->written += (curl_off_t)bytes;
-    return bytes;
-}
-
 static curl_off_t validation_limit(DownloadValidation validation) {
     switch (validation) {
         case DOWNLOAD_VALIDATE_METADATA:
@@ -114,35 +72,6 @@ static curl_off_t validation_limit(DownloadValidation validation) {
 
 static long validation_timeout(DownloadValidation validation) {
     return validation == DOWNLOAD_VALIDATE_ARCHIVE ? 7200L : 300L;
-}
-
-/* HTTP is accepted only for an explicit loopback release-source override. The parser requires a
- * numeric port and rejects user-info forms such as localhost:80@example.invalid. */
-int download_insecure_loopback_is_allowed(const char *url) {
-    const char *allow = getenv("CUP_INSTALL_ALLOW_INSECURE");
-    const char *port;
-    unsigned long value = 0;
-
-    if (url == NULL || allow == NULL || strcmp(allow, "1") != 0) {
-        return 0;
-    }
-    if (strncmp(url, "http://127.0.0.1:", 17) == 0 ||
-        strncmp(url, "http://localhost:", 17) == 0) {
-        port = url + 17;
-    } else {
-        return 0;
-    }
-    if (*port < '0' || *port > '9') {
-        return 0;
-    }
-    while (*port >= '0' && *port <= '9') {
-        value = value * 10 + (unsigned long)(*port - '0');
-        if (value > 65535) {
-            return 0;
-        }
-        port++;
-    }
-    return value != 0 && (*port == '\0' || *port == '/');
 }
 
 static int progress_callback(void *userdata,
@@ -172,46 +101,35 @@ static int progress_callback(void *userdata,
         } \
     } while (0)
 
-
 static CURLcode configure_transfer(CURL *curl,
                                    const char *url,
                                    DownloadValidation validation,
-                                   DownloadWriter *writer,
+                                   FILE *file,
                                    char *error_buffer) {
     CURLcode result = CURLE_OK;
+    int insecure_loopback;
 
     if (configure_tls_trust(curl) != CUP_OK) {
         return CURLE_FAILED_INIT;
     }
+    insecure_loopback = download_insecure_loopback_is_allowed(url);
 
     SETOPT(curl, CURLOPT_ERRORBUFFER, error_buffer);
     SETOPT(curl, CURLOPT_URL, url);
-    SETOPT(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    SETOPT(curl, CURLOPT_MAXREDIRS, 10L);
+    SETOPT(curl, CURLOPT_FOLLOWLOCATION, insecure_loopback ? 0L : 1L);
+    SETOPT(curl, CURLOPT_MAXREDIRS, insecure_loopback ? 0L : 10L);
     SETOPT(curl, CURLOPT_FAILONERROR, 1L);
     SETOPT(curl, CURLOPT_USERAGENT, "cup");
     SETOPT(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     SETOPT(curl, CURLOPT_ACCEPT_ENCODING, "");
     SETOPT(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     SETOPT(curl, CURLOPT_TIMEOUT, validation_timeout(validation));
-    SETOPT(curl, CURLOPT_MAXFILESIZE_LARGE, writer->limit);
+    SETOPT(curl, CURLOPT_MAXFILESIZE_LARGE, validation_limit(validation));
     SETOPT(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
     SETOPT(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    SETOPT(curl,
-           CURLOPT_PROTOCOLS_STR,
-           download_insecure_loopback_is_allowed(url) ? "http,https" : "https");
-    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
-#else
-    SETOPT(curl,
-           CURLOPT_PROTOCOLS,
-           download_insecure_loopback_is_allowed(url)
-               ? CURLPROTO_HTTP | CURLPROTO_HTTPS
-               : CURLPROTO_HTTPS);
-    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
-#endif
-    SETOPT(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
-    SETOPT(curl, CURLOPT_WRITEDATA, writer);
+    SETOPT(curl, CURLOPT_PROTOCOLS_STR, insecure_loopback ? "http" : "https");
+    SETOPT(curl, CURLOPT_REDIR_PROTOCOLS_STR, insecure_loopback ? "http" : "https");
+    SETOPT(curl, CURLOPT_WRITEDATA, file);
     SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
     SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
 
@@ -230,18 +148,17 @@ static CupError classify_transfer_result(const char *url,
                                          CURLcode result,
                                          CURLcode metadata_result,
                                          long response_code,
-                                         const char *error_buffer,
-                                         const DownloadWriter *writer) {
+                                         const char *error_buffer) {
     CupError err;
 
     if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
         return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
     }
-    if (writer->too_large || result == CURLE_FILESIZE_EXCEEDED) {
+    if (result == CURLE_FILESIZE_EXCEEDED) {
         fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
         return remove_temporary_download(temporary_path, CUP_ERR_DOWNLOAD_TOO_LARGE);
     }
-    if (writer->write_failed) {
+    if (result == CURLE_WRITE_ERROR) {
         fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n", url);
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
@@ -276,7 +193,6 @@ static CupError validate_download(const char *path, DownloadValidation validatio
     CupError err;
     long long size;
     int is_regular_file;
-    int is_valid_archive;
 
     err = system_is_regular_file(path, &is_regular_file);
     if (err != CUP_OK) {
@@ -295,16 +211,8 @@ static CupError validate_download(const char *path, DownloadValidation validatio
         return validation == DOWNLOAD_VALIDATE_ARCHIVE ? CUP_ERR_ARCHIVE : CUP_ERR_FETCH;
     }
 
-    if (validation != DOWNLOAD_VALIDATE_ARCHIVE) {
-        return CUP_OK;
-    }
-
-    err = package_archive_is_valid(path, NULL, &is_valid_archive);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return is_valid_archive ? CUP_OK : CUP_ERR_ARCHIVE;
+    /* Archive syntax is intentionally not parsed before an authenticated digest exists. */
+    return CUP_OK;
 }
 
 static CupError prepare_destination(const char *path, int *restore_read_only) {
@@ -367,12 +275,15 @@ static CupError commit_download(const char *temporary_path, const char *destinat
 
 /* Atomic download pipeline. Data is written to an exclusive temporary file, validated, synced and
  * then committed. */
-CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
+CupError download_file_checked(const char *url,
+                               const char *destination,
+                               DownloadValidation validation,
+                               DownloadValidator validator,
+                               void *validator_data) {
     CURL *curl = NULL;
     CURLcode result = CURLE_OK;
     CURLcode package_metadata_result = CURLE_OK;
     FILE *file = NULL;
-    DownloadWriter writer = {0};
     CupError sync_err = CUP_OK;
     CupError err;
     char error_buffer[CURL_ERROR_SIZE];
@@ -405,7 +316,7 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         system_create_temp_file(parent, "download", temporary_path, sizeof(temporary_path), &file);
     if (err != CUP_OK) {
         curl_global_cleanup();
-        return CUP_ERR_FETCH;
+        return err;
     }
 
     curl = curl_easy_init();
@@ -418,38 +329,32 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
     }
 
     /* Apply protocol, trust, timeout and size policy before the first network byte is accepted. */
-    writer.file = file;
-    writer.limit = validation_limit(validation);
     error_buffer[0] = '\0';
-    result = configure_transfer(curl, url, validation, &writer, error_buffer);
+    result = configure_transfer(curl, url, validation, file, error_buffer);
     if (result == CURLE_OK) {
         result = curl_easy_perform(curl);
         package_metadata_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     }
 
-    /* Close and sync the temporary file before classifying transfer or validation failures. */
-    if (curl != NULL) {
-        curl_easy_cleanup(curl);
-    }
-
-    if (file != NULL) {
-        sync_err = system_sync_file(file);
+    /* Classify the transfer before issuing durability I/O for bytes that will be rejected. */
+    curl_easy_cleanup(curl);
+    if (!(result == CURLE_OK && package_metadata_result == CURLE_OK && response_code == 200)) {
         close_status = fclose(file);
         file = NULL;
+        curl_global_cleanup();
+        err = classify_transfer_result(url,
+                                       temporary_path,
+                                       result,
+                                       package_metadata_result,
+                                       response_code,
+                                       error_buffer);
+        return close_status == 0 ? err : CUP_ERR_FILESYSTEM;
     }
-    curl_global_cleanup();
 
-    /* Translate transport outcomes into stable CUP errors and always remove rejected data. */
-    err = classify_transfer_result(url,
-                                   temporary_path,
-                                   result,
-                                   package_metadata_result,
-                                   response_code,
-                                   error_buffer,
-                                   &writer);
-    if (err != CUP_OK) {
-        return err;
-    }
+    sync_err = system_sync_file(file);
+    close_status = fclose(file);
+    file = NULL;
+    curl_global_cleanup();
     if (sync_err != CUP_OK || close_status != 0) {
         fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n", url);
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
@@ -457,6 +362,14 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
 
     /* Content validation happens before the atomic destination replacement. */
     err = validate_download(temporary_path, validation);
+    if (err == CUP_OK && validator != NULL) {
+        err = validator(temporary_path, validator_data);
+    }
+    if (err != CUP_OK) {
+        return remove_temporary_download(temporary_path, err);
+    }
+
+    err = interrupt_safe_point();
     if (err != CUP_OK) {
         return remove_temporary_download(temporary_path, err);
     }
@@ -466,4 +379,8 @@ CupError download_file(const char *url, const char *destination, DownloadValidat
         return remove_temporary_download(temporary_path, err);
     }
     return err;
+}
+
+CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
+    return download_file_checked(url, destination, validation, NULL, NULL);
 }

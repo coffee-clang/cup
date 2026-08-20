@@ -13,7 +13,8 @@
 /* Normalize a path to the internal representation used by the current host. */
 CupError path_normalize(char *path);
 
-/* Compare paths using host filesystem separator and case semantics. */
+/* Compare path spellings using CUP lexical rules: Windows normalizes separators and ignores
+ * ASCII case; POSIX compares bytes exactly. This is not a filesystem-identity check. */
 int path_equal(const char *left, const char *right);
 
 /* Join a parent and child path using the internal representation. */
@@ -22,7 +23,7 @@ CupError path_join(char *buffer, size_t size, const char *parent, const char *ch
 /* Join only after validating child as a safe relative path. */
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child);
 
-/* Copy the parent directory in CUP's normalized path representation. */
+/* Copy the parent directory in cup's normalized path representation. */
 CupError path_parent(char *buffer, size_t size, const char *path);
 
 /* Return a pointer to the final path segment without modifying the input. */

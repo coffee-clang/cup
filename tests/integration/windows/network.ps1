@@ -1,4 +1,4 @@
-# Purpose: Verifies package download through a local hostname and checksum
+# Verifies package download through a local hostname and checksum
 # rejection on Windows.
 
 param(
@@ -48,8 +48,8 @@ try {
     } else {
         $env:CUP_TEST_CONFIGURATION
     }
-    $helper = Join-Path $Script:CupTestProjectRoot (
-        "build\windows-x64\$configuration\tests\helpers\network-helper.exe")
+    $helper = Join-Path $Script:CupTestBuildRoot (
+        "windows-x64\$configuration\tests\helpers\network-helper.exe")
     Assert-PathExists $helper
 
     $serverRoot = Join-Path $Script:CupTestRoot 'server'
@@ -70,12 +70,18 @@ try {
         -NoNewWindow -PassThru
 
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while (-not (Test-Path -LiteralPath $readyFile -PathType Leaf)) {
+    while ($true) {
         if ($server.HasExited) {
             $errorText = if (Test-Path -LiteralPath $stderrFile) {
                 Get-Content -LiteralPath $stderrFile -Raw
             } else { '' }
             Fail-Test "local HTTP fixture exited before becoming ready`n$errorText"
+        }
+        if (Test-Path -LiteralPath $readyFile -PathType Leaf) {
+            $readyItem = Get-Item -LiteralPath $readyFile -ErrorAction SilentlyContinue
+            if ($null -ne $readyItem -and $readyItem.Length -gt 0) {
+                break
+            }
         }
         if ([DateTime]::UtcNow -ge $deadline) {
             Fail-Test 'local HTTP fixture did not become ready'
@@ -117,15 +123,27 @@ try {
         ('0' * 64) + "  $($badPackage.PackageName).zip")
 
     Write-Host '==> Rejecting a package whose downloaded checksum does not match...'
-    Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$badVersion") `
-        -ExpectFailure | Out-Null
+    $failure = Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$badVersion") `
+        -ExpectFailure
+    Assert-Contains $failure 'downloaded package failed SHA-256 verification'
+    $badCache = Join-Path $Script:CupTestHome (
+        ".cup\cache\compiler\clang\windows-x64\windows-x64\$badVersion")
+    Assert-PathMissing (Join-Path $badCache "$($badPackage.PackageName).zip")
+    Assert-NotContains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
+        "compiler:clang@$badVersion"
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
+    Assert-CupHealthy
 
     Write-Host 'Windows network integration tests passed.'
 } finally {
     if ($null -ne $server) {
         if (-not $server.HasExited) {
-            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
-            $server.WaitForExit(5000) | Out-Null
+            try {
+                & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
+            } catch {
+                # Cleanup is best effort.
+            }
+            [void]$server.WaitForExit(5000)
         }
         $server.Dispose()
     }

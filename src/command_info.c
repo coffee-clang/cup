@@ -6,13 +6,8 @@
 #include "installed_package.h"
 
 #include "command_context.h"
-#include "layout.h"
 #include "package.h"
 #include "package_catalog.h"
-#include "package_metadata.h"
-#include "package_selector.h"
-#include "path.h"
-#include "registry.h"
 #include "state.h"
 #include "wrappers.h"
 
@@ -27,8 +22,8 @@ static size_t collect_info_entries(const CommandContext *context,
     size_t count = 0;
     size_t i;
 
-    for (i = 0; i < context->state.active_count; ++i) {
-        const PackageIdentity *candidate = &context->state.active[i];
+    for (i = 0; i < context->state.default_count; ++i) {
+        const PackageIdentity *candidate = &context->state.defaults[i];
 
         if (package_identity_matches(candidate,
                                      context->host_platform,
@@ -113,13 +108,13 @@ static CupError print_info_entry(const CommandContext *context,
                                   &is_stable);
     }
 
-    err = wrapper_plan_build_active(&wrappers, identity);
+    err = wrapper_plan_build_default(&wrappers, identity);
     if (err != CUP_OK) {
         wrapper_plan_free(&wrappers);
         return err;
     }
 
-    err = wrapper_plan_expected_matches(&wrappers, &wrappers_match);
+    err = wrapper_plan_entries_match(&wrappers, &wrappers_match);
     if (err != CUP_OK || !wrappers_match) {
         wrapper_plan_free(&wrappers);
         return err == CUP_OK ? CUP_ERR_INCONSISTENT_STATE : err;
@@ -173,14 +168,8 @@ CupError command_info(const char *component, const char *target_override) {
     PackageIdentity entries[MAX_INSTALLED];
     size_t entry_count;
     CupError err;
+    CupError catalog_err = CUP_OK;
     int invalid;
-
-    if (component != NULL) {
-        err = registry_validate_component(component);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
 
     err = command_context_begin_read_only(&context, target_override);
     if (err != CUP_OK) {
@@ -195,18 +184,18 @@ CupError command_info(const char *component, const char *target_override) {
             goto done;
         }
     }
-    command_context_try_catalog(&context);
+    catalog_err = command_context_load_catalog(&context);
 
     entry_count = collect_info_entries(&context, component, target_override, entries);
     if (entry_count == 0) {
         print_empty_info(&context, component, target_override);
-        err = CUP_OK;
+        err = catalog_err;
         goto done;
     }
 
     print_info_heading(&context, component, target_override);
     invalid = print_info_entries(&context, entries, entry_count);
-    err = invalid ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
+    err = invalid ? CUP_ERR_INCONSISTENT_STATE : catalog_err;
 
 done:
     command_context_end(&context);

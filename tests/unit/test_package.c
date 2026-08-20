@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises package identities, metadata validation, executable entries, scanning
+ * Exercises package identities, metadata validation, executable entries, scanning
  * and quarantine decisions.
  */
 
@@ -12,6 +12,10 @@
 #include "test_platform.h"
 
 #include <stddef.h>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,6 +211,26 @@ static const PackageIssue *find_issue(const PackageList *packages,
     return NULL;
 }
 
+static const PackageIssue *find_issue_suffix(const PackageList *packages,
+                                             PackageIssueReason reason,
+                                             int can_quarantine,
+                                             const char *suffix) {
+    size_t i;
+    size_t suffix_length = strlen(suffix);
+
+    for (i = 0; i < packages->issue_count; ++i) {
+        const PackageIssue *issue = &packages->issues[i];
+        size_t path_length = strlen(issue->path);
+
+        if (issue->reason == reason && issue->can_quarantine == can_quarantine &&
+            path_length >= suffix_length &&
+            strcmp(issue->path + path_length - suffix_length, suffix) == 0) {
+            return issue;
+        }
+    }
+    return NULL;
+}
+
 /*
  * Test cases exercise the real production entry point while changing only controlled boundary
  * outcomes.
@@ -231,7 +255,11 @@ static void test_scope_validation(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_scope_init(NULL, "compiler", "linux-x64", "linux-x64"));
+    memset(&first, 0xa5, sizeof(first));
     TEST_ASSERT_NOT_EQUAL(CUP_OK, package_scope_init(&first, "unknown", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_STRING("", first.component);
+    TEST_ASSERT_EQUAL_STRING("", first.host_platform);
+    TEST_ASSERT_EQUAL_STRING("", first.target_platform);
     TEST_ASSERT_NOT_EQUAL(CUP_OK,
                           package_scope_init(&first, "compiler", "bad-platform", "linux-x64"));
 }
@@ -246,9 +274,10 @@ static void test_identity_validation(void) {
     TEST_ASSERT_EQUAL_STRING("compiler", identity.component);
     TEST_ASSERT_EQUAL_STRING("clang", identity.tool);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_identity_from_selector(
-                              &identity, "compiler", "linux-x64", "linux-x64", "clang@22.1.5"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_from_selector(
+            &identity, "compiler", "linux-x64", "linux-x64", "clang@22.1.5", stderr));
     TEST_ASSERT_EQUAL_STRING("22.1.5", identity.version);
 
     {
@@ -278,11 +307,7 @@ static void test_identity_validation(void) {
         TEST_ASSERT_EQUAL_INT(CUP_OK, package_identity_get_scope(&identity, &scope));
         TEST_ASSERT_EQUAL_STRING("compiler", scope.component);
         TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_get_scope(NULL, &scope));
-        TEST_ASSERT_EQUAL_INT(0, package_identity_compare(&identity, &same));
-        TEST_ASSERT_TRUE(package_identity_compare(&identity, &different) < 0);
-        TEST_ASSERT_TRUE(package_identity_compare(&identity, &different_host) < 0);
         TEST_ASSERT_FALSE(package_identity_equals(&identity, &different_host));
-        TEST_ASSERT_TRUE(package_identity_compare(NULL, &same) < 0);
         TEST_ASSERT_TRUE(package_identity_matches(
             &identity, "linux-x64", "linux-x64", "compiler"));
         TEST_ASSERT_TRUE(package_identity_matches(&identity, "linux-x64", NULL, NULL));
@@ -322,9 +347,12 @@ static void test_identity_validation(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_identity_init(NULL, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
+    memset(&identity, 0xa5, sizeof(identity));
     TEST_ASSERT_NOT_EQUAL(
         CUP_OK,
         package_identity_init(&identity, "unknown", "clang", "linux-x64", "linux-x64", "22.1.5"));
+    TEST_ASSERT_EQUAL_STRING("", identity.component);
+    TEST_ASSERT_EQUAL_STRING("", identity.tool);
     TEST_ASSERT_NOT_EQUAL(
         CUP_OK,
         package_identity_init(
@@ -336,12 +364,17 @@ static void test_identity_validation(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_RELEASE,
         package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "stable"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE,
-                          package_identity_from_selector(
-                              &identity, "compiler", "linux-x64", "linux-x64", "clang@stable"));
+    memset(&identity, 0xa5, sizeof(identity));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_RELEASE,
+        package_identity_from_selector(
+            &identity, "compiler", "linux-x64", "linux-x64", "clang@stable", stderr));
+    TEST_ASSERT_EQUAL_STRING("", identity.component);
+    TEST_ASSERT_EQUAL_STRING("", identity.tool);
     TEST_ASSERT_NOT_EQUAL(
         CUP_OK,
-        package_identity_from_selector(&identity, "compiler", "linux-x64", "linux-x64", "clang"));
+        package_identity_from_selector(
+            &identity, "compiler", "linux-x64", "linux-x64", "clang", stderr));
 }
 
 static void test_identity_argument_contracts(void) {
@@ -367,12 +400,10 @@ static void test_identity_argument_contracts(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_get_scope(&identity, NULL));
     TEST_ASSERT_FALSE(package_identity_equals(&identity, NULL));
-    TEST_ASSERT_EQUAL_INT(0, package_identity_compare(NULL, NULL));
-    TEST_ASSERT_TRUE(package_identity_compare(&identity, NULL) > 0);
     TEST_ASSERT_FALSE(package_identity_matches(&identity, "", NULL, NULL));
     package_identity_sort(&identity, 1);
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(NULL, stderr));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_identity_format_selector(NULL, selector, sizeof(selector)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -384,7 +415,7 @@ static void test_identity_argument_contracts(void) {
 
     invalid = identity;
     invalid.tool[0] = '\0';
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(&invalid));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(&invalid, stderr));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_identity_format_selector(&invalid, selector, sizeof(selector)));
 
@@ -399,10 +430,16 @@ static void test_identity_argument_contracts(void) {
         package_identity_init(&identity, "compiler", "gdb", "linux-x64", "linux-x64", "22.1.5"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_identity_from_selector(NULL, "compiler", "linux-x64", "linux-x64", "clang@22.1.5"));
+        package_identity_from_selector(
+            NULL, "compiler", "linux-x64", "linux-x64", "clang@22.1.5", stderr));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_identity_from_selector(NULL, "compiler", "linux-x64", "linux-x64", "bad", stderr));
 
     TEST_ASSERT_FALSE(package_list_contains(NULL, &identity));
     TEST_ASSERT_FALSE(package_list_contains(&packages, NULL));
+    packages.count = MAX_SCANNED_PACKAGES + 1u;
+    TEST_ASSERT_FALSE(package_list_contains(&packages, &identity));
 }
 
 static void test_valid_package(void) {
@@ -419,9 +456,62 @@ static void test_valid_package(void) {
                               TEST_PACKAGE_HOST,
                               TEST_PACKAGE_HOST,
                               "22.1.5"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(NULL, &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(root, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
+    {
+        char payload_path[512];
+        join_path(payload_path, sizeof(payload_path), root, "share-data.txt");
+        write_text(payload_path, "descriptive payload\n");
+        TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(NULL, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_validate(root, NULL, stderr));
+}
+
+
+static void test_validated_package_snapshot(void) {
+    PackageIdentity identity;
+    ValidatedPackage package;
+    char root[512];
+    char metadata_path[512];
+
+    build_path(root, sizeof(root), "validated-snapshot");
+    make_valid_package(root);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
+
+    validated_package_init(&package);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          validated_package_load(NULL, root, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          validated_package_load(&package, NULL, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          validated_package_load(&package, root, NULL, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, validated_package_load(&package, root, &identity, stderr));
+    TEST_ASSERT_EQUAL_STRING(
+        "22.1.5", package_metadata_get(&package.metadata, "package.version"));
+
+    /* The validated object owns its metadata; later pathname changes cannot alter this view. */
+    join_path(metadata_path, sizeof(metadata_path), root, CUP_INFO_FILENAME);
+    write_text(metadata_path,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=99.0.0\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_STRING(
+        "22.1.5", package_metadata_get(&package.metadata, "package.version"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    validated_package_free(&package);
+    TEST_ASSERT_NULL(package.metadata.fields);
+    TEST_ASSERT_EQUAL_UINT64(0, package.metadata.count);
 }
 
 /* On-disk validation rejects malformed metadata, missing entries, and unsafe launchers. */
@@ -441,17 +531,17 @@ static void test_invalid_package(void) {
 
     build_path(root, sizeof(root), "not-a-directory");
     write_text(root, "file\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "missing-info");
     make_dir(root);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "missing-entry");
     make_valid_package(root);
     join_path(path, sizeof(path), root, TEST_PACKAGE_ENTRY);
     TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "metadata-mismatch");
     make_valid_package(root);
@@ -463,7 +553,7 @@ static void test_invalid_package(void) {
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
                "entry.clang=" TEST_PACKAGE_ENTRY "\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "no-declared-entry");
     make_valid_package(root);
@@ -474,7 +564,7 @@ static void test_invalid_package(void) {
                "package.version=22.1.5\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "unsafe-entry");
     make_valid_package(root);
@@ -486,7 +576,7 @@ static void test_invalid_package(void) {
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
                "entry.clang=../clang\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "non-exec");
     make_valid_package(root);
@@ -510,7 +600,7 @@ static void test_invalid_package(void) {
 #else
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_executable(path, 0));
 #endif
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 }
 
 static void test_metadata_paths(void) {
@@ -529,7 +619,12 @@ static void test_metadata_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_set_metadata_read_only(root));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_is_read_only(root, &value));
     TEST_ASSERT_TRUE(value);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(package_metadata_path, 0));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_is_read_only(root, &value));
+    TEST_ASSERT_FALSE(value);
+    value = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_is_read_only(NULL, &value));
+    TEST_ASSERT_FALSE(value);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_is_read_only(root, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_set_metadata_read_only(NULL));
 
@@ -559,21 +654,22 @@ static void test_scan_roots(void) {
 
     build_path(components, sizeof(components), "components");
     /* The valid package remains usable while every malformed branch is reported. */
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages, stderr));
     TEST_ASSERT_TRUE(packages.complete);
     TEST_ASSERT_EQUAL_size_t(0, packages.count);
 
     write_text(components, "not a directory\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_scan(&packages));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_scan(&packages, stderr));
     TEST_ASSERT_EQUAL_INT(0, test_unlink(components));
 
     components_path_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_scan(&packages));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_scan(&packages, stderr));
 }
 
 static void test_path_failures(void) {
     PackageIdentity identity;
     PackageIssue issue;
+    char observed_path[512];
     char recovery[512];
     int exists;
 
@@ -586,7 +682,12 @@ static void test_path_failures(void) {
     memset(&issue, 0, sizeof(issue));
     issue.can_quarantine = 1;
     issue.package = identity;
-    build_path(issue.path, sizeof(issue.path), "missing-package");
+    build_path(observed_path, sizeof(observed_path), "missing-package");
+    write_text(observed_path, "observed\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(observed_path, &issue.path_identity));
+    TEST_ASSERT_TRUE(issue.path_identity.valid);
+    TEST_ASSERT_TRUE(snprintf(issue.path, sizeof(issue.path), "%s", observed_path) > 0);
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(observed_path));
 
     recovery_result = CUP_ERR_TEMPORARY;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY,
@@ -602,7 +703,11 @@ static void test_path_failures(void) {
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 
     cleanup_result = CUP_ERR_TEMPORARY;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY,
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
+                          package_quarantine(&issue, recovery, sizeof(recovery)));
+
+    issue.path_identity.valid = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_quarantine(&issue, recovery, sizeof(recovery)));
 }
 
@@ -674,6 +779,14 @@ static void create_scan_issue_fixture(char *host, size_t host_size) {
 
     written = snprintf(relative,
                        sizeof(relative),
+                       "components/compiler/clang/%s/%s/stable",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    make_parent_chain(relative);
+
+    written = snprintf(relative,
+                       sizeof(relative),
                        "components/compiler/clang/%s/%s/24.0.0",
                        host,
                        host);
@@ -689,6 +802,16 @@ static void create_scan_issue_fixture(char *host, size_t host_size) {
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     join_path(path, sizeof(path), components, relative);
     write_text(path, "not a package directory\n");
+#if !defined(_WIN32)
+    written = snprintf(relative,
+                       sizeof(relative),
+                       "compiler/clang/%s/%s/25.0.0",
+                       host,
+                       host);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
+    join_path(path, sizeof(path), components, relative);
+    TEST_ASSERT_EQUAL_INT(0, mkfifo(path, 0600));
+#endif
     join_path(path, sizeof(path), components, "unexpected-file");
     write_text(path, "unexpected\n");
 }
@@ -699,7 +822,7 @@ static void assert_scan_issue_inventory(const PackageList *packages, const char 
     TEST_ASSERT_TRUE(packages->complete);
     TEST_ASSERT_EQUAL_size_t(1, packages->count);
     TEST_ASSERT_EQUAL_size_t(1, packages->total_count);
-    TEST_ASSERT_TRUE(packages->issue_count >= 7);
+    TEST_ASSERT_TRUE(packages->issue_count >= 8);
     TEST_ASSERT_EQUAL_size_t(packages->issue_count, packages->total_issue_count);
 
     TEST_ASSERT_EQUAL_INT(
@@ -715,15 +838,39 @@ static void assert_scan_issue_inventory(const PackageList *packages, const char 
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_TARGET, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_VERSION, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 1));
+#if !defined(_WIN32)
+    TEST_ASSERT_NOT_NULL(
+        find_issue_suffix(packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 0, "/25.0.0"));
+#endif
 }
 
 static void assert_scan_issue_quarantine(const PackageList *packages) {
     const PackageIssue *invalid_content;
+    const PackageIssue *invalid_leaf;
     char recovery_path[512];
+    char replacement_path[512];
+    char original_path[512];
     int exists;
 
     invalid_content = find_issue(packages, PACKAGE_ISSUE_INVALID_CONTENT, 1);
     TEST_ASSERT_NOT_NULL(invalid_content);
+    TEST_ASSERT_TRUE(invalid_content->path_identity.valid);
+    TEST_ASSERT_EQUAL_UINT64(SYSTEM_PATH_DIRECTORY, invalid_content->path_identity.kind);
+
+    invalid_leaf = find_issue(packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 1);
+    TEST_ASSERT_NOT_NULL(invalid_leaf);
+    TEST_ASSERT_TRUE(invalid_leaf->path_identity.valid);
+    TEST_ASSERT_EQUAL_UINT64(SYSTEM_PATH_REGULAR_FILE, invalid_leaf->path_identity.kind);
+    TEST_ASSERT_TRUE(
+        snprintf(replacement_path, sizeof(replacement_path), "%s", invalid_leaf->path) > 0);
+    build_path(original_path, sizeof(original_path), "replaced-package-leaf");
+    TEST_ASSERT_EQUAL_INT(0, rename(replacement_path, original_path));
+    write_text(replacement_path, "replacement\n");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION, package_quarantine(invalid_leaf, recovery_path, sizeof(recovery_path)));
+    TEST_ASSERT_TRUE(test_access_exists(replacement_path));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(original_path));
+
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, package_quarantine(invalid_content, recovery_path, sizeof(recovery_path)));
     TEST_ASSERT_TRUE(test_access_exists(recovery_path));
@@ -741,11 +888,11 @@ static void test_scan_issues(void) {
     char host[MAX_PLATFORM_LEN];
 
     create_scan_issue_fixture(host, sizeof(host));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages, stderr));
     assert_scan_issue_inventory(&packages, host);
     assert_scan_issue_quarantine(&packages);
     assert_package_issue_names();
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_scan(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_scan(NULL, stderr));
 }
 
 static void test_registry_platform(void) {
@@ -763,7 +910,11 @@ static void test_registry_platform(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_validate(""));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_validate("linux"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_ARCH, platform_validate("linux-riscv64"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_ARCH, platform_validate("windows-arm64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, platform_validate(long_platform));
+    TEST_ASSERT_EQUAL_UINT(5, CUP_PLATFORM_COUNT);
+    TEST_ASSERT_EQUAL_UINT(7, registry_component_count());
+    TEST_ASSERT_EQUAL_UINT(10, CUP_TOOL_COUNT);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, registry_validate_component(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, registry_validate_component(""));
@@ -790,7 +941,6 @@ static void test_registry_platform(void) {
                           registry_find_tool_component("clang-format", component, 2));
 }
 
-/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(
@@ -800,6 +950,7 @@ int main(void) {
     RUN_TEST(test_identity_validation);
     RUN_TEST(test_identity_argument_contracts);
     RUN_TEST(test_valid_package);
+    RUN_TEST(test_validated_package_snapshot);
     RUN_TEST(test_invalid_package);
     RUN_TEST(test_metadata_paths);
     RUN_TEST(test_scan_roots);

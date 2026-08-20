@@ -8,9 +8,6 @@
 #include "layout.h"
 #include "package.h"
 #include "package_catalog.h"
-#include "package_metadata.h"
-#include "package_selector.h"
-#include "registry.h"
 #include "state.h"
 
 #include <stdio.h>
@@ -93,7 +90,7 @@ static int print_package_health(const PackageIdentity *package,
         return 0;
     }
 
-    err = package_validate(install_path, package);
+    err = package_validate(install_path, package, stderr);
     if (err == CUP_ERR_VALIDATION) {
         printf(" (invalid on disk)\n");
         *degraded = 1;
@@ -109,7 +106,7 @@ static int print_package_health(const PackageIdentity *package,
 
 static int print_package_annotations(const CommandContext *context,
                                      const PackageIdentity *package) {
-    const PackageIdentity *active_identity;
+    const PackageIdentity *default_identity;
     PackageScope scope;
     int is_default;
     int is_stable = 0;
@@ -118,8 +115,8 @@ static int print_package_annotations(const CommandContext *context,
         printf(" (invalid state record)\n");
         return 0;
     }
-    active_identity = state_get_active(&context->state, &scope);
-    is_default = active_identity != NULL && package_identity_equals(active_identity, package);
+    default_identity = state_get_default(&context->state, &scope);
+    is_default = default_identity != NULL && package_identity_equals(default_identity, package);
 
     if (context->has_catalog) {
         (void)package_catalog_is_stable(&context->catalog,
@@ -147,17 +144,11 @@ CupError command_list(const char *component, const char *target_override) {
     PackageIdentity entries[MAX_INSTALLED];
     size_t entry_count = 0;
     CupError err;
+    CupError catalog_err = CUP_OK;
     size_t i;
     int degraded = 0;
 
-    if (component != NULL) {
-        err = registry_validate_component(component);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-
-    /* Open the read-only host view without initializing an unused CUP root. */
+    /* Open the read-only host view without initializing an unused cup root. */
     err = command_context_begin_read_only(&context, target_override);
     if (err != CUP_OK) {
         goto done;
@@ -171,7 +162,7 @@ CupError command_list(const char *component, const char *target_override) {
             goto done;
         }
     }
-    command_context_try_catalog(&context);
+    catalog_err = command_context_load_catalog(&context);
 
     /* Snapshot and sort matching records before any filesystem inspection or output. */
     for (i = 0; i < context.state.installed_count; ++i) {
@@ -188,7 +179,7 @@ CupError command_list(const char *component, const char *target_override) {
 
     if (entry_count == 0) {
         print_empty_list(&context, component, target_override);
-        err = CUP_OK;
+        err = catalog_err;
         goto done;
     }
 
@@ -201,7 +192,7 @@ CupError command_list(const char *component, const char *target_override) {
             degraded = 1;
         }
     }
-    err = degraded ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
+    err = degraded ? CUP_ERR_INCONSISTENT_STATE : catalog_err;
 
 done:
     command_context_end(&context);

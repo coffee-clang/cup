@@ -1,4 +1,4 @@
-# Purpose: Runs every native Windows integration suite in a stable order.
+# Runs every native Windows integration suite in a stable order.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -20,8 +20,17 @@ if ([string]::IsNullOrWhiteSpace($resolvedCup)) {
 }
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $projectRoot "tests\support\windows\common.ps1")
 $suiteRoot = Join-Path $projectRoot "tests\integration\windows"
 $env:CUP_TEST_CONFIGURATION = $Configuration
+$suiteTimeout = 300
+if (-not [string]::IsNullOrWhiteSpace($env:CUP_TEST_SUITE_TIMEOUT)) {
+    if (-not [int]::TryParse($env:CUP_TEST_SUITE_TIMEOUT, [ref]$suiteTimeout) -or
+        $suiteTimeout -lt 1) {
+        throw "invalid CUP_TEST_SUITE_TIMEOUT: $($env:CUP_TEST_SUITE_TIMEOUT)"
+    }
+}
+$powershellPath = (Get-Process -Id $PID).Path
 
 $suites = @(Get-ChildItem -LiteralPath $suiteRoot -Filter '*.ps1' -File |
     Sort-Object -Property Name)
@@ -31,7 +40,21 @@ if ($suites.Count -eq 0) {
 foreach ($suite in $suites) {
     $label = $suite.BaseName.Replace('-', ' ')
     Write-Host "==> Testing $label..."
-    & $suite.FullName -CupExecutablePath $resolvedCup
+    $result = Invoke-NativeProcess `
+        -FilePath $powershellPath `
+        -Arguments @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $suite.FullName,
+            "-CupExecutablePath", $resolvedCup) `
+        -WorkingDirectory $projectRoot `
+        -TimeoutSeconds $suiteTimeout
+    if (-not [string]::IsNullOrWhiteSpace($result.Output)) {
+        Write-Host $result.Output
+    }
+    if ($result.ExitCode -ne 0) {
+        throw "Windows integration suite failed: $($suite.Name) [$($result.ExitCode)]"
+    }
 }
 
 Write-Host "All native Windows cup tests passed."

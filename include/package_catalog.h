@@ -9,14 +9,9 @@
 #include <stddef.h>
 
 #include "constants.h"
+#include "checksum.h"
 #include "error.h"
-
-/* Origin of the catalog currently loaded in memory. */
-typedef enum {
-    PACKAGE_CATALOG_SOURCE_NONE,
-    PACKAGE_CATALOG_SOURCE_INSTALLED,
-    PACKAGE_CATALOG_SOURCE_DEVELOPMENT
-} PackageCatalogSource;
+#include "system.h"
 
 /* One complete component/tool/host/target package configuration. */
 typedef struct {
@@ -33,13 +28,16 @@ typedef struct {
     unsigned field_mask;
 } PackageCatalogEntry;
 
-/* Dynamically sized catalog owned by the caller. */
+/*
+ * Dynamically sized catalog owned by the caller. Initialize it before the first
+ * load/free operation and keep that ownership for its complete lifetime.
+ */
 typedef struct {
     PackageCatalogEntry *packages;
     size_t count;
     size_t capacity;
-    PackageCatalogSource source;
-    char path[MAX_PATH_LEN];
+    SystemPathIdentity identity;
+    char digest[CHECKSUM_SHA256_HEX_LENGTH + 1];
 } PackageCatalog;
 
 /* Initialize or release all storage owned by a PackageCatalog. */
@@ -47,19 +45,22 @@ void package_catalog_init(PackageCatalog *catalog);
 void package_catalog_free(PackageCatalog *catalog);
 
 /*
- * Load the active catalog. The repository copy is a development fallback
- * only when the installed catalog is absent, never when it is invalid.
+ * Load the current catalog. The repository copy is a development fallback
+ * only when the installed catalog is absent, never when it is invalid. A
+ * valid load attempt replaces the previous catalog; operational failure leaves
+ * the initialized output empty.
  */
 CupError package_catalog_load(PackageCatalog *catalog);
 
 /* Load one explicitly selected source and validate the complete document. */
 CupError package_catalog_load_installed(PackageCatalog *catalog);
 CupError package_catalog_load_development(PackageCatalog *catalog);
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source);
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path);
 
-/* Resolve stable or query one concrete version in an exact package tuple. */
+/*
+ * Resolve stable or query one concrete version in an exact canonical package
+ * tuple. String outputs are empty on failure when a writable buffer is supplied.
+ */
 CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
                                         char *buffer,
                                         size_t size,
@@ -88,7 +89,7 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
                                      const char *version,
                                      int *is_available);
 
-/* Resolve the default format or query one supported format in a tuple. */
+/* Resolve the default format or query one supported format in a canonical tuple. */
 CupError package_catalog_get_default_format(const PackageCatalog *catalog,
                                             char *buffer,
                                             size_t size,
@@ -104,7 +105,10 @@ CupError package_catalog_has_format(const PackageCatalog *catalog,
                                     const char *format,
                                     int *is_supported);
 
-/* Expand validated HTTPS templates for one concrete package identity. */
+/*
+ * Expand validated HTTPS templates for one already-validated concrete package
+ * identity. String outputs are empty on failure when a writable buffer is supplied.
+ */
 CupError package_catalog_build_url(const PackageCatalog *catalog,
                                    char *buffer,
                                    size_t size,

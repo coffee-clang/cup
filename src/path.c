@@ -8,16 +8,27 @@
 #include "constants.h"
 #include "text.h"
 
-#include <ctype.h>
 #include <string.h>
 
-#if defined(_WIN32)
-static int is_path_separator(char value) {
-    return value == '/' || value == '\\';
+static int ascii_is_alpha(unsigned char value) {
+    return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+}
+
+static int ascii_is_digit(unsigned char value) {
+    return value >= '0' && value <= '9';
+}
+
+static int ascii_is_alnum(unsigned char value) {
+    return ascii_is_alpha(value) || ascii_is_digit(value);
 }
 
 static unsigned char ascii_lower(unsigned char value) {
     return value >= 'A' && value <= 'Z' ? (unsigned char)(value + ('a' - 'A')) : value;
+}
+
+#if defined(_WIN32)
+static int is_path_separator(char value) {
+    return value == '/' || value == '\\';
 }
 
 static int ascii_equal_ignore_case(char left, char right) {
@@ -25,7 +36,13 @@ static int ascii_equal_ignore_case(char left, char right) {
 }
 
 static int is_drive_root(const char *path, size_t length) {
-    return length == 3 && isalpha((unsigned char)path[0]) && path[1] == ':' && path[2] == '/';
+    return length == 3 && ascii_is_alpha((unsigned char)path[0]) && path[1] == ':' &&
+           path[2] == '/';
+}
+
+static int is_drive_absolute(const char *path, size_t length) {
+    return length >= 3 && ascii_is_alpha((unsigned char)path[0]) && path[1] == ':' &&
+           path[2] == '/';
 }
 #endif
 
@@ -49,6 +66,10 @@ CupError path_normalize(char *path) {
             read = 8;
         } else if (length >= 4 && is_path_separator(path[0]) && is_path_separator(path[1]) &&
                    path[2] == '?' && is_path_separator(path[3])) {
+            if (length < 7 || !ascii_is_alpha((unsigned char)path[4]) || path[5] != ':' ||
+                !is_path_separator(path[6])) {
+                return CUP_ERR_INVALID_INPUT;
+            }
             read = 4;
         } else if (length >= 4 && is_path_separator(path[0]) && is_path_separator(path[1]) &&
                    path[2] == '.' && is_path_separator(path[3])) {
@@ -76,6 +97,17 @@ CupError path_normalize(char *path) {
             write--;
         }
         path[write] = '\0';
+
+        for (read = 0; read < write; ++read) {
+            if (path[read] == ':' &&
+                !(read == 1 && ascii_is_alpha((unsigned char)path[0]))) {
+                return CUP_ERR_INVALID_INPUT;
+            }
+        }
+        if (write >= 2 && ascii_is_alpha((unsigned char)path[0]) && path[1] == ':' &&
+            !is_drive_absolute(path, write)) {
+            return CUP_ERR_INVALID_INPUT;
+        }
     }
 #endif
 
@@ -196,7 +228,7 @@ static int equals_ignore_case_n(const char *left, const char *right, size_t leng
     size_t i;
 
     for (i = 0; i < length; ++i) {
-        if (tolower((unsigned char)left[i]) != tolower((unsigned char)right[i])) {
+        if (ascii_lower((unsigned char)left[i]) != ascii_lower((unsigned char)right[i])) {
             return 0;
         }
     }
@@ -238,7 +270,8 @@ int path_is_safe_segment(const char *value) {
     }
 
     length = strlen(value);
-    if ((length == 1 && value[0] == '.') || (length == 2 && value[0] == '.' && value[1] == '.')) {
+    if (length >= MAX_PATH_SEGMENT_LEN || (length == 1 && value[0] == '.') ||
+        (length == 2 && value[0] == '.' && value[1] == '.')) {
         return 0;
     }
 
@@ -261,12 +294,12 @@ int path_is_safe_segment(const char *value) {
 int path_is_safe_identifier(const char *value) {
     const unsigned char *cursor;
 
-    if (!path_is_safe_segment(value) || !isalnum((unsigned char)value[0])) {
+    if (!path_is_safe_segment(value) || !ascii_is_alnum((unsigned char)value[0])) {
         return 0;
     }
 
     for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
-        if (isalnum(*cursor) || *cursor == '.' || *cursor == '_' || *cursor == '+' ||
+        if (ascii_is_alnum(*cursor) || *cursor == '.' || *cursor == '_' || *cursor == '+' ||
             *cursor == '-') {
             continue;
         }
@@ -280,7 +313,7 @@ int path_is_safe_identifier(const char *value) {
 int path_is_safe_relative(const char *path) {
     const char *segment;
     const char *cursor;
-    char part[256];
+    char part[MAX_PATH_SEGMENT_LEN];
     size_t length;
 
     if (text_is_empty(path)) {

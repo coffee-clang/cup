@@ -12,12 +12,6 @@
 #include "error.h"
 #include "package.h"
 
-typedef enum {
-    INSTALL_POLICY_SOURCE_NONE,
-    INSTALL_POLICY_SOURCE_INSTALLED,
-    INSTALL_POLICY_SOURCE_DEVELOPMENT
-} InstallPolicySource;
-
 typedef struct {
     PackageScope scope;
     char tool[MAX_IDENTIFIER_LEN];
@@ -36,18 +30,18 @@ typedef struct {
     size_t profile_count;
     InstallNamedList toolchains[MAX_INSTALL_TOOLCHAINS];
     size_t toolchain_count;
-    InstallPolicySource source;
-    char path[MAX_PATH_LEN];
 } InstallPolicy;
 
-/* Initialize and load one complete policy source. */
+/*
+ * Initialize and load one complete immutable policy source. A valid load
+ * attempt replaces the previous model; operational failure leaves the output
+ * initialized and empty. Read-only queries below require a model produced by a
+ * successful load and not subsequently modified by the caller.
+ */
 void install_policy_init(InstallPolicy *policy);
 CupError install_policy_load(InstallPolicy *policy);
-CupError install_policy_load_installed(InstallPolicy *policy);
 CupError install_policy_load_development(InstallPolicy *policy);
-CupError install_policy_load_path(InstallPolicy *policy,
-                                  const char *path,
-                                  InstallPolicySource source);
+CupError install_policy_load_path(InstallPolicy *policy, const char *path);
 
 /* Query immutable defaults and named plans after a successful load. */
 const InstallDefault *install_policy_find_default(const InstallPolicy *policy,

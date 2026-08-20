@@ -1,91 +1,112 @@
-#!/usr/bin/env sh
+#!/bin/sh
 
-# Purpose: Builds one native release executable and its platform checksum asset.
-# Inputs: PLATFORM, FAMILY and official release metadata.
+# Assembles one already-finalized native candidate with exact checksums.
 set -eu
 
-. "$(dirname "$0")/common.sh"
+LC_ALL=C
+LANG=C
+export LC_ALL LANG
+umask 022
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
+. "$SCRIPT_DIR/common.sh"
+
+validate_release_inputs
 : "${PLATFORM:?PLATFORM is required}"
-: "${FAMILY:?FAMILY is required}"
-
-# Reject accidental cross-host candidate builds before preparing dependencies.
-host_system=$(uname -s)
-host_machine=$(uname -m)
-case "$FAMILY:$PLATFORM:$host_system:$host_machine" in
-    linux:linux-x64:Linux:x86_64|linux:linux-x64:Linux:amd64) ;;
-    linux:linux-arm64:Linux:aarch64|linux:linux-arm64:Linux:arm64) ;;
-    macos:macos-x64:Darwin:x86_64|macos:macos-x64:Darwin:amd64) ;;
-    macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
-    windows:windows-x64:MINGW*:x86_64|windows:windows-x64:MSYS*:x86_64) ;;
-    *)
-        fail "PLATFORM '$PLATFORM' and FAMILY '$FAMILY' do not match \
-host $host_system/$host_machine"
-        ;;
+case "$PLATFORM" in
+    linux-x64|linux-arm64|macos-x64|macos-arm64|windows-x64) ;;
+    *) fail "unsupported release platform: $PLATFORM" ;;
 esac
 
-create_local_release_tag
+[ "$#" -eq 3 ] || {
+    printf 'Usage: %s <common-public-dir> <finalized-dir> <output-dir>\n' "$0" >&2
+    exit 2
+}
+COMMON=$1
+FINALIZED=$2
+OUTPUT=$3
+case "$COMMON" in /*) ;; *) COMMON=$PROJECT_ROOT/$COMMON ;; esac
+case "$FINALIZED" in /*) ;; *) FINALIZED=$PROJECT_ROOT/$FINALIZED ;; esac
+case "$OUTPUT" in /*) ;; *) OUTPUT=$PROJECT_ROOT/$OUTPUT ;; esac
+BUILD_ROOT=${CUP_BUILD_ROOT:-$PROJECT_ROOT/build}
 
-# Prepare and verify the pinned third-party prefix on the native runner.
-case "$FAMILY" in
-    linux | macos)
-        if [ "${CUP_CI_ENVIRONMENT_PREPARED:-0}" != 1 ]; then
-            FAMILY="$FAMILY" scripts/ci/prepare-posix.sh release
-        fi
-        ;;
-    windows)
-        [ "${MSYSTEM:-}" = UCRT64 ] ||
-            fail "Windows release builds require an MSYS2 UCRT64 shell"
-        [ "${MINGW_PREFIX:-}" = /ucrt64 ] ||
-            fail "Windows release builds require MINGW_PREFIX=/ucrt64"
-        ;;
-    *)
-        fail "unsupported release build family: $FAMILY"
-        ;;
-esac
+require_real_directory "$COMMON"
+require_real_directory "$FINALIZED"
+validate_release_file "$COMMON/release.txt"
+require_nonempty_file "$COMMON/SHA256SUMS.common"
+for asset in uninstall.sh uninstall.ps1; do require_nonempty_file "$COMMON/$asset"; done
+require_nonempty_file "$FINALIZED/build-config.txt"
+require_nonempty_file "$FINALIZED/release.txt"
+require_nonempty_file "$FINALIZED/binary-inspection.txt"
+require_nonempty_file "$FINALIZED/finalization.txt"
+cmp -s "$COMMON/release.txt" "$FINALIZED/release.txt" ||
+    fail 'finalized build metadata differs from common release metadata'
 
-# The public release target owns idempotent dependency preparation. A restored
-# cache is reused; a missing or incompatible prefix is rebuilt transactionally.
-make check-ca-bundle
-CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" release
-CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \
-    CUP_BUILD_CONFIGURATION=release finalize-release
-CUP_OFFICIAL_BUILD=1 make PLATFORM="$PLATFORM" \
-    CUP_BUILD_CONFIGURATION=release check-binary
-
-test "$(./scripts/version.sh base)" = "$VERSION"
-mkdir -p "dist/$PLATFORM" "dist/symbols/$PLATFORM" "build/release-$PLATFORM/generated"
-cp -R "build/$PLATFORM/release/symbols"/. "dist/symbols/$PLATFORM"/
-CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release \
-    ./scripts/version.sh generate "build/release-$PLATFORM/generated"
-
-test "$(sed -n 's/^version=//p' build/release-$PLATFORM/generated/release.txt)" = "$VERSION"
-test "$(sed -n 's/^commit=//p' build/release-$PLATFORM/generated/release.txt)" = "$SHA"
-
-# Assemble public platform assets and their exact checksum set.
 if [ "$PLATFORM" = windows-x64 ]; then
-    cp "build/$PLATFORM/release/bin/cup.exe" "dist/$PLATFORM/cup-$PLATFORM.exe"
-    binary="cup-$PLATFORM.exe"
-    uninstall_source="scripts/install/uninstall-cup-windows.ps1"
-    uninstall_asset="uninstall.ps1"
+    source_binary=$FINALIZED/bin/cup.exe
+    public_binary=cup-$PLATFORM.exe
+    uninstall_asset=uninstall.ps1
 else
-    cp "build/$PLATFORM/release/bin/cup" "dist/$PLATFORM/cup-$PLATFORM"
-    chmod +x "dist/$PLATFORM/cup-$PLATFORM"
-    binary="cup-$PLATFORM"
-    uninstall_source="scripts/install/uninstall-cup.sh"
-    uninstall_asset="uninstall.sh"
+    source_binary=$FINALIZED/bin/cup
+    public_binary=cup-$PLATFORM
+    uninstall_asset=uninstall.sh
 fi
+require_nonempty_file "$source_binary"
+require_real_directory "$FINALIZED/symbols"
+cup_path_require_safe_tree "$FINALIZED/symbols" "finalized symbols" ||
+    fail "finalized symbols contain an unsafe entry"
+case "$PLATFORM" in
+    linux-*|windows-x64) validate_exact_directory_files "$FINALIZED/symbols" cup.debug ;;
+    macos-*) validate_exact_directory_files "$FINALIZED/symbols" cup.dSYM ;;
+esac
 
-binary_hash=$(hash_file "dist/$PLATFORM/$binary")
-uninstall_hash=$(hash_file "$uninstall_source")
-metadata_hash=$(hash_file "build/release-$PLATFORM/generated/release.txt")
+prepare_output_staging "$OUTPUT" "$BUILD_ROOT"
+cleanup_platform() {
+    [ -z "${OUTPUT_STAGING:-}" ] || \
+        cup_path_remove_child_tree \
+            "$BUILD_ROOT" "$OUTPUT_STAGING" 'platform release staging'
+}
+trap cleanup_platform EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+PUBLIC=$OUTPUT_STAGING/public
+SYMBOLS=$OUTPUT_STAGING/symbols
+cup_path_prepare_child_directory "$BUILD_ROOT" "$PUBLIC" "platform public directory"
+cup_path_prepare_child_directory "$BUILD_ROOT" "$SYMBOLS" "platform symbols directory"
+if [ "$PLATFORM" = windows-x64 ]; then public_mode=0644; else public_mode=0755; fi
+cup_path_copy_file "$source_binary" "$PUBLIC/$public_binary" "$public_mode" replace ||
+    fail "could not copy public release binary"
+
 {
-    printf '%s  %s\n' "$binary_hash" "$binary"
-    printf '%s  %s\n' "$uninstall_hash" "$uninstall_asset"
-    printf '%s  release.txt\n' "$metadata_hash"
-} > "dist/$PLATFORM/SHA256SUMS.$PLATFORM"
+    printf '%s  %s\n' "$(hash_file "$PUBLIC/$public_binary")" "$public_binary"
+    printf '%s  %s\n' "$(hash_file "$COMMON/$uninstall_asset")" "$uninstall_asset"
+    printf '%s  release.txt\n' "$(hash_file "$COMMON/release.txt")"
+    printf '%s  SHA256SUMS.common\n' "$(hash_file "$COMMON/SHA256SUMS.common")"
+} | cup_path_write_file "$PUBLIC/SHA256SUMS.$PLATFORM" 0644 replace
 
-if [ "$FAMILY" != windows ]; then
-    "dist/$PLATFORM/$binary" --version
-    "dist/$PLATFORM/$binary" help >/dev/null
-fi
+cup_path_copy_tree "$FINALIZED/symbols" "$SYMBOLS" ||
+    fail "could not copy finalized symbols"
+for metadata in build-config.txt release.txt binary-inspection.txt finalization.txt; do
+    cup_path_copy_file "$FINALIZED/$metadata" "$SYMBOLS/$metadata" 0644 replace ||
+        fail "could not copy finalized metadata: $metadata"
+done
+
+# Verify the checksum against an exact temporary assembled view containing the
+# common files referenced by the platform checksum.
+VERIFY=$OUTPUT_STAGING/.verify
+cup_path_prepare_child_directory "$BUILD_ROOT" "$VERIFY" "checksum verification directory"
+cup_path_copy_file "$PUBLIC/$public_binary" "$VERIFY/$public_binary" "$public_mode" replace
+cup_path_copy_file "$PUBLIC/SHA256SUMS.$PLATFORM" "$VERIFY/SHA256SUMS.$PLATFORM" 0644 replace
+cup_path_copy_file "$COMMON/$uninstall_asset" "$VERIFY/$uninstall_asset" 0644 replace
+cup_path_copy_file "$COMMON/release.txt" "$VERIFY/release.txt" 0644 replace
+cup_path_copy_file "$COMMON/SHA256SUMS.common" "$VERIFY/SHA256SUMS.common" 0644 replace
+verify_checksum_file_exact "$VERIFY" "SHA256SUMS.$PLATFORM" \
+    "$public_binary" "$uninstall_asset" release.txt SHA256SUMS.common
+cup_path_remove_child_tree "$BUILD_ROOT" "$VERIFY" 'checksum verification directory'
+
+validate_exact_directory_files "$PUBLIC" "$public_binary" "SHA256SUMS.$PLATFORM"
+commit_output_staging "$OUTPUT"
+trap - EXIT HUP INT TERM
+printf '%s\n' "$OUTPUT"

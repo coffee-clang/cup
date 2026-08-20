@@ -4,6 +4,7 @@
 #include "command_context.h"
 #include "commands.h"
 #include "install_policy.h"
+#include "interrupt.h"
 #include "tool_preferences.h"
 #include "registry.h"
 #include "text.h"
@@ -21,14 +22,18 @@ static ToolPreferences saved;
 static InstallDefault official;
 static int save_calls;
 static int load_calls;
+static int policy_calls;
 static int operational_calls;
 static int read_only_calls;
 static int end_calls;
+static int safe_point_calls;
+static int context_runtime_available;
 static CupError begin_result;
 static CupError policy_result;
 static CupError load_result;
 static CupError save_result;
 static CupError resolve_result;
+static CupError safe_point_result;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -40,8 +45,11 @@ void setUp(void) {
     strcpy(official.scope.host_platform, "linux-x64");
     strcpy(official.scope.target_platform, "linux-x64");
     strcpy(official.tool, "clang");
-    save_calls = load_calls = operational_calls = read_only_calls = end_calls = 0;
+    save_calls = load_calls = policy_calls = operational_calls = read_only_calls = end_calls = 0;
+    safe_point_calls = 0;
+    context_runtime_available = 1;
     begin_result = policy_result = load_result = save_result = resolve_result = CUP_OK;
+    safe_point_result = CUP_OK;
 }
 
 void tearDown(void) {
@@ -50,6 +58,7 @@ void tearDown(void) {
 static CupError begin_common(CommandContext *context, const char *target) {
     memset(context, 0, sizeof(*context));
     strcpy(context->host_platform, "linux-x64");
+    context->runtime_available = context_runtime_available;
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           text_copy_lower_ascii(context->target_platform,
                                                 sizeof(context->target_platform),
@@ -78,11 +87,17 @@ void command_context_end(CommandContext *context) {
     end_calls++;
 }
 
+CupError interrupt_safe_point(void) {
+    safe_point_calls++;
+    return safe_point_result;
+}
+
 void install_policy_init(InstallPolicy *policy) {
     memset(policy, 0, sizeof(*policy));
 }
 
 CupError install_policy_load(InstallPolicy *policy) {
+    policy_calls++;
     if (policy_result != CUP_OK) {
         return policy_result;
     }
@@ -113,8 +128,7 @@ void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
 
-CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *preferences) {
-    (void)policy;
+CupError tool_preferences_load(ToolPreferences *preferences) {
     load_calls++;
     if (load_result == CUP_OK) {
         *preferences = loaded;
@@ -122,8 +136,7 @@ CupError tool_preferences_load(const InstallPolicy *policy, ToolPreferences *pre
     return load_result;
 }
 
-CupError tool_preferences_save(const InstallPolicy *policy, const ToolPreferences *preferences) {
-    (void)policy;
+CupError tool_preferences_save(const ToolPreferences *preferences) {
     save_calls++;
     saved = *preferences;
     return save_result;
@@ -215,14 +228,27 @@ static void test_view_is_read_only(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config(NULL, NULL, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, read_only_calls);
     TEST_ASSERT_EQUAL_INT(0, operational_calls);
+    TEST_ASSERT_EQUAL_INT(1, policy_calls);
     TEST_ASSERT_EQUAL_INT(1, load_calls);
     TEST_ASSERT_EQUAL_INT(0, save_calls);
     TEST_ASSERT_EQUAL_INT(1, end_calls);
 }
 
+static void test_view_without_runtime_uses_empty_preferences(void) {
+    context_runtime_available = 0;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config(NULL, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, read_only_calls);
+    TEST_ASSERT_EQUAL_INT(1, policy_calls);
+    TEST_ASSERT_EQUAL_INT(0, load_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
+}
+
 static void test_set_scope(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("SET", "COMPILER", "GCC", "WINDOWS-X64"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("set", "compiler", "gcc", "windows-x64"));
     TEST_ASSERT_EQUAL_INT(1, operational_calls);
+    TEST_ASSERT_EQUAL_INT(0, policy_calls);
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_size_t(1, saved.count);
     TEST_ASSERT_EQUAL_STRING("linux-x64", saved.items[0].scope.host_platform);
@@ -234,6 +260,7 @@ static void test_set_scope(void) {
 static void test_reset_component(void) {
     seed_preference("linux-x64", "compiler", "gcc");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", "compiler", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, policy_calls);
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_size_t(0, saved.count);
 }
@@ -241,17 +268,22 @@ static void test_reset_component(void) {
 static void test_reset_scope(void) {
     seed_preference("linux-x64", "compiler", "gcc");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, policy_calls);
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_size_t(0, saved.count);
 }
 
-static void test_invalid_args(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("unknown-action", "compiler", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_config("set", "compiler", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_config("reset", "compiler", "extra", NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_UNSUPPORTED_COMPONENT,
-                          command_config("reset", "unknown", NULL, NULL));
+static void test_reset_noop_does_not_persist(void) {
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", "compiler", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+
+    setUp();
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("reset", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
 }
 
 static void test_error_propagation(void) {
@@ -260,8 +292,15 @@ static void test_error_propagation(void) {
     TEST_ASSERT_EQUAL_INT(1, end_calls);
     begin_result = CUP_OK;
     policy_result = CUP_ERR_VALIDATION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_config("set", "compiler", "clang", NULL));
-    policy_result = CUP_OK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_config(NULL, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, policy_calls);
+
+    setUp();
+    policy_result = CUP_ERR_VALIDATION;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_config("set", "compiler", "clang", NULL));
+    TEST_ASSERT_EQUAL_INT(0, policy_calls);
+
+    setUp();
     load_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_config("set", "compiler", "clang", NULL));
     load_result = CUP_OK;
@@ -269,21 +308,46 @@ static void test_error_propagation(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, command_config("set", "compiler", "clang", NULL));
 }
 
+static void test_interrupt_before_save(void) {
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          command_config("set", "compiler", "gcc", NULL));
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+
+    setUp();
+    seed_preference("linux-x64", "compiler", "gcc");
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          command_config("reset", "compiler", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+
+    setUp();
+    seed_preference("linux-x64", "compiler", "gcc");
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
+                          command_config("reset", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+}
+
 static void test_view_error(void) {
     resolve_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_config(NULL, NULL, NULL, NULL));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_view_is_read_only);
+    RUN_TEST(test_view_without_runtime_uses_empty_preferences);
     RUN_TEST(test_set_scope);
     RUN_TEST(test_reset_component);
     RUN_TEST(test_reset_scope);
-    RUN_TEST(test_invalid_args);
+    RUN_TEST(test_reset_noop_does_not_persist);
     RUN_TEST(test_error_propagation);
+    RUN_TEST(test_interrupt_before_save);
     RUN_TEST(test_view_error);
     return UNITY_END();
 }

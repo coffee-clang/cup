@@ -7,6 +7,7 @@
 
 #include "command_context.h"
 #include "install_policy.h"
+#include "interrupt.h"
 #include "registry.h"
 #include "text.h"
 #include "tool_preferences.h"
@@ -57,7 +58,7 @@ static CupError show_configuration(const InstallPolicy *policy,
         }
         printf("%-18s %-18s %-18s %s\n",
                component,
-               effective,
+               source == TOOL_PREFERENCE_NONE ? "-" : effective,
                official == NULL ? "-" : official->tool,
                source == TOOL_PREFERENCE_USER               ? "user preference"
                : source == TOOL_PREFERENCE_OFFICIAL_DEFAULT ? "official default"
@@ -69,16 +70,11 @@ static CupError show_configuration(const InstallPolicy *policy,
     return CUP_OK;
 }
 
-static CupError set_preference(const InstallPolicy *policy,
-                               ToolPreferences *preferences,
+static CupError set_preference(ToolPreferences *preferences,
                                const CommandContext *context,
                                const char *component,
                                const char *tool) {
     CupError err;
-
-    if (text_is_empty(component) || text_is_empty(tool)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
 
     err = tool_preferences_set(preferences,
                                context->host_platform,
@@ -86,7 +82,10 @@ static CupError set_preference(const InstallPolicy *policy,
                                component,
                                tool);
     if (err == CUP_OK) {
-        err = tool_preferences_save(policy, preferences);
+        err = interrupt_safe_point();
+    }
+    if (err == CUP_OK) {
+        err = tool_preferences_save(preferences);
     }
     if (err == CUP_OK) {
         printf("Preferred tool for '%s' on target '%s' set to '%s'.\n",
@@ -97,8 +96,7 @@ static CupError set_preference(const InstallPolicy *policy,
     return err;
 }
 
-static CupError reset_scope_preferences(const InstallPolicy *policy,
-                                        ToolPreferences *preferences,
+static CupError reset_scope_preferences(ToolPreferences *preferences,
                                         const CommandContext *context) {
     size_t removed_count;
     CupError err;
@@ -107,8 +105,11 @@ static CupError reset_scope_preferences(const InstallPolicy *policy,
                                        context->host_platform,
                                        context->target_platform,
                                        &removed_count);
-    if (err == CUP_OK) {
-        err = tool_preferences_save(policy, preferences);
+    if (err == CUP_OK && removed_count > 0) {
+        err = interrupt_safe_point();
+    }
+    if (err == CUP_OK && removed_count > 0) {
+        err = tool_preferences_save(preferences);
     }
     if (err == CUP_OK) {
         printf("Reset %zu preference(s) for target '%s'.\n",
@@ -118,24 +119,22 @@ static CupError reset_scope_preferences(const InstallPolicy *policy,
     return err;
 }
 
-static CupError reset_component_preference(const InstallPolicy *policy,
-                                           ToolPreferences *preferences,
+static CupError reset_component_preference(ToolPreferences *preferences,
                                            const CommandContext *context,
                                            const char *component) {
     CupError err;
     int removed;
-
-    if (registry_validate_component(component) != CUP_OK) {
-        return CUP_ERR_UNSUPPORTED_COMPONENT;
-    }
 
     err = tool_preferences_reset(preferences,
                                  context->host_platform,
                                  context->target_platform,
                                  component,
                                  &removed);
-    if (err == CUP_OK) {
-        err = tool_preferences_save(policy, preferences);
+    if (err == CUP_OK && removed) {
+        err = interrupt_safe_point();
+    }
+    if (err == CUP_OK && removed) {
+        err = tool_preferences_save(preferences);
     }
     if (err == CUP_OK) {
         printf(removed ? "Preference for '%s' on target '%s' was reset.\n"
@@ -146,21 +145,16 @@ static CupError reset_component_preference(const InstallPolicy *policy,
     return err;
 }
 
-static CupError reset_preferences(const InstallPolicy *policy,
-                                  ToolPreferences *preferences,
+static CupError reset_preferences(ToolPreferences *preferences,
                                   const CommandContext *context,
-                                  const char *component,
-                                  const char *unexpected_value) {
-    if (!text_is_empty(unexpected_value)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
+                                  const char *component) {
     if (text_is_empty(component)) {
-        return reset_scope_preferences(policy, preferences, context);
+        return reset_scope_preferences(preferences, context);
     }
-    return reset_component_preference(policy, preferences, context, component);
+    return reset_component_preference(preferences, context, component);
 }
 
-/* View uses a read-only context; set/reset acquire the exclusive mutation lock. */
+/* View uses a read-only context; set/reset acquire the exclusive state-changing lock. */
 CupError command_config(const char *action_input,
                         const char *name_input,
                         const char *value_input,
@@ -169,29 +163,24 @@ CupError command_config(const char *action_input,
     InstallPolicy policy;
     ToolPreferences preferences;
     CupError err;
-    char action[MAX_IDENTIFIER_LEN] = "";
-    char name[MAX_IDENTIFIER_LEN] = "";
-    char value[MAX_IDENTIFIER_LEN] = "";
-    int is_view = text_is_empty(action_input);
+    const char *action = action_input;
+    const char *name = name_input;
+    const char *value = value_input;
+    int is_view;
 
     install_policy_init(&policy);
     tool_preferences_init(&preferences);
-    if (!is_view && (text_copy_lower_ascii(action, sizeof(action), action_input) != CUP_OK ||
-                     (!text_is_empty(name_input) &&
-                      text_copy_lower_ascii(name, sizeof(name), name_input) != CUP_OK) ||
-                     (!text_is_empty(value_input) &&
-                      text_copy_lower_ascii(value, sizeof(value), value_input) != CUP_OK))) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
+    is_view = text_is_empty(action);
 
-    /* Load policy and preferences under the least permissive context required by the action. */
+    /* View needs official policy plus preferences. Mutations need only the private preference
+     * document after the exclusive command context has established runtime ownership. */
     err = is_view ? command_context_begin_read_only(&context, target_override)
                   : command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
-    if (err == CUP_OK) {
+    if (err == CUP_OK && is_view) {
         err = install_policy_load(&policy);
     }
-    if (err == CUP_OK) {
-        err = tool_preferences_load(&policy, &preferences);
+    if (err == CUP_OK && (!is_view || context.runtime_available)) {
+        err = tool_preferences_load(&preferences);
     }
     if (err != CUP_OK) {
         goto done;
@@ -201,9 +190,9 @@ CupError command_config(const char *action_input,
         err = show_configuration(
             &policy, &preferences, context.host_platform, context.target_platform);
     } else if (strcmp(action, "set") == 0) {
-        err = set_preference(&policy, &preferences, &context, name, value);
+        err = set_preference(&preferences, &context, name, value);
     } else if (strcmp(action, "reset") == 0) {
-        err = reset_preferences(&policy, &preferences, &context, name, value);
+        err = reset_preferences(&preferences, &context, name);
     } else {
         fprintf(stderr, "Error: unknown config action '%s'.\n", action);
         err = CUP_ERR_INVALID_INPUT;

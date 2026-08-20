@@ -7,19 +7,15 @@
  */
 
 #include "error.h"
+#include "package_artifact.h"
 
-/* Install one explicit or stable-resolved selector. */
-CupError package_install(const char *component,
-                         const char *selector,
-                         const char *target_override,
-                         const char *format_override);
+/* Execute one catalog-pinned artifact plan without re-resolving catalog coordinates. */
+CupError package_install_artifact(const PackageArtifactSpec *spec);
 
-/* Update one installed scope and report whether package state or its active identity changed. */
-CupError package_install_update_scope(const char *component,
-                                      const char *tool,
-                                      const char *target_override,
-                                      const char *expected_active,
-                                      int *installed,
-                                      int *active_moved);
+/* Update one installed scope using its catalog-pinned stable artifact. */
+CupError package_install_update_artifact(const PackageArtifactSpec *spec,
+                                         const PackageIdentity *expected_default,
+                                         int *installed,
+                                         int *default_moved);
 
 #endif /* CUP_PACKAGE_INSTALL_H */

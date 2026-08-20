@@ -50,6 +50,20 @@ static void report_asset_status(DoctorReport *report,
     report->issue_count++;
 }
 
+static void report_update_helper_status(DoctorReport *report, CupAssetStatus status) {
+    if (status == CUP_ASSET_VALID) {
+        printf("OK: derived native cup update helper is available.\n");
+    } else if (status == CUP_ASSET_MISSING) {
+        printf("Warning: derived native cup update helper is missing; it will be recreated "
+               "before the next cup update.\n");
+        report->warning_count++;
+    } else {
+        printf("Issue: derived native cup update helper path is invalid and blocks "
+               "regeneration.\n");
+        report->issue_count++;
+    }
+}
+
 static void check_read_only_path(const char *path, const char *description, DoctorReport *report) {
     int is_read_only;
 
@@ -97,8 +111,8 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
     }
 
     if (cup_assets_has_installed_assets(&inspection)) {
-        report_asset_status(report, "canonical cup executable", inspection.binary);
-        report_asset_status(report, "native cup update helper", inspection.helper);
+        report_asset_status(report, "installed cup executable", inspection.binary);
+        report_update_helper_status(report, inspection.helper);
         report_asset_status(report, "installed package catalog", inspection.catalog);
         report_asset_status(report, "installation configuration", inspection.install_policy);
         report_asset_status(report, "uninstall script", inspection.uninstall);
@@ -135,7 +149,7 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
 
     err = load_diagnostic_catalog(&inspection, catalog, has_catalog);
     if (err != CUP_OK) {
-        report_incomplete(report, "active package catalog");
+        report_incomplete(report, "current package catalog");
     }
     return CUP_OK;
 }
@@ -171,7 +185,7 @@ static void check_state_packages(const CupState *state,
             continue;
         }
 
-        err = package_validate(install_path, package);
+        err = package_validate(install_path, package, NULL);
         if (err == CUP_ERR_VALIDATION) {
             printf("Issue: installed state record '%s:%s' has no "
                    "valid package.\n",
@@ -221,7 +235,7 @@ static void check_state_packages(const CupState *state,
                 report->incomplete_count++;
             } else if (!is_available) {
                 printf("Warning: installed package '%s:%s' is not listed "
-                       "by the active catalog.\n",
+                       "by the current catalog.\n",
                        package->component,
                        selector);
                 report->warning_count++;
@@ -304,9 +318,15 @@ static CupError print_doctor_summary(const DoctorReport *report) {
     return CUP_ERR_INCONSISTENT_STATE;
 }
 
+typedef enum {
+    DOCTOR_RUNTIME_MISSING = 0,
+    DOCTOR_RUNTIME_ACQUIRED,
+    DOCTOR_RUNTIME_UNAVAILABLE
+} DoctorRuntimeSnapshot;
+
 /* Runtime snapshot preparation. Diagnostics continue only after a shared lock protects one
  * coherent view of state, journals and installed packages. */
-static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
+static DoctorRuntimeSnapshot acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
     LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     CupError err;
     char path[MAX_PATH_LEN];
@@ -315,14 +335,31 @@ static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
     err = layout_get_runtime_status(&runtime_status);
     if (err != CUP_OK) {
         report_incomplete(report, "runtime structure");
-        return 0;
+        return DOCTOR_RUNTIME_UNAVAILABLE;
     }
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        printf("Info: cup runtime is not initialized; "
-               "the first operational command will create it.\n");
-        return 0;
+        SystemPathKind root_kind = SYSTEM_PATH_MISSING;
+
+        err = layout_get_root(path, sizeof(path));
+        if (err == CUP_OK) {
+            err = system_get_path_kind(path, &root_kind);
+        }
+        if (err != CUP_OK) {
+            report_incomplete(report, "cup root");
+            return DOCTOR_RUNTIME_UNAVAILABLE;
+        }
+        if (root_kind == SYSTEM_PATH_MISSING) {
+            printf("Info: cup runtime is not initialized; "
+                   "the first operational command will create it.\n");
+            return DOCTOR_RUNTIME_MISSING;
+        }
+        if (root_kind != SYSTEM_PATH_DIRECTORY) {
+            printf("Issue: cup root is not a real directory.\n");
+            report->issue_count++;
+            return DOCTOR_RUNTIME_UNAVAILABLE;
+        }
     }
-    if (runtime_status == LAYOUT_RUNTIME_INCOMPLETE) {
+    if (runtime_status != LAYOUT_RUNTIME_READY) {
         printf("Issue: cup runtime structure is incomplete.\n");
         report->issue_count++;
     }
@@ -333,24 +370,30 @@ static int acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
     }
     if (err != CUP_OK) {
         report_incomplete(report, "lock file");
-        return 0;
+        return DOCTOR_RUNTIME_UNAVAILABLE;
     }
     if (!lock_exists) {
         printf("Issue: cup lock file is missing: %s\n", path);
         report->issue_count++;
         report_incomplete(report, "coherent runtime snapshot");
-        return 0;
+        return DOCTOR_RUNTIME_UNAVAILABLE;
     }
 
     err = system_lock_acquire(lock, path, SYSTEM_LOCK_SHARED);
+    if (err == CUP_OK) {
+        err = layout_root_snapshot_validate();
+        if (err != CUP_OK) {
+            system_lock_release(lock);
+        }
+    }
     if (err != CUP_OK) {
         printf("Issue: %s.\n",
                err == CUP_ERR_LOCK ? "another cup operation is currently running"
                                    : "cup lock could not be acquired");
         report->issue_count++;
-        return 0;
+        return DOCTOR_RUNTIME_UNAVAILABLE;
     }
-    return 1;
+    return DOCTOR_RUNTIME_ACQUIRED;
 }
 
 static void check_runtime_contents(DoctorReport *report,
@@ -383,7 +426,7 @@ static void load_and_check_state(CupState *state,
 
     *state_loaded = 0;
     *state_valid = 0;
-    err = state_load(state, &state_status);
+    err = state_load(state, &state_status, NULL, NULL);
     if (err != CUP_OK) {
         printf("Issue: state.txt is syntactically invalid.\n");
         report->issue_count++;
@@ -396,7 +439,7 @@ static void load_and_check_state(CupState *state,
     }
 
     *state_loaded = 1;
-    if (state_validate(state) != CUP_OK) {
+    if (state_validate(state, NULL) != CUP_OK) {
         printf("Issue: state.txt is semantically inconsistent.\n");
         report->issue_count++;
         return;
@@ -517,7 +560,7 @@ static void check_package_tree(const CupState *state,
                                int state_loaded,
                                DoctorReport *report) {
     PackageList packages;
-    CupError err = package_scan(&packages);
+    CupError err = package_scan(&packages, NULL);
 
     if (err == CUP_OK) {
         check_scanned_packages(&packages, state, state_loaded, report);
@@ -572,6 +615,7 @@ CupError command_doctor(void) {
     int state_loaded;
     int state_valid;
     int has_catalog = 0;
+    int root_snapshot_active = 0;
     size_t root_issue_count = 0;
 
     package_catalog_init(&catalog);
@@ -582,17 +626,43 @@ CupError command_doctor(void) {
         report_incomplete(&report, "cup root candidates");
     } else if (root_issue_count != 0) {
         report.issue_count += (int)root_issue_count;
-        err = print_doctor_summary(&report);
+        printf("Doctor found %d root ownership issue(s). Manual root recovery is required; "
+               "'cup repair' cannot select or modify the reported root.\n",
+               report.issue_count);
+        err = CUP_ERR_INCONSISTENT_STATE;
         goto done;
     }
 
-    /* Assets can be inspected before the managed runtime exists. */
-    err = check_cup_assets(&catalog, &report, &has_catalog);
+    /* Doctor must diagnose ambiguous candidates before normal root selection. Once the candidates
+     * are valid, freeze the selected root for the remainder of the read-only command. */
+    err = layout_root_snapshot_begin();
     if (err != CUP_OK) {
+        report_incomplete(&report, "cup root selection");
+        err = print_doctor_summary(&report);
         goto done;
     }
-    if (!acquire_runtime_snapshot(&report, &lock)) {
-        err = print_doctor_summary(&report);
+    root_snapshot_active = 1;
+
+    /* Installed assets and their catalog belong to the same managed snapshot as state and
+     * packages. Only a genuinely missing runtime has no installed state to protect; a failed
+     * shared-lock acquisition must not fall back to pathname-based installed-asset reads. */
+    {
+        DoctorRuntimeSnapshot snapshot = acquire_runtime_snapshot(&report, &lock);
+
+        if (snapshot == DOCTOR_RUNTIME_MISSING) {
+            err = check_cup_assets(&catalog, &report, &has_catalog);
+            if (err == CUP_OK) {
+                err = print_doctor_summary(&report);
+            }
+            goto done;
+        }
+        if (snapshot == DOCTOR_RUNTIME_UNAVAILABLE) {
+            err = print_doctor_summary(&report);
+            goto done;
+        }
+    }
+    err = check_cup_assets(&catalog, &report, &has_catalog);
+    if (err != CUP_OK) {
         goto done;
     }
 
@@ -609,5 +679,8 @@ CupError command_doctor(void) {
 done:
     package_catalog_free(&catalog);
     system_lock_release(&lock);
+    if (root_snapshot_active) {
+        layout_root_snapshot_end();
+    }
     return err;
 }

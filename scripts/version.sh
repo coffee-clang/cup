@@ -1,10 +1,23 @@
 #!/bin/sh
 
-# Purpose: Validates VERSION and derives development or official build metadata from Git.
+# Validates VERSION and derives development or official build metadata from Git.
 # Commands generate version.h, release.txt and the Windows VERSIONINFO resource.
 set -eu
 
-VERSION_FILE=${CUP_VERSION_FILE:-VERSION}
+LC_ALL=C
+LANG=C
+TZ=UTC
+export LC_ALL LANG TZ
+umask 022
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+# shellcheck source=lib/path-safety.sh
+. "$PROJECT_ROOT/scripts/lib/path-safety.sh"
+case "${CUP_VERSION_FILE:-VERSION}" in
+    /*) VERSION_FILE=${CUP_VERSION_FILE:-VERSION} ;;
+    *) VERSION_FILE=$PROJECT_ROOT/${CUP_VERSION_FILE:-VERSION} ;;
+esac
 
 fail() {
     printf 'version: %s\n' "$*" >&2
@@ -57,16 +70,27 @@ is_semver() {
                 return 1
                 ;;
         esac
+        [ "${#part}" -le 6 ] || return 1
         [ "$part" -le 999999 ] || return 1
     done
 }
 
 base_version() {
-    [ -f "$VERSION_FILE" ] || fail "missing $VERSION_FILE"
-    version=$(sed -n '1p' "$VERSION_FILE" | tr -d '\r')
-    [ "$(wc -l < "$VERSION_FILE" | tr -d '[:space:]')" -eq 1 ] ||
-        fail "$VERSION_FILE must contain exactly one line"
+    cup_path_require_regular_file "$VERSION_FILE" 'VERSION file' || fail "missing or unsafe $VERSION_FILE"
+    IFS= read -r version < "$VERSION_FILE" ||
+        fail "$VERSION_FILE must contain one LF-terminated line"
     is_semver "$version" || fail "invalid semantic version '$version' in $VERSION_FILE"
+    expected=$(mktemp "${TMPDIR:-/tmp}/cup-version.XXXXXX") ||
+        fail 'could not create VERSION comparison file'
+    printf '%s\n' "$version" > "$expected" || {
+        rm -f -- "$expected"
+        fail 'could not prepare VERSION comparison'
+    }
+    if ! cmp -s "$expected" "$VERSION_FILE"; then
+        rm -f -- "$expected"
+        fail "$VERSION_FILE must contain exactly one canonical LF-terminated semantic version"
+    fi
+    rm -f -- "$expected"
     printf '%s\n' "$version"
 }
 
@@ -81,14 +105,18 @@ split_semver() {
     VERSION_PATCH=$3
 }
 
+git_at_root() {
+    git -C "$PROJECT_ROOT" "$@"
+}
+
 have_git_repository() {
     command -v git >/dev/null 2>&1 &&
-        git rev-parse --is-inside-work-tree >/dev/null 2>&1
+        git_at_root rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
 commit_id() {
     if have_git_repository; then
-        git rev-parse --short=7 HEAD 2>/dev/null || printf '%s\n' unknown
+        git_at_root rev-parse --short=7 HEAD 2>/dev/null || printf '%s\n' unknown
     else
         printf '%s\n' archive
     fi
@@ -96,52 +124,37 @@ commit_id() {
 
 metadata_commit_id() {
     if have_git_repository; then
-        git rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
+        git_at_root rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
     else
-        printf '%s\n' archive
+        # release.txt keeps one fixed hexadecimal schema. The all-zero value is
+        # reserved for development builds generated from a source archive;
+        # official builds still require a real checkout commit.
+        printf '%040d\n' 0
     fi
 }
 
 working_tree_dirty() {
     have_git_repository || return 1
-
-    case "$(uname -s 2>/dev/null || printf unknown)" in
-        MSYS*|MINGW*|CYGWIN*)
-            ! git -c core.fileMode=false diff --quiet \
-                --ignore-cr-at-eol --ignore-submodules -- 2>/dev/null ||
-                ! git -c core.fileMode=false diff --cached --quiet \
-                    --ignore-cr-at-eol --ignore-submodules -- 2>/dev/null
-            ;;
-        *)
-            ! git diff --quiet --ignore-submodules -- 2>/dev/null ||
-                ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null
-            ;;
-    esac
+    [ -n "$(git_at_root -c core.fileMode=false status --porcelain=v1 \
+        --untracked-files=normal --ignore-submodules=none 2>/dev/null)" ]
 }
 
 matching_tag_exists() {
     base=$1
     have_git_repository || return 1
-    git rev-parse -q --verify "refs/tags/v$base^{commit}" >/dev/null 2>&1
+    git_at_root rev-parse -q --verify "refs/tags/v$base^{commit}" >/dev/null 2>&1
 }
 
 at_matching_tag() {
     base=$1
     matching_tag_exists "$base" || return 1
-    [ "$(git rev-parse "v$base^{commit}")" = "$(git rev-parse HEAD)" ]
+    [ "$(git_at_root rev-parse "v$base^{commit}")" = "$(git_at_root rev-parse HEAD)" ]
 }
 
 latest_reachable_version_tag() {
     have_git_repository || return 1
-    for tag in $(git tag --merged HEAD --sort=-version:refname); do
-        case "$tag" in
-            v*)
-                version=${tag#v}
-                ;;
-            *)
-                continue
-                ;;
-        esac
+    for tag in $(git_at_root tag --merged HEAD --sort=-version:refname); do
+        case "$tag" in v*) version=${tag#v} ;; *) continue ;; esac
         if is_semver "$version"; then
             printf '%s\n' "$tag"
             return 0
@@ -152,39 +165,66 @@ latest_reachable_version_tag() {
 
 commits_from_latest_tag() {
     if tag=$(latest_reachable_version_tag); then
-        git rev-list --count "$tag..HEAD"
+        git_at_root rev-list --count "$tag..HEAD"
     else
-        git rev-list --count HEAD
+        git_at_root rev-list --count HEAD
     fi
 }
 
-# Official release eligibility.
+explicit_release_context_present() {
+    [ -n "${CUP_RELEASE_VERSION:-}${CUP_RELEASE_TAG:-}${CUP_RELEASE_COMMIT:-}" ]
+}
+
+validate_explicit_release_context() {
+    base=$1
+    [ -n "${CUP_RELEASE_VERSION:-}" ] && [ -n "${CUP_RELEASE_TAG:-}" ] &&
+        [ -n "${CUP_RELEASE_COMMIT:-}" ] ||
+        fail 'CUP_RELEASE_VERSION, CUP_RELEASE_TAG and CUP_RELEASE_COMMIT must be provided together'
+    [ "$CUP_RELEASE_VERSION" = "$base" ] ||
+        fail "release version '$CUP_RELEASE_VERSION' does not match VERSION '$base'"
+    [ "$CUP_RELEASE_TAG" = "v$base" ] ||
+        fail "release tag must be v$base"
+    case "$CUP_RELEASE_COMMIT" in
+        ''|*[!0-9a-f]*) fail 'release commit must be a lowercase hexadecimal Git commit' ;;
+    esac
+    [ "${#CUP_RELEASE_COMMIT}" -eq 40 ] || fail 'release commit must contain 40 hexadecimal characters'
+    [ "$(git_at_root rev-parse HEAD)" = "$CUP_RELEASE_COMMIT" ] ||
+        fail 'release commit does not match checkout HEAD'
+}
+
+validate_official_build() {
+    base=$1
+    [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] || fail 'official build identity was not requested'
+    [ "${CUP_BUILD_CONFIGURATION:-development}" = release ] ||
+        fail 'official identity requires the release build configuration'
+    have_git_repository || fail 'official releases require a Git checkout'
+    if explicit_release_context_present; then
+        validate_explicit_release_context "$base"
+    else
+        at_matching_tag "$base" ||
+            fail "HEAD must be tagged v$base when no explicit release context is provided"
+    fi
+    if working_tree_dirty; then
+        fail 'official releases require a clean working tree, including untracked files'
+    fi
+    return 0
+}
+
 is_official_build() {
     base=$1
     [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] || return 1
-    [ "${CUP_BUILD_CONFIGURATION:-development}" = release ] || return 1
-    at_matching_tag "$base" || return 1
-    ! working_tree_dirty
+    validate_official_build "$base"
 }
 
 validate_release() {
     base=$(base_version)
-    have_git_repository || fail "official releases require a Git checkout"
-    at_matching_tag "$base" ||
-        fail "HEAD must be tagged v$base and VERSION must match the tag"
-    working_tree_dirty && fail "official releases require a clean working tree"
+    validate_official_build "$base"
     printf '%s\n' "$base"
 }
 
 # Development and official version derivation.
-current_version() {
-    base=$(base_version)
-
-    if is_official_build "$base"; then
-        printf '%s\n' "$base"
-        return
-    fi
-
+development_version() {
+    base=$1
     if ! have_git_repository; then
         printf '%s-dev+archive\n' "$base"
         return
@@ -197,31 +237,54 @@ current_version() {
     printf '%s-dev.%s+%s%s\n' "$base" "$distance" "$commit" "$suffix"
 }
 
+current_version() {
+    base=$(base_version)
+    if is_official_build "$base"; then
+        printf '%s\n' "$base"
+    else
+        development_version "$base"
+    fi
+}
+
 write_if_changed() {
     destination=$1
-    temporary=$2
-    if [ -f "$destination" ] && cmp -s "$temporary" "$destination"; then
-        rm -f "$temporary"
+    if [ -n "${CUP_BUILD_ROOT:-}" ]; then
+        cup_path_prepare_child_file "$CUP_BUILD_ROOT" "$destination" 'generated version output' || exit 1
     else
-        mv -f "$temporary" "$destination"
+        cup_path_prepare_file_target "$destination" 'generated version output' || exit 1
     fi
+    cup_path_write_file "$destination" 0644 if-different
 }
 
 # Deterministic generated metadata outputs.
 generate_files() {
     output_dir=$1
-    mkdir -p "$output_dir"
+    case "$output_dir" in /*|[A-Za-z]:/*) ;; *) output_dir=$(pwd -P)/$output_dir ;; esac
+    if [ -n "${CUP_BUILD_ROOT:-}" ]; then
+        cup_path_require_build_root "$CUP_BUILD_ROOT" || exit 1
+    fi
 
+    # Resolve and validate build identity before creating output directories. An invalid official
+    # request must have no filesystem side effect.
     base=$(base_version)
-    version=$(current_version)
+    official=0
+    if is_official_build "$base"; then
+        official=1
+        version=$base
+    else
+        version=$(development_version "$base")
+    fi
     split_semver "$base"
     commit=$(commit_id)
     metadata_commit=$(metadata_commit_id)
-    official=0
-    is_official_build "$base" && official=1
 
-    header_tmp="$output_dir/version.h.tmp.$$"
-    cat > "$header_tmp" <<HEADER
+    if [ -n "${CUP_BUILD_ROOT:-}" ]; then
+        cup_path_prepare_child_directory "$CUP_BUILD_ROOT" "$output_dir" 'generated version directory' || exit 1
+    else
+        cup_path_prepare_directory_chain "$output_dir" 'generated version directory' || exit 1
+    fi
+
+    cat <<HEADER | write_if_changed "$output_dir/version.h"
 #ifndef CUP_GENERATED_VERSION_H
 #define CUP_GENERATED_VERSION_H
 
@@ -235,18 +298,14 @@ generate_files() {
 
 #endif /* CUP_GENERATED_VERSION_H */
 HEADER
-    write_if_changed "$output_dir/version.h" "$header_tmp"
 
-    metadata_tmp="$output_dir/release.txt.tmp.$$"
-    cat > "$metadata_tmp" <<METADATA
+    cat <<METADATA | write_if_changed "$output_dir/release.txt"
 format=1
 version=$base
 commit=$metadata_commit
 METADATA
-    write_if_changed "$output_dir/release.txt" "$metadata_tmp"
 
-    resource_tmp="$output_dir/version.rc.tmp.$$"
-    cat > "$resource_tmp" <<RESOURCE
+    cat <<RESOURCE | write_if_changed "$output_dir/version.rc"
 #include <windows.h>
 #include "version.h"
 
@@ -294,7 +353,6 @@ BEGIN
     "</assembly>\r\n"
 END
 RESOURCE
-    write_if_changed "$output_dir/version.rc" "$resource_tmp"
 }
 
 usage() {
@@ -310,7 +368,6 @@ USAGE
 }
 
 # Command dispatch.
-validate_build_context
 command=${1:-}
 case "$command" in
     base)
@@ -319,10 +376,12 @@ case "$command" in
         ;;
     current)
         [ "$#" -eq 1 ] || usage
+        validate_build_context
         current_version
         ;;
     official)
         [ "$#" -eq 1 ] || usage
+        validate_build_context
         base=$(base_version)
         if is_official_build "$base"; then
             printf '1\n'
@@ -332,10 +391,12 @@ case "$command" in
         ;;
     validate-release)
         [ "$#" -eq 1 ] || usage
+        validate_build_context
         validate_release
         ;;
     generate)
         [ "$#" -eq 2 ] || usage
+        validate_build_context
         generate_files "$2"
         ;;
     *)

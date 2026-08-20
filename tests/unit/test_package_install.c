@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises install preparation, cache refresh, commit boundaries, default updates
+ * Exercises install preparation, cache refresh, commit boundaries, default updates
  * and rollback decisions.
  */
 
@@ -7,6 +7,7 @@
 #include "package_cache.h"
 #include "package_install.h"
 #include "installed_package.h"
+#include "interrupt.h"
 #include "package_selector.h"
 #include "package_request.h"
 #include "package_extract.h"
@@ -33,7 +34,6 @@
 static CupState initial_state;
 static CupError parse_result;
 static CupError context_result;
-static CupError guard_result;
 static CupError load_state_result;
 static CupError load_catalog_result;
 static CupError resolve_result;
@@ -55,6 +55,7 @@ static PackageCacheSource fetch_sources[MAX_STEPS];
 static CupError extract_results[MAX_STEPS];
 static CupError validate_results[MAX_STEPS];
 static int interrupt_values[MAX_STEPS];
+static CupError safe_point_results[MAX_STEPS];
 static CupError discard_result;
 static CupError remove_results[MAX_STEPS];
 static CupError ensure_dir_result;
@@ -63,8 +64,8 @@ static CupError parent_result;
 static CupError move_results[MAX_STEPS];
 static SystemCommitState move_states[MAX_STEPS];
 static CupError add_state_result;
-static const char *current_active;
-static CupError set_active_result;
+static const char *current_default;
+static CupError set_default_result;
 static CupError plan_build_result;
 static CupError save_result;
 static CupError clear_results[MAX_STEPS];
@@ -81,6 +82,7 @@ static int fetch_calls;
 static int extract_calls;
 static int validate_calls;
 static int interrupt_calls;
+static int safe_point_calls;
 static int discard_calls;
 static int remove_calls;
 static int ensure_dir_calls;
@@ -101,7 +103,6 @@ static void reset_scenario(void) {
     memset(&initial_state, 0, sizeof(initial_state));
     parse_result = CUP_OK;
     context_result = CUP_OK;
-    guard_result = CUP_OK;
     load_state_result = CUP_OK;
     load_catalog_result = CUP_OK;
     resolve_result = CUP_OK;
@@ -123,8 +124,8 @@ static void reset_scenario(void) {
     read_only_result = CUP_OK;
     parent_result = CUP_OK;
     add_state_result = CUP_OK;
-    current_active = NULL;
-    set_active_result = CUP_OK;
+    current_default = NULL;
+    set_default_result = CUP_OK;
     plan_build_result = CUP_OK;
     save_result = CUP_OK;
     plan_apply_result = CUP_OK;
@@ -141,6 +142,7 @@ static void reset_scenario(void) {
     extract_calls = 0;
     validate_calls = 0;
     interrupt_calls = 0;
+    safe_point_calls = 0;
     discard_calls = 0;
     remove_calls = 0;
     ensure_dir_calls = 0;
@@ -155,6 +157,7 @@ static void reset_scenario(void) {
         extract_results[i] = CUP_OK;
         validate_results[i] = CUP_OK;
         interrupt_values[i] = 0;
+        safe_point_results[i] = CUP_OK;
         remove_results[i] = CUP_OK;
         move_results[i] = CUP_OK;
         move_states[i] = SYSTEM_COMMIT_DURABLE;
@@ -232,12 +235,12 @@ void command_context_end(CommandContext *context) {
     context_end_calls++;
 }
 
-CupError runtime_journal_require_none(void) {
-    return guard_result;
-}
-
 CupError command_context_load_state(CommandContext *context) {
     TEST_ASSERT_NOT_NULL(context);
+    context->state_identity.valid = 1;
+    context->state_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    context->state_identity.volume = 1;
+    context->state_identity.object = 1;
     return load_state_result;
 }
 
@@ -371,11 +374,19 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
 
 CupError package_transaction_begin(PackageOperation operation,
                                    const PackageIdentity *package,
-                                   const char *temporary_path) {
+                                   const char *temporary_path,
+                                   PackageTransaction *created) {
     TEST_ASSERT_TRUE(operation == PACKAGE_OPERATION_INSTALL ||
                      operation == PACKAGE_OPERATION_UPDATE);
     TEST_ASSERT_NOT_NULL(package);
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", temporary_path);
+    TEST_ASSERT_NOT_NULL(created);
+
+    memset(created, 0, sizeof(*created));
+    if (begin_result == CUP_OK || begin_result == CUP_ERR_COMMIT) {
+        created->file_identity.valid = 1;
+        created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    }
     return begin_result;
 }
 
@@ -421,6 +432,95 @@ CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
     return buffer_write_result(snprintf(buffer, size, "https://example.invalid/SHA256SUMS"), size);
 }
 
+CupError package_artifact_spec_build(PackageArtifactSpec *spec,
+                                     const PackageCatalog *catalog,
+                                     const PackageIdentity *identity,
+                                     const char *format_name) {
+    CupError err;
+
+    TEST_ASSERT_NOT_NULL(spec);
+    TEST_ASSERT_NOT_NULL(identity);
+    TEST_ASSERT_NOT_NULL(format_name);
+    memset(spec, 0, sizeof(*spec));
+    spec->identity = *identity;
+    spec->format = strcmp(format_name, "tar.gz") == 0
+                       ? PACKAGE_ARCHIVE_FORMAT_TAR_GZ
+                       : PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
+    err = package_catalog_build_url(catalog,
+                                    spec->package_url,
+                                    sizeof(spec->package_url),
+                                    identity->component,
+                                    identity->tool,
+                                    identity->host_platform,
+                                    identity->target_platform,
+                                    identity->version,
+                                    format_name);
+    if (err == CUP_OK) {
+        err = package_catalog_build_checksum_url(catalog,
+                                                 spec->checksum_url,
+                                                 sizeof(spec->checksum_url),
+                                                 identity->component,
+                                                 identity->tool,
+                                                 identity->host_platform,
+                                                 identity->target_platform,
+                                                 identity->version);
+    }
+    return err;
+}
+
+void verified_artifact_init(VerifiedArtifact *artifact) {
+    TEST_ASSERT_NOT_NULL(artifact);
+    memset(artifact, 0, sizeof(*artifact));
+}
+
+void verified_artifact_release(VerifiedArtifact *artifact) {
+    TEST_ASSERT_NOT_NULL(artifact);
+    memset(artifact, 0, sizeof(*artifact));
+}
+
+CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
+                                      const PackageArtifactSpec *spec,
+                                      PackageCachePolicy cache_policy,
+                                      PackageCacheResult *result) {
+    int index = fetch_calls++;
+
+    TEST_ASSERT_TRUE(index < MAX_STEPS);
+    TEST_ASSERT_NOT_NULL(artifact);
+    TEST_ASSERT_NOT_NULL(spec);
+    TEST_ASSERT_NOT_NULL(result);
+    TEST_ASSERT_EQUAL_STRING("https://example.invalid/package", spec->package_url);
+    TEST_ASSERT_EQUAL_STRING("https://example.invalid/SHA256SUMS", spec->checksum_url);
+    TEST_ASSERT_EQUAL_INT(index == 0 ? PACKAGE_CACHE_ALLOW : PACKAGE_CACHE_REFRESH, cache_policy);
+    if (fetch_results[index] != CUP_OK) {
+        return fetch_results[index];
+    }
+    memset(result, 0, sizeof(*result));
+    result->source = fetch_sources[index];
+    artifact->file = (FILE *)(uintptr_t)1;
+    strcpy(artifact->path, "/tmp/archive.tar.gz");
+    artifact->identity.valid = 1;
+    artifact->identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    return CUP_OK;
+}
+
+CupError package_extract_verified(VerifiedArtifact *artifact, const char *tmp_path) {
+    int index = extract_calls++;
+
+    TEST_ASSERT_NOT_NULL(artifact);
+    TEST_ASSERT_EQUAL_STRING("/tmp/staging", tmp_path);
+    TEST_ASSERT_TRUE(index < MAX_STEPS);
+    return extract_results[index];
+}
+
+CupError verified_artifact_discard(VerifiedArtifact *artifact) {
+    TEST_ASSERT_NOT_NULL(artifact);
+    discard_calls++;
+    if (discard_result == CUP_OK) {
+        memset(artifact, 0, sizeof(*artifact));
+    }
+    return discard_result;
+}
+
 CupError package_cache_fetch(char *archive_path,
                              size_t archive_path_size,
                              const char *package_url,
@@ -451,29 +551,25 @@ int interrupt_requested(void) {
     return interrupt_values[index];
 }
 
-CupError package_extract_archive(const char *archive_path,
-                                 const char *tmp_path,
-                                 const char *format) {
-    int index = extract_calls++;
-    TEST_ASSERT_EQUAL_STRING("/tmp/archive.tar.gz", archive_path);
-    TEST_ASSERT_EQUAL_STRING("/tmp/staging", tmp_path);
-    TEST_ASSERT_EQUAL_STRING("tar.gz", format);
+CupError interrupt_safe_point(void) {
+    int index = safe_point_calls++;
+
     TEST_ASSERT_TRUE(index < MAX_STEPS);
-    return extract_results[index];
+    return safe_point_results[index];
 }
 
-CupError package_validate(const char *base_path, const PackageIdentity *identity) {
+
+
+
+CupError package_validate(const char *base_path,
+                          const PackageIdentity *identity,
+                          FILE *diagnostics) {
+    (void)diagnostics;
     int index = validate_calls++;
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", base_path);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_TRUE(index < MAX_STEPS);
     return validate_results[index];
-}
-
-CupError package_cache_discard(const char *archive_path) {
-    TEST_ASSERT_EQUAL_STRING("/tmp/archive.tar.gz", archive_path);
-    discard_calls++;
-    return discard_result;
 }
 
 CupError filesystem_remove_tree(const char *path) {
@@ -520,19 +616,20 @@ CupError state_add_installed(CupState *state, const PackageIdentity *identity) {
     return add_state_result;
 }
 
-const PackageIdentity *state_get_active(const CupState *state, const PackageScope *scope) {
+const PackageIdentity *state_get_default(const CupState *state, const PackageScope *scope) {
     static PackageIdentity identity;
     char tool[MAX_IDENTIFIER_LEN];
     char version[MAX_IDENTIFIER_LEN];
 
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(scope);
-    if (current_active == NULL) {
+    if (current_default == NULL) {
         return NULL;
     }
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_selector_parse_parts(current_active, tool, sizeof(tool), version, sizeof(version)));
+        package_selector_parse_parts(
+            current_default, tool, sizeof(tool), version, sizeof(version)));
     memset(&identity, 0, sizeof(identity));
     strcpy(identity.component, scope->component);
     strcpy(identity.tool, tool);
@@ -542,16 +639,17 @@ const PackageIdentity *state_get_active(const CupState *state, const PackageScop
     return &identity;
 }
 
-CupError state_set_active(CupState *state, const PackageIdentity *identity) {
+CupError state_set_default(CupState *state, const PackageIdentity *identity) {
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_EQUAL_STRING("compiler", identity->component);
     TEST_ASSERT_EQUAL_STRING("clang", identity->tool);
     TEST_ASSERT_EQUAL_STRING("22.1.5", identity->version);
-    return set_active_result;
+    return set_default_result;
 }
 
-CupError package_identity_validate(const PackageIdentity *identity) {
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
     return identity == NULL || identity->tool[0] == '\0' || identity->version[0] == '\0'
                ? CUP_ERR_INVALID_INPUT
                : CUP_OK;
@@ -589,13 +687,26 @@ CupError wrapper_plan_build(WrapperPlan *plan, const CupState *state) {
     return plan_build_result;
 }
 
-CupError state_save(const CupState *state) {
+CupError state_save(const CupState *state,
+                    const SystemPathIdentity *expected_identity,
+                    SystemPathIdentity *published_identity) {
     TEST_ASSERT_NOT_NULL(state);
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
+    if (published_identity != NULL) {
+        *published_identity = *expected_identity;
+    }
     save_calls++;
     return save_result;
 }
 
-CupError runtime_journal_clear(void) {
+
+
+CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
     int index = clear_calls++;
     TEST_ASSERT_TRUE(index < MAX_STEPS);
     return clear_results[index];
@@ -667,88 +778,111 @@ static void assert_cleanup(void) {
  * outcomes.
  */
 
+static PackageArtifactSpec test_artifact_spec(void) {
+    PackageArtifactSpec spec;
+
+    memset(&spec, 0, sizeof(spec));
+    strcpy(spec.identity.component, "compiler");
+    strcpy(spec.identity.tool, "clang");
+    strcpy(spec.identity.host_platform, "linux-x64");
+    strcpy(spec.identity.target_platform, "linux-x64");
+    strcpy(spec.identity.version, "22.1.5");
+    spec.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+    strcpy(spec.package_url, "https://example.invalid/package");
+    strcpy(spec.checksum_url, "https://example.invalid/SHA256SUMS");
+    return spec;
+}
+
+static CupError install_test_artifact(void) {
+    PackageArtifactSpec spec = test_artifact_spec();
+
+    return package_install_artifact(&spec);
+}
+
+static CupError update_test_artifact(const char *expected_default_selector,
+                                     int *installed,
+                                     int *moved) {
+    PackageArtifactSpec spec = test_artifact_spec();
+    PackageIdentity expected_default;
+    const PackageIdentity *expected_default_ptr = NULL;
+
+    if (expected_default_selector != NULL) {
+        char tool[MAX_IDENTIFIER_LEN];
+        char version[MAX_IDENTIFIER_LEN];
+        CupError err = package_selector_parse_parts(expected_default_selector,
+                                                    tool,
+                                                    sizeof(tool),
+                                                    version,
+                                                    sizeof(version));
+        if (err != CUP_OK) {
+            return err;
+        }
+        err = package_identity_init(&expected_default,
+                                    spec.identity.component,
+                                    tool,
+                                    spec.identity.host_platform,
+                                    spec.identity.target_platform,
+                                    version);
+        if (err != CUP_OK) {
+            return err;
+        }
+        expected_default_ptr = &expected_default;
+    }
+
+    return package_install_update_artifact(&spec, expected_default_ptr, installed, moved);
+}
+
 static void test_public_inputs(void) {
+    PackageArtifactSpec spec = test_artifact_spec();
     int installed;
     int moved;
 
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_install_artifact(NULL));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_install_update_scope(NULL, "clang", NULL, NULL, &installed, &moved));
+        package_install_update_artifact(NULL, NULL, &installed, &moved));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_install_update_scope("compiler", "", NULL, NULL, &installed, &moved));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_install_update_scope("compiler", "clang", NULL, NULL, NULL, &moved));
-
-    entry_build_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_install_update_scope("compiler", "clang", NULL, NULL, &installed, &moved));
-    TEST_ASSERT_EQUAL_INT(0, plan_init_calls);
+        package_install_update_artifact(&spec, NULL, NULL, &moved));
 
     reset_scenario();
     {
-        char long_active[MAX_SELECTOR_LEN + 8];
-        memset(long_active, 'x', sizeof(long_active) - 1);
-        long_active[sizeof(long_active) - 1] = '\0';
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                              package_install_update_scope(
-                                  "compiler", "clang", NULL, long_active, &installed, &moved));
+        PackageIdentity invalid_default;
+
+        memset(&invalid_default, 0, sizeof(invalid_default));
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_INVALID_INPUT,
+            package_install_update_artifact(&spec, &invalid_default, &installed, &moved));
     }
 }
 
 static void test_prepare_failures(void) {
-    parse_result = CUP_ERR_INVALID_INPUT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_install("compiler", "bad", NULL, NULL));
+    PackageArtifactSpec spec;
+
+    context_result = CUP_ERR_LOCK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, install_test_artifact());
     assert_cleanup();
 
     reset_scenario();
-    context_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    guard_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    context_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, install_test_artifact());
 
     reset_scenario();
     load_state_result = CUP_ERR_STATE_LOAD;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_LOAD, install_test_artifact());
 
     reset_scenario();
-    load_catalog_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    resolve_result = CUP_ERR_NOT_AVAILABLE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    identity_result = CUP_ERR_INVALID_RELEASE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE,
-                          package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    version_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    version_available = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    spec = test_artifact_spec();
+    strcpy(spec.identity.host_platform, "macos-x64");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, package_install_artifact(&spec));
 
     reset_scenario();
     absent_result = CUP_ERR_INCONSISTENT_STATE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, install_test_artifact());
 
     reset_scenario();
     absent_result = CUP_ERR_ALREADY_INSTALLED;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ALREADY_INSTALLED,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ALREADY_INSTALLED, install_test_artifact());
 }
 
 static void test_update_guards(void) {
@@ -757,16 +891,15 @@ static void test_update_guards(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_NOT_INSTALLED,
-        package_install_update_scope("compiler", "clang", NULL, NULL, &installed, &moved));
+        update_test_artifact(NULL, &installed, &moved));
     TEST_ASSERT_EQUAL_INT(0, installed);
     TEST_ASSERT_EQUAL_INT(0, moved);
 
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "broken");
-    entry_parse_result = CUP_ERR_INVALID_INPUT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INCONSISTENT_STATE,
-        package_install_update_scope("compiler", "clang", NULL, NULL, &installed, &moved));
+        update_test_artifact(NULL, &installed, &moved));
 
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
@@ -774,69 +907,35 @@ static void test_update_guards(void) {
     valid_installed_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_VALIDATION,
-        package_install_update_scope("compiler", "clang", NULL, NULL, &installed, &moved));
-
-    reset_scenario();
-    add_entry("compiler", "macos-x64", "linux-x64", "clang@1.0.0");
-    add_entry("compiler", "linux-x64", "windows-x64", "clang@1.0.0");
-    add_entry("debugger", "linux-x64", "linux-x64", "gdb@1.0.0");
-    add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
-    load_catalog_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_install_update_scope("compiler", "clang", NULL, NULL, &installed, &moved));
+        update_test_artifact(NULL, &installed, &moved));
 }
 
-static void test_format_selection(void) {
-    char long_format[MAX_IDENTIFIER_LEN + 8];
-
-    default_format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    memset(long_format, 'x', sizeof(long_format) - 1);
-    long_format[sizeof(long_format) - 1] = '\0';
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          package_install("compiler", "clang@stable", NULL, long_format));
-
-    reset_scenario();
-    format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG,
-                          package_install("compiler", "clang@stable", NULL, "zip"));
-
-    reset_scenario();
-    format_supported = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
-                          package_install("compiler", "clang@stable", NULL, "zip"));
-
-    reset_scenario();
+static void test_transaction_preparation(void) {
     tmp_result = CUP_ERR_TEMPORARY;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY,
-                          package_install("compiler", "clang@stable", NULL, "tar.gz"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, install_test_artifact());
 
     reset_scenario();
     install_path_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(1, remove_calls);
 
     reset_scenario();
     install_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     remove_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, install_test_artifact());
 
     reset_scenario();
     begin_result = CUP_ERR_COMMIT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(0, remove_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, clear_calls);
 }
 
 static void test_cache_refresh(void) {
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(2, fetch_calls);
     TEST_ASSERT_EQUAL_INT(2, extract_calls);
     TEST_ASSERT_EQUAL_INT(1, discard_calls);
@@ -847,69 +946,102 @@ static void test_cache_refresh(void) {
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
     discard_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 
     reset_scenario();
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
     remove_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 
     reset_scenario();
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
     ensure_dir_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 
     reset_scenario();
     validate_results[0] = CUP_ERR_VALIDATION;
     discard_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(1, discard_calls);
 }
 
+static void test_interrupt_safe_points(void) {
+    safe_point_results[0] = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, clear_calls);
+
+    reset_scenario();
+    safe_point_results[1] = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(2, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, clear_calls);
+
+    reset_scenario();
+    safe_point_results[2] = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(3, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(1, clear_calls);
+}
+
+static void test_existing_update_honors_persistence_safe_point(void) {
+    int installed = 0;
+    int moved = 0;
+
+    add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
+    absent_result = CUP_ERR_ALREADY_INSTALLED;
+    current_default = "clang@1.0.0";
+    safe_point_results[0] = CUP_ERR_INTERRUPT;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INTERRUPT,
+        update_test_artifact("clang@1.0.0", &installed, &moved));
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+    TEST_ASSERT_EQUAL_INT(0, plan_apply_calls);
+    TEST_ASSERT_EQUAL_INT(0, installed);
+    TEST_ASSERT_EQUAL_INT(0, moved);
+}
+
 static void test_fetch_failures(void) {
-    url_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
-    checksum_url_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_install("compiler", "clang@stable", NULL, NULL));
-
-    reset_scenario();
     fetch_results[0] = CUP_ERR_FETCH;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, install_test_artifact());
+
+    reset_scenario();
+    fetch_results[0] = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, clear_calls);
 
     reset_scenario();
     interrupt_values[0] = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
 
     reset_scenario();
     interrupt_values[1] = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
 
     reset_scenario();
     read_only_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 
     reset_scenario();
     parent_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 }
 
 static void test_new_install_commit(void) {
     int installed = 0;
     int moved = 0;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(1, move_calls);
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_INT(1, clear_calls);
@@ -919,10 +1051,10 @@ static void test_new_install_commit(void) {
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     absent_result = CUP_ERR_ALREADY_INSTALLED;
-    current_active = "clang@1.0.0";
+    current_default = "clang@1.0.0";
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_install_update_scope("compiler", "clang", NULL, "clang@1.0.0", &installed, &moved));
+        update_test_artifact("clang@1.0.0", &installed, &moved));
     TEST_ASSERT_EQUAL_INT(0, installed);
     TEST_ASSERT_EQUAL_INT(1, moved);
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
@@ -931,126 +1063,126 @@ static void test_new_install_commit(void) {
 }
 
 static void test_commit_failures(void) {
-    /* Distinguish a move that never applied from one that crossed the commit boundary. */
     move_results[0] = CUP_ERR_FILESYSTEM;
     move_states[0] = SYSTEM_COMMIT_NOT_APPLIED;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(1, remove_calls);
     TEST_ASSERT_EQUAL_INT(1, clear_calls);
 
     reset_scenario();
     move_results[0] = CUP_ERR_FILESYSTEM;
     move_states[0] = SYSTEM_COMMIT_APPLIED;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(0, remove_calls);
 
-    /* State and active-package mutations fail before persistence. */
     reset_scenario();
     add_state_result = CUP_ERR_STATE_FULL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(2, move_calls);
 
     reset_scenario();
-    set_active_result = CUP_ERR_ACTIVE_FULL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ACTIVE_FULL,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    set_default_result = CUP_ERR_DEFAULT_FULL;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_DEFAULT_FULL, install_test_artifact());
 
     reset_scenario();
     plan_build_result = CUP_ERR_VALIDATION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_test_artifact());
 
-    /* Persistence and post-commit cleanup failures preserve commit semantics. */
     reset_scenario();
-    save_result = CUP_ERR_STATE_SAVE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_SAVE,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    save_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(2, move_calls);
+
+    reset_scenario();
+    save_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(2, move_calls);
 
     reset_scenario();
     save_result = CUP_ERR_COMMIT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
     TEST_ASSERT_EQUAL_INT(1, move_calls);
 
     reset_scenario();
     clear_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
 
     reset_scenario();
     plan_apply_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, install_test_artifact());
 
-    /* Existing-package activation reports state, save, and launcher failures consistently. */
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     absent_result = CUP_ERR_ALREADY_INSTALLED;
-    current_active = "clang@1.0.0";
-    set_active_result = CUP_ERR_ACTIVE_FULL;
+    current_default = "clang@1.0.0";
+    set_default_result = CUP_ERR_DEFAULT_FULL;
     {
         int installed;
         int moved;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_ACTIVE_FULL,
-                              package_install_update_scope(
-                                  "compiler", "clang", NULL, "clang@1.0.0", &installed, &moved));
+
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_DEFAULT_FULL,
+            update_test_artifact("clang@1.0.0", &installed, &moved));
     }
 
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     absent_result = CUP_ERR_ALREADY_INSTALLED;
-    current_active = "clang@1.0.0";
-    save_result = CUP_ERR_STATE_SAVE;
+    current_default = "clang@1.0.0";
+    save_result = CUP_ERR_FILESYSTEM;
     {
         int installed;
         int moved;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_SAVE,
-                              package_install_update_scope(
-                                  "compiler", "clang", NULL, "clang@1.0.0", &installed, &moved));
+
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_FILESYSTEM,
+            update_test_artifact("clang@1.0.0", &installed, &moved));
     }
 
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
     absent_result = CUP_ERR_ALREADY_INSTALLED;
-    current_active = "clang@1.0.0";
+    current_default = "clang@1.0.0";
     plan_apply_result = CUP_ERR_FILESYSTEM;
     {
         int installed;
         int moved;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                              package_install_update_scope(
-                                  "compiler", "clang", NULL, "clang@1.0.0", &installed, &moved));
+
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_COMMIT,
+            update_test_artifact("clang@1.0.0", &installed, &moved));
     }
 }
 
 static void test_rollback_failures(void) {
     add_state_result = CUP_ERR_STATE_FULL;
     move_results[1] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, install_test_artifact());
 
     reset_scenario();
     extract_results[0] = CUP_ERR_EXTRACT;
     remove_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, install_test_artifact());
 
     reset_scenario();
-    extract_results[0] = CUP_ERR_EXTRACT;
+    safe_point_results[2] = CUP_ERR_INTERRUPT;
     clear_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK,
-                          package_install("compiler", "clang@stable", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(1, clear_calls);
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_public_inputs);
     RUN_TEST(test_prepare_failures);
     RUN_TEST(test_update_guards);
-    RUN_TEST(test_format_selection);
+    RUN_TEST(test_transaction_preparation);
     RUN_TEST(test_cache_refresh);
+    RUN_TEST(test_interrupt_safe_points);
+    RUN_TEST(test_existing_update_honors_persistence_safe_point);
     RUN_TEST(test_fetch_failures);
     RUN_TEST(test_new_install_commit);
     RUN_TEST(test_commit_failures);

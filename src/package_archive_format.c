@@ -26,3 +26,18 @@ CupError package_archive_parse_format(const char *value, PackageArchiveFormat *f
 
     return CUP_OK;
 }
+
+const char *package_archive_format_name(PackageArchiveFormat format) {
+    switch (format) {
+        case PACKAGE_ARCHIVE_FORMAT_TAR_XZ:
+            return "tar.xz";
+        case PACKAGE_ARCHIVE_FORMAT_TAR_GZ:
+            return "tar.gz";
+        case PACKAGE_ARCHIVE_FORMAT_ZIP:
+            return "zip";
+        case PACKAGE_ARCHIVE_FORMAT_ANY:
+            return NULL;
+        default:
+            return NULL;
+    }
+}

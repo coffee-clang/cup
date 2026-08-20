@@ -4,17 +4,15 @@
 
 #include "layout.h"
 #include "path.h"
+#include "filesystem.h"
 #include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
 
-#include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define UNINSTALL_JOURNAL_FORMAT "1"
-#define UNINSTALL_JOURNAL_LINE_LEN 512
 #define FIELD_FORMAT (1u << 0)
 #define FIELD_OPERATION (1u << 1)
 #define FIELD_PHASE (1u << 2)
@@ -90,20 +88,25 @@ static int parse_stage(const char *value, UninstallStage *stage) {
     return 1;
 }
 
-static int temporary_name_is_valid(const char *name) {
-    return path_is_safe_segment(name) && strncmp(name, ".cup-uninstall.", 15) == 0 &&
-           name[15] != '\0';
+static const char *temporary_name_token(const char *name) {
+    if (!path_is_safe_segment(name) || strlen(name) >= MAX_METADATA_VALUE_LEN ||
+        strncmp(name, ".cup-uninstall", 14) != 0 ||
+        (name[14] != '.' && name[14] != '-') || name[15] == '\0') {
+        return NULL;
+    }
+    return name + 15;
 }
 
 static int token_is_valid(const char *token) {
     const unsigned char *cursor;
 
-    if (text_is_empty(token) || strlen(token) >= MAX_IDENTIFIER_LEN) {
+    if (text_is_empty(token) || strlen(token) >= MAX_TRANSACTION_TOKEN_LEN) {
         return 0;
     }
     for (cursor = (const unsigned char *)token; *cursor != '\0'; ++cursor) {
         if (!((*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z') ||
-              (*cursor >= '0' && *cursor <= '9') || *cursor == '_' || *cursor == '-')) {
+              (*cursor >= '0' && *cursor <= '9') || *cursor == '_' || *cursor == '-' ||
+              *cursor == '.')) {
             return 0;
         }
     }
@@ -111,23 +114,9 @@ static int token_is_valid(const char *token) {
 }
 
 static int name_matches_token(const char *name, const char *token) {
-    return temporary_name_is_valid(name) && token_is_valid(token) && strcmp(name + 15, token) == 0;
-}
+    const char *name_token = temporary_name_token(name);
 
-static CupError parse_nonnegative_int(const char *value, int *result) {
-    char *end;
-    long parsed;
-
-    if (text_is_empty(value) || result == NULL) {
-        return CUP_ERR_TRANSACTION;
-    }
-    errno = 0;
-    parsed = strtol(value, &end, 10);
-    if (errno != 0 || *end != '\0' || parsed < 0 || parsed > 255) {
-        return CUP_ERR_TRANSACTION;
-    }
-    *result = (int)parsed;
-    return CUP_OK;
+    return name_token != NULL && token_is_valid(token) && strcmp(name_token, token) == 0;
 }
 
 static int journal_is_coherent(const UninstallJournal *journal) {
@@ -150,47 +139,44 @@ static int journal_is_coherent(const UninstallJournal *journal) {
     }
 }
 
-static CupError save_journal(const UninstallJournal *journal) {
-    char root[MAX_PATH_LEN];
-    char path[MAX_PATH_LEN];
-    char temporary[MAX_PATH_LEN];
-    FILE *file = NULL;
-    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-    CupError err;
-    int failed = 0;
+static CupError write_uninstall_journal(FILE *file, const void *value) {
+    const UninstallJournal *journal = value;
 
-    if (!journal_is_coherent(journal) || layout_get_root(root, sizeof(root)) != CUP_OK ||
-        layout_get_transaction_path(path, sizeof(path)) != CUP_OK ||
-        system_create_temp_file(root, "uninstall-transaction", temporary, sizeof(temporary), &file) !=
-            CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    if (fprintf(file, "format=%s\n", UNINSTALL_JOURNAL_FORMAT) < 0 ||
+    if (journal == NULL ||
+        fprintf(file, "format=%s\n", UNINSTALL_JOURNAL_FORMAT) < 0 ||
         fprintf(file, "operation=uninstall\n") < 0 ||
         fprintf(file, "phase=%s\n", uninstall_phase_name(journal->phase)) < 0 ||
         fprintf(file, "temporary_name=%s\n", journal->temporary_name) < 0 ||
         fprintf(file, "token=%s\n", journal->token) < 0 ||
         fprintf(file, "stage=%s\n", uninstall_stage_name(journal->stage)) < 0 ||
-        fprintf(file, "error=%d\n", journal->error_code) < 0 ||
-        system_sync_file(file) != CUP_OK) {
-        failed = 1;
-    }
-    if (fclose(file) != 0) {
-        failed = 1;
-    }
-    if (failed) {
-        system_remove_file(temporary);
+        fprintf(file, "error=%d\n", journal->error_code) < 0) {
         return CUP_ERR_TRANSACTION;
     }
-    err = system_replace_file(temporary, path, &commit_state);
-    if (err == CUP_OK) {
-        return CUP_OK;
-    }
-    if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
-        system_remove_file(temporary);
+    return CUP_OK;
+}
+
+static CupError save_journal(UninstallJournal *journal) {
+    char root[MAX_PATH_LEN];
+    SystemPathIdentity published_identity;
+    const SystemPathIdentity *expected_identity;
+    CupError err;
+
+    if (!journal_is_coherent(journal) ||
+        layout_get_root(root, sizeof(root)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
-    return CUP_ERR_COMMIT;
+
+    expected_identity = journal->file_identity.valid ? &journal->file_identity : NULL;
+    err = runtime_journal_publish(root,
+                                  "uninstall-transaction",
+                                  expected_identity,
+                                  write_uninstall_journal,
+                                  journal,
+                                  &published_identity);
+    if ((err == CUP_OK || err == CUP_ERR_COMMIT) && published_identity.valid) {
+        journal->file_identity = published_identity;
+    }
+    return err;
 }
 
 CupError uninstall_journal_begin(const char *temporary_path, const char *token) {
@@ -257,8 +243,14 @@ static CupError set_field(UninstallJournal *journal,
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "error") == 0) {
+        unsigned parsed;
+
         bit = FIELD_ERROR;
-        err = parse_nonnegative_int(value, &journal->error_code);
+        if (!text_parse_uint(value, 255u, &parsed)) {
+            err = CUP_ERR_TRANSACTION;
+        } else {
+            journal->error_code = (int)parsed;
+        }
     } else {
         return CUP_ERR_TRANSACTION;
     }
@@ -269,60 +261,68 @@ static CupError set_field(UninstallJournal *journal,
     return CUP_OK;
 }
 
+static const char *const uninstall_journal_keys[] = {
+    "format", "operation", "phase", "temporary_name",
+    "token", "stage", "error"};
+
+typedef struct {
+    UninstallJournal *candidate;
+    unsigned seen;
+} UninstallJournalParser;
+
+static CupError parse_uninstall_journal_field(const char *key,
+                                              const char *value,
+                                              void *userdata) {
+    UninstallJournalParser *parser = userdata;
+
+    if (parser == NULL) {
+        return CUP_ERR_TRANSACTION;
+    }
+    return set_field(parser->candidate, key, value, &parser->seen);
+}
+
 CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatus *status) {
     UninstallJournal candidate;
-    char path[MAX_PATH_LEN];
-    char line[UNINSTALL_JOURNAL_LINE_LEN];
-    FILE *file;
-    size_t line_number = 0;
-    unsigned seen = 0;
+    UninstallJournalParser parser;
+    SystemPathIdentity file_identity;
+    CupError err;
+    int missing;
 
     if (journal == NULL || status == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+
     uninstall_journal_init(journal);
     uninstall_journal_init(&candidate);
+    memset(&parser, 0, sizeof(parser));
+    memset(&file_identity, 0, sizeof(file_identity));
+    parser.candidate = &candidate;
     *status = UNINSTALL_JOURNAL_MISSING;
-    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    file = fopen(path, "r");
-    if (file == NULL) {
-        return errno == ENOENT ? CUP_OK : CUP_ERR_TRANSACTION;
-    }
-    while (1) {
-        char key[64];
-        char value[MAX_PATH_LEN];
-        int has_line;
-        CupError err = text_read_line(file, line, sizeof(line), &has_line, &line_number);
 
-        if (err != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
-        if (!has_line) {
-            break;
-        }
-        err = text_parse_key_value(line, key, sizeof(key), value, sizeof(value));
-        if (err == CUP_OK) {
-            err = set_field(&candidate, key, value, &seen);
-        }
-        if (err != CUP_OK) {
-            fclose(file);
-            return CUP_ERR_TRANSACTION;
-        }
+    err = runtime_journal_parse(uninstall_journal_keys,
+                                sizeof(uninstall_journal_keys) /
+                                    sizeof(uninstall_journal_keys[0]),
+                                parse_uninstall_journal_field,
+                                &parser,
+                                &file_identity,
+                                &missing);
+    if (err != CUP_OK || missing) {
+        return err;
     }
-    if (fclose(file) != 0 || seen != JOURNAL_FIELDS || !journal_is_coherent(&candidate)) {
+    if (parser.seen != JOURNAL_FIELDS ||
+        !journal_is_coherent(&candidate)) {
         return CUP_ERR_TRANSACTION;
     }
+    candidate.file_identity = file_identity;
+
     *journal = candidate;
     *status = UNINSTALL_JOURNAL_LOADED;
     return CUP_OK;
 }
 
-CupError uninstall_journal_get_detached_path(const UninstallJournal *journal,
-                                             char *buffer,
-                                             size_t size) {
+static CupError uninstall_journal_get_detached_path(const UninstallJournal *journal,
+                                                    char *buffer,
+                                                    size_t size) {
     char root[MAX_PATH_LEN];
     char parent[MAX_PATH_LEN];
     CupError err;
@@ -337,12 +337,12 @@ CupError uninstall_journal_get_detached_path(const UninstallJournal *journal,
     return err == CUP_OK ? path_join(buffer, size, parent, journal->temporary_name) : err;
 }
 
-CupError uninstall_journal_acknowledge_failure(const UninstallJournal *journal) {
+CupError uninstall_journal_recover(const UninstallJournal *journal) {
     char detached[MAX_PATH_LEN];
     SystemPathKind kind;
     CupError err;
 
-    if (journal == NULL || journal->phase != UNINSTALL_PHASE_FAILED) {
+    if (journal == NULL || !journal_is_coherent(journal)) {
         return CUP_ERR_INVALID_INPUT;
     }
     err = uninstall_journal_get_detached_path(journal, detached, sizeof(detached));
@@ -352,11 +352,17 @@ CupError uninstall_journal_acknowledge_failure(const UninstallJournal *journal) 
     if (err != CUP_OK || kind != SYSTEM_PATH_MISSING) {
         return CUP_ERR_TRANSACTION;
     }
-    err = runtime_journal_clear();
+    err = runtime_journal_clear_if_identity(&journal->file_identity);
     if (err == CUP_OK) {
-        printf("Acknowledged failed cup uninstall during '%s' (error %d).\n",
-               uninstall_stage_name(journal->stage),
-               journal->error_code);
+        if (journal->phase == UNINSTALL_PHASE_FAILED) {
+            printf("Acknowledged failed cup uninstall during '%s' (error %d).\n",
+                   uninstall_stage_name(journal->stage),
+                   journal->error_code);
+        } else {
+            printf("Cancelled interrupted cup uninstall in phase '%s' during '%s'.\n",
+                   uninstall_phase_name(journal->phase),
+                   uninstall_stage_name(journal->stage));
+        }
     }
     return err;
 }

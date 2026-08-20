@@ -1,12 +1,13 @@
 #ifndef CUP_SHA256_H
 #define CUP_SHA256_H
 
-/* Incremental in-tree SHA-256 primitive; file and SHA256SUMS handling belong to checksum.h. */
+/* Adapted third-party incremental SHA-256 primitive; file and SHA256SUMS handling belong to checksum.h. */
 
 #include <stddef.h>
 #include <stdint.h>
 
 #define SHA256_DIGEST_SIZE 32u
+#define SHA256_HEX_LENGTH 64u
 
 /* Mutable state of one incremental SHA-256 calculation. */
 typedef struct {

@@ -9,15 +9,12 @@
 #include "package_cache.h"
 
 #include "command_context.h"
-#include "runtime_journal.h"
 #include "package_extract.h"
-#include "package_selector.h"
-#include "package_request.h"
+#include "runtime_journal.h"
 #include "wrappers.h"
 #include "filesystem.h"
 #include "interrupt.h"
 #include "layout.h"
-#include "package_catalog.h"
 #include "package.h"
 #include "state.h"
 #include "system.h"
@@ -35,22 +32,20 @@ typedef enum {
 
 typedef struct {
     CommandContext context;
-    PackageRequest request;
-    PackageIdentity package;
-    char format[MAX_IDENTIFIER_LEN];
-    char url[MAX_CATALOG_URL_LEN];
-    char checksum_url[MAX_CATALOG_URL_LEN];
-    char archive_path[MAX_PATH_LEN];
+    PackageArtifactSpec artifact_spec;
+    VerifiedArtifact artifact;
     char staging_path[MAX_PATH_LEN];
     char install_path[MAX_PATH_LEN];
     int staging_created;
     int package_moved;
     int journal_started;
-    int made_active;
+    SystemPathIdentity journal_identity;
+    int made_default;
     int package_already_installed;
-    int active_moved;
+    int default_moved;
     InstallRequestKind kind;
-    char expected_active[MAX_SELECTOR_LEN];
+    PackageIdentity expected_default;
+    int has_expected_default;
     WrapperPlan wrappers;
     int wrappers_ready;
 } InstallOperation;
@@ -76,7 +71,7 @@ static CupError update_scope_is_installed(const InstallOperation *operation,
             continue;
         }
 
-        if (package_identity_validate(identity) != CUP_OK) {
+        if (package_identity_validate(identity, stderr) != CUP_OK) {
             return CUP_ERR_INCONSISTENT_STATE;
         }
         if (strcmp(identity->tool, tool) == 0) {
@@ -88,211 +83,146 @@ static CupError update_scope_is_installed(const InstallOperation *operation,
     return CUP_OK;
 }
 
-static CupError resolve_archive_format(const PackageCatalog *catalog,
-                                       const PackageIdentity *package,
-                                       const char *format_override,
-                                       char *format,
-                                       size_t size) {
-    CupError err;
-    int supported;
-
-    if (text_is_empty(format_override)) {
-        return package_catalog_get_default_format(catalog,
-                                                  format,
-                                                  size,
-                                                  package->component,
-                                                  package->tool,
-                                                  package->host_platform,
-                                                  package->target_platform);
+static CupError prepare_install_operation(InstallOperation *operation,
+                                          const PackageArtifactSpec *spec,
+                                          InstallRequestKind kind,
+                                          const PackageIdentity *expected_default) {
+    if (operation == NULL || spec == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
 
-    err = text_copy(format, size, format_override);
-    if (err != CUP_OK) {
-        return err;
-    }
+    operation->kind = kind;
+    operation->artifact_spec = *spec;
 
-    err = package_catalog_has_format(catalog,
-                                     package->component,
-                                     package->tool,
-                                     package->host_platform,
-                                     package->target_platform,
-                                     format,
-                                     &supported);
-    if (err != CUP_OK) {
-        return err;
+    if (expected_default != NULL) {
+        if (package_identity_validate(expected_default, NULL) != CUP_OK) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+        operation->expected_default = *expected_default;
+        operation->has_expected_default = 1;
     }
-
-    if (!supported) {
-        fprintf(stderr,
-                "Error: archive format '%s' is not available for '%s'.\n",
-                format,
-                package->tool);
-        return CUP_ERR_NOT_AVAILABLE;
-    }
-
     return CUP_OK;
 }
 
-/* Request and scope preparation. */
-static CupError prepare_install(InstallOperation *operation,
-                                const char *component,
-                                const char *selector,
-                                const char *target_override,
-                                const char *format_override,
-                                InstallRequestKind kind,
-                                const char *expected_active) {
+static CupError load_install_context(InstallOperation *operation) {
     CupError err;
-    int version_available;
 
-    /* Parse the request and acquire one exclusive, transaction-free command context. */
-    operation->kind = kind;
-    if (!text_is_empty(expected_active) && text_copy(operation->expected_active,
-                                                     sizeof(operation->expected_active),
-                                                     expected_active) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+    err = command_context_begin(&operation->context,
+                                operation->artifact_spec.identity.target_platform,
+                                SYSTEM_LOCK_EXCLUSIVE);
+    if (err == CUP_OK) {
+        err = command_context_load_state(&operation->context);
     }
-
-    err = package_request_parse(component, selector, &operation->request);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = command_context_begin(&operation->context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+    if (strcmp(operation->context.host_platform,
+               operation->artifact_spec.identity.host_platform) != 0 ||
+        strcmp(operation->context.target_platform,
+               operation->artifact_spec.identity.target_platform) != 0) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    return CUP_OK;
+}
+
+static CupError validate_update_scope(InstallOperation *operation) {
+    CupError err;
+    int scope_installed;
+
+    if (operation->kind != INSTALL_REQUEST_UPDATE) {
+        return CUP_OK;
+    }
+
+    err = update_scope_is_installed(operation,
+                                    operation->artifact_spec.identity.component,
+                                    operation->artifact_spec.identity.tool,
+                                    &scope_installed);
     if (err != CUP_OK) {
         return err;
     }
+    if (scope_installed) {
+        return CUP_OK;
+    }
 
-    err = runtime_journal_require_none();
-    if (err != CUP_OK) {
+    fprintf(stderr,
+            "Warning: installed package '%s:%s' for target '%s' is no "
+            "longer installed; skipping it.\n",
+            operation->artifact_spec.identity.component,
+            operation->artifact_spec.identity.tool,
+            operation->context.target_platform);
+    return CUP_ERR_NOT_INSTALLED;
+}
+
+static CupError check_existing_install(InstallOperation *operation, int *complete) {
+    CupError err;
+
+    *complete = 0;
+    err = installed_package_require_absent(&operation->context.state,
+                                           &operation->artifact_spec.identity);
+    if (err != CUP_ERR_ALREADY_INSTALLED) {
         return err;
     }
 
-    err = command_context_load_state(&operation->context);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    /* Updates revalidate that the originally selected scope still exists. */
-    if (kind == INSTALL_REQUEST_UPDATE) {
-        int scope_installed;
-
-        err = update_scope_is_installed(
-            operation, component, operation->request.selector.tool, &scope_installed);
+    if (operation->kind == INSTALL_REQUEST_UPDATE) {
+        err = installed_package_require_valid(&operation->context.state,
+                                              &operation->artifact_spec.identity);
         if (err != CUP_OK) {
             return err;
         }
-        if (!scope_installed) {
-            fprintf(stderr,
-                    "Warning: update scope '%s:%s' for target '%s' is no "
-                    "longer installed; skipping it.\n",
-                    component,
-                    operation->request.selector.tool,
-                    operation->context.target_platform);
-            return CUP_ERR_NOT_INSTALLED;
-        }
+        operation->package_already_installed = 1;
+        *complete = 1;
+        return CUP_OK;
     }
 
-    /* Resolve a concrete identity and confirm that the catalog still offers its version. */
-    err = command_context_load_catalog(&operation->context);
+    printf("Package '%s:%s@%s' is already installed for host '%s', "
+           "target '%s'; no changes were made.\n",
+           operation->artifact_spec.identity.component,
+           operation->artifact_spec.identity.tool,
+           operation->artifact_spec.identity.version,
+           operation->artifact_spec.identity.host_platform,
+           operation->artifact_spec.identity.target_platform);
+    return CUP_ERR_ALREADY_INSTALLED;
+}
+
+static CupError prepare_install_staging(InstallOperation *operation) {
+    CupError err;
+
+    err = interrupt_safe_point();
     if (err != CUP_OK) {
         return err;
     }
 
-    err = package_request_resolve(&operation->context.catalog,
-                                  component,
-                                  operation->context.host_platform,
-                                  operation->context.target_platform,
-                                  &operation->request);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = package_identity_init(&operation->package,
-                                component,
-                                operation->request.selector.tool,
-                                operation->context.host_platform,
-                                operation->context.target_platform,
-                                operation->request.resolved_release);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = package_catalog_has_version(&operation->context.catalog,
-                                      operation->package.component,
-                                      operation->package.tool,
-                                      operation->package.host_platform,
-                                      operation->package.target_platform,
-                                      operation->package.version,
-                                      &version_available);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    if (!version_available) {
-        fprintf(stderr,
-                "Error: version '%s' is not available for '%s' on host '%s', "
-                "target '%s'.\n",
-                operation->package.version,
-                operation->package.tool,
-                operation->package.host_platform,
-                operation->package.target_platform);
-        return CUP_ERR_NOT_AVAILABLE;
-    }
-
-    /* A valid existing package is reusable only for update-scope activation. */
-    err = installed_package_require_absent(&operation->context.state, &operation->package);
-    if (err == CUP_ERR_ALREADY_INSTALLED) {
-        if (kind == INSTALL_REQUEST_UPDATE) {
-            err = installed_package_require_valid(&operation->context.state, &operation->package);
-            if (err != CUP_OK) {
-                return err;
-            }
-            operation->package_already_installed = 1;
-            return CUP_OK;
-        }
-
-        printf("Package '%s:%s@%s' is already installed for host '%s', "
-               "target '%s'; no changes were made.\n",
-               operation->package.component,
-               operation->package.tool,
-               operation->package.version,
-               operation->package.host_platform,
-               operation->package.target_platform);
-        return err;
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    /* Allocate identity-bound staging and persist the transaction before downloading. */
-    err = resolve_archive_format(&operation->context.catalog,
-                                 &operation->package,
-                                 format_override,
-                                 operation->format,
-                                 sizeof(operation->format));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = layout_create_staging_dir(operation->staging_path,
-                                    sizeof(operation->staging_path),
-                                    kind == INSTALL_REQUEST_UPDATE ? "update" : "install",
-                                    &operation->package);
+    err = layout_create_staging_dir(
+        operation->staging_path,
+        sizeof(operation->staging_path),
+        operation->kind == INSTALL_REQUEST_UPDATE ? "update" : "install",
+        &operation->artifact_spec.identity);
     if (err != CUP_OK) {
         return err;
     }
     operation->staging_created = 1;
 
-    err = layout_build_install_path(
-        operation->install_path, sizeof(operation->install_path), &operation->package);
+    err = layout_build_install_path(operation->install_path,
+                                    sizeof(operation->install_path),
+                                    &operation->artifact_spec.identity);
+    return err;
+}
+
+static CupError begin_install_commit(InstallOperation *operation) {
+    PackageTransaction journal;
+    CupError err;
+
+    err = interrupt_safe_point();
     if (err != CUP_OK) {
         return err;
     }
-
-    err = package_transaction_begin(kind == INSTALL_REQUEST_UPDATE ? PACKAGE_OPERATION_UPDATE
-                                                                   : PACKAGE_OPERATION_INSTALL,
-                                    &operation->package,
-                                    operation->staging_path);
+    err = package_transaction_begin(
+        operation->kind == INSTALL_REQUEST_UPDATE ? PACKAGE_OPERATION_UPDATE
+                                                  : PACKAGE_OPERATION_INSTALL,
+        &operation->artifact_spec.identity,
+        operation->staging_path,
+        &journal);
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
@@ -302,9 +232,37 @@ static CupError prepare_install(InstallOperation *operation,
         return err;
     }
 
+    operation->journal_identity = journal.file_identity;
     operation->journal_started = 1;
     return CUP_OK;
 }
+
+static CupError prepare_install(InstallOperation *operation,
+                                const PackageArtifactSpec *spec,
+                                InstallRequestKind kind,
+                                const PackageIdentity *expected_default) {
+    CupError err;
+    int complete;
+
+    err = prepare_install_operation(operation, spec, kind, expected_default);
+    if (err == CUP_OK) {
+        err = load_install_context(operation);
+    }
+    if (err == CUP_OK) {
+        err = validate_update_scope(operation);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    err = check_existing_install(operation, &complete);
+    if (err != CUP_OK || complete) {
+        return err;
+    }
+
+    return prepare_install_staging(operation);
+}
+
 
 /* Archive extraction, cache refresh and package validation. */
 static int package_failure_allows_refresh(CupError err) {
@@ -326,8 +284,7 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
     CupError err;
 
     printf("==> Extracting package...\n");
-    err = package_extract_archive(
-        operation->archive_path, operation->staging_path, operation->format);
+    err = package_extract_verified(&operation->artifact, operation->staging_path);
     if (err != CUP_OK) {
         return err;
     }
@@ -337,58 +294,28 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
     }
 
     printf("==> Validating package...\n");
-    return package_validate(operation->staging_path, &operation->package);
+    return package_validate(operation->staging_path, &operation->artifact_spec.identity, stderr);
 }
 
-static CupError discard_invalid_cache(const InstallOperation *operation, CupError original_error) {
+static CupError discard_invalid_cache(InstallOperation *operation, CupError original_error) {
     CupError discard_error;
 
-    discard_error = package_cache_discard(operation->archive_path);
+    discard_error = verified_artifact_discard(&operation->artifact);
     return discard_error == CUP_OK ? original_error : discard_error;
 }
 
 static CupError extract_install_package(InstallOperation *operation) {
-    PackageCacheSource source;
+    PackageCacheResult cache_result;
     CupError err;
 
     printf("==> Resolving package archive for %s@%s...\n",
-           operation->package.tool,
-           operation->package.version);
+           operation->artifact_spec.identity.tool,
+           operation->artifact_spec.identity.version);
 
-    /* Resolve the archive and checksum endpoints from one concrete catalog identity. */
-    err = package_catalog_build_url(&operation->context.catalog,
-                                    operation->url,
-                                    sizeof(operation->url),
-                                    operation->package.component,
-                                    operation->package.tool,
-                                    operation->package.host_platform,
-                                    operation->package.target_platform,
-                                    operation->package.version,
-                                    operation->format);
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = package_catalog_build_checksum_url(&operation->context.catalog,
-                                             operation->checksum_url,
-                                             sizeof(operation->checksum_url),
-                                             operation->package.component,
-                                             operation->package.tool,
-                                             operation->package.host_platform,
-                                             operation->package.target_platform,
-                                             operation->package.version);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    /* Prefer a verified cache entry, but record its source for one bounded refresh attempt. */
-    err = package_cache_fetch(operation->archive_path,
-                              sizeof(operation->archive_path),
-                              operation->url,
-                              operation->checksum_url,
-                              &operation->package,
-                              operation->format,
-                              PACKAGE_CACHE_ALLOW,
-                              &source);
+    err = package_cache_fetch_artifact(&operation->artifact,
+                                       &operation->artifact_spec,
+                                       PACKAGE_CACHE_ALLOW,
+                                       &cache_result);
     if (err != CUP_OK) {
         return err;
     }
@@ -397,36 +324,29 @@ static CupError extract_install_package(InstallOperation *operation) {
         return CUP_ERR_INTERRUPT;
     }
 
-    if (source == PACKAGE_CACHE_SOURCE_CACHE) {
+    if (cache_result.source == PACKAGE_CACHE_SOURCE_CACHE) {
         printf("==> Using cached package archive.\n");
     } else {
         printf("==> Downloaded package archive.\n");
     }
 
-    /* Extract into staging and validate the package before any canonical path is touched. */
     err = extract_and_validate_package(operation);
-    if (err != CUP_OK && source == PACKAGE_CACHE_SOURCE_CACHE &&
+    if (err != CUP_OK && cache_result.source == PACKAGE_CACHE_SOURCE_CACHE &&
         package_failure_allows_refresh(err)) {
         printf("==> Cached package is invalid; downloading it again...\n");
 
-        err = package_cache_discard(operation->archive_path);
+        err = verified_artifact_discard(&operation->artifact);
         if (err != CUP_OK) {
             return err;
         }
-
         err = reset_install_staging(operation);
         if (err != CUP_OK) {
             return err;
         }
-
-        err = package_cache_fetch(operation->archive_path,
-                                  sizeof(operation->archive_path),
-                                  operation->url,
-                                  operation->checksum_url,
-                                  &operation->package,
-                                  operation->format,
-                                  PACKAGE_CACHE_REFRESH,
-                                  &source);
+        err = package_cache_fetch_artifact(&operation->artifact,
+                                           &operation->artifact_spec,
+                                           PACKAGE_CACHE_REFRESH,
+                                           &cache_result);
         if (err != CUP_OK) {
             return err;
         }
@@ -435,59 +355,54 @@ static CupError extract_install_package(InstallOperation *operation) {
         err = extract_and_validate_package(operation);
     }
 
-    /* Network data that still fails package validation must not remain cached. */
     if (err != CUP_OK) {
-        if (source == PACKAGE_CACHE_SOURCE_NETWORK && package_failure_allows_refresh(err)) {
+        if (cache_result.source == PACKAGE_CACHE_SOURCE_NETWORK &&
+            package_failure_allows_refresh(err)) {
             return discard_invalid_cache(operation, err);
         }
         return err;
     }
 
-    /* Freeze package metadata and prepare the canonical parent only after validation succeeds. */
+    verified_artifact_release(&operation->artifact);
     err = package_set_metadata_read_only(operation->staging_path);
     if (err != CUP_OK) {
         return err;
     }
 
-    return layout_ensure_package_parent(&operation->package);
+    return layout_ensure_package_parent(&operation->artifact_spec.identity);
 }
 
 /* Build the candidate state and its complete managed-wrapper plan before commit. */
-static CupError prepare_active_change(InstallOperation *operation,
-                                      CupState *candidate,
-                                      int package_is_new) {
-    const PackageIdentity *current_active;
+static CupError prepare_default_change(InstallOperation *operation,
+                                       CupState *candidate,
+                                       int package_is_new) {
+    const PackageIdentity *current_default;
     PackageScope scope;
-    char current_entry[MAX_SELECTOR_LEN];
-    int should_set_active = 0;
+    int should_set_default = 0;
     CupError err;
 
-    err = package_identity_get_scope(&operation->package, &scope);
+    err = package_identity_get_scope(&operation->artifact_spec.identity, &scope);
     if (err != CUP_OK) {
         return err;
     }
-    current_active = state_get_active(candidate, &scope);
-    if (current_active != NULL &&
-        package_identity_format_selector(current_active, current_entry, sizeof(current_entry)) !=
-            CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
+    current_default = state_get_default(candidate, &scope);
+
+    if (current_default == NULL && package_is_new) {
+        should_set_default = 1;
+        operation->made_default = 1;
+    } else if (operation->kind == INSTALL_REQUEST_UPDATE &&
+               operation->has_expected_default && current_default != NULL &&
+               package_identity_equals(current_default, &operation->expected_default) &&
+               !package_identity_equals(current_default, &operation->artifact_spec.identity)) {
+        should_set_default = 1;
+        operation->default_moved = 1;
     }
 
-    if (current_active == NULL && package_is_new) {
-        should_set_active = 1;
-        operation->made_active = 1;
-    } else if (operation->kind == INSTALL_REQUEST_UPDATE && operation->expected_active[0] != '\0' &&
-               current_active != NULL && strcmp(current_entry, operation->expected_active) == 0 &&
-               !package_identity_equals(current_active, &operation->package)) {
-        should_set_active = 1;
-        operation->active_moved = 1;
-    }
-
-    if (!should_set_active) {
+    if (!should_set_default) {
         return CUP_OK;
     }
 
-    err = state_set_active(candidate, &operation->package);
+    err = state_set_default(candidate, &operation->artifact_spec.identity);
     if (err != CUP_OK) {
         return err;
     }
@@ -500,15 +415,21 @@ static CupError prepare_active_change(InstallOperation *operation,
     return CUP_OK;
 }
 
-static CupError save_active_change(InstallOperation *operation, const CupState *candidate) {
+static CupError save_default_change(InstallOperation *operation, const CupState *candidate) {
     CupError err;
 
     if (!operation->wrappers_ready) {
         return CUP_OK;
     }
 
+    err = interrupt_safe_point();
+    if (err != CUP_OK) {
+        return err;
+    }
     operation->context.state = *candidate;
-    err = state_save(&operation->context.state);
+    err = state_save(&operation->context.state,
+                     &operation->context.state_identity,
+                     &operation->context.state_identity);
     if (err != CUP_OK) {
         return err;
     }
@@ -528,11 +449,11 @@ static CupError commit_existing_update(InstallOperation *operation) {
     CupState candidate = operation->context.state;
     CupError err;
 
-    err = prepare_active_change(operation, &candidate, 0);
+    err = prepare_default_change(operation, &candidate, 0);
     if (err != CUP_OK) {
         return err;
     }
-    return save_active_change(operation, &candidate);
+    return save_default_change(operation, &candidate);
 }
 
 static CupError commit_install(InstallOperation *operation) {
@@ -543,6 +464,14 @@ static CupError commit_install(InstallOperation *operation) {
 
     printf("==> Committing installation...\n");
 
+    err = begin_install_commit(operation);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = interrupt_safe_point();
+    if (err != CUP_OK) {
+        return err;
+    }
     err = system_move_path(operation->staging_path, operation->install_path, &commit_state);
     if (err != CUP_OK) {
         if (commit_state == SYSTEM_COMMIT_APPLIED) {
@@ -557,18 +486,20 @@ static CupError commit_install(InstallOperation *operation) {
     operation->package_moved = 1;
 
     candidate = operation->context.state;
-    err = state_add_installed(&candidate, &operation->package);
+    err = state_add_installed(&candidate, &operation->artifact_spec.identity);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = prepare_active_change(operation, &candidate, 1);
+    err = prepare_default_change(operation, &candidate, 1);
     if (err != CUP_OK) {
         return err;
     }
 
     operation->context.state = candidate;
-    err = state_save(&operation->context.state);
+    err = state_save(&operation->context.state,
+                     &operation->context.state_identity,
+                     &operation->context.state_identity);
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
@@ -578,7 +509,7 @@ static CupError commit_install(InstallOperation *operation) {
         return err;
     }
 
-    err = runtime_journal_clear();
+    err = runtime_journal_clear_if_identity(&operation->journal_identity);
     if (err != CUP_OK) {
         fprintf(stderr,
                 "Warning: installation committed, but transaction cleanup failed. "
@@ -620,7 +551,7 @@ static CupError rollback_install(InstallOperation *operation) {
     operation->staging_created = 0;
 
     if (operation->journal_started) {
-        err = runtime_journal_clear();
+        err = runtime_journal_clear_if_identity(&operation->journal_identity);
         if (err != CUP_OK) {
             return CUP_ERR_ROLLBACK;
         }
@@ -631,29 +562,25 @@ static CupError rollback_install(InstallOperation *operation) {
 }
 
 static void print_install_result(const InstallOperation *operation) {
-    printf("Installed %s ", operation->package.component);
-    package_request_print(stdout, &operation->request);
-    printf(" for host '%s', target '%s'%s.\n",
-           operation->package.host_platform,
-           operation->package.target_platform,
-           operation->made_active ? " and set it as the first default" : "");
+    printf("Installed %s %s@%s for host '%s', target '%s'%s.\n",
+           operation->artifact_spec.identity.component,
+           operation->artifact_spec.identity.tool,
+           operation->artifact_spec.identity.version,
+           operation->artifact_spec.identity.host_platform,
+           operation->artifact_spec.identity.target_platform,
+           operation->made_default ? " and set it as the first default" : "");
 }
 
 /* Shared one-scope execution used by install and update. */
 static CupError execute_install(InstallOperation *operation,
-                            const char *component,
-                            const char *selector,
-                            const char *target_override,
-                            const char *format_override,
-                            InstallRequestKind kind,
-                            const char *expected_active) {
+                                const PackageArtifactSpec *spec,
+                                InstallRequestKind kind,
+                                const PackageIdentity *expected_default) {
     CupError err;
 
-    err = prepare_install(
-        operation, component, selector, target_override, format_override, kind, expected_active);
+    err = prepare_install(operation, spec, kind, expected_default);
     if (err != CUP_OK) {
-        if (operation->staging_created && err != CUP_ERR_COMMIT &&
-            rollback_install(operation) != CUP_OK) {
+        if (operation->staging_created && rollback_install(operation) != CUP_OK) {
             fprintf(stderr,
                     "Error: installation failed and rollback could not be "
                     "completed. Run 'cup repair'.\n");
@@ -671,7 +598,8 @@ static CupError execute_install(InstallOperation *operation,
         }
     }
 
-    if (err != CUP_OK && err != CUP_ERR_COMMIT && operation->staging_created) {
+    if (err != CUP_OK && operation->staging_created &&
+        (err != CUP_ERR_COMMIT || !operation->package_moved)) {
         if (rollback_install(operation) != CUP_OK) {
             fprintf(stderr,
                     "Error: installation failed and rollback could not be "
@@ -681,26 +609,24 @@ static CupError execute_install(InstallOperation *operation,
     }
 
 done:
+    verified_artifact_release(&operation->artifact);
     command_context_end(&operation->context);
     return err;
 }
 
 /* Package installation entry points. */
-CupError package_install(const char *component,
-                         const char *selector,
-                         const char *target_override,
-                         const char *format_override) {
+CupError package_install_artifact(const PackageArtifactSpec *spec) {
     InstallOperation operation = {0};
     CupError err;
 
+    if (spec == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
     wrapper_plan_init(&operation.wrappers);
-    err = execute_install(&operation,
-                      component,
-                      selector,
-                      target_override,
-                      format_override,
-                      INSTALL_REQUEST_USER,
-                      NULL);
+    verified_artifact_init(&operation.artifact);
+    err = execute_install(
+        &operation, spec, INSTALL_REQUEST_USER, NULL);
     if (err == CUP_OK) {
         print_install_result(&operation);
     }
@@ -708,39 +634,26 @@ CupError package_install(const char *component,
     return err;
 }
 
-CupError package_install_update_scope(const char *component,
-                                      const char *tool,
-                                      const char *target_override,
-                                      const char *expected_active,
-                                      int *installed,
-                                      int *active_moved) {
+CupError package_install_update_artifact(const PackageArtifactSpec *spec,
+                                         const PackageIdentity *expected_default,
+                                         int *installed,
+                                         int *default_moved) {
     InstallOperation operation = {0};
     CupError err;
-    char selector[MAX_SELECTOR_LEN];
 
-    if (installed == NULL || active_moved == NULL || text_is_empty(component) ||
-        text_is_empty(tool)) {
+    if (spec == NULL || installed == NULL || default_moved == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *installed = 0;
-    *active_moved = 0;
-
-    err = package_selector_format_parts(selector, sizeof(selector), tool, "stable");
-    if (err != CUP_OK) {
-        return err;
-    }
+    *default_moved = 0;
 
     wrapper_plan_init(&operation.wrappers);
-    err = execute_install(&operation,
-                      component,
-                      selector,
-                      target_override,
-                      NULL,
-                      INSTALL_REQUEST_UPDATE,
-                      expected_active);
+    verified_artifact_init(&operation.artifact);
+    err = execute_install(
+        &operation, spec, INSTALL_REQUEST_UPDATE, expected_default);
     if (err == CUP_OK) {
         *installed = !operation.package_already_installed;
-        *active_moved = operation.active_moved || operation.made_active;
+        *default_moved = operation.default_moved || operation.made_default;
     }
     wrapper_plan_free(&operation.wrappers);
     return err;

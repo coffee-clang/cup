@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# Purpose: Exercises a synchronized overlapping install and verifies that an
-# active transaction blocks a second mutation without corrupting final state.
+# Exercises a synchronized overlapping install and verifies that an
+# active operation blocks a second mutation without corrupting final state.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -13,28 +13,47 @@ run_cup repair >/dev/null
 make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang clang++
 
 configuration=${CUP_TEST_CONFIGURATION:-development}
-helper=$PROJECT_ROOT/build/$TEST_PLATFORM/$configuration/tests/helpers/network-helper
+test_build_root=${CUP_TEST_BUILD_ROOT:-$PROJECT_ROOT/build}
+helper=$test_build_root/$TEST_PLATFORM/$configuration/tests/helpers/network-helper
 server_root=$TMP_ROOT/http-root
 ready=$TMP_ROOT/http-ready
+request_ready=$TMP_ROOT/http-request-ready
 server_log=$TMP_ROOT/http-server.log
 port=0
 server_pid=
 pid_a=
 
-cleanup_concurrency() {
-    if [ -n "$pid_a" ] && kill -0 "$pid_a" 2>/dev/null; then
-        kill "$pid_a" 2>/dev/null || true
-        wait "$pid_a" 2>/dev/null || true
-    fi
-    if [ -n "$server_pid" ]; then
-        kill "$server_pid" 2>/dev/null || true
-        wait "$server_pid" 2>/dev/null || true
-    fi
-    rm -rf "$TMP_ROOT"
+cleanup_concurrency_processes() {
+    test_stop_process "$pid_a"
+    test_stop_process "$server_pid"
 }
-trap cleanup_concurrency EXIT HUP INT TERM
+concurrency_exit_handler() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup_concurrency_processes
+    test_cleanup_root || status=1
+    exit "$status"
+}
+concurrency_signal_handler() {
+    status=$1
+    trap - EXIT HUP INT TERM
+    cleanup_concurrency_processes
+    test_cleanup_root || :
+    exit "$status"
+}
+trap concurrency_exit_handler EXIT
+trap 'concurrency_signal_handler 129' HUP
+trap 'concurrency_signal_handler 130' INT
+trap 'concurrency_signal_handler 143' TERM
 
 assert_file "$helper"
+process_group_helper=$(test_process_group_helper)
+assert_file "$process_group_helper"
+test_start_process_group sh -c 'trap "" TERM; sleep 30 & wait'
+process_tree_pid=$CUP_TEST_PROCESS_GROUP_PID
+test_stop_process_group "$process_tree_pid"
+process_tree_pid=
+
 mkdir -p "$server_root"
 cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
 archive_name=clang-22.1.5-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
@@ -44,9 +63,10 @@ mkdir -p "$checksum_root"
 mv "$cache_dir/SHA256SUMS" "$checksum_root/SHA256SUMS"
 rm -rf "$TEST_HOME/.cup/cache/compiler/clang"
 
-rm -f "$ready"
+rm -f "$ready" "$request_ready"
 "$helper" http-server --root "$server_root" --port "$port" \
-    --ready-file "$ready" --delay-ms 3000 >"$server_log" 2>&1 &
+    --ready-file "$ready" --request-file "$request_ready" --delay-ms 3000 \
+    >"$server_log" 2>&1 &
 server_pid=$!
 attempt=0
 while [ ! -f "$ready" ] && [ "$attempt" -lt 100 ]; do
@@ -99,17 +119,17 @@ pid_a=$!
 
 transaction=$TEST_HOME/.cup/transaction.txt
 attempt=0
-while [ ! -f "$transaction" ] && [ "$attempt" -lt 200 ]; do
+while [ ! -f "$request_ready" ] && [ "$attempt" -lt 200 ]; do
     if ! kill -0 "$pid_a" 2>/dev/null; then
         wait "$pid_a" || true
         pid_a=
         cat "$TMP_ROOT/install-a.out" >&2 || true
-        fail 'first install exited before publishing its transaction journal'
+        fail 'first install exited before reaching the synchronized download'
     fi
     sleep 0.05
     attempt=$((attempt + 1))
 done
-[ -f "$transaction" ] || fail 'first install did not publish its transaction journal'
+[ -f "$request_ready" ] || fail 'first install did not reach the synchronized download'
 
 status_b=0
 (
@@ -121,7 +141,7 @@ status_b=0
 if [ "$status_b" -eq 0 ]; then
     printf 'overlapping install status/output: %s\n%s\n' \
         "$status_b" "$(cat "$TMP_ROOT/install-b.out")" >&2
-    fail 'overlapping install was not blocked while the first transaction was active'
+    fail 'overlapping install was not blocked while the first operation was active'
 fi
 
 status_a=0

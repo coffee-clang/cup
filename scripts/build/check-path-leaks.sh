@@ -1,10 +1,22 @@
 #!/usr/bin/env sh
 
-# Purpose: Rejects machine-specific and transactional paths in release binaries.
+# Rejects machine-specific and transactional paths in release binaries.
 set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
+# shellcheck source=../lib/path-safety.sh
+. "$ROOT_DIR/scripts/lib/path-safety.sh"
 
 binary=${1:?binary is required}
 shift
+
+case "$binary" in /*|[A-Za-z]:/*) ;; *) binary=$(pwd -P)/$binary ;; esac
+cup_path_require_regular_file "$binary" 'release binary' || exit 2
+[ -s "$binary" ] || {
+    echo "Error: release binary must be non-empty: $binary" >&2
+    exit 2
+}
 
 if ! command -v strings >/dev/null 2>&1; then
     echo "Error: strings is required to inspect release binaries." >&2
@@ -12,7 +24,11 @@ if ! command -v strings >/dev/null 2>&1; then
 fi
 
 strings_file=$(mktemp "${TMPDIR:-/tmp}/cup-release-strings.XXXXXX")
-trap 'rm -f "$strings_file"' EXIT HUP INT TERM
+cleanup_strings() { rm -f -- "$strings_file"; }
+trap cleanup_strings EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 strings -a "$binary" >"$strings_file"
 
 if grep -E -q \

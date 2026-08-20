@@ -1,5 +1,5 @@
 /*
- * Purpose: Gives every LLVM-instrumented executable the same external main
+ * Gives every LLVM-instrumented executable the same external main
  * control flow while keeping each program's real entry point uniquely named.
  */
 

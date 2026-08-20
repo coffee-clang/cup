@@ -1,4 +1,4 @@
-# Purpose: Exercises Windows state persistence and invalid-state handling.
+# Exercises Windows state persistence and invalid-state handling.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -45,6 +45,17 @@ try {
 
     Copy-Item $statePath "$statePath.valid"
 
+    function Write-CanonicalState {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string[]]$Lines
+        )
+
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $text = if ($Lines.Count -eq 0) { "" } else { ($Lines -join "`n") + "`n" }
+        [System.IO.File]::WriteAllText($statePath, $text, $encoding)
+    }
+
     function Assert-InvalidStateRejected {
         $failure = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
         Assert-Contains $failure "state.txt"
@@ -54,12 +65,12 @@ try {
 
     $firstInstalled = $state | Where-Object { $_.StartsWith("installed.") } |
         Select-Object -First 1
-    Add-Content -LiteralPath $statePath -Value $firstInstalled
+    Write-CanonicalState -Lines @($state + $firstInstalled)
     Assert-InvalidStateRejected
 
     $firstDefault = $state | Where-Object { $_.StartsWith("default.") } |
         Select-Object -First 1
-    Add-Content -LiteralPath $statePath -Value $firstDefault
+    Write-CanonicalState -Lines @($state + $firstDefault)
     Assert-InvalidStateRejected
 
     $orphaned = Get-Content -LiteralPath $statePath | ForEach-Object {
@@ -69,10 +80,10 @@ try {
             $_
         }
     }
-    Write-Utf8NoBom -Path $statePath -Lines $orphaned
+    Write-CanonicalState -Lines $orphaned
     Assert-InvalidStateRejected
 
-    Add-Content -LiteralPath $statePath -Value "unexpected.key=value"
+    Write-CanonicalState -Lines @($state + "unexpected.key=value")
     Assert-InvalidStateRejected
 
     Write-Host "Windows state tests passed."

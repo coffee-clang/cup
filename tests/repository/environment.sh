@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# Purpose: Verifies source-test environment resolution, explicit dependency
-# preparation and build-prefix isolation.
+# Verifies test environment resolution, explicit dependency use and
+# platform-profile tool preparation.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -14,107 +14,41 @@ test_begin environment
 NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
     fail 'could not resolve native build platform for repository tests'
 
-create_private_prefix() {
-    prefix=$1
-    mkdir -p "$prefix/include/event2" "$prefix/lib"
-    touch "$prefix/include/argtable3.h" \
-        "$prefix/include/uthash.h" \
-        "$prefix/include/ares.h" \
-        "$prefix/include/unity.h" \
-        "$prefix/include/unity_internals.h" \
-        "$prefix/include/event2/event.h" \
-        "$prefix/include/event2/http.h" \
-        "$prefix/include/event2/bufferevent.h" \
-        "$prefix/include/event2/listener.h" \
-        "$prefix/lib/libargtable3.a" \
-        "$prefix/lib/libcares.a" \
-        "$prefix/lib/libunity.a" \
-        "$prefix/lib/libevent_core.a" \
-        "$prefix/lib/libevent_extra.a"
-}
+# Background fixture cleanup must not wait indefinitely when a child ignores
+# TERM. The shared helper escalates after a bounded grace period and reaps the
+# direct child before returning.
+stop_ready=$TMP_ROOT/stop-process.ready
+(
+    trap '' TERM
+    : >"$stop_ready"
+    while :; do
+        sleep 10
+    done
+) &
+stubborn_pid=$!
+stop_attempt=0
+while [ ! -f "$stop_ready" ] && [ "$stop_attempt" -lt 100 ]; do
+    sleep 0.01
+    stop_attempt=$((stop_attempt + 1))
+done
+[ -f "$stop_ready" ] || fail 'TERM-resistant fixture did not become ready'
+stop_started=$(date +%s)
+test_stop_process "$stubborn_pid"
+stop_elapsed=$(($(date +%s) - stop_started))
+[ "$stop_elapsed" -lt 5 ] || fail 'background fixture cleanup was not bounded'
+if kill -0 "$stubborn_pid" 2>/dev/null; then
+    fail 'background fixture survived bounded cleanup'
+fi
 
-create_complete_prefix() {
-    prefix=$1
-    use_openssl=${2:-1}
-    create_private_prefix "$prefix"
-    mkdir -p "$prefix/bin" "$prefix/include/curl" \
-        "$prefix/lib/pkgconfig"
-    touch "$prefix/include/curl/curl.h" \
-        "$prefix/include/archive.h" \
-        "$prefix/include/archive_entry.h" \
-        "$prefix/include/zlib.h" \
-        "$prefix/include/lzma.h" \
-        "$prefix/lib/libcurl.a" \
-        "$prefix/lib/libarchive.a" \
-        "$prefix/lib/libz.a" \
-        "$prefix/lib/liblzma.a"
-    if [ "$use_openssl" = 1 ]; then
-        mkdir -p "$prefix/include/openssl"
-        touch "$prefix/include/openssl/ssl.h" \
-            "$prefix/lib/libssl.a" \
-            "$prefix/lib/libcrypto.a"
-    fi
-    cat >"$prefix/bin/curl-config" <<EOF_CURL_CONFIG
+create_verifier_fixture() {
+    root=$1
+    mkdir -p "$root/scripts/dependencies"
+    cat >"$root/scripts/dependencies/verify.sh" <<'EOF_VERIFY'
 #!/bin/sh
-case "\${1:-}" in
-    --static-libs)
-        printf '%s%s\\n' \
-            '$prefix/lib/libcurl.a -L$prefix/lib -lcares ' \
-            '$prefix/lib/libssl.a $prefix/lib/libcrypto.a $prefix/lib/libz.a'
-        ;;
-    --features)
-        printf '%s\\n' AsynchDNS
-        ;;
-    --configure)
-        printf "%s\\n" " '--prefix=$prefix' '--enable-ares=$prefix'"
-        ;;
-    *)
-        exit 2
-        ;;
-esac
-EOF_CURL_CONFIG
-    chmod +x "$prefix/bin/curl-config"
-    cat >"$prefix/lib/pkgconfig/libcares.pc" <<EOF_CARES_PC
-prefix=$prefix
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-Name: c-ares
-Description: test metadata
-Version: 1
-Libs: -L\${libdir} -lcares
-Cflags: -I\${includedir}
-EOF_CARES_PC
-    cat >"$prefix/lib/pkgconfig/libarchive.pc" <<EOF_ARCHIVE_PC
-prefix=$prefix
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-Name: libarchive
-Description: test metadata
-Version: 1
-Libs: \${libdir}/libarchive.a \${libdir}/liblzma.a \${libdir}/libz.a
-Cflags: -I\${includedir}
-EOF_ARCHIVE_PC
-    cat >"$prefix/lib/pkgconfig/libevent_core.pc" <<EOF_EVENT_CORE_PC
-prefix=$prefix
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-Name: libevent_core
-Description: test metadata
-Version: 1
-Libs: -L\${libdir} -levent_core
-Cflags: -I\${includedir}
-EOF_EVENT_CORE_PC
-    cat >"$prefix/lib/pkgconfig/libevent_extra.pc" <<EOF_EVENT_EXTRA_PC
-prefix=$prefix
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-Name: libevent_extra
-Description: test metadata
-Version: 1
-Requires.private: libevent_core
-Libs: -L\${libdir} -levent_extra
-Cflags: -I\${includedir}
-EOF_EVENT_EXTRA_PC
+[ "$#" -eq 2 ] || exit 2
+[ -f "$2/.verified-prefix" ]
+EOF_VERIFY
+    chmod +x "$root/scripts/dependencies/verify.sh"
 }
 
 (
@@ -159,15 +93,104 @@ if (
 fi
 assert_contains "$(cat "$TMP_ROOT/invalid.out")" 'Unsupported CUP_TEST_PLATFORM'
 
+(
+    CUP_TEST_PROJECT_ROOT='C:\fixture'
+    CUP_TEST_BUILD_ROOT='C:\fixture\build'
+    export CUP_TEST_PROJECT_ROOT CUP_TEST_BUILD_ROOT
+    cygpath() {
+        [ "$1" = -u ] && [ "$2" = 'C:\fixture\build' ] || return 2
+        printf '%s\n' /c/fixture/build
+    }
+    assert_equals "$(cup_test_build_root)" /c/fixture/build
+)
+
 CUP_TEST_PLATFORM=linux-x64
 DEPS_PREFIX="$TMP_ROOT/dependencies"
-export CUP_TEST_PLATFORM DEPS_PREFIX
-create_complete_prefix "$DEPS_PREFIX" 1
-cup_test_dependencies_ready || fail 'complete test dependency prefix was rejected'
-rm "$DEPS_PREFIX/include/uthash.h"
+CUP_TEST_PROJECT_ROOT="$TMP_ROOT/verifier-project"
+export CUP_TEST_PLATFORM DEPS_PREFIX CUP_TEST_PROJECT_ROOT
+create_verifier_fixture "$CUP_TEST_PROJECT_ROOT"
+mkdir -p "$DEPS_PREFIX"
+printf '%s\n' verified >"$DEPS_PREFIX/.verified-prefix"
+cup_test_dependencies_ready || fail 'verified test dependency prefix was rejected'
+rm "$DEPS_PREFIX/.verified-prefix"
 if cup_test_dependencies_ready; then
-    fail 'incomplete test dependency prefix was accepted'
+    fail 'dependency verifier failure was ignored'
 fi
+
+BUILD_PROJECT="$TMP_ROOT/build-project"
+CUP_TEST_PROJECT_ROOT="$BUILD_PROJECT"
+CUP_TEST_BUILD_ROOT="$BUILD_PROJECT/build"
+export CUP_TEST_PROJECT_ROOT CUP_TEST_BUILD_ROOT
+mkdir -p "$BUILD_PROJECT/scripts/lib" "$CUP_TEST_BUILD_ROOT/reports/existing" "$TMP_ROOT/outside"
+cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$PROJECT_ROOT/scripts/lib/path-ops.sh" \
+    "$PROJECT_ROOT/scripts/lib/path-ops.c" "$BUILD_PROJECT/scripts/lib/"
+printf '%s\n' \
+    'format=1' \
+    'product=coffee-clang/cup' \
+    'kind=build-root' \
+    'layout=1' >"$CUP_TEST_BUILD_ROOT/.cup-build-root"
+printf '%s\n' stale >"$CUP_TEST_BUILD_ROOT/reports/existing/.stale"
+printf '%s\n' keep >"$TMP_ROOT/outside/sentinel"
+cup_test_reset_output_directory "$CUP_TEST_BUILD_ROOT/reports/existing"
+[ -d "$CUP_TEST_BUILD_ROOT/reports/existing" ] &&
+    [ ! -e "$CUP_TEST_BUILD_ROOT/reports/existing/.stale" ] ||
+    fail 'owned test output was not reset exactly'
+if cup_test_reset_output_directory \
+    "$CUP_TEST_BUILD_ROOT/reports/../../outside" >"$TMP_ROOT/traversal.out" 2>&1; then
+    fail 'test output traversal was accepted'
+fi
+ln -s "$TMP_ROOT/outside" "$CUP_TEST_BUILD_ROOT/link"
+if cup_test_reset_output_directory \
+    "$CUP_TEST_BUILD_ROOT/link/report" >"$TMP_ROOT/symlink.out" 2>&1; then
+    fail 'test output symlink was followed'
+fi
+assert_equals "$(cat "$TMP_ROOT/outside/sentinel")" keep
+mkdir -p "$TMP_ROOT/build-parent/actual-build"
+printf '%s\n' \
+    'format=1' \
+    'product=coffee-clang/cup' \
+    'kind=build-root' \
+    'layout=1' >"$TMP_ROOT/build-parent/actual-build/.cup-build-root"
+ln -s "$TMP_ROOT/build-parent" "$TMP_ROOT/build-parent-link"
+CUP_TEST_BUILD_ROOT="$TMP_ROOT/build-parent-link/actual-build"
+export CUP_TEST_BUILD_ROOT
+if cup_test_build_root_owned >"$TMP_ROOT/build-root-link.out" 2>&1; then
+    fail 'test build root with a symlink parent was accepted'
+fi
+
+# Integration setup removes ambient transport policy before any repair or
+# download. Individual suites may set explicit values after preparation.
+(
+    unset CUP_TEST_PROJECT_ROOT CUP_TEST_BUILD_ROOT DEPS_PREFIX
+    CUP_TEST_PLATFORM=$NATIVE_BUILD_PLATFORM
+    CUP_TEST_BINARY="$TMP_ROOT/fake-cup"
+    export CUP_TEST_PLATFORM CUP_TEST_BINARY
+    printf '#!/bin/sh\nexit 0\n' > "$CUP_TEST_BINARY"
+    chmod +x "$CUP_TEST_BINARY"
+    . "$TESTS_ROOT/support/posix/cli.sh"
+    CUP_INSTALL_BASE_URL=https://ambient.invalid
+    CUP_INSTALL_ALLOW_INSECURE=1
+    HTTP_PROXY=http://ambient.invalid
+    HTTPS_PROXY=http://ambient.invalid
+    ALL_PROXY=http://ambient.invalid
+    NO_PROXY=ambient.invalid
+    http_proxy=http://ambient.invalid
+    https_proxy=http://ambient.invalid
+    all_proxy=http://ambient.invalid
+    no_proxy=ambient.invalid
+    export CUP_INSTALL_BASE_URL CUP_INSTALL_ALLOW_INSECURE \
+        HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+        http_proxy https_proxy all_proxy no_proxy
+    prepare_command_environment
+    for variable in \
+        CUP_INSTALL_BASE_URL CUP_INSTALL_ALLOW_INSECURE \
+        HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+        http_proxy https_proxy all_proxy no_proxy; do
+        eval "value=\${$variable-}"
+        [ -z "$value" ] || fail "ambient test variable survived: $variable"
+    done
+)
+
 printf 'Source-test environment contract tests passed.\n'
 
 printf '==> Testing macOS dependency tool preparation...\n'
@@ -184,812 +207,71 @@ case "\${1:-}" in
 esac
 EOF_BREW
 chmod +x "$FAKE_BREW_DIR/brew"
-for tool in ar clang dsymutil dwarfdump lipo otool ranlib strings xcrun; do
+cat >"$FAKE_BREW_DIR/uname" <<'EOF_UNAME'
+#!/bin/sh
+case "${1:-}" in
+    -s) printf '%s\n' Darwin ;;
+    -m) printf '%s\n' arm64 ;;
+    *) exit 2 ;;
+esac
+EOF_UNAME
+chmod +x "$FAKE_BREW_DIR/uname"
+for tool in ar clang dsymutil dwarfdump gcovr lipo otool ranlib strings xcrun; do
     cat >"$FAKE_BREW_DIR/$tool" <<'EOF_TOOL'
 #!/bin/sh
 exit 0
 EOF_TOOL
     chmod +x "$FAKE_BREW_DIR/$tool"
 done
-PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
-    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" dependencies
-for package in perl pkg-config xz; do
-    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
-        fail "macOS dependency preparation omitted $package"
-done
-: >"$FAKE_BREW_LOG"
-PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
-    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" source
-for package in coreutils perl pkg-config xz; do
-    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
-        fail "macOS source preparation omitted $package"
-done
-: >"$FAKE_BREW_LOG"
-PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
-    "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" debug
+
+
+prepare_macos_profile() {
+    profile=$1
+    shift
+    : >"$FAKE_BREW_LOG"
+    PATH="$FAKE_BREW_DIR:$PATH" FAMILY=macos PLATFORM=macos-arm64 \
+        "$PROJECT_ROOT/scripts/ci/prepare-posix.sh" "$profile"
+    for package in "$@"; do
+        grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
+            fail "macOS $profile preparation omitted $package"
+    done
+}
+
+prepare_macos_profile dependencies perl pkg-config xz
 if grep -Fq 'list --formula coreutils' "$FAKE_BREW_LOG"; then
-    fail 'macOS debug preparation installs source-test-only coreutils'
+    fail 'macOS dependency preparation installed source-test-only coreutils'
 fi
-for package in perl pkg-config xz; do
-    grep -Fq "list --formula $package" "$FAKE_BREW_LOG" ||
-        fail "macOS debug preparation omitted $package"
-done
+prepare_macos_profile source coreutils perl pkg-config xz
+prepare_macos_profile coverage coreutils gcovr perl pkg-config xz
+prepare_macos_profile sanitizers coreutils perl pkg-config xz
+prepare_macos_profile debug perl pkg-config xz
+if grep -Fq 'list --formula coreutils' "$FAKE_BREW_LOG"; then
+    fail 'macOS debug preparation installed source-test-only coreutils'
+fi
 printf 'macOS CI profile preparation tests passed.\n'
 
 printf '==> Testing explicit dependency preparation...\n'
-FAKE_ROOT="$TMP_ROOT/fake-project"
+FAKE_ROOT="$TMP_ROOT/explicit-project"
 DEPENDENCY_BUILD_LOG="$TMP_ROOT/dependency-build.log"
-mkdir -p "$FAKE_ROOT/scripts/dependencies"
+create_verifier_fixture "$FAKE_ROOT"
 cat >"$FAKE_ROOT/scripts/dependencies/build-posix.sh" <<EOF_BOOTSTRAP
 #!/bin/sh
-printf 'unexpected dependency build\\n' >'$DEPENDENCY_BUILD_LOG'
+printf 'unexpected dependency build\n' >'$DEPENDENCY_BUILD_LOG'
 EOF_BOOTSTRAP
 chmod +x "$FAKE_ROOT/scripts/dependencies/build-posix.sh"
+CUP_TEST_PROJECT_ROOT="$FAKE_ROOT"
 DEPS_PREFIX="$TMP_ROOT/missing-explicit-prefix"
-export DEPS_PREFIX
+export CUP_TEST_PROJECT_ROOT DEPS_PREFIX
 if cup_test_require_dependencies >"$TMP_ROOT/explicit.out" 2>&1; then
     fail 'test dependency check accepted a missing prefix'
 fi
 [ ! -e "$DEPENDENCY_BUILD_LOG" ] || fail 'test runner started a dependency build implicitly'
 assert_contains "$(cat "$TMP_ROOT/explicit.out")" "Run 'make PLATFORM=linux-x64 deps'"
-create_complete_prefix "$DEPS_PREFIX" 1
+mkdir -p "$DEPS_PREFIX"
+printf '%s\n' verified >"$DEPS_PREFIX/.verified-prefix"
 cup_test_require_dependencies || fail 'explicitly prepared test prefix was rejected'
 printf 'Explicit dependency preparation tests passed.\n'
 
-unset DEPS_PREFIX
-make_output=$(
-    cd "$PROJECT_ROOT"
-    MAKEFLAGS= MAKEOVERRIDES= PLATFORM=linux/amd64 \
-        make --no-print-directory -s version
-)
-[ -n "$make_output" ] || fail 'Makefile rejected an unrelated PLATFORM environment value'
-
-if (
-    cd "$PROJECT_ROOT"
-    MAKEFLAGS= MAKEOVERRIDES= \
-        make --no-print-directory -n PLATFORM=linux/amd64
-) >"$TMP_ROOT/make-invalid.out" 2>&1; then
-    fail 'invalid command-line PLATFORM selector was accepted by Makefile'
-fi
-assert_contains "$(cat "$TMP_ROOT/make-invalid.out")" 'Unsupported PLATFORM'
-
-FAKE_UNAME_DIR="$TMP_ROOT/fake-uname"
-mkdir -p "$FAKE_UNAME_DIR"
-cat >"$FAKE_UNAME_DIR/uname" <<'EOF_UNAME'
-#!/bin/sh
-case "$1" in
-    -s)
-        printf '%s\n' UnknownOS
-        ;;
-    -m)
-        printf '%s\n' unknown-architecture
-        ;;
-    *)
-        exit 1
-        ;;
-esac
-EOF_UNAME
-chmod +x "$FAKE_UNAME_DIR/uname"
-if (
-    cd "$PROJECT_ROOT"
-    PATH="$FAKE_UNAME_DIR:$PATH" MAKEFLAGS= MAKEOVERRIDES= \
-        PLATFORM=linux/amd64 make --no-print-directory -n all
-) >"$TMP_ROOT/make-unsupported-native.out" 2>&1; then
-    fail 'unsupported native architecture was silently treated as x64'
-fi
-assert_contains "$(cat "$TMP_ROOT/make-unsupported-native.out")" \
-    "Unsupported PLATFORM 'unsupported'"
-printf 'Makefile platform-selector isolation tests passed.\n'
-
-printf '==> Testing dependency-prefix transactions...\n'
-DEPENDENCY_COMMON="$PROJECT_ROOT/scripts/dependencies/common.sh"
-TRANSACTION_PREFIX="$TMP_ROOT/transaction-prefix"
-mkdir -p "$TRANSACTION_PREFIX"
-printf 'partial\n' >"$TRANSACTION_PREFIX/.cup-deps-building"
-printf 'old\n' >"$TRANSACTION_PREFIX/old.txt"
-
-bash -eu -o pipefail -c '
-    common=$1
-    final=$2
-    . "$common"
-
-    create_complete() {
-        prefix=$1
-        embedded_prefix=$2
-        mkdir -p "$prefix/bin" "$prefix/include/curl" \
-            "$prefix/include/openssl" "$prefix/include/event2" \
-            "$prefix/lib/pkgconfig"
-        touch "$prefix/include/argtable3.h" "$prefix/include/uthash.h" \
-            "$prefix/include/ares.h" \
-            "$prefix/include/unity.h" "$prefix/include/unity_internals.h" \
-            "$prefix/include/event2/event.h" "$prefix/include/event2/http.h" \
-            "$prefix/include/event2/bufferevent.h" \
-            "$prefix/include/event2/listener.h" \
-            "$prefix/include/curl/curl.h" "$prefix/include/archive.h" \
-            "$prefix/include/archive_entry.h" "$prefix/include/zlib.h" \
-            "$prefix/include/lzma.h" "$prefix/include/openssl/ssl.h" \
-            "$prefix/lib/libargtable3.a" "$prefix/lib/libcares.a" \
-            "$prefix/lib/libunity.a" \
-            "$prefix/lib/libevent_core.a" "$prefix/lib/libevent_extra.a" \
-            "$prefix/lib/libcurl.a" "$prefix/lib/libarchive.a" \
-            "$prefix/lib/libz.a" "$prefix/lib/liblzma.a" \
-            "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a"
-        cat >"$prefix/bin/curl-config" <<EOF_CURL_CONFIG
-#!/bin/sh
-case "\${1:-}" in
-    --features) printf "%s\n" AsynchDNS ;;
-    --static-libs|"") printf "%s\n" "-L$embedded_prefix/lib -lcurl -lcares" ;;
-    --configure)
-        printf " \047--prefix=$embedded_prefix\047"
-        printf " \047--enable-ares=$embedded_prefix\047\n"
-        ;;
-    *) exit 2 ;;
-esac
-EOF_CURL_CONFIG
-        chmod +x "$prefix/bin/curl-config"
-        cat >"$prefix/lib/pkgconfig/libcares.pc" <<EOF_CARES_PC
-prefix=$embedded_prefix
-libdir=\${prefix}/lib
-Name: c-ares
-Description: test metadata
-Version: 1
-Libs: -L\${libdir} -lcares
-EOF_CARES_PC
-        cat >"$prefix/lib/pkgconfig/libarchive.pc" <<EOF_LIBARCHIVE_PC
-prefix=$embedded_prefix
-libdir=\${prefix}/lib
-Name: libarchive
-Description: test metadata
-Version: 1
-Libs: -L\${libdir} -larchive
-EOF_LIBARCHIVE_PC
-        cat >"$prefix/lib/pkgconfig/libevent_core.pc" <<EOF_EVENT_CORE_PC
-prefix=$embedded_prefix
-libdir=\${prefix}/lib
-Name: libevent_core
-Description: test metadata
-Version: 1
-Libs: -L\${libdir} -levent_core
-EOF_EVENT_CORE_PC
-        cat >"$prefix/lib/pkgconfig/libevent_extra.pc" <<EOF_EVENT_EXTRA_PC
-prefix=$embedded_prefix
-libdir=\${prefix}/lib
-Name: libevent_extra
-Description: test metadata
-Version: 1
-Requires.private: libevent_core
-Libs: -L\${libdir} -levent_extra
-EOF_EVENT_EXTRA_PC
-    }
-
-    lock_sha256=$(dependency_lock_sha256)
-    recipe=$(dependency_recipe_version)
-    metadata=$(dependency_metadata linux-x64 gcc)
-    [ "$(printf "%s\n" "$metadata" | sed -n "1p")" = \
-        "prefix_format=4" ]
-    [ "$(printf "%s\n" "$metadata" | sed -n "2p")" = \
-        "platform=linux-x64" ]
-    [ "$(printf "%s\n" "$metadata" | sed -n "3p")" = \
-        "profile=gcc" ]
-    [ "$(printf "%s\n" "$metadata" | sed -n "4p")" = \
-        "recipe=$recipe" ]
-    [ "$(printf "%s\n" "$metadata" | sed -n "5p")" = \
-        "lock_sha256=$lock_sha256" ]
-    dependency_metadata_valid "$metadata"
-    if dependency_metadata_valid "prefix_format=3
-platform=linux-x64
-profile=gcc
-recipe=$recipe
-lock_sha256=$lock_sha256"; then
-        exit 1
-    fi
-    if dependency_metadata_valid "prefix_format=4
-platform=linux-x64
-profile=apple-clang
-recipe=$recipe
-lock_sha256=$lock_sha256"; then
-        exit 1
-    fi
-
-    if prepare_dependency_prefix relative-prefix "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix / "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix /tmp/install/ "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix /tmp/../escape "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix /tmp/./install "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix "/tmp/with space/install" "$metadata" 1; then
-        exit 1
-    fi
-    if prepare_dependency_prefix /tmp/install "$metadata" 2; then
-        exit 1
-    fi
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ -n "$CUP_DEPS_STAGE_ROOT" ]
-    [ "$CUP_DEPS_BUILD_PREFIX" = "$CUP_DEPS_STAGE_ROOT$final" ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    [ -f "$final/old.txt" ]
-    create_complete "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_BUILD_PREFIX"
-    printf "new\n" >"$CUP_DEPS_BUILD_PREFIX/new.txt"
-
-    cygpath() {
-        case "$1" in
-            -m)
-                printf "D:/msys64%s\n" "$2"
-                ;;
-            -w)
-                converted=$(printf "%s" "$2" | sed "s#/#\\\\#g")
-                printf "D:\\msys64%s\n" "$converted"
-                ;;
-            *)
-                return 1
-                ;;
-        esac
-    }
-    staged_native=$(cygpath -m "$CUP_DEPS_BUILD_PREFIX")
-    final_native=$(cygpath -m "$final")
-    staged_windows=$(cygpath -w "$CUP_DEPS_BUILD_PREFIX")
-    final_windows=$(cygpath -w "$final")
-    mixed_first=${staged_native%%/*}
-    mixed_rest=${staged_native#*/}
-    mixed_second=${mixed_rest%%/*}
-    mixed_rest=${mixed_rest#*/}
-    mixed_third=${mixed_rest%%/*}
-    mixed_rest=${mixed_rest#*/}
-    if [ "$mixed_rest" = "$mixed_third" ]; then
-        echo "Error: could not construct a mixed-separator test path." >&2
-        exit 1
-    fi
-    mixed_native="$mixed_first/$mixed_second/$mixed_third\\$mixed_rest"
-    cat >"$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake" <<EOF_WINDOWS_PATHS
-posix=$CUP_DEPS_BUILD_PREFIX
-native=$staged_native
-windows=$staged_windows
-mixed=$mixed_native
-EOF_WINDOWS_PATHS
-    dependency_metadata_contains_staging "$mixed_native" ||
-        fail "mixed-separator staging path was not detected"
-
-    normalize_dependency_metadata "$CUP_DEPS_BUILD_PREFIX" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"
-    ! find "$CUP_DEPS_BUILD_PREFIX" -type f \
-        \( -name '*.pc' -o -name '*.la' -o -name '*.cmake' \
-           -o -name '*-config' -o -name 'curl-config' \) \
-        -exec grep -F -l "$CUP_DEPS_STAGE_ROOT" {} + | grep .
-    [ "$("$CUP_DEPS_BUILD_PREFIX/bin/curl-config")" = "-L$final/lib -lcurl -lcares" ]
-    windows_metadata="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig/windows-paths.cmake"
-    grep -F "posix=$final" "$windows_metadata" >/dev/null
-    grep -F "native=$final_native" "$windows_metadata" >/dev/null
-    grep -F "windows=$final_native" "$windows_metadata" >/dev/null
-    grep -F "mixed=$final_native" "$windows_metadata" >/dev/null
-    ! grep -F "$CUP_DEPS_BUILD_PREFIX" "$windows_metadata" >/dev/null
-    ! grep -F "$staged_native" "$windows_metadata" >/dev/null
-    ! grep -F "$staged_windows" "$windows_metadata" >/dev/null
-    relocated_archive_flags=$( \
-        PKG_CONFIG_PATH="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        pkg-config --define-prefix --libs libarchive)
-    case "$relocated_archive_flags" in
-        *"$CUP_DEPS_BUILD_PREFIX"*) ;;
-        *)
-            echo "Error: pkg-config relocation test did not expose the staging prefix." >&2
-            exit 1
-            ;;
-    esac
-    archive_flags=$(PKG_CONFIG_PATH="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$CUP_DEPS_BUILD_PREFIX/lib/pkgconfig" \
-        PKG_CONFIG_SYSROOT_DIR="" \
-        dependency_pkg_config --libs libarchive)
-    [ "$archive_flags" = "-L$final/lib -larchive " ] || \
-        [ "$archive_flags" = "-L$final/lib -larchive" ]
-    dependency_link_flags_valid "-L$final_native/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"
-    dependency_link_flags_valid "-Wl,-L,$final_native/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"
-    if dependency_link_flags_valid \
-        "-L$final/lib -L$staged_native/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "native staging path was accepted in dependency link metadata"
-    fi
-    if dependency_link_flags_valid \
-        "-L$final/lib -Wl,-L,/usr/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "host linker search path was accepted in dependency metadata"
-    fi
-    if dependency_link_flags_valid \
-        "-L$final/lib -Wl,-rpath,/usr/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "host runtime search path was accepted in dependency metadata"
-    fi
-    if dependency_link_flags_valid \
-        "-L$final/lib -Wl,-R,/usr/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "host -R runtime path was accepted in dependency metadata"
-    fi
-    if dependency_link_flags_valid \
-        "-L$final/lib -R/usr/lib -lcurl" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "direct host -R path was accepted in dependency metadata"
-    fi
-    if dependency_link_flags_valid "-L" \
-        "$CUP_DEPS_BUILD_PREFIX" "$final"; then
-        fail "incomplete linker search flag was accepted in dependency metadata"
-    fi
-    finish_dependency_prefix "$CUP_DEPS_BUILD_PREFIX"
-    [ -f "$final/new.txt" ]
-    [ ! -e "$final/old.txt" ]
-    [ ! -e "$final/.cup-deps-building" ]
-    [ "$(cat "$final/.cup-dependencies")" = "$metadata" ]
-    [ "$("$final/bin/curl-config")" = "-L$final/lib -lcurl -lcares" ]
-
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 1 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" = "$final" ]
-
-    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
-    printf "#!/bin/sh\nexit 0\n" >"$final/bin/curl-config"
-    chmod +x "$final/bin/curl-config"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    abort_dependency_prefix
-    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
-
-    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
-    cat >"$final/bin/curl-config" <<EOF_NO_CARES_CONFIGURE
-#!/bin/sh
-case "\${1:-}" in
-    --static-libs) printf "%s\n" "-L$final/lib -lcurl -lcares" ;;
-    --features) printf "%s\n" AsynchDNS ;;
-    --configure) printf " \047--prefix=$final\047\n" ;;
-    *) exit 2 ;;
-esac
-EOF_NO_CARES_CONFIGURE
-    chmod +x "$final/bin/curl-config"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    abort_dependency_prefix
-    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
-
-    cp "$final/lib/pkgconfig/libarchive.pc" \
-        "$final/lib/pkgconfig/libarchive.pc.valid"
-    printf "Libs.private: -lacl\n" >> \
-        "$final/lib/pkgconfig/libarchive.pc"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    abort_dependency_prefix
-    mv "$final/lib/pkgconfig/libarchive.pc.valid" \
-        "$final/lib/pkgconfig/libarchive.pc"
-
-    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
-    cat >"$final/bin/curl-config" <<EOF_HOST_SEARCH
-#!/bin/sh
-printf "%s\\n" "-L$final/lib -lcurl -L/usr/lib -lhost"
-EOF_HOST_SEARCH
-    chmod +x "$final/bin/curl-config"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    abort_dependency_prefix
-    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
-
-    cp "$final/lib/pkgconfig/libarchive.pc" \
-        "$final/lib/pkgconfig/libarchive.pc.valid"
-    printf "Libs.private: /usr/lib/libhost.a\\n" >> \
-        "$final/lib/pkgconfig/libarchive.pc"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    abort_dependency_prefix
-    mv "$final/lib/pkgconfig/libarchive.pc.valid" \
-        "$final/lib/pkgconfig/libarchive.pc"
-
-    cp "$final/lib/pkgconfig/libarchive.pc" \
-        "$final/lib/pkgconfig/libarchive.pc.valid"
-    printf "Libs.private: -ldl -lpthread\\n" >> \
-        "$final/lib/pkgconfig/libarchive.pc"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 1 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" = "$final" ]
-    mv "$final/lib/pkgconfig/libarchive.pc.valid" \
-        "$final/lib/pkgconfig/libarchive.pc"
-
-    rm "$final/include/uthash.h"
-    prepare_dependency_prefix "$final" "$metadata" 1
-    [ "$CUP_DEPS_PREFIX_READY" = 0 ]
-    [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
-    [ -f "$final/new.txt" ]
-    abort_dependency_prefix
-' sh "$DEPENDENCY_COMMON" "$TRANSACTION_PREFIX"
-
-ZLIB_VERSION=0 ZLIB_URL=https://invalid.example/zlib.tar.gz bash -eu -c '
-    . "$1"
-    [ "$ZLIB_VERSION" = 1.3.2 ]
-    case "$ZLIB_URL" in
-        https://github.com/madler/zlib/*) ;;
-        *)
-            exit 1
-            ;;
-    esac
-' sh "$DEPENDENCY_COMMON"
-
-FAILED_PREFIX="$TMP_ROOT/failed-prefix"
-bash -eu -o pipefail -c '
-    common=$1
-    final=$2
-    . "$common"
-
-    metadata=$(dependency_metadata linux-x64 gcc)
-    prepare_dependency_prefix "$final" "$metadata" 1
-    build=$CUP_DEPS_BUILD_PREFIX
-    printf "partial\n" >"$build/partial.txt"
-    if finish_dependency_prefix "$build"; then
-        exit 1
-    fi
-    [ ! -e "$final" ]
-    [ -d "$build" ]
-    abort_dependency_prefix
-    [ ! -e "$build" ]
-    [ ! -e "$final" ]
-    [ -z "$CUP_DEPS_STAGE_ROOT" ]
-    [ -z "$CUP_DEPS_BUILD_PREFIX" ]
-    [ -z "$CUP_DEPS_FINAL_PREFIX" ]
-' sh "$DEPENDENCY_COMMON" "$FAILED_PREFIX"
-
-leftovers=$(find "$TMP_ROOT" -maxdepth 1 -name '.*.staging.*' -print)
-[ -z "$leftovers" ] || fail "dependency staging directories were not cleaned: $leftovers"
-printf 'Dependency-prefix transaction tests passed.\n'
-
-printf '==> Testing failed dependency build cleanup and retry...\n'
-FAILED_DEPENDENCY_ROOT="$TMP_ROOT/failed-dependency-build"
-FAILED_DEPENDENCY_PREFIX="$FAILED_DEPENDENCY_ROOT/install"
-FAKE_CURL_DIR="$TMP_ROOT/failing-curl"
-mkdir -p "$FAKE_CURL_DIR"
-cat >"$FAKE_CURL_DIR/curl" <<'EOF_CURL'
-#!/bin/sh
-exit 7
-EOF_CURL
-chmod +x "$FAKE_CURL_DIR/curl"
-
-attempt=1
-while [ "$attempt" -le 2 ]; do
-    if (
-        cd "$PROJECT_ROOT"
-        PATH="$FAKE_CURL_DIR:$PATH" \
-            DEPS_ROOT="$FAILED_DEPENDENCY_ROOT" \
-            DEPS_PREFIX="$FAILED_DEPENDENCY_PREFIX" \
-            PLATFORM=linux-x64 \
-            bash ./scripts/dependencies/build-posix.sh
-    ) >"$TMP_ROOT/failed-dependency-build-$attempt.out" 2>&1; then
-        fail 'dependency build unexpectedly succeeded with a failing downloader'
-    fi
-    [ ! -e "$FAILED_DEPENDENCY_PREFIX" ] ||
-        fail 'failed dependency build exposed a partial final prefix'
-    leftovers=$(find "$FAILED_DEPENDENCY_ROOT" -maxdepth 1 \
-        -name '.install.staging.*' -print 2>/dev/null || true)
-    [ -z "$leftovers" ] ||
-        fail "failed dependency build left staging directories: $leftovers"
-    attempt=$((attempt + 1))
-done
-printf 'Failed dependency build cleanup and retry tests passed.\n'
-
-printf '==> Testing target-based build configurations...\n'
-print_dependency_prefix() {
-    (
-        cd "$PROJECT_ROOT"
-        printf '%s\n' \
-            'print-deps-prefix:' \
-            '	@printf "%s\n" "$(DEPS_PREFIX)"' |
-            make --no-print-directory -s -f Makefile -f - \
-                "$@" print-deps-prefix
-    )
-}
-
-PINNED_PREFIX="$TMP_ROOT/pinned-prefix"
-create_complete_prefix "$PINNED_PREFIX" 1
-resolved_prefix=$(print_dependency_prefix DEPS_PREFIX="$PINNED_PREFIX")
-assert_equals "$resolved_prefix" "$PINNED_PREFIX"
-
-normalized_prefix=$(print_dependency_prefix \
-    DEPS_PREFIX="$PINNED_PREFIX/../$(basename "$PINNED_PREFIX")")
-assert_equals "$normalized_prefix" "$PINNED_PREFIX"
-
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        BUILD_DIR="$TMP_ROOT/build output" help \
-        >"$TMP_ROOT/build-dir-space.out" 2>&1; then
-    fail 'BUILD_DIR containing whitespace was accepted'
-fi
-assert_contains "$(cat "$TMP_ROOT/build-dir-space.out")" \
-    'BUILD_DIR must not contain whitespace'
-
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        DEPS_PREFIX="$TMP_ROOT/dependency prefix" help \
-        >"$TMP_ROOT/deps-prefix-space.out" 2>&1; then
-    fail 'DEPS_PREFIX containing whitespace was accepted'
-fi
-assert_contains "$(cat "$TMP_ROOT/deps-prefix-space.out")" \
-    'DEPS_PREFIX must not contain whitespace'
-
-development_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" all
-)
-assert_contains "$development_command" "build/$NATIVE_BUILD_PLATFORM/development/bin/cup"
-assert_contains "$development_command" "-I$PINNED_PREFIX/include"
-assert_contains "$development_command" "-L$PINNED_PREFIX/lib"
-assert_contains "$development_command" "$PINNED_PREFIX/lib/libargtable3.a"
-assert_contains "$development_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$development_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_not_contains "$development_command" 'libcurl.so'
-assert_not_contains "$development_command" 'libarchive.so'
-assert_not_contains "$development_command" ' -static '
-
-debug_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" debug
-)
-assert_contains "$debug_command" "build/$NATIVE_BUILD_PLATFORM/debug/bin/cup"
-assert_contains "$debug_command" '-fno-omit-frame-pointer'
-assert_contains "$debug_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$debug_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_not_contains "$debug_command" ' -static '
-
-for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
-    coverage_command=$(
-        cd "$PROJECT_ROOT"
-        make --no-print-directory -B -n PLATFORM="$coverage_platform" \
-            DEPS_PREFIX="$PINNED_PREFIX" coverage
-    )
-    case "$coverage_platform" in
-        windows-x64)
-            coverage_binary=cup.exe
-            ;;
-        *)
-            coverage_binary=cup
-            ;;
-    esac
-    assert_contains "$coverage_command" \
-        "build/$coverage_platform/coverage/bin/$coverage_binary"
-    case "$coverage_platform" in
-        macos-*)
-            assert_contains "$coverage_command" '-fprofile-instr-generate'
-            ;;
-        *)
-            assert_contains "$coverage_command" '--coverage'
-            ;;
-    esac
-    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
-    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
-    assert_not_contains "$coverage_command" ' -static '
-done
-
-coverage_runner_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=macos-arm64 \
-        DEPS_PREFIX="$PINNED_PREFIX" test-coverage
-)
-assert_contains "$coverage_runner_command" "CUP_TEST_PLATFORM='macos-arm64'"
-assert_contains "$coverage_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
-
-sanitizer_runner_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=windows-x64 \
-        DEPS_PREFIX="$PINNED_PREFIX" test-sanitizers
-)
-assert_contains "$sanitizer_runner_command" "CUP_TEST_PLATFORM='windows-x64'"
-assert_contains "$sanitizer_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
-
-for sanitizer_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
-    sanitizer_command=$(
-        cd "$PROJECT_ROOT"
-        make --no-print-directory -B -n PLATFORM="$sanitizer_platform" \
-            DEPS_PREFIX="$PINNED_PREFIX" sanitizers
-    )
-    case "$sanitizer_platform" in
-        windows-x64)
-            sanitizer_binary=cup.exe
-            ;;
-        *)
-            sanitizer_binary=cup
-            ;;
-    esac
-    assert_contains "$sanitizer_command" \
-        "build/$sanitizer_platform/sanitizers/bin/$sanitizer_binary"
-    assert_contains "$sanitizer_command" '-fsanitize=address,undefined'
-    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libcurl.a"
-    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libarchive.a"
-    assert_not_contains "$sanitizer_command" ' -static '
-done
-
-windows_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n PLATFORM=windows-x64 \
-        DEPS_PREFIX="$PINNED_PREFIX" all
-)
-assert_contains "$windows_command" 'build/windows-x64/development/generated/version.rc'
-assert_contains "$windows_command" 'version-resource.o'
-assert_contains "$windows_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$windows_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_contains "$windows_command" '-DCURL_STATICLIB'
-
-release_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" release
-)
-assert_contains "$release_command" "build/$NATIVE_BUILD_PLATFORM/release/bin/cup"
-assert_contains "$release_command" "-I$PINNED_PREFIX/include"
-assert_contains "$release_command" "-L$PINNED_PREFIX/lib"
-assert_contains "$release_command" "$PINNED_PREFIX/lib/libargtable3.a"
-assert_contains "$release_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$release_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_contains "$release_command" '-static'
-
-help_output=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -s help
-)
-assert_contains "$help_output" 'make debug'
-assert_contains "$help_output" 'make coverage'
-assert_contains "$help_output" 'make sanitizers'
-assert_contains "$help_output" 'make release'
-printf 'Target-based build configuration tests passed.\n'
-
-printf '==> Testing dependency diagnostics...\n'
-missing_prefix="$TMP_ROOT/missing-prefix"
-(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=linux-x64 \
-        DEPS_PREFIX="$missing_prefix" all
-) >"$TMP_ROOT/missing-prefix.out" 2>&1 || true
-if (
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -s PLATFORM=linux-x64 \
-        DEPS_PREFIX="$missing_prefix" deps-check
-) >"$TMP_ROOT/deps-check-missing.out" 2>&1; then
-    fail 'deps-check accepted a missing dependency prefix'
-fi
-assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
-    'Pinned dependency prefix is missing, incomplete or incompatible'
-
-default_deps_prefix="$HOME/deps/linux-x64/install"
-deps_command=$(
-    cd "$PROJECT_ROOT"
-    unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES
-    make --no-print-directory -B -n PLATFORM=linux-x64 deps
-)
-assert_contains "$deps_command" "$default_deps_prefix"
-custom_deps_prefix="$TMP_ROOT/custom-deps-prefix"
-custom_deps_command=$(
-    cd "$PROJECT_ROOT"
-    unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES
-    make --no-print-directory -B -n PLATFORM=linux-x64 \
-        DEPS_PREFIX="$custom_deps_prefix" deps
-)
-assert_contains "$custom_deps_command" "DEPS_PREFIX='$custom_deps_prefix'"
-printf 'Dependency diagnostic tests passed.\n'
-
-printf '==> Testing dependency platform rejection...\n'
-DEPENDENCY_DIR="$PROJECT_ROOT/scripts/dependencies"
-if PLATFORM=macos-x64 MACOSX_DEPLOYMENT_TARGET=12.0 \
-        bash "$DEPENDENCY_DIR/build-posix.sh" \
-        >"$TMP_ROOT/macos-deps-floor.out" 2>&1; then
-    fail 'macOS dependency builder accepted the wrong deployment target'
-fi
-assert_contains "$(cat "$TMP_ROOT/macos-deps-floor.out")" \
-    'require MACOSX_DEPLOYMENT_TARGET=13.0'
-if MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 \
-        bash "$DEPENDENCY_DIR/build-windows.sh" \
-        >"$TMP_ROOT/windows-deps-runtime.out" 2>&1; then
-    fail 'Windows dependency builder accepted a non-UCRT64 shell'
-fi
-assert_contains "$(cat "$TMP_ROOT/windows-deps-runtime.out")" \
-    'require an MSYS2 UCRT64 or CLANG64 shell'
-printf 'Dependency platform rejection tests passed.\n'
-
-printf '==> Testing dependency inventory, scopes and notices...\n'
-DEPENDENCY_SOURCES="$DEPENDENCY_DIR/sources.sh"
-DEPENDENCY_NOTICES="$DEPENDENCY_DIR/THIRD_PARTY_NOTICES.txt"
-[ -f "$DEPENDENCY_NOTICES" ] || fail 'third-party notices file is missing'
-packages=$(sh -eu -c \
-    'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; all_source_packages' \
-    sh "$DEPENDENCY_SOURCES")
-expected_packages='zlib
-xz
-openssl
-cares
-curl
-libarchive
-argtable3
-uthash
-unity
-libevent'
-[ "$packages" = "$expected_packages" ] ||
-    fail 'canonical dependency inventory changed unexpectedly'
-for package in zlib xz openssl cares curl libarchive argtable3 uthash; do
-    scope=$(sh -eu -c \
-        'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
-        sh "$DEPENDENCY_SOURCES" "$package")
-    [ "$scope" = runtime ] || fail "$package does not have runtime scope"
-done
-for package in unity libevent; do
-    scope=$(sh -eu -c \
-        'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package "$2"' \
-        sh "$DEPENDENCY_SOURCES" "$package")
-    [ "$scope" = test ] || fail "$package does not have test scope"
-done
-[ "$(sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package uthash' \
-    sh "$DEPENDENCY_SOURCES")" = header-only ] ||
-    fail 'uthash usage classification is incorrect'
-[ "$(sh -eu -c \
-    'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_usage_for_package libevent' \
-    sh "$DEPENDENCY_SOURCES")" = network-test-library ] ||
-    fail 'libevent usage classification is incorrect'
-if sh -eu -c 'CUP_DEPENDENCIES_DIR=$(dirname "$1"); . "$1"; dependency_scope_for_package unknown' \
-        sh "$DEPENDENCY_SOURCES" >/dev/null 2>&1; then
-    fail 'dependency scope lookup accepted an unknown package'
-fi
-notices_content=$(cat "$DEPENDENCY_NOTICES")
-assert_contains "$notices_content" 'cup third-party notices'
-assert_contains "$notices_content" 'Scope: runtime'
-assert_contains "$notices_content" 'Scope: test'
-assert_contains "$notices_content" \
-    'Usage: static libraries linked only into the test network helper'
-printf 'Dependency inventory, scope and notice tests passed.\n'
-
-printf '==> Testing normalized dependency build environment...\n'
-bash -eu -o pipefail -c '
-    common=$1
-    . "$common"
-
-    CFLAGS=ambient-cflags
-    CPPFLAGS=ambient-cppflags
-    LDFLAGS=ambient-ldflags
-    LIBS=ambient-libs
-    CPATH=/ambient/include
-    LIBRARY_PATH=/ambient/lib
-    PKG_CONFIG_PATH=/ambient/pkgconfig
-    CONFIG_SITE=/ambient/config.site
-    CCACHE=ambient-ccache
-    MAKEFLAGS=ambient-makeflags
-    export CFLAGS CPPFLAGS LDFLAGS LIBS CPATH LIBRARY_PATH
-    export PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS
-
-    dependency_normalize_build_environment
-    [ "$LC_ALL" = C ]
-    [ "$LANG" = C ]
-    [ "$TZ" = UTC ]
-    [ "$(umask)" = 0022 ] || [ "$(umask)" = 022 ]
-    for variable in CFLAGS CPPFLAGS LDFLAGS LIBS CPATH LIBRARY_PATH \
-            PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS; do
-        if [[ -v $variable ]]; then
-            exit 1
-        fi
-    done
-
-    [ "$(dependency_resolve_jobs)" = 4 ]
-    JOBS=7
-    [ "$(dependency_resolve_jobs)" = 7 ]
-    JOBS=0
-    if dependency_resolve_jobs >/dev/null 2>&1; then
-        exit 1
-    fi
-    JOBS=invalid
-    if dependency_resolve_jobs >/dev/null 2>&1; then
-        exit 1
-    fi
-' sh "$DEPENDENCY_COMMON"
 # Quality-tool guidance must follow the active Windows toolchain instead of
 # recommending UCRT64 packages from the isolated CLANG64 sanitizer shell.
 clang_hint=$(CUP_TEST_PLATFORM=windows-x64 MSYSTEM=CLANG64 \
@@ -999,4 +281,4 @@ assert_contains "$clang_hint" 'Install LLVM tools in CLANG64'
 assert_contains "$clang_hint" 'mingw-w64-clang-x86_64-compiler-rt'
 assert_not_contains "$clang_hint" 'mingw-w64-ucrt-x86_64-compiler-rt'
 
-printf 'Normalized dependency build environment tests passed.\n'
+printf 'Quality-tool guidance tests passed.\n'

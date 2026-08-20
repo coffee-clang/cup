@@ -37,17 +37,26 @@ static CupError inspect_regular_file(const char *path, CupAssetStatus *status) {
     return CUP_OK;
 }
 
-static CupError inspect_checksum_file(const char *path,
-                                      const char *const *asset_names,
-                                      size_t asset_count,
-                                      CupAssetStatus *status) {
+static CupError inspect_checksum_document(const char *path,
+                                          const char *const *asset_names,
+                                          size_t asset_count,
+                                          CupAssetStatus *status,
+                                          ChecksumDocument *document) {
     CupError err;
 
     err = inspect_regular_file(path, status);
     if (err != CUP_OK || *status != CUP_ASSET_VALID) {
         return err;
     }
-    err = checksum_validate_assets(path, asset_names, asset_count);
+    err = checksum_document_load(document, path);
+    if (err == CUP_ERR_VALIDATION) {
+        *status = CUP_ASSET_INVALID;
+        return CUP_OK;
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = checksum_document_validate_assets(document, asset_names, asset_count);
     if (err == CUP_ERR_VALIDATION) {
         *status = CUP_ASSET_INVALID;
         return CUP_OK;
@@ -101,6 +110,7 @@ static CupError resolve_installed_asset_paths(InstalledAssetPaths *paths) {
 }
 
 static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
+                                     const ChecksumDocument *platform_checksums,
                                      CupAssetsInspection *inspection) {
     CupError err;
     int executable;
@@ -120,10 +130,8 @@ static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
         return CUP_OK;
     }
 
-    err = checksum_verify_file(paths->platform_checksums,
-                                  paths->binary_asset,
-                                  paths->binary,
-                                  &valid);
+    err = checksum_document_verify_file(
+        platform_checksums, paths->binary_asset, paths->binary, &valid);
     if (err == CUP_OK && !valid) {
         inspection->binary = CUP_ASSET_INVALID;
     }
@@ -133,47 +141,28 @@ static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
 static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
                                             CupAssetsInspection *inspection) {
     CupError err;
-    char binary_hash[SHA256_HEX_LENGTH + 1];
-    char helper_hash[SHA256_HEX_LENGTH + 1];
+    int executable;
 
+    /* The update helper is derived from the canonical executable immediately before use. A stale
+     * but executable regular copy is therefore harmless and must not invalidate the installed
+     * generation after a successful cup update. */
     err = inspect_regular_file(paths->helper, &inspection->helper);
     if (err != CUP_OK || inspection->helper != CUP_ASSET_VALID) {
         return err;
     }
 
-    {
-        int executable;
-
-        err = system_is_executable(paths->helper, &executable);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (!executable) {
-            inspection->helper = CUP_ASSET_INVALID;
-        }
-    }
-    if (inspection->helper != CUP_ASSET_VALID) {
-        return CUP_OK;
-    }
-    if (inspection->binary != CUP_ASSET_VALID) {
-        inspection->helper = CUP_ASSET_INVALID;
-        return CUP_OK;
-    }
-
-    err = checksum_sha256_file(paths->binary, binary_hash, sizeof(binary_hash));
-    if (err == CUP_OK) {
-        err = checksum_sha256_file(paths->helper, helper_hash, sizeof(helper_hash));
-    }
+    err = system_is_executable(paths->helper, &executable);
     if (err != CUP_OK) {
         return err;
     }
-    if (strcmp(binary_hash, helper_hash) != 0) {
+    if (!executable) {
         inspection->helper = CUP_ASSET_INVALID;
     }
     return CUP_OK;
 }
 
 static CupError inspect_catalog_asset(const InstalledAssetPaths *paths,
+                                      const ChecksumDocument *common_checksums,
                                       CupAssetsInspection *inspection) {
     PackageCatalog catalog;
     CupError err;
@@ -195,10 +184,8 @@ static CupError inspect_catalog_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-    err = checksum_verify_file(paths->common_checksums,
-                                  CUP_PACKAGES_FILENAME,
-                                  paths->package_catalog,
-                                  &valid);
+    err = checksum_document_verify_file(
+        common_checksums, CUP_PACKAGES_FILENAME, paths->package_catalog, &valid);
     if (err == CUP_OK && !valid) {
         inspection->catalog = CUP_ASSET_INVALID;
     }
@@ -206,6 +193,7 @@ static CupError inspect_catalog_asset(const InstalledAssetPaths *paths,
 }
 
 static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
+                                             const ChecksumDocument *common_checksums,
                                              CupAssetsInspection *inspection) {
     InstallPolicy install_policy;
     CupError err;
@@ -217,8 +205,7 @@ static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
     }
 
     install_policy_init(&install_policy);
-    err = install_policy_load_path(
-        &install_policy, paths->install_policy, INSTALL_POLICY_SOURCE_INSTALLED);
+    err = install_policy_load_path(&install_policy, paths->install_policy);
     if (err == CUP_ERR_VALIDATION || inspection->common_checksums != CUP_ASSET_VALID) {
         inspection->install_policy = CUP_ASSET_INVALID;
         return CUP_OK;
@@ -227,10 +214,10 @@ static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-    err = checksum_verify_file(paths->common_checksums,
-                                  CUP_INSTALL_POLICY_FILENAME,
-                                  paths->install_policy,
-                                  &valid);
+    err = checksum_document_verify_file(common_checksums,
+                                        CUP_INSTALL_POLICY_FILENAME,
+                                        paths->install_policy,
+                                        &valid);
     if (err == CUP_OK && !valid) {
         inspection->install_policy = CUP_ASSET_INVALID;
     }
@@ -238,6 +225,7 @@ static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
 }
 
 static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
+                                        const ChecksumDocument *platform_checksums,
                                         CupAssetsInspection *inspection) {
     CupError err;
     int valid;
@@ -265,10 +253,8 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
         return CUP_OK;
     }
 
-    err = checksum_verify_file(paths->platform_checksums,
-                                  CUP_UNINSTALL_FILENAME,
-                                  paths->uninstall,
-                                  &valid);
+    err = checksum_document_verify_file(
+        platform_checksums, CUP_UNINSTALL_FILENAME, paths->uninstall, &valid);
     if (err == CUP_OK && !valid) {
         inspection->uninstall = CUP_ASSET_INVALID;
     }
@@ -277,48 +263,100 @@ static CupError inspect_uninstall_asset(const InstalledAssetPaths *paths,
 
 static CupError inspect_installed_assets(CupAssetsInspection *inspection) {
     InstalledAssetPaths paths;
+    ChecksumDocument common_document;
+    ChecksumDocument platform_document;
     CupError err;
-    const char *platform_assets[3];
+    const char *platform_assets[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
+
+    checksum_document_init(&common_document);
+    checksum_document_init(&platform_document);
 
     /* Resolve the complete installed generation before inspecting any individual asset. */
     err = resolve_installed_asset_paths(&paths);
     if (err != CUP_OK) {
-        return err;
+        goto done;
     }
 
-    /* Checksum files are the trust root for the assets they enumerate. */
     platform_assets[0] = paths.binary_asset;
     platform_assets[1] = CUP_UNINSTALL_FILENAME;
     platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
+    platform_assets[3] = CUP_COMMON_CHECKSUMS_FILENAME;
 
-    err = inspect_checksum_file(paths.common_checksums,
-                                CUP_COMMON_CHECKSUM_ASSETS,
-                                CUP_COMMON_CHECKSUM_ASSET_COUNT,
-                                &inspection->common_checksums);
+    err = inspect_checksum_document(paths.common_checksums,
+                                    CUP_COMMON_CHECKSUM_ASSETS,
+                                    CUP_COMMON_CHECKSUM_ASSET_COUNT,
+                                    &inspection->common_checksums,
+                                    &common_document);
     if (err == CUP_OK) {
-        err = inspect_checksum_file(paths.platform_checksums,
-                                    platform_assets,
-                                    sizeof(platform_assets) / sizeof(platform_assets[0]),
-                                    &inspection->platform_checksums);
+        err = inspect_checksum_document(paths.platform_checksums,
+                                        platform_assets,
+                                        sizeof(platform_assets) / sizeof(platform_assets[0]),
+                                        &inspection->platform_checksums,
+                                        &platform_document);
     }
     if (err != CUP_OK) {
-        return err;
+        goto done;
     }
 
-    /* Each asset keeps its own parser, executable and checksum requirements. */
-    err = inspect_binary_asset(&paths, inspection);
+    /* The platform document authenticates the exact common document used below. */
+    if (inspection->common_checksums == CUP_ASSET_VALID &&
+        inspection->platform_checksums == CUP_ASSET_VALID) {
+        int valid;
+
+        err = checksum_document_verify_file(&platform_document,
+                                            CUP_COMMON_CHECKSUMS_FILENAME,
+                                            paths.common_checksums,
+                                            &valid);
+        if (err == CUP_OK && !valid) {
+            inspection->common_checksums = CUP_ASSET_INVALID;
+            inspection->catalog = CUP_ASSET_INVALID;
+            inspection->install_policy = CUP_ASSET_INVALID;
+        }
+    }
+    if (err != CUP_OK) {
+        goto done;
+    }
+
+    err = inspect_binary_asset(&paths, &platform_document, inspection);
     if (err == CUP_OK) {
         err = inspect_update_helper_asset(&paths, inspection);
     }
     if (err == CUP_OK) {
-        err = inspect_catalog_asset(&paths, inspection);
+        err = inspect_catalog_asset(&paths, &common_document, inspection);
     }
     if (err == CUP_OK) {
-        err = inspect_install_policy_asset(&paths, inspection);
+        err = inspect_install_policy_asset(&paths, &common_document, inspection);
     }
     if (err == CUP_OK) {
-        err = inspect_uninstall_asset(&paths, inspection);
+        err = inspect_uninstall_asset(&paths, &platform_document, inspection);
     }
+
+    /* Reject a mixed observation if either checksum pathname changed during inspection. */
+    if (err == CUP_OK && inspection->common_checksums == CUP_ASSET_VALID) {
+        SystemPathIdentity current;
+        err = system_get_path_identity(paths.common_checksums, &current);
+        if (err == CUP_OK && !system_path_identity_equal(&common_document.identity, &current)) {
+            inspection->common_checksums = CUP_ASSET_INVALID;
+            inspection->catalog = CUP_ASSET_INVALID;
+            inspection->install_policy = CUP_ASSET_INVALID;
+        }
+    }
+    if (err == CUP_OK && inspection->platform_checksums == CUP_ASSET_VALID) {
+        SystemPathIdentity current;
+        err = system_get_path_identity(paths.platform_checksums, &current);
+        if (err == CUP_OK && !system_path_identity_equal(&platform_document.identity, &current)) {
+            inspection->platform_checksums = CUP_ASSET_INVALID;
+            inspection->binary = CUP_ASSET_INVALID;
+            inspection->uninstall = CUP_ASSET_INVALID;
+            inspection->common_checksums = CUP_ASSET_INVALID;
+            inspection->catalog = CUP_ASSET_INVALID;
+            inspection->install_policy = CUP_ASSET_INVALID;
+        }
+    }
+
+done:
+    checksum_document_free(&common_document);
+    checksum_document_free(&platform_document);
     return err;
 }
 
@@ -391,7 +429,7 @@ int cup_assets_has_installed_assets(const CupAssetsInspection *inspection) {
     if (inspection == NULL) {
         return 0;
     }
-    return inspection->binary != CUP_ASSET_MISSING || inspection->helper != CUP_ASSET_MISSING ||
+    return inspection->binary != CUP_ASSET_MISSING ||
            inspection->catalog != CUP_ASSET_MISSING ||
            inspection->install_policy != CUP_ASSET_MISSING ||
            inspection->uninstall != CUP_ASSET_MISSING ||
@@ -401,7 +439,7 @@ int cup_assets_has_installed_assets(const CupAssetsInspection *inspection) {
 
 int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
     return inspection != NULL && inspection->binary == CUP_ASSET_VALID &&
-           inspection->helper == CUP_ASSET_VALID && inspection->catalog == CUP_ASSET_VALID &&
+           inspection->catalog == CUP_ASSET_VALID &&
            inspection->install_policy == CUP_ASSET_VALID &&
            inspection->uninstall == CUP_ASSET_VALID &&
            inspection->common_checksums == CUP_ASSET_VALID &&
@@ -413,26 +451,23 @@ int cup_assets_development_is_valid(const CupAssetsInspection *inspection) {
            inspection->development_install_policy_valid && inspection->development_uninstall_valid;
 }
 
-CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *source) {
+CupError cup_assets_find_uninstall(char *path, size_t size) {
     CupAssetsInspection inspection;
     CupError err;
 
-    if (path == NULL || size == 0 || source == NULL) {
+    if (path == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    *source = CUP_ASSETS_SOURCE_NONE;
 
     err = cup_assets_inspect(&inspection);
     if (err != CUP_OK) {
         return err;
     }
     if (inspection.uninstall == CUP_ASSET_VALID) {
-        *source = CUP_ASSETS_SOURCE_INSTALLED;
         return layout_get_uninstall_path(path, size);
     }
 #if !CUP_VERSION_OFFICIAL
     if (inspection.development_uninstall_valid) {
-        *source = CUP_ASSETS_SOURCE_DEVELOPMENT;
         return text_copy(path, size, CUP_DEVELOPMENT_UNINSTALL_PATH);
     }
 #endif

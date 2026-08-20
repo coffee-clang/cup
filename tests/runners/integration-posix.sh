@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Runs every native POSIX integration suite in a stable order.
+# Runs every native POSIX integration suite in a stable order.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -16,7 +16,7 @@ run_suite() {
     printf '==> Testing %s...\n' "$label"
     if [ -n "${CUP_TEST_SUITE_TIMEOUT:-}" ]; then
         case "$CUP_TEST_SUITE_TIMEOUT" in
-            *[!0-9]*|'')
+            *[!0-9]*|''|0)
                 printf 'Invalid CUP_TEST_SUITE_TIMEOUT: %s\n' \
                     "$CUP_TEST_SUITE_TIMEOUT" >&2
                 exit 2

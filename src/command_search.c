@@ -5,14 +5,7 @@
 #include "commands.h"
 
 #include "command_context.h"
-#include "package_selector.h"
-#include "package_metadata.h"
-#include "layout.h"
 #include "package_catalog.h"
-#include "package.h"
-#include "path.h"
-#include "registry.h"
-#include "state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,13 +156,6 @@ CupError command_search(const char *component, const char *target_override) {
     CommandContext context = {0};
     CupError err;
     const char *target = NULL;
-
-    if (component != NULL) {
-        err = registry_validate_component(component);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
 
     err = command_context_begin_read_only(&context, target_override);
     if (err != CUP_OK) {

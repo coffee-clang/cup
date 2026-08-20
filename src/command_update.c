@@ -18,10 +18,9 @@
 
 /* Stable-update plan built from one consistent state snapshot. */
 typedef struct {
-    char component[MAX_IDENTIFIER_LEN];
-    char tool[MAX_IDENTIFIER_LEN];
-    char target[MAX_PLATFORM_LEN];
-    char previous_active[MAX_SELECTOR_LEN];
+    PackageIdentity previous_default;
+    int has_previous_default;
+    PackageArtifactSpec artifact_spec;
 } UpdatePlanItem;
 
 typedef struct {
@@ -30,14 +29,16 @@ typedef struct {
 } UpdatePlan;
 
 static int update_plan_find(const UpdatePlan *plan,
-                     const char *component,
-                     const char *tool,
-                     const char *target) {
+                            const char *component,
+                            const char *tool,
+                            const char *target) {
     size_t i;
 
     for (i = 0; i < plan->count; ++i) {
-        if (strcmp(plan->items[i].component, component) == 0 &&
-            strcmp(plan->items[i].tool, tool) == 0 && strcmp(plan->items[i].target, target) == 0) {
+        const PackageIdentity *identity = &plan->items[i].artifact_spec.identity;
+
+        if (strcmp(identity->component, component) == 0 && strcmp(identity->tool, tool) == 0 &&
+            strcmp(identity->target_platform, target) == 0) {
             return (int)i;
         }
     }
@@ -45,14 +46,14 @@ static int update_plan_find(const UpdatePlan *plan,
 }
 
 static CupError update_plan_add(UpdatePlan *plan,
-                         const CommandContext *context,
-                         const PackageIdentity *installed) {
+                                const CommandContext *context,
+                                const PackageIdentity *installed) {
     UpdatePlanItem candidate = {0};
-    const PackageIdentity *active_identity;
+    const PackageIdentity *default_identity;
     PackageScope scope;
     CupError err;
 
-    if (package_identity_validate(installed) != CUP_OK) {
+    if (package_identity_validate(installed, stderr) != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
     if (update_plan_find(
@@ -63,30 +64,28 @@ static CupError update_plan_add(UpdatePlan *plan,
         return CUP_ERR_STATE_FULL;
     }
 
-    err = text_copy(candidate.component, sizeof(candidate.component), installed->component);
-    if (err == CUP_OK) {
-        err = text_copy(candidate.tool, sizeof(candidate.tool), installed->tool);
-    }
-    if (err == CUP_OK) {
-        err = text_copy(candidate.target, sizeof(candidate.target), installed->target_platform);
-    }
+    err = package_scope_init(
+        &scope, installed->component, context->host_platform, installed->target_platform);
     if (err != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    default_identity = state_get_default(&context->state, &scope);
+    if (default_identity != NULL && package_identity_validate(default_identity, stderr) != CUP_OK) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    if (default_identity != NULL && strcmp(default_identity->tool, installed->tool) == 0) {
+        candidate.previous_default = *default_identity;
+        candidate.has_previous_default = 1;
     }
 
-    err = package_scope_init(&scope, candidate.component, context->host_platform, candidate.target);
+    err = package_artifact_spec_resolve_stable(&candidate.artifact_spec,
+                                               &context->catalog,
+                                               installed->component,
+                                               installed->tool,
+                                               context->host_platform,
+                                               installed->target_platform);
     if (err != CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
-    active_identity = state_get_active(&context->state, &scope);
-    if (active_identity != NULL && package_identity_validate(active_identity) != CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
-    if (active_identity != NULL && strcmp(active_identity->tool, candidate.tool) == 0 &&
-        package_identity_format_selector(active_identity,
-                                         candidate.previous_active,
-                                         sizeof(candidate.previous_active)) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+        return err;
     }
 
     plan->items[plan->count++] = candidate;
@@ -123,6 +122,9 @@ static CupError update_plan_build(const char *name, UpdatePlan *plan) {
         goto done;
     }
     err = command_context_load_state(&context);
+    if (err == CUP_OK) {
+        err = command_context_load_catalog(&context);
+    }
     if (err != CUP_OK) {
         goto done;
     }
@@ -135,10 +137,6 @@ static CupError update_plan_build(const char *name, UpdatePlan *plan) {
             continue;
         }
 
-        if (package_identity_validate(installed) != CUP_OK) {
-            err = CUP_ERR_INCONSISTENT_STATE;
-            goto done;
-        }
         if (!text_is_empty(name) && !component_request &&
             strcmp(installed->tool, requested_tool) != 0) {
             continue;
@@ -161,17 +159,14 @@ done:
 CupError command_update(const char *selector) {
     UpdatePlan plan;
     CupError err;
-    char name[MAX_IDENTIFIER_LEN] = "";
+    const char *name = selector;
     const char *label;
     size_t i;
     size_t installed_count = 0;
-    size_t active_count = 0;
+    size_t moved_default_count = 0;
     size_t skipped_count = 0;
 
-    if (!text_is_empty(selector) && text_copy_lower_ascii(name, sizeof(name), selector) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    if (strcmp(name, "cup") == 0) {
+    if (!text_is_empty(name) && strcmp(name, "cup") == 0) {
         return cup_update_start();
     }
 
@@ -182,58 +177,57 @@ CupError command_update(const char *selector) {
     }
     if (plan.count == 0) {
         if (text_is_empty(name)) {
-            printf("No installed tool scopes to update.\n");
+            printf("No installed tools to update.\n");
         } else {
-            printf("No installed scopes match '%s'.\n", name);
+            printf("No installed packages match '%s'.\n", name);
         }
         return CUP_OK;
     }
 
     for (i = 0; i < plan.count; ++i) {
         UpdatePlanItem *item = &plan.items[i];
+        const PackageIdentity *identity = &item->artifact_spec.identity;
         int installed = 0;
-        int active_moved = 0;
+        int default_moved = 0;
 
         printf(
-            "==> Updating %s:%s for target '%s'...\n", item->component, item->tool, item->target);
-        err = package_install_update_scope(item->component,
-                                           item->tool,
-                                           item->target,
-                                           item->previous_active,
-                                           &installed,
-                                           &active_moved);
+            "==> Updating %s:%s for target '%s'...\n",
+            identity->component,
+            identity->tool,
+            identity->target_platform);
+        err = package_install_update_artifact(&item->artifact_spec,
+                                              item->has_previous_default
+                                                  ? &item->previous_default
+                                                  : NULL,
+                                              &installed,
+                                              &default_moved);
         if (err == CUP_ERR_NOT_INSTALLED) {
             skipped_count++;
             continue;
         }
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Update for '%s' stopped while processing scope %zu of %zu: "
+                    "Update for '%s' stopped while processing package %zu of %zu: "
                     "%zu stable package(s) installed, %zu default(s) moved, "
-                    "%zu scope(s) skipped. Previous releases were retained.\n",
+                    "%zu package(s) skipped. Previous releases were retained.\n",
                     label,
                     i + 1,
                     plan.count,
                     installed_count,
-                    active_count,
+                    moved_default_count,
                     skipped_count);
-            if (err == CUP_ERR_COMMIT) {
-                fprintf(stderr,
-                        "The current scope may also have committed; run 'cup repair' "
-                        "before continuing.\n");
-            }
             return err;
         }
         installed_count += (size_t)installed;
-        active_count += (size_t)active_moved;
+        moved_default_count += (size_t)default_moved;
     }
 
     printf("Update completed for '%s': %zu stable package(s) installed, "
-           "%zu default(s) moved, %zu scope(s) skipped; previous releases "
+           "%zu default(s) moved, %zu package(s) skipped; previous releases "
            "were retained.\n",
            label,
            installed_count,
-           active_count,
+           moved_default_count,
            skipped_count);
     return CUP_OK;
 }

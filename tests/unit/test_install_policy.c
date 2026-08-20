@@ -2,6 +2,7 @@
  * Tests the scoped official installation policy and user preference overlay.
  */
 #include "install_policy.h"
+#include "filesystem.h"
 #include "tool_preferences.h"
 #include "layout.h"
 #include "registry.h"
@@ -26,6 +27,8 @@ static char official_path[MAX_PATH_LEN];
 static char preferences_path[MAX_PATH_LEN];
 static int sync_parent_calls;
 static CupError sync_parent_result;
+static CupError install_policy_path_result;
+static int install_policy_path_calls;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -81,6 +84,8 @@ void setUp(void) {
     write_text(official_path, valid_policy());
     sync_parent_calls = 0;
     sync_parent_result = CUP_OK;
+    install_policy_path_result = CUP_OK;
+    install_policy_path_calls = 0;
 }
 
 void tearDown(void) {
@@ -133,7 +138,15 @@ CupError platform_validate(const char *platform) {
     return CUP_ERR_INVALID_INPUT;
 }
 
+int platform_is_supported(const char *platform) {
+    return platform_validate(platform) == CUP_OK;
+}
+
 CupError layout_get_install_policy_path(char *buffer, size_t size) {
+    install_policy_path_calls++;
+    if (install_policy_path_result != CUP_OK) {
+        return install_policy_path_result;
+    }
     return text_copy(buffer, size, official_path);
 }
 
@@ -165,34 +178,6 @@ CupError system_path_exists(const char *path, int *exists) {
     return CUP_ERR_FILESYSTEM;
 }
 
-CupError system_create_temp_file(
-    const char *directory, const char *prefix, char *path, size_t path_size, FILE **file) {
-    if (directory == NULL || prefix == NULL || path == NULL || path_size == 0 || file == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    return test_create_temp_file(directory, prefix, path, path_size, file) == 0
-               ? CUP_OK
-               : CUP_ERR_TEMPORARY;
-}
-
-CupError system_sync_file(FILE *file) {
-    return test_sync_file(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
-}
-
-CupError system_replace_file(const char *source,
-                             const char *destination,
-                             SystemCommitState *state) {
-    if (state == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *state = SYSTEM_COMMIT_NOT_APPLIED;
-    if (test_replace_file(source, destination) != 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    *state = SYSTEM_COMMIT_DURABLE;
-    return CUP_OK;
-}
-
 CupError system_remove_file(const char *path) {
     return test_unlink(path) == 0 || errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
 }
@@ -205,6 +190,33 @@ CupError system_sync_parent_directory(const char *path) {
     return sync_parent_result;
 }
 
+CupError filesystem_replace_file_atomically(const char *directory,
+                                            const char *temporary_prefix,
+                                            const char *destination,
+                                            int executable,
+                                            FilesystemFileWriter writer,
+                                            const void *value) {
+    FILE *file;
+    CupError err;
+
+    if (directory == NULL || temporary_prefix == NULL || destination == NULL ||
+        executable != 0 || writer == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    file = fopen(destination, "wb");
+    if (file == NULL) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    err = writer(file, value);
+    if (fclose(file) != 0 && err == CUP_OK) {
+        err = CUP_ERR_FILESYSTEM;
+    }
+    if (err != CUP_OK) {
+        (void)test_unlink(destination);
+    }
+    return err;
+}
+
 /*
  * Test cases exercise the real production entry point while changing only controlled boundary
  * outcomes.
@@ -214,8 +226,7 @@ static void test_policy_load(void) {
     InstallPolicy policy;
     const InstallDefault *official;
     const InstallNamedList *profile;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
-    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_INSTALLED, policy.source);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     official = install_policy_find_default(&policy, "linux-x64", "linux-x64", "compiler");
     TEST_ASSERT_NOT_NULL(official);
     TEST_ASSERT_EQUAL_STRING("clang", official->tool);
@@ -227,6 +238,13 @@ static void test_policy_load(void) {
     TEST_ASSERT_NOT_NULL(profile);
     TEST_ASSERT_EQUAL_size_t(4, profile->item_count);
     TEST_ASSERT_NOT_NULL(install_policy_find_toolchain(&policy, "gnu"));
+}
+
+static void test_policy_load_reuses_resolved_installed_path(void) {
+    InstallPolicy policy;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
+    TEST_ASSERT_EQUAL_INT(1, install_policy_path_calls);
 }
 
 static void test_policy_comments_and_blank_lines(void) {
@@ -245,7 +263,7 @@ static void test_policy_comments_and_blank_lines(void) {
                "# A toolchain is explicit and does not use defaults.\n"
                "toolchain.llvm=clang,lldb,lld\n");
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     TEST_ASSERT_NOT_NULL(
         install_policy_find_default(&policy, "linux-x64", "linux-x64", "compiler"));
     TEST_ASSERT_NOT_NULL(install_policy_find_profile(&policy, "minimal"));
@@ -255,8 +273,7 @@ static void test_policy_comments_and_blank_lines(void) {
 static void assert_invalid_policy(const char *text) {
     InstallPolicy policy;
     write_text(official_path, text);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_policy_load_installed(&policy));
-    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_NONE, policy.source);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_policy_load(&policy));
 }
 
 
@@ -265,7 +282,6 @@ static void test_official_load_does_not_use_development_policy(void) {
 
     TEST_ASSERT_EQUAL_INT(0, test_unlink(official_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_policy_load(&policy));
-    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_NONE, policy.source);
 }
 
 static void test_policy_invalid(void) {
@@ -275,6 +291,9 @@ static void test_policy_invalid(void) {
     assert_invalid_policy("format=1\nformat=1\n");
     assert_invalid_policy("format=1\nmalformed\n");
     assert_invalid_policy("format=1\ndefault.linux-x64.linux-x64.compiler=clang\n");
+    assert_invalid_policy("default.linux-x64.linux-x64.compiler=clang\nformat=1\n"
+                          "profile.minimal=compiler\n"
+                          "toolchain.llvm=clang\n");
     assert_invalid_policy("format=1\nprofile.minimal=compiler\ntoolchain.llvm=clang\n");
     assert_invalid_policy(
         "format=1\ndefault.linux-x64.linux-x64.compiler=clang\nprofile.minimal=compiler\n");
@@ -308,7 +327,7 @@ static void test_policy_invalid(void) {
 static void test_policy_lookup_contracts(void) {
     InstallPolicy policy;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     install_policy_init(NULL);
 
     TEST_ASSERT_NULL(
@@ -330,14 +349,23 @@ static void test_policy_lookup_contracts(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        install_policy_load_path(&policy, NULL, INSTALL_POLICY_SOURCE_INSTALLED));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        install_policy_load_path(&policy, official_path, INSTALL_POLICY_SOURCE_NONE));
+        install_policy_load_path(&policy, NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          install_policy_load_path(&policy,
-                                                   "/missing/cup/install.cfg",
-                                                   INSTALL_POLICY_SOURCE_INSTALLED));
+                          install_policy_load_path(&policy, "/missing/cup/install.cfg"));
+}
+
+static void test_installed_load_failure_clears_previous_policy(void) {
+    InstallPolicy policy;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
+    TEST_ASSERT_TRUE(policy.default_count > 0);
+
+    install_policy_path_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, install_policy_load(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_policy_load(&policy));
+    TEST_ASSERT_EQUAL_size_t(0, policy.default_count);
+    TEST_ASSERT_EQUAL_size_t(0, policy.profile_count);
+    TEST_ASSERT_EQUAL_size_t(0, policy.toolchain_count);
 }
 
 static void test_resolution_scope(void) {
@@ -345,7 +373,7 @@ static void test_resolution_scope(void) {
     ToolPreferences preferences;
     ToolPreferenceSource source;
     char tool[MAX_IDENTIFIER_LEN];
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     tool_preferences_init(&preferences);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           tool_preferences_resolve(&policy,
@@ -382,6 +410,8 @@ static void test_resolution_scope(void) {
                                                    &source));
     TEST_ASSERT_EQUAL_STRING("gcc", tool);
     TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_OFFICIAL_DEFAULT, source);
+    strcpy(tool, "stale");
+    source = TOOL_PREFERENCE_USER;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
                           tool_preferences_resolve(&policy,
                                                    &preferences,
@@ -391,6 +421,37 @@ static void test_resolution_scope(void) {
                                                    tool,
                                                    sizeof(tool),
                                                    &source));
+    TEST_ASSERT_EQUAL_STRING("", tool);
+    TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_NONE, source);
+
+    strcpy(tool, "stale");
+    source = TOOL_PREFERENCE_USER;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          tool_preferences_resolve(&policy,
+                                                   &preferences,
+                                                   "linux-x64",
+                                                   "windows-x64",
+                                                   "compiler",
+                                                   tool,
+                                                   2,
+                                                   &source));
+    TEST_ASSERT_EQUAL_STRING("", tool);
+    TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_NONE, source);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, tool_preferences_set(&preferences, "linux-x64", "windows-x64", "compiler", "gcc"));
+    strcpy(tool, "stale");
+    source = TOOL_PREFERENCE_OFFICIAL_DEFAULT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          tool_preferences_resolve(&policy,
+                                                   &preferences,
+                                                   "linux-x64",
+                                                   "windows-x64",
+                                                   "compiler",
+                                                   tool,
+                                                   2,
+                                                   &source));
+    TEST_ASSERT_EQUAL_STRING("", tool);
     TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_NONE, source);
 }
 
@@ -419,7 +480,9 @@ static void test_preference_mutation(void) {
     TEST_ASSERT_EQUAL_STRING("windows-x64", preferences.items[0].scope.target_platform);
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, tool_preferences_set(&preferences, "linux-x64", "windows-x64", "compiler", "clang"));
+        CUP_OK,
+        tool_preferences_set(
+            &preferences, "linux-x64", "windows-x64", "compiler", "clang"));
     TEST_ASSERT_EQUAL_size_t(1, preferences.count);
     TEST_ASSERT_EQUAL_STRING("clang", preferences.items[0].tool);
 
@@ -438,7 +501,7 @@ static void test_round_trip(void) {
     ToolPreferences preferences;
     ToolPreferences loaded;
     char *text;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     tool_preferences_init(&preferences);
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, tool_preferences_set(&preferences, "linux-x64", "windows-x64", "compiler", "gcc"));
@@ -446,7 +509,7 @@ static void test_round_trip(void) {
         CUP_OK, tool_preferences_set(&preferences, "linux-x64", "linux-x64", "linker", "ld"));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, tool_preferences_set(&preferences, "linux-x64", "linux-x64", "compiler", "gcc"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_save(&preferences));
     text = read_text(preferences_path);
     TEST_ASSERT_EQUAL_STRING("format=1\n"
                              "preferred.linux-x64.linux-x64.compiler=gcc\n"
@@ -454,34 +517,37 @@ static void test_round_trip(void) {
                              "preferred.linux-x64.windows-x64.compiler=gcc\n",
                              text);
     free(text);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&policy, &loaded));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&loaded));
     TEST_ASSERT_EQUAL_size_t(3, loaded.count);
 }
 
 static void test_preferences_invalid(void) {
     InstallPolicy policy;
     ToolPreferences preferences;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     write_text(preferences_path, "format=1\npreset=llvm\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path,
                "format=1\npreferred.linux-x64.linux-x64.compiler=clang\n"
                "preferred.linux-x64.linux-x64.compiler=gcc\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=1\npreferred.linux-x64.linux-x64.compiler=gdb\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=2\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=1\nformat=1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
+    write_text(preferences_path,
+               "preferred.linux-x64.linux-x64.compiler=clang\nformat=1\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=1\nmalformed\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=1\nwrong.linux-x64.linux-x64.compiler=clang\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
     write_text(preferences_path, "format=1\npreferred.invalid.linux-x64.compiler=clang\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_load(&preferences));
 }
 
 static void test_preferences_comments_missing_and_capacity(void) {
@@ -489,9 +555,9 @@ static void test_preferences_comments_missing_and_capacity(void) {
     ToolPreferences preferences;
     size_t i;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     (void)test_unlink(preferences_path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&preferences));
     TEST_ASSERT_EQUAL_size_t(0, preferences.count);
 
     write_text(preferences_path,
@@ -499,7 +565,7 @@ static void test_preferences_comments_missing_and_capacity(void) {
                " format=1 \n"
                "\n"
                "preferred.linux-x64.linux-x64.compiler=gcc\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_load(&preferences));
     TEST_ASSERT_EQUAL_size_t(1, preferences.count);
 
     tool_preferences_init(&preferences);
@@ -517,12 +583,12 @@ static void test_invalid_preferences_save(void) {
     InstallPolicy policy;
     ToolPreferences preferences;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     tool_preferences_init(NULL);
 
     tool_preferences_init(&preferences);
     preferences.count = MAX_INSTALL_DEFAULTS + 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&preferences));
 
     tool_preferences_init(&preferences);
     preferences.count = 1;
@@ -530,115 +596,184 @@ static void test_invalid_preferences_save(void) {
     strcpy(preferences.items[0].scope.host_platform, "invalid");
     strcpy(preferences.items[0].scope.target_platform, "linux-x64");
     strcpy(preferences.items[0].tool, "clang");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&preferences));
 
     strcpy(preferences.items[0].scope.host_platform, "linux-x64");
     strcpy(preferences.items[0].tool, "gdb");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&preferences));
 
     strcpy(preferences.items[0].tool, "clang");
     preferences.items[1] = preferences.items[0];
     preferences.count = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&preferences));
 }
 
 static void test_empty_save(void) {
     InstallPolicy policy;
     ToolPreferences preferences;
     int exists = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load_installed(&policy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_policy_load(&policy));
     write_text(preferences_path, "format=1\n");
     tool_preferences_init(&preferences);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_save(&policy, &preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, tool_preferences_save(&preferences));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(preferences_path, &exists));
     TEST_ASSERT_FALSE(exists);
     TEST_ASSERT_EQUAL_INT(1, sync_parent_calls);
+
+    write_text(preferences_path, "format=1\n");
+    sync_parent_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, tool_preferences_save(&preferences));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(preferences_path, &exists));
+    TEST_ASSERT_FALSE(exists);
+    TEST_ASSERT_EQUAL_INT(2, sync_parent_calls);
 }
 
-static void test_argument_contracts(void) {
-    InstallPolicy policy;
-    ToolPreferences preferences;
-    ToolPreferenceSource source;
-    char tool[2];
-    int removed;
-    size_t count;
-    install_policy_init(&policy);
-    tool_preferences_init(&preferences);
+static void assert_invalid_preference_storage(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        install_policy_load_path(NULL, official_path, INSTALL_POLICY_SOURCE_INSTALLED));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(NULL, &preferences));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(&policy, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(NULL, &preferences));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, tool_preferences_save(&policy, NULL));
+        install_policy_load_path(NULL, official_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_save(NULL));
+}
+
+static void assert_invalid_preference_mutation(ToolPreferences *preferences) {
+    int removed;
+    size_t count;
+
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         tool_preferences_set(NULL, "linux-x64", "linux-x64", "compiler", "clang"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(&preferences, NULL, "linux-x64", "compiler", "clang"));
+        tool_preferences_set(preferences, NULL, "linux-x64", "compiler", "clang"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(&preferences, "linux-x64", NULL, "compiler", "clang"));
+        tool_preferences_set(preferences, "linux-x64", NULL, "compiler", "clang"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(&preferences, "linux-x64", "linux-x64", NULL, "clang"));
+        tool_preferences_set(preferences, "linux-x64", "linux-x64", NULL, "clang"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(&preferences, "linux-x64", "linux-x64", "compiler", "gdb"));
+        tool_preferences_set(preferences, "linux-x64", "linux-x64", "compiler", "gdb"));
+
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset(&preferences, "linux-x64", "linux-x64", "compiler", NULL));
+        tool_preferences_reset(preferences, "linux-x64", "linux-x64", "compiler", NULL));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         tool_preferences_reset(NULL, "linux-x64", "linux-x64", "compiler", &removed));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset(&preferences, NULL, "linux-x64", "compiler", &removed));
+        tool_preferences_reset(preferences, NULL, "linux-x64", "compiler", &removed));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset_scope(&preferences, "linux-x64", "linux-x64", NULL));
+        tool_preferences_reset_scope(preferences, "linux-x64", "linux-x64", NULL));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         tool_preferences_reset_scope(NULL, "linux-x64", "linux-x64", &count));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset_scope(&preferences, "invalid", "linux-x64", &count));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            NULL, &preferences, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            &policy, NULL, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            &policy, &preferences, "linux-x64", "linux-x64", "compiler", NULL, 2, &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            &policy, &preferences, "linux-x64", "linux-x64", "compiler", tool, 0, &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            &policy, &preferences, "linux-x64", "linux-x64", "compiler", tool, 2, NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            &policy, &preferences, "invalid", "linux-x64", "compiler", tool, 2, &source));
+        tool_preferences_reset_scope(preferences, "invalid", "linux-x64", &count));
 }
 
-/* Suite registration. */
+static void assert_invalid_preference_resolution(InstallPolicy *policy,
+                                                 ToolPreferences *preferences) {
+    ToolPreferenceSource source;
+    char tool[2];
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            NULL, preferences, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            policy, NULL, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            policy, preferences, "linux-x64", "linux-x64", "compiler", NULL, 2, &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            policy, preferences, "linux-x64", "linux-x64", "compiler", tool, 0, &source));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            policy, preferences, "linux-x64", "linux-x64", "compiler", tool, 2, NULL));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        tool_preferences_resolve(
+            policy, preferences, "invalid", "linux-x64", "compiler", tool, 2, &source));
+}
+
+static void test_corrupt_preference_count_is_rejected(void) {
+    InstallPolicy policy;
+    ToolPreferences preferences;
+    ToolPreferenceSource source = TOOL_PREFERENCE_USER;
+    char tool[MAX_IDENTIFIER_LEN] = "stale";
+    int removed = 1;
+    size_t removed_count = 1;
+
+    install_policy_init(&policy);
+    tool_preferences_init(&preferences);
+    preferences.count = MAX_INSTALL_DEFAULTS + 1;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        tool_preferences_set(&preferences, "linux-x64", "linux-x64", "compiler", "clang"));
+    TEST_ASSERT_EQUAL_size_t(MAX_INSTALL_DEFAULTS + 1, preferences.count);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        tool_preferences_reset(
+            &preferences, "linux-x64", "linux-x64", "compiler", &removed));
+    TEST_ASSERT_EQUAL_INT(0, removed);
+    TEST_ASSERT_EQUAL_size_t(MAX_INSTALL_DEFAULTS + 1, preferences.count);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        tool_preferences_reset_scope(
+            &preferences, "linux-x64", "linux-x64", &removed_count));
+    TEST_ASSERT_EQUAL_size_t(0, removed_count);
+    TEST_ASSERT_EQUAL_size_t(MAX_INSTALL_DEFAULTS + 1, preferences.count);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        tool_preferences_resolve(&policy,
+                                 &preferences,
+                                 "linux-x64",
+                                 "linux-x64",
+                                 "compiler",
+                                 tool,
+                                 sizeof(tool),
+                                 &source));
+    TEST_ASSERT_EQUAL_STRING("", tool);
+    TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_NONE, source);
+}
+
+static void test_argument_contracts(void) {
+    InstallPolicy policy;
+    ToolPreferences preferences;
+
+    install_policy_init(&policy);
+    tool_preferences_init(&preferences);
+
+    assert_invalid_preference_storage();
+    assert_invalid_preference_mutation(&preferences);
+    assert_invalid_preference_resolution(&policy, &preferences);
+}
+
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_load);
+    RUN_TEST(test_policy_load_reuses_resolved_installed_path);
     RUN_TEST(test_policy_comments_and_blank_lines);
     RUN_TEST(test_official_load_does_not_use_development_policy);
     RUN_TEST(test_policy_invalid);
     RUN_TEST(test_policy_lookup_contracts);
+    RUN_TEST(test_installed_load_failure_clears_previous_policy);
     RUN_TEST(test_resolution_scope);
     RUN_TEST(test_preference_mutation);
     RUN_TEST(test_round_trip);
@@ -646,6 +781,7 @@ int main(void) {
     RUN_TEST(test_preferences_comments_missing_and_capacity);
     RUN_TEST(test_invalid_preferences_save);
     RUN_TEST(test_empty_save);
+    RUN_TEST(test_corrupt_preference_count_is_rejected);
     RUN_TEST(test_argument_contracts);
     return UNITY_END();
 }

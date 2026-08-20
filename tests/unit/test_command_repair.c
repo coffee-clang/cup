@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises repair ordering, state reconciliation, quarantine and cleanup decisions
+ * Exercises repair ordering, state reconciliation, quarantine and cleanup decisions
  * without duplicating filesystem recovery.
  */
 
@@ -41,14 +41,18 @@ static CupError host_result;
 static CupError root_result;
 static CupError lock_path_result;
 static CupError lock_result;
+static SystemPathKind root_path_kind;
+static SystemPathKind lock_path_kind;
+static CupError path_kind_result;
+static int interrupt_fail_call;
 static CupError runtime_result;
 static RuntimeJournalKind runtime_kinds[MAX_STEPS];
 static UninstallJournal uninstall_journals[MAX_STEPS];
 static UninstallJournalStatus uninstall_statuses[MAX_STEPS];
 static CupError uninstall_load_results[MAX_STEPS];
-static CupError uninstall_ack_result;
+static CupError uninstall_recover_result;
 static size_t uninstall_load_calls;
-static int uninstall_ack_calls;
+static int uninstall_recover_calls;
 static CupError state_load_result;
 static CupError state_validate_result;
 static CupError transaction_results[MAX_STEPS];
@@ -62,6 +66,7 @@ static CupAssetsInspection cup_assets_inspection;
 static CupError cup_assets_result;
 static int has_installed_assets;
 static int development_valid;
+static int installed_valid;
 static CupError ensure_cup_assets_result;
 static PackageList scan_lists[MAX_STEPS];
 static CupError scan_results[MAX_STEPS];
@@ -76,6 +81,7 @@ static CupError state_path_result;
 static CupError staging_path_result;
 static CupError transaction_path_result;
 static int metadata_read_only;
+static CupError set_metadata_result;
 static int cup_assets_read_only;
 static int cup_assets_executable;
 static int verify_matches;
@@ -87,7 +93,9 @@ static size_t binary_verify_calls;
 static int fetch_calls;
 static int allow_insecure_loopback;
 static char last_fetch_url[MAX_CATALOG_URL_LEN];
+static int lock_acquire_calls;
 static int lock_release_calls;
+static int interrupt_calls;
 static int backup_calls;
 static int recover_calls;
 static int save_calls;
@@ -128,6 +136,8 @@ static int checksum_hash_calls;
 static int checksum_staged_remove_failure;
 static int checksum_destination_read_only_failure;
 static int checksum_destination_writable;
+static SystemPathKind update_helper_kind;
+static int update_helper_prepare_calls;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -145,21 +155,26 @@ static void reset_scenario(void) {
     root_result = CUP_OK;
     lock_path_result = CUP_OK;
     lock_result = CUP_OK;
+    root_path_kind = SYSTEM_PATH_DIRECTORY;
+    lock_path_kind = SYSTEM_PATH_REGULAR_FILE;
+    path_kind_result = CUP_OK;
+    interrupt_fail_call = 0;
     runtime_result = CUP_OK;
     uninstall_load_calls = 0;
-    uninstall_ack_result = CUP_OK;
-    uninstall_ack_calls = 0;
+    uninstall_recover_result = CUP_OK;
+    uninstall_recover_calls = 0;
     state_load_result = CUP_OK;
     state_validate_result = CUP_OK;
     transaction_calls = 0;
     recover_result = CUP_OK;
     update_load_result = CUP_OK;
     update_load_status = CUP_UPDATE_JOURNAL_LOADED;
-    /* CUP asset, package-scan, and reconciliation outcomes. */
+    /* cup asset, package-scan, and reconciliation outcomes. */
     memset(&cup_assets_inspection, 0, sizeof(cup_assets_inspection));
     cup_assets_result = CUP_OK;
     has_installed_assets = 0;
     development_valid = 1;
+    installed_valid = 1;
     ensure_cup_assets_result = CUP_OK;
     scan_calls = 0;
     quarantine_result = CUP_OK;
@@ -172,6 +187,7 @@ static void reset_scenario(void) {
     staging_path_result = CUP_OK;
     transaction_path_result = CUP_OK;
     metadata_read_only = 1;
+    set_metadata_result = CUP_OK;
     cup_assets_read_only = 1;
     cup_assets_executable = 1;
     verify_matches = 1;
@@ -186,7 +202,9 @@ static void reset_scenario(void) {
     fetch_calls = 0;
     allow_insecure_loopback = 0;
     last_fetch_url[0] = '\0';
+    lock_acquire_calls = 0;
     lock_release_calls = 0;
+    interrupt_calls = 0;
     backup_calls = 0;
     recover_calls = 0;
     save_calls = 0;
@@ -231,6 +249,8 @@ static void reset_scenario(void) {
     checksum_staged_remove_failure = 0;
     checksum_destination_read_only_failure = 0;
     checksum_destination_writable = 0;
+    update_helper_kind = SYSTEM_PATH_REGULAR_FILE;
+    update_helper_prepare_calls = 0;
 
     /* Per-phase transaction and scan sequences support ordered recovery scenarios. */
     for (i = 0; i < MAX_STEPS; ++i) {
@@ -260,6 +280,7 @@ CupError platform_get_host(char *buffer, size_t size) {
 }
 
 CupError cup_update_helper_prepare(void) {
+    update_helper_prepare_calls++;
     return CUP_OK;
 }
 
@@ -308,6 +329,19 @@ CupError layout_ensure_root(void) {
     return root_result;
 }
 
+CupError layout_get_root(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "/tmp/.cup"), size);
+}
+
+CupError layout_root_snapshot_validate(void) {
+    return CUP_OK;
+}
+
+CupError interrupt_safe_point(void) {
+    interrupt_calls++;
+    return interrupt_fail_call == interrupt_calls ? CUP_ERR_INTERRUPT : CUP_OK;
+}
+
 CupError layout_get_lock_path(char *buffer, size_t size) {
     if (lock_path_result != CUP_OK) {
         return lock_path_result;
@@ -319,6 +353,7 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     TEST_ASSERT_NOT_NULL(lock);
     TEST_ASSERT_EQUAL_STRING("/tmp/cup.lock", path);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, mode);
+    lock_acquire_calls++;
     lock->active = lock_result == CUP_OK;
     return lock_result;
 }
@@ -333,13 +368,27 @@ CupError layout_ensure_runtime(void) {
     return runtime_result;
 }
 
-CupError state_load(CupState *state, StateFileStatus *status) {
+CupError state_load(CupState *state,
+                    StateFileStatus *status,
+                    SystemPathIdentity *source_identity,
+                    FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     *state = loaded_state;
     *status = loaded_status;
+    if (source_identity != NULL) {
+        memset(source_identity, 0, sizeof(*source_identity));
+        if (loaded_status == STATE_FILE_LOADED) {
+            source_identity->valid = 1;
+            source_identity->kind = SYSTEM_PATH_REGULAR_FILE;
+            source_identity->volume = 3;
+            source_identity->object = 5;
+        }
+    }
     return state_load_result;
 }
 
-CupError state_validate(const CupState *state) {
+CupError state_validate(const CupState *state, FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     (void)state;
     return state_validate_result;
 }
@@ -381,11 +430,10 @@ CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatu
     return CUP_OK;
 }
 
-CupError uninstall_journal_acknowledge_failure(const UninstallJournal *journal) {
+CupError uninstall_journal_recover(const UninstallJournal *journal) {
     TEST_ASSERT_NOT_NULL(journal);
-    TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_FAILED, journal->phase);
-    uninstall_ack_calls++;
-    return uninstall_ack_result;
+    uninstall_recover_calls++;
+    return uninstall_recover_result;
 }
 
 void cup_update_journal_init(CupUpdateJournal *journal) {
@@ -448,12 +496,44 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "/tmp/transaction.txt"), size);
 }
 
+CupError layout_get_cup_update_helper_path(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "/tmp/cup-update-helper"), size);
+}
+
+CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(kind);
+    if (path_kind_result != CUP_OK) {
+        return path_kind_result;
+    }
+    if (strcmp(path, "/tmp/.cup") == 0) {
+        *kind = root_path_kind;
+    } else if (strcmp(path, "/tmp/cup.lock") == 0) {
+        *kind = lock_path_kind;
+    } else if (strcmp(path, "/tmp/cup-update-helper") == 0) {
+        *kind = update_helper_kind;
+    } else {
+        TEST_FAIL_MESSAGE("unexpected path kind query");
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
+
 CupError filesystem_backup_invalid(const char *path, char *backup_path, size_t backup_size) {
     backup_calls++;
     if (backup_result != CUP_OK) {
         return backup_result;
     }
     return buffer_write_result(snprintf(backup_path, backup_size, "%s.invalid", path), backup_size);
+}
+
+CupError filesystem_backup_invalid_if_identity(const char *path,
+                                               const SystemPathIdentity *expected_identity,
+                                               char *backup_path,
+                                               size_t backup_size) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    return filesystem_backup_invalid(path, backup_path, backup_size);
 }
 
 CupError cup_assets_inspect(CupAssetsInspection *inspection) {
@@ -471,11 +551,17 @@ int cup_assets_development_is_valid(const CupAssetsInspection *inspection) {
     return development_valid;
 }
 
+int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
+    (void)inspection;
+    return installed_valid;
+}
+
 CupError layout_ensure_cup_assets(void) {
     return ensure_cup_assets_result;
 }
 
-CupError package_scan(PackageList *packages) {
+CupError package_scan(PackageList *packages, FILE *diagnostics) {
+    TEST_ASSERT_NULL(diagnostics);
     size_t index = scan_calls++;
 
     TEST_ASSERT_TRUE(index < MAX_STEPS);
@@ -503,7 +589,9 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *component,
                                         const char *host_platform,
                                         const char *target_platform,
-                                        const char *entry) {
+                                        const char *entry,
+                                        FILE *diagnostics) {
+    (void)diagnostics;
     const char *separator = strchr(entry, '@');
     size_t tool_length;
 
@@ -521,7 +609,8 @@ CupError package_identity_from_selector(PackageIdentity *identity,
     return CUP_OK;
 }
 
-CupError package_identity_validate(const PackageIdentity *identity) {
+CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
+    (void)diagnostics;
     return identity != NULL && identity->component[0] != '\0' && identity->tool[0] != '\0' &&
                    identity->host_platform[0] != '\0' && identity->target_platform[0] != '\0' &&
                    identity->version[0] != '\0'
@@ -533,7 +622,7 @@ CupError package_identity_format_selector(const PackageIdentity *identity,
                                           char *buffer,
                                           size_t size) {
     int written;
-    if (package_identity_validate(identity) != CUP_OK) {
+    if (package_identity_validate(identity, stderr) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
     written = snprintf(buffer, size, "%s@%s", identity->tool, identity->version);
@@ -541,7 +630,7 @@ CupError package_identity_format_selector(const PackageIdentity *identity,
 }
 
 CupError package_identity_get_scope(const PackageIdentity *identity, PackageScope *scope) {
-    if (package_identity_validate(identity) != CUP_OK || scope == NULL) {
+    if (package_identity_validate(identity, stderr) != CUP_OK || scope == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     memset(scope, 0, sizeof(*scope));
@@ -588,32 +677,32 @@ CupError state_remove_installed(CupState *state, const PackageIdentity *identity
     return CUP_OK;
 }
 
-CupError state_clear_active(CupState *state, const PackageScope *scope) {
+CupError state_clear_default(CupState *state, const PackageScope *scope) {
     size_t i;
 
-    for (i = 0; i < state->active_count; ++i) {
-        PackageIdentity *item = &state->active[i];
+    for (i = 0; i < state->default_count; ++i) {
+        PackageIdentity *item = &state->defaults[i];
         if (strcmp(item->component, scope->component) == 0 &&
             strcmp(item->host_platform, scope->host_platform) == 0 &&
             strcmp(item->target_platform, scope->target_platform) == 0) {
-            memmove(item, item + 1, (state->active_count - i - 1) * sizeof(PackageIdentity));
-            state->active_count--;
+            memmove(item, item + 1, (state->default_count - i - 1) * sizeof(PackageIdentity));
+            state->default_count--;
             break;
         }
     }
     return CUP_OK;
 }
 
-CupError state_clear_matching_active(CupState *state, const PackageIdentity *identity) {
+CupError state_clear_matching_default(CupState *state, const PackageIdentity *identity) {
     size_t i;
     PackageScope scope;
 
-    for (i = 0; i < state->active_count; ++i) {
-        if (identities_equal(&state->active[i], identity)) {
+    for (i = 0; i < state->default_count; ++i) {
+        if (identities_equal(&state->defaults[i], identity)) {
             if (package_identity_get_scope(identity, &scope) != CUP_OK) {
                 return CUP_ERR_INVALID_INPUT;
             }
-            return state_clear_active(state, &scope);
+            return state_clear_default(state, &scope);
         }
     }
     return CUP_OK;
@@ -633,7 +722,7 @@ CupError package_metadata_is_read_only(const char *base_path, int *is_read_only)
 CupError package_set_metadata_read_only(const char *base_path) {
     (void)base_path;
     set_metadata_calls++;
-    return CUP_OK;
+    return set_metadata_result;
 }
 
 CupError package_quarantine(const PackageIssue *issue, char *recovery_path, size_t recovery_size) {
@@ -651,8 +740,19 @@ const char *package_issue_reason_name(PackageIssueReason reason) {
     return "invalid content";
 }
 
-CupError state_save(const CupState *state) {
+CupError state_save(const CupState *state,
+                    const SystemPathIdentity *expected_identity,
+                    SystemPathIdentity *published_identity) {
     TEST_ASSERT_NOT_NULL(state);
+    if (loaded_status == STATE_FILE_LOADED) {
+        TEST_ASSERT_NOT_NULL(expected_identity);
+        TEST_ASSERT_TRUE(expected_identity->valid);
+    } else {
+        TEST_ASSERT_NULL(expected_identity);
+    }
+    if (published_identity != NULL && expected_identity != NULL) {
+        *published_identity = *expected_identity;
+    }
     save_calls++;
     return state_save_result;
 }
@@ -760,18 +860,19 @@ CupError checksum_validate_assets(const char *path,
         return CUP_ERR_VALIDATION;
     }
 
-    if (required_count == CUP_COMMON_CHECKSUM_ASSET_COUNT) {
-        TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, required_assets[0]);
+    if (strcmp(required_assets[0], CUP_PACKAGES_FILENAME) == 0) {
+        TEST_ASSERT_EQUAL_UINT(CUP_COMMON_CHECKSUM_ASSET_COUNT, required_count);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, required_assets[1]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, required_assets[2]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, required_assets[3]);
         return CUP_OK;
     }
 
-    TEST_ASSERT_EQUAL_UINT(3, required_count);
+    TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, required_count);
     TEST_ASSERT_EQUAL_STRING("cup-linux-x64", required_assets[0]);
     TEST_ASSERT_EQUAL_STRING(CUP_UNINSTALL_FILENAME, required_assets[1]);
     TEST_ASSERT_EQUAL_STRING(CUP_RELEASE_METADATA_FILENAME, required_assets[2]);
+    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, required_assets[3]);
     return CUP_OK;
 }
 
@@ -828,9 +929,9 @@ CupError filesystem_apply_required_permissions(const char *path, int executable,
 }
 
 CupError checksum_verify_file(const char *checksum_path,
-                                 const char *asset_name,
-                                 const char *asset_path,
-                                 int *matches) {
+                              const char *asset_name,
+                              const char *asset_path,
+                              int *matches) {
     (void)checksum_path;
     (void)asset_path;
     if (strcmp(asset_name, "cup-linux-x64") == 0) {
@@ -864,12 +965,9 @@ CupError package_catalog_load_installed(PackageCatalog *catalog) {
     return CUP_OK;
 }
 
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source) {
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
     (void)catalog;
     (void)path;
-    (void)source;
     return CUP_OK;
 }
 
@@ -877,12 +975,9 @@ void install_policy_init(InstallPolicy *config) {
     memset(config, 0, sizeof(*config));
 }
 
-CupError install_policy_load_path(InstallPolicy *config,
-                                  const char *path,
-                                  InstallPolicySource source) {
+CupError install_policy_load_path(InstallPolicy *config, const char *path) {
     (void)config;
     (void)path;
-    (void)source;
     if (install_policy_load_override) {
         size_t index = install_policy_load_calls++;
 
@@ -894,6 +989,31 @@ CupError install_policy_load_path(InstallPolicy *config,
 
 int download_insecure_loopback_is_allowed(const char *url) {
     return allow_insecure_loopback && url != NULL;
+}
+
+CupError download_copy_release_base_override(char *base, size_t size) {
+    const char *value = getenv("CUP_INSTALL_BASE_URL");
+    size_t length;
+
+    if (base == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (value == NULL || value[0] == '\0') {
+        return CUP_ERR_NOT_AVAILABLE;
+    }
+    if (!download_insecure_loopback_is_allowed(value)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    length = strlen(value);
+    while (length > 0 && value[length - 1] == '/') {
+        length--;
+    }
+    if (length == 0 || length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(base, value, length);
+    base[length] = '\0';
+    return CUP_OK;
 }
 
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
@@ -932,6 +1052,17 @@ CupError system_remove_file(const char *path) {
 CupError system_path_exists(const char *path, int *exists) {
     (void)path;
     *exists = destination_exists;
+    return CUP_OK;
+}
+
+CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(identity);
+    memset(identity, 0, sizeof(*identity));
+    identity->valid = 1;
+    identity->kind = SYSTEM_PATH_REGULAR_FILE;
+    identity->volume = 3;
+    identity->object = 5;
     return CUP_OK;
 }
 
@@ -990,7 +1121,7 @@ static void test_success_reconciles(void) {
     PackageList *packages = &scan_lists[0];
 
     loaded_state.installed[loaded_state.installed_count++] = state_entry("clang@1.0.0");
-    loaded_state.active[loaded_state.active_count++] = state_entry("clang@1.0.0");
+    loaded_state.defaults[loaded_state.default_count++] = state_entry("clang@1.0.0");
     packages->items[packages->count++] = package_identity("2.0.0");
     packages->total_count = packages->count;
     metadata_read_only = 0;
@@ -1057,14 +1188,14 @@ static void test_recover_transaction(void) {
     uninstall_journals[0].stage = UNINSTALL_STAGE_HANDOFF;
     uninstall_journals[0].error_code = 7;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
-    TEST_ASSERT_EQUAL_INT(1, uninstall_ack_calls);
+    TEST_ASSERT_EQUAL_INT(1, uninstall_recover_calls);
 
     reset_scenario();
     runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
     uninstall_statuses[0] = UNINSTALL_JOURNAL_LOADED;
     uninstall_journals[0].phase = UNINSTALL_PHASE_SCHEDULED;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_repair());
-    TEST_ASSERT_EQUAL_INT(0, uninstall_ack_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, uninstall_recover_calls);
 }
 
 static void test_recovery_rejects_ambiguous_journals(void) {
@@ -1088,7 +1219,7 @@ static void test_recovery_rejects_ambiguous_journals(void) {
     runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
     uninstall_load_results[0] = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_repair());
-    TEST_ASSERT_EQUAL_INT(0, uninstall_ack_calls);
+    TEST_ASSERT_EQUAL_INT(0, uninstall_recover_calls);
 
     reset_scenario();
     runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
@@ -1096,7 +1227,7 @@ static void test_recovery_rejects_ambiguous_journals(void) {
     uninstall_journals[0].phase = UNINSTALL_PHASE_FAILED;
     uninstall_journals[0].stage = UNINSTALL_STAGE_HANDOFF;
     uninstall_journals[0].error_code = 7;
-    uninstall_ack_result = CUP_ERR_FILESYSTEM;
+    uninstall_recover_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 }
 
@@ -1106,7 +1237,28 @@ static void test_scan_limits(void) {
 
     reset_scenario();
     scan_lists[0].total_count = MAX_INSTALLED + 1u;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_repair());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, command_repair());
+}
+
+static void test_projected_state_counts_foreign_records_before_mutation(void) {
+    size_t i;
+    PackageIssue *issue = &scan_lists[0].issues[0];
+
+    loaded_state.installed_count = MAX_INSTALLED;
+    for (i = 0; i < loaded_state.installed_count; ++i) {
+        loaded_state.installed[i] = state_entry("clang@1.0.0");
+        strcpy(loaded_state.installed[i].host_platform, "windows-x64");
+    }
+    scan_lists[0].total_count = 1;
+    scan_lists[0].issue_count = 1;
+    scan_lists[0].total_issue_count = 1;
+    issue->can_quarantine = 1;
+    strcpy(issue->path, "/tmp/would-be-quarantined");
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, command_repair());
+    TEST_ASSERT_EQUAL_INT(0, quarantine_calls);
+    TEST_ASSERT_EQUAL_INT(0, save_calls);
+    TEST_ASSERT_EQUAL_INT(0, plan_build_calls);
 }
 
 static void test_quarantine_rescans(void) {
@@ -1159,6 +1311,14 @@ static void test_package_repair_failures(void) {
     scan_lists[0].foreign_host_count = 1;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_EQUAL_INT(0, quarantine_calls);
+
+    reset_scenario();
+    scan_lists[0].items[scan_lists[0].count++] = package_identity("2.0.0");
+    scan_lists[0].total_count = scan_lists[0].count;
+    metadata_read_only = 0;
+    set_metadata_result = CUP_ERR_ROLLBACK;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, set_metadata_calls);
 }
 
 static void prepare_installed_official_cup_assets(void);
@@ -1172,6 +1332,15 @@ static void test_asset_permissions(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(set_read_only_calls >= 3);
     TEST_ASSERT_TRUE(set_executable_calls >= (1 + CUP_UNINSTALL_EXECUTABLE));
+    TEST_ASSERT_EQUAL_INT(1, update_helper_prepare_calls);
+
+    reset_scenario();
+    has_installed_assets = 1;
+    development_valid = 0;
+    update_helper_kind = SYSTEM_PATH_DIRECTORY;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, backup_calls);
+    TEST_ASSERT_EQUAL_INT(1, update_helper_prepare_calls);
 }
 
 static void test_cup_assets_restores(void) {
@@ -1396,6 +1565,45 @@ static void test_cup_assets_rejects(void) {
     TEST_ASSERT_EQUAL_INT(0, plan_build_calls);
 }
 
+static void test_lock_path_recovery(void) {
+    lock_path_kind = SYSTEM_PATH_DIRECTORY;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, backup_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+
+    reset_scenario();
+    lock_path_kind = SYSTEM_PATH_DIRECTORY;
+    backup_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, backup_calls);
+    TEST_ASSERT_EQUAL_INT(0, lock_acquire_calls);
+    TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
+
+    reset_scenario();
+    root_path_kind = SYSTEM_PATH_MISSING;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
+    TEST_ASSERT_TRUE(interrupt_calls >= 1);
+
+    reset_scenario();
+    root_path_kind = SYSTEM_PATH_REGULAR_FILE;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
+    TEST_ASSERT_EQUAL_INT(0, lock_acquire_calls);
+}
+
+static void test_interrupt_phase_boundaries(void) {
+    int call;
+
+    for (call = 1; call <= 8; ++call) {
+        reset_scenario();
+        interrupt_fail_call = call;
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, command_repair());
+        TEST_ASSERT_EQUAL_INT(call, interrupt_calls);
+        TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+    }
+}
+
 static void test_early_failures(void) {
     host_result = CUP_ERR_NOT_AVAILABLE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE, command_repair());
@@ -1404,7 +1612,7 @@ static void test_early_failures(void) {
     reset_scenario();
     root_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
-    TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
     lock_result = CUP_ERR_LOCK;
@@ -1413,7 +1621,7 @@ static void test_early_failures(void) {
 
     reset_scenario();
     lock_path_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, command_repair());
     TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
 
     reset_scenario();
@@ -1455,6 +1663,15 @@ static void test_state_and_asset_phase_failures(void) {
     TEST_ASSERT_EQUAL_INT(1, save_calls);
 }
 
+static void test_repaired_assets_require_one_verified_generation(void) {
+    has_installed_assets = 1;
+    development_valid = 0;
+    installed_valid = 0;
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+}
+
 static void test_late_failures(void) {
     plan_build_result = CUP_ERR_INCONSISTENT_STATE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_repair());
@@ -1478,7 +1695,6 @@ static void test_late_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
@@ -1489,6 +1705,7 @@ int main(void) {
     RUN_TEST(test_recover_transaction);
     RUN_TEST(test_recovery_rejects_ambiguous_journals);
     RUN_TEST(test_scan_limits);
+    RUN_TEST(test_projected_state_counts_foreign_records_before_mutation);
     RUN_TEST(test_quarantine_rescans);
     RUN_TEST(test_package_repair_failures);
     RUN_TEST(test_asset_permissions);
@@ -1503,8 +1720,11 @@ int main(void) {
     RUN_TEST(test_config_repair);
     RUN_TEST(test_repair_uses_explicit_loopback_candidate_base);
     RUN_TEST(test_cup_assets_rejects);
+    RUN_TEST(test_lock_path_recovery);
+    RUN_TEST(test_interrupt_phase_boundaries);
     RUN_TEST(test_early_failures);
     RUN_TEST(test_state_and_asset_phase_failures);
+    RUN_TEST(test_repaired_assets_require_one_verified_generation);
     RUN_TEST(test_late_failures);
     return UNITY_END();
 }

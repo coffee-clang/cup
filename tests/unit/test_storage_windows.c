@@ -1,5 +1,5 @@
 /*
- * Test focus: Provides the Windows Unity wrapper for portable filesystem and
+ * Provides the Windows Unity wrapper for portable filesystem and
  * layout tests. Native system primitives remain in test_system_windows.
  */
 

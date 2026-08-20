@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises archive-entry safety and extraction normalization with real libarchive
+ * Exercises archive-entry safety and extraction normalization with real libarchive
  * files and no package-install workflow.
  */
 
@@ -13,13 +13,13 @@
 
 #include <archive.h>
 #include <archive_entry.h>
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/stat.h>
-#include <unistd.h>
+#endif
 
 typedef enum {
     TEST_FILE,
@@ -54,50 +54,19 @@ static void join_path(char *buffer, size_t size, const char *left, const char *r
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
-static void remove_tree(const char *path) {
-    DIR *directory = opendir(path);
-    struct dirent *entry;
-
-    if (directory == NULL) {
-        TEST_ASSERT_TRUE(unlink(path) == 0 || errno == ENOENT);
-        return;
-    }
-
-    while ((entry = readdir(directory)) != NULL) {
-        char child[1200];
-        struct stat status;
-
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        join_path(child, sizeof(child), path, entry->d_name);
-        TEST_ASSERT_EQUAL_INT(0, lstat(child, &status));
-        if (S_ISDIR(status.st_mode)) {
-            remove_tree(child);
-        } else {
-            TEST_ASSERT_EQUAL_INT(0, unlink(child));
-        }
-    }
-
-    TEST_ASSERT_EQUAL_INT(0, closedir(directory));
-    TEST_ASSERT_EQUAL_INT(0, rmdir(path));
-}
-
 static void make_dir(const char *path) {
     TEST_ASSERT_TRUE(test_mkdir(path, 0700) == 0 || errno == EEXIST);
 }
 
 void setUp(void) {
-    char template_path[] = "/tmp/cup-extract-unit-XXXXXX";
-
-    TEST_ASSERT_NOT_NULL(mkdtemp(template_path));
-    strcpy(root, template_path);
+    TEST_ASSERT_NOT_NULL(
+        test_make_temp_directory(root, sizeof(root), "cup-extract-unit"));
     interrupted = 0;
     archive_number = 0;
 }
 
 void tearDown(void) {
-    remove_tree(root);
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(root));
 }
 
 /*
@@ -114,15 +83,17 @@ int package_archive_reader_matches_format(struct archive *reader, PackageArchive
     return expected == PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
 }
 
-CupError package_archive_open_reader(struct archive **reader, const char *archive_path) {
+CupError package_archive_open_stream(struct archive **reader, FILE *file) {
     struct archive *candidate = archive_read_new();
 
-    if (candidate == NULL) {
+    if (candidate == NULL || file == NULL) {
+        archive_read_free(candidate);
         return CUP_ERR_ARCHIVE;
     }
+    rewind(file);
     archive_read_support_filter_all(candidate);
     archive_read_support_format_all(candidate);
-    if (archive_read_open_filename(candidate, archive_path, 10240) != ARCHIVE_OK) {
+    if (archive_read_open_FILE(candidate, file) != ARCHIVE_OK) {
         archive_read_free(candidate);
         return CUP_ERR_ARCHIVE;
     }
@@ -190,6 +161,24 @@ static void create_archive(char *path, size_t path_size, const TestEntry *entrie
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_write_free(writer));
 }
 
+static CupError extract_archive_fixture(const char *archive_path,
+                                        const char *destination,
+                                        PackageArchiveFormat format) {
+    VerifiedArtifact artifact;
+    CupError err;
+
+    memset(&artifact, 0, sizeof(artifact));
+    artifact.file = fopen(archive_path, "rb");
+    if (artifact.file == NULL) {
+        return CUP_ERR_ARCHIVE;
+    }
+    artifact.format = format;
+
+    err = package_extract_verified(&artifact, destination);
+    TEST_ASSERT_EQUAL_INT(0, fclose(artifact.file));
+    return err;
+}
+
 static CupError extract_entries(const TestEntry *entries,
                                 size_t count,
                                 char *destination,
@@ -200,7 +189,8 @@ static CupError extract_entries(const TestEntry *entries,
     TEST_ASSERT_TRUE(snprintf(destination, destination_size, "%s/output-%u", root, archive_number) >
                      0);
     make_dir(destination);
-    return package_extract_archive(archive_path, destination, "tar.gz");
+    return extract_archive_fixture(
+        archive_path, destination, PACKAGE_ARCHIVE_FORMAT_TAR_GZ);
 }
 
 /*
@@ -209,16 +199,22 @@ static CupError extract_entries(const TestEntry *entries,
  */
 
 static void test_invalid_inputs(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_archive(NULL, "/tmp", "tar.gz"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_archive("", "/tmp", "tar.gz"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_extract_archive("/tmp/archive", "", "tar.gz"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_extract_archive("/tmp/archive", "/tmp", NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_extract_archive("/tmp/archive", "/tmp", "7z"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE,
-                          package_extract_archive("/missing/archive.tar.gz", "/tmp", "tar.gz"));
+    VerifiedArtifact artifact;
+    FILE *file = tmpfile();
+
+    TEST_ASSERT_NOT_NULL(file);
+    memset(&artifact, 0, sizeof(artifact));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(NULL, root));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, root));
+
+    artifact.file = file;
+    artifact.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, package_extract_verified(&artifact, root));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, ""));
+    artifact.format = PACKAGE_ARCHIVE_FORMAT_ANY;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, root));
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
 static void test_destination_and_declared_format(void) {
@@ -233,8 +229,9 @@ static void test_destination_and_declared_format(void) {
 
     create_archive(archive_path, sizeof(archive_path), entries, 2);
     TEST_ASSERT_TRUE(snprintf(missing, sizeof(missing), "%s/missing-output", root) > 0);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_extract_archive(archive_path, missing, "tar.gz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        extract_archive_fixture(archive_path, missing, PACKAGE_ARCHIVE_FORMAT_TAR_GZ));
 
     TEST_ASSERT_TRUE(snprintf(regular, sizeof(regular), "%s/regular-output", root) > 0);
     {
@@ -243,58 +240,65 @@ static void test_destination_and_declared_format(void) {
         TEST_ASSERT_NOT_NULL(file);
         TEST_ASSERT_EQUAL_INT(0, fclose(file));
     }
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          package_extract_archive(archive_path, regular, "tar.gz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        extract_archive_fixture(archive_path, regular, PACKAGE_ARCHIVE_FORMAT_TAR_GZ));
 
     TEST_ASSERT_TRUE(snprintf(output, sizeof(output), "%s/wrong-format", root) > 0);
     make_dir(output);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          package_extract_archive(archive_path, output, "zip"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_ARCHIVE_UNSAFE,
+        extract_archive_fixture(archive_path, output, PACKAGE_ARCHIVE_FORMAT_ZIP));
 }
 
+#ifdef _WIN32
 static void test_valid_archive(void) {
     const TestEntry entries[] = {
         {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
         {TEST_DIRECTORY, "pkg/bin/", NULL, NULL, 0},
         {TEST_FILE, "pkg/bin/tool", "hello", NULL, 1},
         {TEST_FILE, "pkg/readme", "text", NULL, 0},
-        {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
-        {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
-        {TEST_SYMLINK, "pkg/current", NULL, "tool", 0},
-        {TEST_SYMLINK, "pkg/bin/readme-link", NULL, "../readme", 0},
     };
     char output[1024];
     char tool[1024];
     char readme[1024];
-    char current[1024];
-    char copy[1024];
-    char root_link[1024];
-    char parent_link[1024];
-    struct stat tool_stat;
-    struct stat copy_stat;
+    TestPlatformStat status;
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         extract_entries(entries, sizeof(entries) / sizeof(entries[0]), output, sizeof(output)));
     join_path(tool, sizeof(tool), output, "bin/tool");
     join_path(readme, sizeof(readme), output, "readme");
-    join_path(current, sizeof(current), output, "bin/current");
-    join_path(copy, sizeof(copy), output, "bin/copy");
-    join_path(root_link, sizeof(root_link), output, "current");
-    join_path(parent_link, sizeof(parent_link), output, "bin/readme-link");
-    TEST_ASSERT_EQUAL_INT(0, stat(tool, &tool_stat));
-    TEST_ASSERT_TRUE((tool_stat.st_mode & S_IXUSR) != 0);
-    TEST_ASSERT_EQUAL_INT(0, stat(readme, &copy_stat));
-    TEST_ASSERT_FALSE((copy_stat.st_mode & S_IXUSR) != 0);
-    TEST_ASSERT_EQUAL_INT(0, lstat(current, &copy_stat));
-    TEST_ASSERT_TRUE(S_ISLNK(copy_stat.st_mode));
-    TEST_ASSERT_EQUAL_INT(0, stat(copy, &copy_stat));
-    TEST_ASSERT_TRUE(tool_stat.st_ino == copy_stat.st_ino);
-    TEST_ASSERT_EQUAL_INT(0, lstat(root_link, &copy_stat));
-    TEST_ASSERT_TRUE(S_ISLNK(copy_stat.st_mode));
-    TEST_ASSERT_EQUAL_INT(0, lstat(parent_link, &copy_stat));
-    TEST_ASSERT_TRUE(S_ISLNK(copy_stat.st_mode));
+    TEST_ASSERT_EQUAL_INT(0, test_stat_path(tool, &status));
+    TEST_ASSERT_TRUE(test_stat_is_regular(&status));
+    TEST_ASSERT_EQUAL_INT(0, test_stat_path(readme, &status));
+    TEST_ASSERT_TRUE(test_stat_is_regular(&status));
 }
+#else
+static void test_valid_archive(void) {
+    const TestEntry entries[] = {
+        {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
+        {TEST_DIRECTORY, "pkg/bin/", NULL, NULL, 0},
+        {TEST_FILE, "pkg/bin/tool", "hello", NULL, 1},
+        {TEST_FILE, "pkg/readme", "text", NULL, 0},
+    };
+    char output[1024];
+    char tool[1024];
+    char readme[1024];
+    struct stat status;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        extract_entries(entries, sizeof(entries) / sizeof(entries[0]), output, sizeof(output)));
+    join_path(tool, sizeof(tool), output, "bin/tool");
+    join_path(readme, sizeof(readme), output, "readme");
+    TEST_ASSERT_EQUAL_INT(0, stat(tool, &status));
+    TEST_ASSERT_TRUE((status.st_mode & S_IXUSR) != 0);
+    TEST_ASSERT_EQUAL_INT(0, stat(readme, &status));
+    TEST_ASSERT_FALSE((status.st_mode & S_IXUSR) != 0);
+}
+
+#endif
 
 static void test_unsafe_paths(void) {
     const TestEntry absolute[] = {
@@ -343,38 +347,14 @@ static void test_unsafe_paths(void) {
                           extract_entries(&deep, 1, output, sizeof(output)));
 }
 
-static void test_unsafe_links(void) {
+static void test_unsupported_entry_types(void) {
     const TestEntry symlink[] = {
         {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_SYMLINK, "pkg/bin/out", NULL, "../../escape", 0},
-    };
-    const TestEntry absolute_symlink[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_SYMLINK, "pkg/bin/out", NULL, "/escape", 0},
-    };
-    const TestEntry rooted_backslash_symlink[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_SYMLINK, "pkg/bin/out", NULL, "\\escape", 0},
-    };
-    const TestEntry embedded_backslash_symlink[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_SYMLINK, "pkg/bin/out", NULL, "dir\\escape", 0},
-    };
-    const TestEntry drive_symlink[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_SYMLINK, "pkg/bin/out", NULL, "C:/escape", 0},
+        {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
     };
     const TestEntry hardlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
         {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-    };
-    const TestEntry hardlink_other_root[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_HARDLINK, "pkg/bin/copy", NULL, "other/bin/tool", 0},
-    };
-    const TestEntry hardlink_absolute[] = {
-        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
-        {TEST_HARDLINK, "pkg/bin/copy", NULL, "/pkg/bin/tool", 0},
     };
     const TestEntry fifo[] = {
         {TEST_FIFO, "pkg/pipe", NULL, NULL, 0},
@@ -384,20 +364,9 @@ static void test_unsafe_links(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(symlink, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(absolute_symlink, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(rooted_backslash_symlink, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(embedded_backslash_symlink, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(drive_symlink, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(hardlink, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(hardlink_other_root, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(hardlink_absolute, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE, extract_entries(fifo, 1, output, sizeof(output)));
+                          extract_entries(fifo, 1, output, sizeof(output)));
 }
 
 static void test_path_collisions(void) {
@@ -413,10 +382,9 @@ static void test_path_collisions(void) {
         {TEST_FILE, "pkg/share/file", "y", NULL, 0},
         {TEST_FILE, "pkg/share", "x", NULL, 0},
     };
-    const TestEntry symlink_parent[] = {
-        {TEST_DIRECTORY, "pkg/real", NULL, NULL, 0},
-        {TEST_SYMLINK, "pkg/link", NULL, "real", 0},
-        {TEST_FILE, "pkg/link/tool", "x", NULL, 1},
+    const TestEntry child_then_directory[] = {
+        {TEST_FILE, "pkg/share/file", "y", NULL, 0},
+        {TEST_DIRECTORY, "pkg/share/", NULL, NULL, 0},
     };
     const TestEntry reserved[] = {
         {TEST_FILE, "pkg/CON.txt", "x", NULL, 0},
@@ -427,12 +395,6 @@ static void test_path_collisions(void) {
     const TestEntry file_root[] = {
         {TEST_FILE, "pkg", "x", NULL, 0},
     };
-    const TestEntry symlink_root[] = {
-        {TEST_SYMLINK, "pkg", NULL, "target", 0},
-    };
-    const TestEntry hardlink_root[] = {
-        {TEST_HARDLINK, "pkg", NULL, "pkg/tool", 0},
-    };
     char output[1024];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
@@ -441,19 +403,60 @@ static void test_path_collisions(void) {
                           extract_entries(file_then_child, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(child_then_file, 2, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(symlink_parent, 3, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(child_then_directory, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(reserved, 1, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(non_ascii, 1, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(file_root, 1, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(symlink_root, 1, output, sizeof(output)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
-                          extract_entries(hardlink_root, 1, output, sizeof(output)));
 }
+
+#ifndef _WIN32
+static void test_verified_archive_path_swap(void) {
+    const TestEntry original[] = {
+        {TEST_FILE, "pkg/tool", "original-bytes", NULL, 1},
+    };
+    const TestEntry replacement[] = {
+        {TEST_FILE, "pkg/tool", "replacement-bytes", NULL, 1},
+    };
+    VerifiedArtifact artifact;
+    char original_path[1024];
+    char replacement_path[1024];
+    char output[1024];
+    char tool[1024];
+    char content[64];
+    FILE *file;
+    FILE *extracted;
+    size_t count;
+
+    create_archive(original_path, sizeof(original_path), original, 1);
+    create_archive(replacement_path, sizeof(replacement_path), replacement, 1);
+    file = fopen(original_path, "rb");
+    TEST_ASSERT_NOT_NULL(file);
+
+    memset(&artifact, 0, sizeof(artifact));
+    artifact.file = file;
+    artifact.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+
+    TEST_ASSERT_EQUAL_INT(0, rename(replacement_path, original_path));
+    TEST_ASSERT_TRUE(snprintf(output, sizeof(output), "%s/verified-swap", root) > 0);
+    make_dir(output);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_extract_verified(&artifact, output));
+
+    join_path(tool, sizeof(tool), output, "tool");
+    extracted = fopen(tool, "rb");
+    TEST_ASSERT_NOT_NULL(extracted);
+    count = fread(content, 1, sizeof(content) - 1u, extracted);
+    TEST_ASSERT_FALSE(ferror(extracted));
+    content[count] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, fclose(extracted));
+    TEST_ASSERT_EQUAL_STRING("original-bytes", content);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    artifact.file = NULL;
+}
+#endif
 
 static void test_empty_archive(void) {
     const TestEntry root_only[] = {
@@ -481,11 +484,11 @@ static void test_interrupt(void) {
     TEST_ASSERT_TRUE(snprintf(output, sizeof(output), "%s/interrupted", root) > 0);
     make_dir(output);
     interrupted = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          package_extract_archive(archive_path, output, "tar.gz"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INTERRUPT,
+        extract_archive_fixture(archive_path, output, PACKAGE_ARCHIVE_FORMAT_TAR_GZ));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();
@@ -493,8 +496,11 @@ int main(void) {
     RUN_TEST(test_destination_and_declared_format);
     RUN_TEST(test_valid_archive);
     RUN_TEST(test_unsafe_paths);
-    RUN_TEST(test_unsafe_links);
+    RUN_TEST(test_unsupported_entry_types);
     RUN_TEST(test_path_collisions);
+#ifndef _WIN32
+    RUN_TEST(test_verified_archive_path_swap);
+#endif
     RUN_TEST(test_empty_archive);
     RUN_TEST(test_interrupt);
     return UNITY_END();

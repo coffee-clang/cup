@@ -1,9 +1,9 @@
-#ifndef CUP_CUP_ASSETS_H
-#define CUP_CUP_ASSETS_H
+#ifndef CUP_ASSETS_H
+#define CUP_ASSETS_H
 
 /*
- * Inspection and checksum verification for the canonical CUP executable, catalog, checksum
- * files, and uninstall helper.
+ * Inspection and checksum verification for the canonical cup executable, catalog, checksum
+ * files and uninstall helper. The native update helper is reported separately as derived data.
  */
 
 #include <stddef.h>
@@ -11,21 +11,14 @@
 #include "constants.h"
 #include "error.h"
 
-/* Integrity state of one installed CUP asset. */
+/* Integrity state of one installed cup asset. */
 typedef enum {
     CUP_ASSET_MISSING,
     CUP_ASSET_VALID,
     CUP_ASSET_INVALID
 } CupAssetStatus;
 
-/* Source selected for an operation that can use installed or checkout data. */
-typedef enum {
-    CUP_ASSETS_SOURCE_NONE,
-    CUP_ASSETS_SOURCE_INSTALLED,
-    CUP_ASSETS_SOURCE_DEVELOPMENT
-} CupAssetsSource;
-
-/* Complete read-only inspection of installed and development CUP asset data. */
+/* Complete read-only inspection of canonical assets, derived helper and development data. */
 typedef struct {
     CupAssetStatus binary;
     CupAssetStatus helper;
@@ -40,7 +33,7 @@ typedef struct {
 } CupAssetsInspection;
 
 
-/* Inspect every CUP asset without repairing or replacing any file. */
+/* Inspect every cup asset without repairing or replacing any file. */
 CupError cup_assets_inspect(CupAssetsInspection *inspection);
 
 /* Predicates over a completed CupAssetsInspection. */
@@ -49,10 +42,10 @@ int cup_assets_installed_is_valid(const CupAssetsInspection *inspection);
 int cup_assets_development_is_valid(const CupAssetsInspection *inspection);
 
 /* Select a validated uninstall helper, preferring the installed asset. */
-CupError cup_assets_find_uninstall(char *path, size_t size, CupAssetsSource *source);
+CupError cup_assets_find_uninstall(char *path, size_t size);
 
 /* Build platform-dependent names used by checksum files and installers. */
 CupError cup_assets_binary_asset_name(char *name, size_t size);
 CupError cup_assets_platform_checksums_name(char *name, size_t size);
 
-#endif /* CUP_CUP_ASSETS_H */
+#endif /* CUP_ASSETS_H */

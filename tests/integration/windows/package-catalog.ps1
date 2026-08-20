@@ -1,4 +1,5 @@
-# Purpose: Exercises Windows catalog checksum-schema and secure-URL validation through the real CLI.
+# Exercises Windows development-catalog fallback, checksum-schema and secure-URL validation
+# through the real CLI. Installed-source precedence is covered by the catalog unit suite.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -19,7 +20,9 @@ try {
             $line
         }
     }
-    if (-not $removed) { Fail-Test "could not remove checksum_url_template" }
+    if (-not $removed) {
+        Fail-Test "could not remove checksum_url_template"
+    }
     Write-Utf8NoBom -Path $catalog -Lines $missingChecksum
     Assert-Contains (Invoke-Cup -CommandArgs @("search") -ExpectFailure) `
         "is missing one or more required fields"
@@ -33,7 +36,9 @@ try {
             $line
         }
     }
-    if (-not $changed) { Fail-Test "could not alter checksum URL" }
+    if (-not $changed) {
+        Fail-Test "could not alter checksum URL"
+    }
     Write-Utf8NoBom -Path $catalog -Lines $insecure
     Assert-Contains (Invoke-Cup -CommandArgs @("search") -ExpectFailure) `
         "catalog URL templates must use HTTPS"

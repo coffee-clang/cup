@@ -1,10 +1,11 @@
 #!/usr/bin/env sh
 
-# Purpose: Validates one completed POSIX release candidate, native binary and generated installer.
+# Validates one completed POSIX release candidate, native binary and generated installer.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$ROOT/scripts/release/common.sh"
+SCRIPT_DIR=$ROOT/scripts/release
+. "$SCRIPT_DIR/common.sh"
 . "$ROOT/tests/support/posix/uninstall.sh"
 
 : "${PLATFORM:?PLATFORM is required}"
@@ -15,7 +16,7 @@ release_dir=${1:-release}
 verify_checksum_file_exact "$release_dir" SHA256SUMS.common \
     packages.cfg install.cfg install.sh install.ps1
 verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" \
-    "cup-$PLATFORM" uninstall.sh release.txt
+    "cup-$PLATFORM" uninstall.sh release.txt SHA256SUMS.common
 
 test "$(sed -n 's/^format=//p' "$release_dir/release.txt")" = 1
 test "$(sed -n 's/^version=//p' "$release_dir/release.txt")" = "$VERSION"
@@ -49,12 +50,14 @@ next_test_version() {
 }
 
 port=0
-helper="$ROOT/build/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
-temporary_root=${RUNNER_TEMP:-/tmp}
-ready="$temporary_root/cup-http-ready.$$"
-server_log="$temporary_root/cup-http.$$.log"
-test_home="$temporary_root/cup-installer-home.$$"
-foreign_home="$temporary_root/cup-installer-foreign-home.$$"
+test_build_root=${CUP_TEST_BUILD_ROOT:-$ROOT/build}
+helper="$test_build_root/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
+temporary_parent=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
+test_root=$(mktemp -d "$temporary_parent/cup-release-test.XXXXXX")
+ready="$test_root/http-ready"
+server_log="$test_root/http.log"
+test_home="$test_root/installer-home"
+foreign_home="$test_root/foreign-home"
 server_pid=
 
 cleanup() {
@@ -62,10 +65,26 @@ cleanup() {
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
-    rm -f "$ready" "$server_log"
-    rm -rf "$test_home" "$foreign_home"
+    if [ -d "$test_root" ] && [ ! -L "$test_root" ]; then
+        rm -rf -- "$test_root"
+    fi
 }
-trap cleanup EXIT HUP INT TERM
+exit_handler() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+signal_handler() {
+    status=$1
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+trap exit_handler EXIT
+trap 'signal_handler 129' HUP
+trap 'signal_handler 130' INT
+trap 'signal_handler 143' TERM
 
 [ -x "$helper" ] || fail "HTTP test helper is not built: $helper"
 rm -f "$ready"
@@ -95,7 +114,6 @@ mkdir -p "$test_home"
 HOME="$test_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
-CUP_INSTALL_NO_PATH_PROMPT=1 \
     sh "$release_dir/install.sh"
 installed_cup="$test_home/.cup/bin/cup"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
@@ -120,7 +138,6 @@ printf 'unrelated\n' > "$foreign_home/.cup/foreign.txt"
 HOME="$foreign_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
-CUP_INSTALL_NO_PATH_PROMPT=1 \
     sh "$release_dir/install.sh"
 foreign_cup="$foreign_home/.coffee-cup/bin/cup"
 test -f "$foreign_home/.cup/foreign.txt"
@@ -185,35 +202,37 @@ case "$uninstall_mode" in
 esac
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 
-# A completion marker is accepted only for a complete installed generation. The failed
-# recovery must preserve both the executable and transaction evidence.
-bootstrap_staging="$test_home/.cup/.bootstrap"
-saved_update_helper="$test_home/saved-cup-update-helper"
-mkdir "$bootstrap_staging"
-: > "$bootstrap_staging/committed"
-mv "$test_home/.cup/helpers/cup-update-helper" "$saved_update_helper"
+# A pending or malformed canonical journal blocks bootstrap before any managed mutation.
+# The installer must preserve both the journal evidence and the installed executable.
+transaction="$test_home/.cup/transaction.txt"
+printf 'invalid=1\n' > "$transaction"
 if HOME="$test_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
-CUP_INSTALL_NO_PATH_PROMPT=1 \
-    sh "$release_dir/install.sh" >"$test_home/incomplete-bootstrap.out" 2>&1; then
-    fail 'incomplete committed bootstrap staging unexpectedly succeeded'
+    sh "$release_dir/install.sh" >"$test_home/pending-transaction.out" 2>&1; then
+    fail 'bootstrap unexpectedly ignored a malformed canonical transaction'
 fi
-grep -F 'completed bootstrap staging does not match a complete installed generation' \
-    "$test_home/incomplete-bootstrap.out" >/dev/null
-test -f "$bootstrap_staging/committed"
+grep -F 'verified cup bootstrap transaction was rejected' \
+    "$test_home/pending-transaction.out" >/dev/null
+test -f "$transaction"
+test "$(cat "$transaction")" = 'invalid=1'
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
-mv "$saved_update_helper" "$test_home/.cup/helpers/cup-update-helper"
+rm -f "$transaction"
 
-# Reinstalling the same tested candidate now completes cleanup and leaves the executable valid.
+# Reinstalling the same tested candidate leaves no journal or staging residue.
 HOME="$test_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
-CUP_INSTALL_NO_PATH_PROMPT=1 \
     sh "$release_dir/install.sh"
-test ! -e "$bootstrap_staging"
+test ! -e "$transaction"
+if find "$test_home/.cup/staging" -mindepth 1 -print -quit | grep -q .; then
+    fail 'reinstall left canonical staging residue'
+fi
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
+update_helper="$test_home/.cup/helpers/cup-update-helper"
+helper_hash_before_update=$(hash_file "$update_helper")
+test "$helper_hash_before_update" = "$binary_hash_before"
 
 # A local immutable release fixture exercises the complete detached update path. The binary
 # patcher changes only same-length embedded version strings, so the served executable remains the
@@ -222,7 +241,7 @@ next_version=$(next_test_version "$VERSION")
 update_root="$release_dir/update-fixture"
 version_root="$update_root/$next_version"
 configuration=${CUP_TEST_CONFIGURATION:-development}
-patch_helper="$ROOT/build/$PLATFORM/$configuration/tests/helpers/binary-patch"
+patch_helper="$test_build_root/$PLATFORM/$configuration/tests/helpers/binary-patch"
 rm -rf "$update_root"
 mkdir -p "$version_root"
 [ -x "$patch_helper" ] || fail "binary patch helper is not built: $patch_helper"
@@ -245,11 +264,11 @@ cp "$version_root/release.txt" "$update_root/release.txt"
     cd "$version_root"
     : > SHA256SUMS.common
     for asset in packages.cfg install.cfg install.sh install.ps1; do
-        printf '%s  %s\n' "$(hash_file "$asset")" "$asset" >> SHA256SUMS.common
+        printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> SHA256SUMS.common
     done
     : > "SHA256SUMS.$PLATFORM"
-    for asset in "cup-$PLATFORM" uninstall.sh release.txt; do
-        printf '%s  %s\n' "$(hash_file "$asset")" "$asset" >> "SHA256SUMS.$PLATFORM"
+    for asset in "cup-$PLATFORM" uninstall.sh release.txt SHA256SUMS.common; do
+        printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> "SHA256SUMS.$PLATFORM"
     done
 )
 
@@ -279,6 +298,8 @@ done
 [ "$attempt" -lt 200 ] || fail 'cup update helper did not complete the verified update'
 test ! -e "$test_home/.cup/transaction.txt"
 test "$(hash_file "$installed_cup")" = "$(hash_file "$version_root/cup-$PLATFORM")"
+test "$(hash_file "$update_helper")" = "$helper_hash_before_update"
+test "$(hash_file "$update_helper")" != "$(hash_file "$installed_cup")"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $next_version"
 updated_doctor=$(HOME="$test_home" "$installed_cup" doctor 2>&1)
 printf '%s\n' "$updated_doctor"

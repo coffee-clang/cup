@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises cup asset inspection, source selection, checksum lookup and
+ * Exercises cup asset inspection, source selection, checksum lookup and
  * platform-name helpers through controlled filesystem/system boundaries.
  */
 
@@ -45,14 +45,15 @@ static CupError development_catalog_result;
 static CupError installed_install_policy_result;
 static CupError development_install_policy_result;
 static CupError verify_result;
-static CupError hash_result;
-static int helper_matches_binary;
 static int binary_matches;
 static int package_catalog_matches;
 static int install_policy_matches;
 static int uninstall_matches;
+static int common_checksums_matches;
 static CupError host_result;
 static char host_value[MAX_PLATFORM_LEN];
+static int common_identity_changed;
+static int platform_identity_changed;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -84,14 +85,15 @@ static void reset_scenario(void) {
     installed_install_policy_result = CUP_OK;
     development_install_policy_result = CUP_ERR_VALIDATION;
     verify_result = CUP_OK;
-    hash_result = CUP_OK;
-    helper_matches_binary = 1;
     binary_matches = 1;
     package_catalog_matches = 1;
     install_policy_matches = 1;
     uninstall_matches = 1;
+    common_checksums_matches = 1;
     host_result = CUP_OK;
     strcpy(host_value, "linux-x64");
+    common_identity_changed = 0;
+    platform_identity_changed = 0;
 }
 
 void setUp(void) {
@@ -172,6 +174,76 @@ int path_is_safe_identifier(const char *value) {
     return value != NULL && value[0] != '\0';
 }
 
+void checksum_document_init(ChecksumDocument *document) {
+    TEST_ASSERT_NOT_NULL(document);
+    memset(document, 0, sizeof(*document));
+}
+
+void checksum_document_free(ChecksumDocument *document) {
+    TEST_ASSERT_NOT_NULL(document);
+    memset(document, 0, sizeof(*document));
+}
+
+CupError checksum_document_load(ChecksumDocument *document, const char *path) {
+    TEST_ASSERT_NOT_NULL(document);
+    TEST_ASSERT_NOT_NULL(path);
+    document->identity.valid = 1;
+    document->identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    if (strcmp(path, "/common") == 0) {
+        document->identity.object = 1;
+    } else if (strcmp(path, "/platform") == 0) {
+        document->identity.object = 2;
+    } else {
+        TEST_FAIL_MESSAGE("unexpected checksum document path");
+    }
+    return CUP_OK;
+}
+
+CupError checksum_document_validate_assets(const ChecksumDocument *document,
+                                           const char *const *asset_names,
+                                           size_t asset_count) {
+    TEST_ASSERT_NOT_NULL(document);
+    TEST_ASSERT_NOT_NULL(asset_names);
+    if (document->identity.object == 1) {
+        TEST_ASSERT_EQUAL_UINT(CUP_COMMON_CHECKSUM_ASSET_COUNT, asset_count);
+        return common_schema_result;
+    }
+    TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, asset_count);
+    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, asset_names[3]);
+    return platform_schema_result;
+}
+
+CupError checksum_document_verify_file(const ChecksumDocument *document,
+                                       const char *asset_name,
+                                       const char *asset_path,
+                                       int *matches) {
+    (void)document;
+    return checksum_verify_file("loaded", asset_name, asset_path, matches);
+}
+
+CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(identity);
+    memset(identity, 0, sizeof(*identity));
+    identity->valid = 1;
+    identity->kind = SYSTEM_PATH_REGULAR_FILE;
+    if (strcmp(path, "/common") == 0) {
+        identity->object = common_identity_changed ? 11 : 1;
+    } else if (strcmp(path, "/platform") == 0) {
+        identity->object = platform_identity_changed ? 12 : 2;
+    } else {
+        TEST_FAIL_MESSAGE("unexpected identity path");
+    }
+    return CUP_OK;
+}
+
+int system_path_identity_equal(const SystemPathIdentity *left,
+                               const SystemPathIdentity *right) {
+    return left != NULL && right != NULL && left->valid && right->valid &&
+           left->object == right->object && left->object_high == right->object_high &&
+           left->kind == right->kind;
+}
+
 CupError checksum_validate_assets(const char *checksum_path,
                                   const char *const *asset_names,
                                   size_t asset_count) {
@@ -186,22 +258,9 @@ CupError checksum_validate_assets(const char *checksum_path,
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, asset_names[3]);
         return common_schema_result;
     }
-    TEST_ASSERT_EQUAL_UINT(3, asset_count);
+    TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, asset_count);
+    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, asset_names[3]);
     return platform_schema_result;
-}
-
-CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
-    const char *value;
-
-    TEST_ASSERT_NOT_NULL(path);
-    TEST_ASSERT_NOT_NULL(hex);
-    if (hash_result != CUP_OK) {
-        return hash_result;
-    }
-    value = strcmp(path, "/helper") == 0 && !helper_matches_binary
-                ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    return buffer_write_result(snprintf(hex, size, "%s", value), size);
 }
 
 CupError system_is_executable(const char *path, int *is_executable) {
@@ -244,12 +303,9 @@ CupError package_catalog_load_development(PackageCatalog *catalog) {
     return development_catalog_result;
 }
 
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source) {
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
     TEST_ASSERT_NOT_NULL(catalog);
     TEST_ASSERT_EQUAL_STRING("/catalog", path);
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CATALOG_SOURCE_INSTALLED, source);
     return installed_catalog_result;
 }
 
@@ -258,12 +314,9 @@ void install_policy_init(InstallPolicy *config) {
     memset(config, 0, sizeof(*config));
 }
 
-CupError install_policy_load_path(InstallPolicy *config,
-                                  const char *path,
-                                  InstallPolicySource source) {
+CupError install_policy_load_path(InstallPolicy *config, const char *path) {
     TEST_ASSERT_NOT_NULL(config);
     TEST_ASSERT_EQUAL_STRING("/install-config", path);
-    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_INSTALLED, source);
     return installed_install_policy_result;
 }
 
@@ -291,6 +344,8 @@ CupError checksum_verify_file(const char *checksum_path,
         *matches = install_policy_matches;
     } else if (strcmp(asset_path, "/uninstall") == 0) {
         *matches = uninstall_matches;
+    } else if (strcmp(asset_path, "/common") == 0) {
+        *matches = common_checksums_matches;
     } else {
         TEST_FAIL_MESSAGE("unexpected checksum asset path");
         return CUP_ERR_INVALID_INPUT;
@@ -372,6 +427,16 @@ static void test_bad_assets(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.uninstall);
 
+    reset_scenario();
+    make_assets_regular();
+    common_checksums_matches = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_VALID, inspection.platform_checksums);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.common_checksums);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.catalog);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.install_policy);
+    TEST_ASSERT_FALSE(cup_assets_installed_is_valid(&inspection));
+
     /* Executability requirements differ only where Windows uses script-file semantics. */
     reset_scenario();
     make_assets_regular();
@@ -399,9 +464,10 @@ static void test_bad_assets(void) {
 
     reset_scenario();
     make_assets_regular();
-    helper_matches_binary = 0;
+    helper_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_MISSING, inspection.helper);
+    TEST_ASSERT_TRUE(cup_assets_installed_is_valid(&inspection));
 
     /* Digest and parser failures are reported on the specific installed asset. */
     reset_scenario();
@@ -427,6 +493,25 @@ static void test_bad_assets(void) {
     installed_install_policy_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.install_policy);
+
+    /* Checksum documents must remain the same filesystem objects for the whole inspection. */
+    reset_scenario();
+    make_assets_regular();
+    common_identity_changed = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.common_checksums);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.catalog);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.install_policy);
+    TEST_ASSERT_FALSE(cup_assets_installed_is_valid(&inspection));
+
+    reset_scenario();
+    make_assets_regular();
+    platform_identity_changed = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_inspect(&inspection));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.platform_checksums);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.uninstall);
+    TEST_ASSERT_FALSE(cup_assets_installed_is_valid(&inspection));
 }
 
 static void test_inspection_errors(void) {
@@ -465,43 +550,33 @@ static void test_inspection_errors(void) {
     installed_catalog_result = CUP_ERR_TEMPORARY;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, cup_assets_inspect(&inspection));
 
-    reset_scenario();
-    make_assets_regular();
-    hash_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, cup_assets_inspect(&inspection));
 }
 
 static void test_uninstall_fallback(void) {
-    CupAssetsSource source;
     char path[MAX_PATH_LEN];
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_assets_find_uninstall(NULL, sizeof(path), &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_assets_find_uninstall(path, 0, &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_assets_find_uninstall(path, sizeof(path), NULL));
+                          cup_assets_find_uninstall(NULL, sizeof(path)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_assets_find_uninstall(path, 0));
 
     uninstall_kind = SYSTEM_PATH_REGULAR_FILE;
     platform_kind = SYSTEM_PATH_REGULAR_FILE;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_find_uninstall(path, sizeof(path), &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSETS_SOURCE_INSTALLED, source);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_assets_find_uninstall(path, sizeof(path)));
     TEST_ASSERT_EQUAL_STRING("/uninstall", path);
 
     reset_scenario();
     development_uninstall_regular = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          cup_assets_find_uninstall(path, sizeof(path), &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSETS_SOURCE_NONE, source);
+                          cup_assets_find_uninstall(path, sizeof(path)));
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          cup_assets_find_uninstall(path, sizeof(path), &source));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSETS_SOURCE_NONE, source);
+                          cup_assets_find_uninstall(path, sizeof(path)));
 
     reset_scenario();
     kind_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          cup_assets_find_uninstall(path, sizeof(path), &source));
+                          cup_assets_find_uninstall(path, sizeof(path)));
 }
 
 static void test_platform_asset_names(void) {
@@ -526,7 +601,6 @@ static void test_platform_asset_names(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, cup_assets_platform_checksums_name(name, 2));
 }
 
-/* Suite registration. */
 
 int main(void) {
     UNITY_BEGIN();

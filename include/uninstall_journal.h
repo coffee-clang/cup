@@ -3,10 +3,9 @@
 
 /* Strict transaction.txt schema for the detached uninstall handoff. */
 
-#include <stddef.h>
-
 #include "constants.h"
 #include "error.h"
+#include "system.h"
 
 typedef enum {
     UNINSTALL_JOURNAL_MISSING,
@@ -28,10 +27,11 @@ typedef enum {
 
 typedef struct {
     char temporary_name[MAX_PATH_LEN];
-    char token[MAX_IDENTIFIER_LEN];
+    char token[MAX_TRANSACTION_TOKEN_LEN];
     UninstallPhase phase;
     UninstallStage stage;
     int error_code;
+    SystemPathIdentity file_identity;
 } UninstallJournal;
 
 void uninstall_journal_init(UninstallJournal *journal);
@@ -39,9 +39,8 @@ const char *uninstall_phase_name(UninstallPhase phase);
 const char *uninstall_stage_name(UninstallStage stage);
 CupError uninstall_journal_begin(const char *temporary_path, const char *token);
 CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatus *status);
-CupError uninstall_journal_get_detached_path(const UninstallJournal *journal,
-                                             char *buffer,
-                                             size_t size);
-CupError uninstall_journal_acknowledge_failure(const UninstallJournal *journal);
+/* Recover a stale uninstall journal while the caller owns the canonical exclusive cup lock.
+ * Recovery never touches a detached root and succeeds only while that sibling is absent. */
+CupError uninstall_journal_recover(const UninstallJournal *journal);
 
 #endif /* CUP_UNINSTALL_JOURNAL_H */

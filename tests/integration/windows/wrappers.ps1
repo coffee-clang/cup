@@ -1,4 +1,4 @@
-# Purpose: Exercises Windows .cmd managed wrappers and native quoting behavior.
+# Exercises Windows .cmd managed wrappers and native quoting behavior.
 
 param(
     [Parameter(Mandatory = $true)]

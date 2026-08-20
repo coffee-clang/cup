@@ -25,9 +25,8 @@ int cup_error_to_exit_status(CupError error) {
 
         case CUP_ERR_CATALOG:
         case CUP_ERR_STATE_LOAD:
-        case CUP_ERR_STATE_SAVE:
         case CUP_ERR_STATE_FULL:
-        case CUP_ERR_ACTIVE_FULL:
+        case CUP_ERR_DEFAULT_FULL:
         case CUP_ERR_INCONSISTENT_STATE:
         case CUP_ERR_VALIDATION:
             return CUP_STATUS_STATE;
@@ -53,7 +52,6 @@ int cup_error_to_exit_status(CupError error) {
             return CUP_STATUS_INTERRUPT;
 
         case CUP_ERR_BUFFER_TOO_SMALL:
-        case CUP_ERR_CRYPTO:
         default:
             return CUP_STATUS_INTERNAL;
     }

@@ -1,6 +1,6 @@
 /*
- * Owns the native interrupt-handler lifecycle for one mutating public command and exposes only
- * an async-signal-safe request flag.
+ * Owns the native interrupt-handler lifecycle for one state-changing public command and exposes
+ * only an async-signal-safe request flag.
  */
 
 #include "interrupt.h"
@@ -11,7 +11,11 @@
 #include <windows.h>
 #endif
 
+#if defined(_WIN32)
+static volatile LONG g_interrupted = 0;
+#else
 static volatile sig_atomic_t g_interrupted = 0;
+#endif
 static int g_handler_active = 0;
 
 #if defined(_WIN32)
@@ -20,7 +24,7 @@ static BOOL WINAPI handle_console_event(DWORD type) {
         case CTRL_C_EVENT:
         case CTRL_BREAK_EVENT:
         case CTRL_CLOSE_EVENT:
-            g_interrupted = 1;
+            InterlockedExchange(&g_interrupted, 1);
             return TRUE;
         default:
             return FALSE;
@@ -45,14 +49,18 @@ CupError interrupt_enable(void) {
         return CUP_ERR_INVALID_INPUT;
     }
 
+#if defined(_WIN32)
+    InterlockedExchange(&g_interrupted, 0);
+#else
     g_interrupted = 0;
+#endif
 #if defined(_WIN32)
     if (!SetConsoleCtrlHandler(handle_console_event, TRUE)) {
         return CUP_ERR_FILESYSTEM;
     }
 #else
     {
-        struct sigaction action;
+        struct sigaction action = {0};
 
         action.sa_handler = handle_signal;
         sigemptyset(&action.sa_mask);
@@ -75,7 +83,11 @@ CupError interrupt_enable(void) {
 
 void interrupt_disable(void) {
     if (!g_handler_active) {
+#if defined(_WIN32)
+        InterlockedExchange(&g_interrupted, 0);
+#else
         g_interrupted = 0;
+#endif
         return;
     }
 
@@ -92,9 +104,21 @@ void interrupt_disable(void) {
     g_sigterm_saved = 0;
 #endif
     g_handler_active = 0;
+#if defined(_WIN32)
+    InterlockedExchange(&g_interrupted, 0);
+#else
     g_interrupted = 0;
+#endif
 }
 
 int interrupt_requested(void) {
+#if defined(_WIN32)
+    return InterlockedCompareExchange(&g_interrupted, 0, 0) != 0;
+#else
     return g_interrupted != 0;
+#endif
+}
+
+CupError interrupt_safe_point(void) {
+    return interrupt_requested() ? CUP_ERR_INTERRUPT : CUP_OK;
 }

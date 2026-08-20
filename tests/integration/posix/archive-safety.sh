@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Purpose: Exercises supported formats and malicious archive rejection through the real POSIX CLI.
+# Exercises supported formats and malicious archive rejection through the real POSIX CLI.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -9,7 +9,8 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin archive-safety
 prepare_command_environment
 run_cup repair >/dev/null
-rm -f /tmp/cup-absolute-escape.txt
+absolute_escape=$TMP_ROOT/absolute-escape.txt
+export CUP_TEST_ABSOLUTE_ESCAPE_PATH=$absolute_escape
 
 install_supported_format() {
     version=$1
@@ -95,6 +96,9 @@ run_cup_expect_failure "$TMP_ROOT/archive-format-mismatch.out" \
 assert_contains "$(cat "$TMP_ROOT/archive-format-mismatch.out")" \
     "failed to download"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" 'compiler:clang@98.1.1'
+assert_missing "$declared"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_cup_healthy
 
 create_plain_tar_disguised_as_gzip 98.1.2
 run_cup_expect_failure "$TMP_ROOT/archive-plain-tar.out" \
@@ -102,6 +106,9 @@ run_cup_expect_failure "$TMP_ROOT/archive-plain-tar.out" \
 assert_contains "$(cat "$TMP_ROOT/archive-plain-tar.out")" \
     "failed to download"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" 'compiler:clang@98.1.2'
+assert_missing "$archive"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_cup_healthy
 
 package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz replace
 
@@ -118,7 +125,8 @@ create_unsafe_archive() {
     mkdir -p "$cache_dir"
 
     configuration=${CUP_TEST_CONFIGURATION:-development}
-    fixture=$PROJECT_ROOT/build/$TEST_PLATFORM/$configuration/tests/helpers/archive-fixture
+    test_build_root=${CUP_TEST_BUILD_ROOT:-$PROJECT_ROOT/build}
+    fixture=$test_build_root/$TEST_PLATFORM/$configuration/tests/helpers/archive-fixture
     assert_file "$fixture"
     "$fixture" "$package_name" "$version" "$host" "$target" \
         "$archive" "$mode"
@@ -137,7 +145,7 @@ for case in traversal absolute symlink symlink-parent duplicate case-collision \
         install compiler "clang@$version"
     assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" "compiler:clang@$version"
     assert_missing "$TMP_ROOT/outside.txt"
-    assert_missing /tmp/cup-absolute-escape.txt
+    assert_missing "$absolute_escape"
     assert_missing "$TEST_HOME/.cup/transaction.txt"
 done
 

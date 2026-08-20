@@ -9,3 +9,4 @@
 
 # Documentation theme fetched locally
 /docs/theme/index.hbs
+/mdbook

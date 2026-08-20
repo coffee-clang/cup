@@ -9,7 +9,7 @@
 #include <sys/types.h>
 
 typedef struct {
-    const char *package;
+    const char *package_root;
     const char *version;
     const char *host;
     const char *target;
@@ -122,7 +122,7 @@ static int parse_options(int argc, char **argv, FixtureOptions *options) {
     if (argc != 7 || options == NULL) {
         return 0;
     }
-    options->package = argv[1];
+    options->package_root = argv[1];
     options->version = argv[2];
     options->host = argv[3];
     options->target = argv[4];
@@ -173,15 +173,15 @@ static void add_common_package(struct archive *archive,
     char path[1024];
 
     if (strcmp(options->mode, "root-file") == 0) {
-        add_file(archive, options->package, "not a directory\n", 16, 0644);
+        add_file(archive, options->package_root, "not a directory\n", 16, 0644);
     } else {
-        add_directory(archive, options->package);
+        add_directory(archive, options->package_root);
     }
-    join_path(path, sizeof(path), options->package, "bin");
+    join_path(path, sizeof(path), options->package_root, "bin");
     add_directory(archive, path);
-    join_path(path, sizeof(path), options->package, "info.txt");
+    join_path(path, sizeof(path), options->package_root, "info.txt");
     add_file(archive, path, info, info_size, 0644);
-    join_path(path, sizeof(path), options->package, "bin/clang");
+    join_path(path, sizeof(path), options->package_root, "bin/clang");
     add_file(archive, path, script, sizeof(script) - 1, 0755);
 }
 
@@ -193,7 +193,7 @@ static int add_mode_entries(struct archive *archive, const FixtureOptions *optio
         return 1;
     }
     if (strcmp(options->mode, "traversal") == 0) {
-        int written = snprintf(path, sizeof(path), "%s/../outside.txt", options->package);
+        int written = snprintf(path, sizeof(path), "%s/../outside.txt", options->package_root);
 
         if (written < 0 || (size_t)written >= sizeof(path)) {
             fprintf(stderr, "fixture path is too long\n");
@@ -203,60 +203,66 @@ static int add_mode_entries(struct archive *archive, const FixtureOptions *optio
         return 1;
     }
     if (strcmp(options->mode, "absolute") == 0) {
-        add_file(archive, "/tmp/cup-absolute-escape.txt", "escape\n", 7, 0644);
+        const char *escape_path = getenv("CUP_TEST_ABSOLUTE_ESCAPE_PATH");
+
+        if (escape_path == NULL || escape_path[0] != '/') {
+            fprintf(stderr, "CUP_TEST_ABSOLUTE_ESCAPE_PATH must be absolute\n");
+            exit(2);
+        }
+        add_file(archive, escape_path, "escape\n", 7, 0644);
         return 1;
     }
     if (strcmp(options->mode, "symlink") == 0) {
-        join_path(path, sizeof(path), options->package, "bin/evil-link");
+        join_path(path, sizeof(path), options->package_root, "bin/evil-link");
         add_link(archive, path, "../../outside.txt", 0);
         return 1;
     }
     if (strcmp(options->mode, "symlink-parent") == 0) {
-        join_path(path, sizeof(path), options->package, "real");
+        join_path(path, sizeof(path), options->package_root, "real");
         add_directory(archive, path);
-        join_path(path, sizeof(path), options->package, "bin/redirect");
+        join_path(path, sizeof(path), options->package_root, "bin/redirect");
         add_link(archive, path, "../real", 0);
-        join_path(path, sizeof(path), options->package, "bin/redirect/child");
+        join_path(path, sizeof(path), options->package_root, "bin/redirect/child");
         add_file(archive, path, "escape\n", 7, 0644);
         return 1;
     }
     if (strcmp(options->mode, "duplicate") == 0) {
-        join_path(path, sizeof(path), options->package, "bin/clang");
+        join_path(path, sizeof(path), options->package_root, "bin/clang");
         add_file(archive, path, "overwrite\n", 10, 0755);
         return 1;
     }
     if (strcmp(options->mode, "case-collision") == 0) {
-        join_path(path, sizeof(path), options->package, "bin/CLANG");
+        join_path(path, sizeof(path), options->package_root, "bin/CLANG");
         add_file(archive, path, "collision\n", 10, 0755);
         return 1;
     }
     if (strcmp(options->mode, "file-directory") == 0) {
-        join_path(path, sizeof(path), options->package, "conflict");
+        join_path(path, sizeof(path), options->package_root, "conflict");
         add_file(archive, path, "file\n", 5, 0644);
-        join_path(path, sizeof(path), options->package, "conflict/child");
+        join_path(path, sizeof(path), options->package_root, "conflict/child");
         add_file(archive, path, "child\n", 6, 0644);
         return 1;
     }
     if (strcmp(options->mode, "reserved") == 0) {
-        join_path(path, sizeof(path), options->package, "bin/CON");
+        join_path(path, sizeof(path), options->package_root, "bin/CON");
         add_file(archive, path, "reserved\n", 9, 0644);
         return 1;
     }
     if (strcmp(options->mode, "unicode") == 0) {
-        join_path(path, sizeof(path), options->package, "bin/caf\303\251");
+        join_path(path, sizeof(path), options->package_root, "bin/caf\303\251");
         add_file(archive, path, "unicode\n", 8, 0644);
         return 1;
     }
     if (strcmp(options->mode, "special") == 0) {
-        join_path(path, sizeof(path), options->package, "pipe");
+        join_path(path, sizeof(path), options->package_root, "pipe");
         add_fifo(archive, path);
         return 1;
     }
     if (strcmp(options->mode, "hardlink-forward") == 0) {
         char target_path[1024];
 
-        join_path(path, sizeof(path), options->package, "bin/copy");
-        join_path(target_path, sizeof(target_path), options->package, "bin/later");
+        join_path(path, sizeof(path), options->package_root, "bin/copy");
+        join_path(target_path, sizeof(target_path), options->package_root, "bin/later");
         add_link(archive, path, target_path, 1);
         add_file(archive, target_path, "later\n", 6, 0644);
         return 1;
@@ -283,7 +289,7 @@ int main(int argc, char **argv) {
     size_t info_size;
 
     if (!parse_options(argc, argv, &options)) {
-        fprintf(stderr, "usage: %s PACKAGE VERSION HOST TARGET OUTPUT MODE\n", argv[0]);
+        fprintf(stderr, "usage: %s PACKAGE_ROOT VERSION HOST TARGET OUTPUT MODE\n", argv[0]);
         return 2;
     }
     if (setlocale(LC_CTYPE, "C.UTF-8") == NULL && setlocale(LC_CTYPE, "en_US.UTF-8") == NULL) {

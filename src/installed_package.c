@@ -1,12 +1,11 @@
 /*
- * Checks package presence and validity across state and the canonical components tree. Command
- * modules add operation context.
+ * Checks package presence and validity across an already validated state and the canonical
+ * components tree. Command modules add operation context.
  */
 
 #include "installed_package.h"
 
 #include "layout.h"
-#include "package_selector.h"
 
 #include <stdio.h>
 
@@ -14,18 +13,14 @@
  * package. */
 static CupError get_presence(const CupState *state,
                              const PackageIdentity *package,
-                             char *selector,
-                             size_t selector_size,
                              int *in_state,
                              int *on_disk) {
     CupError err;
 
-    if (state == NULL || package == NULL || selector == NULL || selector_size == 0 ||
-        in_state == NULL || on_disk == NULL) {
+    if (state == NULL || package == NULL || in_state == NULL || on_disk == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-
-    err = package_identity_format_selector(package, selector, selector_size);
+    err = package_identity_validate(package, NULL);
     if (err != CUP_OK) {
         return err;
     }
@@ -40,12 +35,16 @@ CupError installed_package_require_present(const CupState *state, const PackageI
     int in_state;
     int on_disk;
 
-    err = get_presence(state, package, selector, sizeof(selector), &in_state, &on_disk);
+    err = get_presence(state, package, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
     if (in_state && on_disk) {
         return CUP_OK;
+    }
+    err = package_identity_format_selector(package, selector, sizeof(selector));
+    if (err != CUP_OK) {
+        return err;
     }
     if (!in_state && !on_disk) {
         fprintf(stderr,
@@ -65,12 +64,17 @@ CupError installed_package_require_present(const CupState *state, const PackageI
     return CUP_ERR_INCONSISTENT_STATE;
 }
 
-/* A present package must also match its immutable metadata before an operation can reuse it. */
-CupError installed_package_require_valid(const CupState *state, const PackageIdentity *package) {
+/* A present package must also pass semantic metadata and entry validation before reuse. */
+CupError installed_package_load_validated(const CupState *state,
+                                          const PackageIdentity *package,
+                                          ValidatedPackage *validated) {
     CupError err;
     char install_path[MAX_PATH_LEN];
     char selector[MAX_SELECTOR_LEN];
 
+    if (validated == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     err = installed_package_require_present(state, package);
     if (err != CUP_OK) {
         return err;
@@ -80,11 +84,11 @@ CupError installed_package_require_valid(const CupState *state, const PackageIde
     if (err != CUP_OK) {
         return err;
     }
-    err = package_validate(install_path, package);
+    err = validated_package_load(validated, install_path, package, stderr);
     if (err == CUP_OK) {
         return CUP_OK;
     }
-    if (err != CUP_ERR_VALIDATION) {
+    if (err != CUP_ERR_VALIDATION && err != CUP_ERR_INCONSISTENT_STATE) {
         return err;
     }
 
@@ -99,13 +103,23 @@ CupError installed_package_require_valid(const CupState *state, const PackageIde
     return CUP_ERR_INCONSISTENT_STATE;
 }
 
+CupError installed_package_require_valid(const CupState *state, const PackageIdentity *package) {
+    ValidatedPackage validated;
+    CupError err;
+
+    validated_package_init(&validated);
+    err = installed_package_load_validated(state, package, &validated);
+    validated_package_free(&validated);
+    return err;
+}
+
 CupError installed_package_require_absent(const CupState *state, const PackageIdentity *package) {
     CupError err;
     char selector[MAX_SELECTOR_LEN];
     int in_state;
     int on_disk;
 
-    err = get_presence(state, package, selector, sizeof(selector), &in_state, &on_disk);
+    err = get_presence(state, package, &in_state, &on_disk);
     if (err != CUP_OK) {
         return err;
     }
@@ -114,6 +128,10 @@ CupError installed_package_require_absent(const CupState *state, const PackageId
     }
     if (in_state && on_disk) {
         return CUP_ERR_ALREADY_INSTALLED;
+    }
+    err = package_identity_format_selector(package, selector, sizeof(selector));
+    if (err != CUP_OK) {
+        return err;
     }
 
     fprintf(stderr,

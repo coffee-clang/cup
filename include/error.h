@@ -6,7 +6,7 @@
 typedef enum {
     CUP_OK = 0,
 
-    /* Input / cli. */
+    /* Input / CLI. */
     CUP_ERR_INVALID_INPUT,
 
     /* Supported domain. */
@@ -17,14 +17,13 @@ typedef enum {
     CUP_ERR_INVALID_ARCH,
     CUP_ERR_NOT_AVAILABLE,
 
-    /* PackageCatalog. */
+    /* Package catalog. */
     CUP_ERR_CATALOG,
 
     /* State. */
     CUP_ERR_STATE_LOAD,
-    CUP_ERR_STATE_SAVE,
     CUP_ERR_STATE_FULL,
-    CUP_ERR_ACTIVE_FULL,
+    CUP_ERR_DEFAULT_FULL,
     CUP_ERR_ALREADY_INSTALLED,
     CUP_ERR_NOT_INSTALLED,
     CUP_ERR_INCONSISTENT_STATE,
@@ -46,12 +45,6 @@ typedef enum {
     CUP_ERR_ARCHIVE,
     CUP_ERR_ARCHIVE_UNSAFE,
     CUP_ERR_EXTRACT,
-
-    /*
-     * Reserved to keep the historical numeric exit code stable even though
-     * SHA-256 no longer uses an external cryptographic provider.
-     */
-    CUP_ERR_CRYPTO,
 
     /* Install validation / transactions. */
     CUP_ERR_VALIDATION,

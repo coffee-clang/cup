@@ -1,12 +1,15 @@
-#!/usr/bin/env sh
+#!/bin/sh
 
-# Purpose: Installs the native POSIX tools required by one CI profile before
-# the dependency cache key is resolved and its prefix is restored.
+# Installs and verifies one native POSIX CI tool profile.
 set -eu
+
+LC_ALL=C
+LANG=C
+export LC_ALL LANG
 
 profile=${1:?CI profile is required}
 family=${FAMILY:?FAMILY is required}
-platform=${PLATFORM:-}
+platform=${PLATFORM:?PLATFORM is required}
 
 fail() {
     printf 'CI environment: %s\n' "$*" >&2
@@ -14,39 +17,34 @@ fail() {
 }
 
 require_tool() {
-    command -v "$1" >/dev/null 2>&1 ||
-        fail "required tool was not prepared: $1"
+    command -v "$1" >/dev/null 2>&1 || fail "required tool was not prepared: $1"
 }
 
 require_one_of() {
-    purpose=$1
+    requirement=$1
     shift
     for candidate in "$@"; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            return 0
-        fi
+        command -v "$candidate" >/dev/null 2>&1 && return 0
     done
-    fail "$purpose requires one of: $*"
+    fail "$requirement requires one of: $*"
 }
 
-require_llvm_tool() {
-    llvm_tool=$1
-    if command -v "$llvm_tool" >/dev/null 2>&1; then
-        return 0
-    fi
-    command -v xcrun >/dev/null 2>&1 &&
-        xcrun --find "$llvm_tool" >/dev/null 2>&1 && return 0
-    fail "required LLVM tool was not prepared: $llvm_tool"
+validate_native_platform() {
+    host_system=$(uname -s)
+    host_machine=$(uname -m)
+    case "$family:$platform:$host_system:$host_machine" in
+        linux:linux-x64:Linux:x86_64|linux:linux-x64:Linux:amd64) ;;
+        linux:linux-arm64:Linux:aarch64|linux:linux-arm64:Linux:arm64) ;;
+        macos:macos-x64:Darwin:x86_64|macos:macos-x64:Darwin:amd64) ;;
+        macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
+        *) fail "PLATFORM '$platform' and FAMILY '$family' do not match host $host_system/$host_machine" ;;
+    esac
 }
 
 verify_common_tools() {
-    # These commands form the controlled POSIX CI baseline used by the build,
-    # dependency, test and release scripts. Hosted-runner presence alone is not
-    # accepted as the contract: missing commands fail before the real work.
-    for required_tool in awk basename cat chmod cmp cp curl cut date dirname \
-            file git grep head make mkdir mktemp mv od perl pkg-config rm sed \
-            sort tar tr uname wc xz; do
-        require_tool "$required_tool"
+    for tool in awk basename cat chmod cksum cmp cp curl cut date dirname file git grep \
+            head id make mkdir mktemp mv od perl pkg-config rm sed sort stat tar tr uname wc xz; do
+        require_tool "$tool"
     done
     require_one_of 'SHA-256 verification' sha256sum shasum
 }
@@ -54,19 +52,19 @@ verify_common_tools() {
 verify_native_toolchain() {
     case "$family" in
         linux)
-            for required_tool in ar gcc ranlib; do
-                require_tool "$required_tool"
+            for tool in ar gcc ranlib; do
+                require_tool "$tool"
             done
             ;;
         macos)
-            for required_tool in ar clang ranlib xcrun; do
-                require_tool "$required_tool"
+            for tool in ar clang ranlib xcrun; do
+                require_tool "$tool"
             done
             ;;
     esac
 }
 
-verify_binary_inspection_tools() {
+verify_binary_tools() {
     require_tool strings
     case "$family" in
         linux)
@@ -79,73 +77,77 @@ verify_binary_inspection_tools() {
     esac
 }
 
-verify_prepared_tools() {
+verify_llvm_tool() {
+    xcrun --sdk macosx --find "$1" >/dev/null 2>&1 || fail "required Apple LLVM tool was not prepared: $1"
+}
+
+verify_profile_tools() {
     verify_common_tools
     verify_native_toolchain
-
-    case "$profile:$family:$platform" in
-        source:linux:linux-x64|source:linux:)
-            require_tool clang
+    case "$profile:$family" in
+        dependencies:*) ;;
+        source:linux)
             require_tool openssl
             require_one_of 'bounded source tests' timeout gtimeout
-            verify_binary_inspection_tools
+            verify_binary_tools
+            [ "$platform" != linux-x64 ] || require_tool clang
             ;;
-        source:linux:linux-arm64)
+        source:macos)
             require_one_of 'bounded source tests' timeout gtimeout
-            verify_binary_inspection_tools
+            verify_binary_tools
             ;;
-        source:macos:*)
-            require_one_of 'bounded source tests' timeout gtimeout
-            verify_binary_inspection_tools
-            ;;
-        coverage:linux:*)
+        coverage:linux)
             require_tool gcov
             require_tool gcovr
             require_one_of 'bounded coverage tests' timeout gtimeout
+            verify_binary_tools
             ;;
-        coverage:macos:*)
+        coverage:macos)
             require_tool gcovr
+            verify_llvm_tool llvm-cov
+            verify_llvm_tool llvm-profdata
             require_one_of 'bounded coverage tests' timeout gtimeout
-            require_llvm_tool llvm-cov
-            require_llvm_tool llvm-profdata
+            verify_binary_tools
             ;;
-        sanitizers:*:*)
+        sanitizers:linux|sanitizers:macos)
             require_tool clang
             require_one_of 'bounded sanitizer tests' timeout gtimeout
+            verify_binary_tools
             ;;
-        debug:linux:*)
-            verify_binary_inspection_tools
+        debug:linux)
+            verify_binary_tools
             require_tool objcopy
             ;;
-        debug:macos:*)
-            verify_binary_inspection_tools
+        debug:macos)
+            verify_binary_tools
             require_tool dsymutil
             require_tool dwarfdump
             ;;
-        release:linux:*)
-            verify_binary_inspection_tools
+        release:linux)
+            verify_binary_tools
             require_tool objcopy
             require_tool strip
+            require_one_of 'bounded release tests' timeout gtimeout
             ;;
-        release:macos:*)
-            verify_binary_inspection_tools
+        release:macos)
+            verify_binary_tools
             require_tool dsymutil
+            require_tool dwarfdump
             require_tool strip
+            require_one_of 'bounded release tests' timeout gtimeout
             ;;
+        *) fail "unsupported profile/family combination: $profile/$family" ;;
     esac
 }
 
-report_prepared_packages() {
+report_packages() {
     case "$family" in
         linux)
-            if command -v dpkg-query >/dev/null 2>&1; then
-                # Word splitting is intentional: packages is a controlled list.
-                # shellcheck disable=SC2086
-                dpkg-query -W -f='${Package}=${Version}\n' $packages 2>/dev/null || true
-            fi
+            command -v dpkg-query >/dev/null 2>&1 || return 0
+            # shellcheck disable=SC2086
+            dpkg-query -W -f='${Package}=${Version}\n' $packages 2>/dev/null || true
             ;;
         macos)
-            # Word splitting is intentional: packages is a controlled list.
             # shellcheck disable=SC2086
             brew list --versions $packages 2>/dev/null || true
             ;;
@@ -153,80 +155,45 @@ report_prepared_packages() {
 }
 
 case "$profile" in
-    dependencies | source | coverage | sanitizers | debug | release)
+    dependencies|source|coverage|sanitizers|debug|release)
         ;;
     *)
         fail "unsupported profile: $profile"
         ;;
 esac
-
 case "$family" in
-    linux)
-        packages='build-essential ca-certificates curl file git make perl pkg-config tar xz-utils'
-        case "$profile" in
-            dependencies)
-                ;;
-            source)
-                # The primary Linux build uses GCC. Clang is installed only for
-                # the x64 secondary compiler pass; OpenSSL is needed only by
-                # the x64 static-release portability fixture.
-                case "$platform" in
-                    linux-x64|'')
-                        packages="$packages clang openssl"
-                        ;;
-                    linux-arm64)
-                        ;;
-                    *)
-                        fail "unsupported Linux source platform: $platform"
-                        ;;
-                esac
-                ;;
-            coverage)
-                packages="$packages gcovr"
-                ;;
-            sanitizers)
-                # Keep one sanitizer implementation across POSIX and Windows.
-                packages="$packages clang llvm"
-                ;;
-            debug)
-                ;;
-            release)
-                packages="$packages zlib1g-dev"
-                ;;
-        esac
-        sudo apt-get update
-        # Word splitting is intentional: packages is a controlled internal list.
-        # shellcheck disable=SC2086
-        sudo apt-get install -y --no-install-recommends $packages
-        ;;
-    macos)
-        # GitHub-hosted macOS images may retain this unused third-party tap.
-        # Remove it before Homebrew commands so trust diagnostics stay relevant.
-        brew untap aws/tap >/dev/null 2>&1 || true
-        case "$profile" in
-            dependencies)
-                packages='perl pkg-config xz'
-                ;;
-            source | coverage | sanitizers)
-                # GNU timeout is not provided by macOS; coreutils supplies gtimeout.
-                packages='coreutils perl pkg-config xz'
-                ;;
-            debug)
-                packages='perl pkg-config xz'
-                ;;
-            release)
-                brew update
-                packages='curl perl pkg-config xz'
-                ;;
-        esac
-        for package in $packages; do
-            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
-        done
+    linux|macos)
         ;;
     *)
         fail "unsupported POSIX family: $family"
         ;;
 esac
+validate_native_platform
 
-report_prepared_packages
-verify_prepared_tools
+case "$family" in
+    linux)
+        packages='build-essential ca-certificates curl file git make openssl perl pkg-config tar xz-utils'
+        case "$profile" in
+            source) [ "$platform" != linux-x64 ] || packages="$packages clang" ;;
+            coverage) packages="$packages gcovr" ;;
+            sanitizers) packages="$packages clang llvm" ;;
+        esac
+        sudo apt-get update
+        # shellcheck disable=SC2086
+        sudo apt-get install -y --no-install-recommends $packages
+        ;;
+    macos)
+        brew untap aws/tap >/dev/null 2>&1 || true
+        case "$profile" in
+            source|sanitizers|release) packages='coreutils perl pkg-config xz' ;;
+            coverage) packages='coreutils gcovr perl pkg-config xz' ;;
+            dependencies|debug) packages='perl pkg-config xz' ;;
+        esac
+        for package in $packages; do
+            brew list --formula "$package" >/dev/null 2>&1 || brew install "$package"
+        done
+        ;;
+esac
+
+report_packages
+verify_profile_tools

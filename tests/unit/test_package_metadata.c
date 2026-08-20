@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises strict info.txt parsing, storage growth, duplicate rejection and ordered
+ * Exercises strict info.txt parsing, storage growth, duplicate rejection and ordered
  * field lookup.
  */
 
@@ -54,13 +54,13 @@ static void test_load_fields(void) {
     build_path(path, sizeof(path), "info.txt");
     write_text(path,
                "# package metadata\n"
-               "package.component=compiler\r\n"
+               "package.component=compiler\n"
                "package.tool=clang\n"
                "entry.clang=bin/clang\n"
                "entry.clang++=bin/clang++\n"
                "features.lto=yes\n");
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path, stderr));
     TEST_ASSERT_EQUAL_size_t(5, info.count);
     TEST_ASSERT_EQUAL_STRING("compiler", package_metadata_get(&info, "package.component"));
     TEST_ASSERT_EQUAL_STRING("clang", package_metadata_get(&info, "package.tool"));
@@ -91,7 +91,7 @@ static void test_storage_growth(void) {
     }
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path, stderr));
     TEST_ASSERT_EQUAL_size_t(20, info.count);
     TEST_ASSERT_TRUE(info.capacity >= 20);
     TEST_ASSERT_EQUAL_STRING("value19", package_metadata_get(&info, "config.key19"));
@@ -114,34 +114,34 @@ static void test_invalid_fields(void) {
     write_text(path,
                "package.component=compiler\n"
                "package.component=debugger\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
     TEST_ASSERT_EQUAL_size_t(0, info.count);
 
     build_path(path, sizeof(path), "unsafe-key.txt");
     write_text(path, "entry...clang=bin/clang\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     build_path(path, sizeof(path), "empty-group.txt");
     write_text(path, "features.=yes\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     build_path(path, sizeof(path), "empty-value.txt");
     write_text(path, "package.component=\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     memset(long_key, 'k', sizeof(long_key) - 1);
     long_key[sizeof(long_key) - 1] = '\0';
     TEST_ASSERT_TRUE(snprintf(record, sizeof(record), "%s=value\n", long_key) > 0);
     build_path(path, sizeof(path), "long-key.txt");
     write_text(path, record);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     memset(long_value, 'v', sizeof(long_value) - 1);
     long_value[sizeof(long_value) - 1] = '\0';
     TEST_ASSERT_TRUE(snprintf(record, sizeof(record), "key=%s\n", long_value) > 0);
     build_path(path, sizeof(path), "long-value.txt");
     write_text(path, record);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     package_metadata_free(&info);
 }
@@ -151,32 +151,45 @@ static void test_line_failures(void) {
     char path[256];
     unsigned char control[] = {'k', 'e', 'y', '=', 'a', 1, 'b', '\n'};
     unsigned char delete_control[] = {'k', 'e', 'y', '=', 'a', 127, 'b', '\n'};
+    unsigned char nul[] = {'k', 'e', 'y', '=', 'a', 0, 'b', '\n'};
     char long_line[MAX_METADATA_LINE_LEN + 16];
 
     package_metadata_init(&info);
     build_path(path, sizeof(path), "control.txt");
     write_bytes(path, control, sizeof(control));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     build_path(path, sizeof(path), "delete-control.txt");
     write_bytes(path, delete_control, sizeof(delete_control));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+
+    build_path(path, sizeof(path), "nul.txt");
+    write_bytes(path, nul, sizeof(nul));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+
+    build_path(path, sizeof(path), "carriage.txt");
+    write_text(path, "key=value\r\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+
+    build_path(path, sizeof(path), "missing-lf.txt");
+    write_text(path, "key=value");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     memset(long_line, 'x', sizeof(long_line));
     long_line[sizeof(long_line) - 1] = '\n';
     build_path(path, sizeof(path), "long-line.txt");
     write_bytes(path, long_line, sizeof(long_line));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
     build_path(path, sizeof(path), "directory");
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_metadata_load(&info, path, stderr));
     TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
 
     build_path(path, sizeof(path), "missing.txt");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_load(NULL, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_load(&info, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_load(NULL, path, stderr));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_load(&info, NULL, stderr));
     package_metadata_free(&info);
 }
 
@@ -189,7 +202,7 @@ static void test_query_guards(void) {
     package_metadata_init(&info);
     build_path(path, sizeof(path), "query.txt");
     write_text(path, "entry.clang=bin/clang\npackage.tool=clang\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path, stderr));
 
     TEST_ASSERT_NULL(package_metadata_get(NULL, "package.tool"));
     TEST_ASSERT_NULL(package_metadata_get(&info, NULL));
@@ -208,10 +221,22 @@ static void test_query_guards(void) {
     TEST_ASSERT_EQUAL_STRING("clang", command.name);
     TEST_ASSERT_EQUAL_STRING("bin/clang", command.path);
     TEST_ASSERT_FALSE(package_metadata_next_command(&info, &command, &cursor));
+    TEST_ASSERT_EQUAL_STRING("", command.name);
+    TEST_ASSERT_EQUAL_STRING("", command.path);
+
+    memset(&command, 0xa5, sizeof(command));
+    TEST_ASSERT_FALSE(package_metadata_next_command(NULL, &command, &cursor));
+    TEST_ASSERT_EQUAL_STRING("", command.name);
+    TEST_ASSERT_EQUAL_STRING("", command.path);
+
+    info.count = info.capacity + 1u;
+    cursor = 0;
+    TEST_ASSERT_NULL(package_metadata_get(&info, "package.tool"));
+    TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", &cursor));
+    info.count = 2;
     package_metadata_free(&info);
 }
 
-/* Suite registration. */
 
 int main(void) {
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(

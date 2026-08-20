@@ -1,5 +1,5 @@
 /*
- * Test focus: Exercises official-version selection, downgrade/equality policy, staged asset
+ * Exercises official-version selection, downgrade/equality policy, staged asset
  * verification and deferred-helper boundaries.
  */
 
@@ -9,14 +9,17 @@
 #include "command_context.h"
 #include "commands.h"
 #include "cup_update.h"
+#include "cup_update_journal.h"
 #include "constants.h"
 #include "error.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "install_policy.h"
+#include "interrupt.h"
 #include "package_catalog.h"
 #include "system.h"
 #include "package_transaction.h"
+#include "release_metadata.h"
 #include "unity.h"
 #include "test_platform.h"
 
@@ -48,18 +51,19 @@ static int fail_setup_call;
 static int latest_metadata_mode;
 static int versioned_metadata_mode;
 static CupError context_result;
-static CupError transaction_check_result;
 static CupError transaction_begin_result;
 static CupError transaction_clear_result;
 static CupError helper_prepare_result;
 static CupError helper_result;
 static CupError cleanup_result;
+static CupError safe_point_result;
 static int context_end_calls;
 static int transaction_begin_calls;
 static int transaction_clear_calls;
 static int helper_prepare_calls;
 static int helper_calls;
 static int cleanup_calls;
+static int safe_point_calls;
 static int executable_calls;
 static unsigned staging_serial;
 static CupError cup_assets_inspect_result;
@@ -76,9 +80,9 @@ static CupError buffer_write_result(int written, size_t size) {
 
 static void reset_scenario(void) {
     strcpy(remote_version, "1.2.4");
-    strcpy(remote_commit, "abcdef1");
+    strcpy(remote_commit, "abcdef1234567890abcdef1234567890abcdef12");
     strcpy(versioned_version, "1.2.4");
-    strcpy(versioned_commit, "abcdef1");
+    strcpy(versioned_commit, "abcdef1234567890abcdef1234567890abcdef12");
     fetch_calls = 0;
     fail_fetch_call = 0;
     checksum_schema_valid = 1;
@@ -93,18 +97,19 @@ static void reset_scenario(void) {
     latest_metadata_mode = 0;
     versioned_metadata_mode = 0;
     context_result = CUP_OK;
-    transaction_check_result = CUP_OK;
     transaction_begin_result = CUP_OK;
     transaction_clear_result = CUP_OK;
     helper_prepare_result = CUP_OK;
     helper_result = CUP_OK;
     cleanup_result = CUP_OK;
+    safe_point_result = CUP_OK;
     context_end_calls = 0;
     transaction_begin_calls = 0;
     transaction_clear_calls = 0;
     helper_prepare_calls = 0;
     helper_calls = 0;
     cleanup_calls = 0;
+    safe_point_calls = 0;
     executable_calls = 0;
     cup_assets_inspect_result = CUP_OK;
     installed_generation_valid = 1;
@@ -195,10 +200,6 @@ void command_context_end(CommandContext *context) {
     context_end_calls++;
 }
 
-CupError runtime_journal_require_none(void) {
-    return transaction_check_result;
-}
-
 CupError cup_assets_inspect(CupAssetsInspection *inspection) {
     cup_assets_inspect_calls++;
     if (inspection == NULL) {
@@ -240,9 +241,9 @@ CupError cup_assets_platform_checksums_name(char *name, size_t size) {
 }
 
 CupError checksum_verify_file(const char *checksum_path,
-                                 const char *asset_name,
-                                 const char *asset_path,
-                                 int *matches) {
+                              const char *asset_name,
+                              const char *asset_path,
+                              int *matches) {
     (void)checksum_path;
     (void)asset_name;
     (void)asset_path;
@@ -266,63 +267,6 @@ CupError layout_get_staging_dir(char *buffer, size_t size) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
     return copy_test_path(buffer, size, "tmp");
-}
-
-CupError layout_get_binary_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "installed/cup");
-}
-
-CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return buffer_write_result(
-        snprintf(buffer, size, "%s/installed/%s", temp_dir, CUP_UNINSTALL_FILENAME), size);
-}
-
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "installed/SHA256SUMS.linux-x64");
-}
-
-CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "installed/packages.cfg");
-}
-
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "installed/install.cfg");
-}
-
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "installed/SHA256SUMS.common");
-}
-
-CupError layout_get_lock_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "cup.lock");
-}
-
-CupError layout_get_transaction_path(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return copy_test_path(buffer, size, "tmp/transaction.txt");
 }
 
 CupError system_create_temp_directory(const char *directory,
@@ -368,8 +312,38 @@ CupError cup_update_helper_start(const char *token) {
     return helper_result;
 }
 
+CupError interrupt_safe_point(void) {
+    safe_point_calls++;
+    return safe_point_result;
+}
+
 int download_insecure_loopback_is_allowed(const char *url) {
     return allow_insecure_loopback && url != NULL;
+}
+
+CupError download_copy_release_base_override(char *base, size_t size) {
+    const char *value = getenv("CUP_INSTALL_BASE_URL");
+    size_t length;
+
+    if (base == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (value == NULL || value[0] == '\0') {
+        return CUP_ERR_NOT_AVAILABLE;
+    }
+    if (!download_insecure_loopback_is_allowed(value)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    length = strlen(value);
+    while (length > 0 && value[length - 1] == '/') {
+        length--;
+    }
+    if (length == 0 || length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(base, value, length);
+    base[length] = '\0';
+    return CUP_OK;
 }
 
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
@@ -428,12 +402,15 @@ CupError checksum_validate_assets(const char *checksum_path,
                                   size_t asset_count) {
     TEST_ASSERT_NOT_NULL(checksum_path);
     TEST_ASSERT_NOT_NULL(asset_names);
-    TEST_ASSERT_TRUE(asset_count == 3 || asset_count == CUP_COMMON_CHECKSUM_ASSET_COUNT);
-    if (asset_count == CUP_COMMON_CHECKSUM_ASSET_COUNT) {
+    if (strstr(checksum_path, CUP_UPDATE_COMMON_CHECKSUMS_NEW) != NULL) {
+        TEST_ASSERT_EQUAL_UINT(CUP_COMMON_CHECKSUM_ASSET_COUNT, asset_count);
         TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, asset_names[0]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, asset_names[1]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, asset_names[2]);
         TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, asset_names[3]);
+    } else {
+        TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, asset_count);
+        TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, asset_names[3]);
     }
     return checksum_schema_valid ? CUP_OK : CUP_ERR_VALIDATION;
 }
@@ -448,12 +425,9 @@ void package_catalog_free(PackageCatalog *catalog) {
     (void)catalog;
 }
 
-CupError package_catalog_load_path(PackageCatalog *catalog,
-                                   const char *path,
-                                   PackageCatalogSource source) {
+CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
     TEST_ASSERT_NOT_NULL(catalog);
     TEST_ASSERT_NOT_NULL(path);
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CATALOG_SOURCE_INSTALLED, source);
     return CUP_OK;
 }
 
@@ -463,28 +437,46 @@ void install_policy_init(InstallPolicy *config) {
     }
 }
 
-CupError install_policy_load_path(InstallPolicy *config,
-                                  const char *path,
-                                  InstallPolicySource source) {
+CupError install_policy_load_path(InstallPolicy *config, const char *path) {
     TEST_ASSERT_NOT_NULL(config);
     TEST_ASSERT_NOT_NULL(path);
-    TEST_ASSERT_EQUAL_INT(INSTALL_POLICY_SOURCE_INSTALLED, source);
     return CUP_OK;
+}
+
+void cup_update_journal_init(CupUpdateJournal *journal) {
+    if (journal != NULL) {
+        memset(journal, 0, sizeof(*journal));
+        journal->phase = CUP_UPDATE_PHASE_SCHEDULED;
+        journal->recovery = CUP_UPDATE_FAILURE_NONE;
+    }
 }
 
 CupError cup_update_journal_begin(const char *temporary_path,
                                   const char *token,
-                                  const char *version) {
+                                  const char *version,
+                                  CupUpdateJournal *created) {
     TEST_ASSERT_NOT_NULL(temporary_path);
     TEST_ASSERT_NOT_NULL(token);
     TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));
     TEST_ASSERT_NOT_NULL(strstr(token, ".tmp"));
     TEST_ASSERT_EQUAL_STRING(versioned_version, version);
+    TEST_ASSERT_NOT_NULL(created);
+
     transaction_begin_calls++;
+    cup_update_journal_init(created);
+    if (transaction_begin_result == CUP_OK || transaction_begin_result == CUP_ERR_COMMIT) {
+        created->file_identity.valid = 1;
+        created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    }
     return transaction_begin_result;
 }
 
-CupError runtime_journal_clear(void) {
+
+
+CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
     transaction_clear_calls++;
     return transaction_clear_result;
 }
@@ -546,6 +538,37 @@ static void test_loopback_base_normalization(void) {
     TEST_ASSERT_EQUAL_INT(8, fetch_calls);
 }
 
+
+
+static void test_invalid_override_fails_closed(void) {
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_INSTALL_BASE_URL", "ftp://example.invalid"));
+#else
+    TEST_ASSERT_EQUAL_INT(0, setenv("CUP_INSTALL_BASE_URL", "ftp://example.invalid", 1));
+#endif
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_update_start());
+    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(1, context_end_calls);
+}
+
+static void test_release_version_grammar(void) {
+    ReleaseVersion version;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, release_version_parse("0.2.2", &version));
+    TEST_ASSERT_EQUAL_UINT(0, version.major);
+    TEST_ASSERT_EQUAL_UINT(2, version.minor);
+    TEST_ASSERT_EQUAL_UINT(2, version.patch);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, release_version_parse("999999.0.1", NULL));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, release_version_parse(NULL, &version));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, release_version_parse("", &version));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("01.2.3", &version));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1.2", &version));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1.2.3.4", &version));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1000000.2.3", &version));
+}
+
 static void test_noop_versions(void) {
     strcpy(remote_version, "1.2.3");
     strcpy(versioned_version, "1.2.3");
@@ -576,7 +599,7 @@ static void test_bad_latest_metadata(void) {
 }
 
 static void test_versioned_checksums(void) {
-    strcpy(versioned_commit, "abcdef2");
+    strcpy(versioned_commit, "abcdef1234567890abcdef1234567890abcdef13");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(4, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
@@ -601,7 +624,7 @@ static void test_update_fetch_fail(void) {
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
 
     reset_scenario();
-    transaction_check_result = CUP_ERR_TRANSACTION;
+    context_result = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_start());
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
 
@@ -613,6 +636,16 @@ static void test_update_fetch_fail(void) {
     reset_scenario();
     fail_fetch_call = 5;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, cup_update_start());
+    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
+}
+
+static void test_interrupt_before_helper_handoff(void) {
+    safe_point_result = CUP_ERR_INTERRUPT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, cup_update_start());
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
+    TEST_ASSERT_EQUAL_INT(1, transaction_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
@@ -680,7 +713,7 @@ static void test_metadata_shapes(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
 
     reset_scenario();
-    strcpy(remote_commit, "ABCDEF1");
+    strcpy(remote_commit, "Abcdef1234567890abcdef1234567890abcdef12");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, cup_update_start());
 
     reset_scenario();
@@ -691,7 +724,7 @@ static void test_metadata_shapes(void) {
 static void test_setup_failures(void) {
     int step;
 
-    for (step = 1; step <= 12; ++step) {
+    for (step = 1; step <= 4; ++step) {
         reset_scenario();
         fail_setup_call = step;
         TEST_ASSERT_NOT_EQUAL(CUP_OK, cup_update_start());
@@ -732,7 +765,6 @@ static void test_stage_failures(void) {
 #endif
 }
 
-/* Suite registration. */
 
 int main(void) {
     char tmp_path[1024];
@@ -745,9 +777,11 @@ int main(void) {
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(tmp_path, 0700));
 
     UNITY_BEGIN();
+    RUN_TEST(test_release_version_grammar);
     RUN_TEST(test_installed_preflight);
     RUN_TEST(test_update_success);
     RUN_TEST(test_loopback_base_normalization);
+    RUN_TEST(test_invalid_override_fails_closed);
     RUN_TEST(test_noop_versions);
     RUN_TEST(test_version_order);
     RUN_TEST(test_bad_latest_metadata);
@@ -756,6 +790,7 @@ int main(void) {
     RUN_TEST(test_stage_failures);
     RUN_TEST(test_versioned_checksums);
     RUN_TEST(test_update_fetch_fail);
+    RUN_TEST(test_interrupt_before_helper_handoff);
     RUN_TEST(test_update_commit_fail);
     return UNITY_END();
 }

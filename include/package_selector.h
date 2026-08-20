@@ -23,7 +23,10 @@ CupError package_selector_parse(PackageSelector *selector, const char *text);
 /* Return whether a release uses the exact symbolic 'stable' name. */
 int package_release_is_stable(const char *release);
 
-/* Parse and validate both fields of a '<tool>@<release>' string. */
+/* Validate one canonical concrete release that may be persisted. */
+CupError package_release_validate_concrete(const char *release);
+
+/* Split one exact non-empty '<tool>@<release>' string without trimming or normalization. */
 CupError package_selector_parse_parts(
     const char *text, char *tool, size_t tool_size, char *release, size_t release_size);
 

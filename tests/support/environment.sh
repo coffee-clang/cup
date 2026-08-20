@@ -1,8 +1,8 @@
 
-# Purpose: Resolves the native source-test platform and validates the explicit
+# Resolves the native source-test platform and validates the explicit
 # dependency prefix. Test runners never bootstrap dependencies implicitly.
 
-# Map the native kernel and architecture to CUP's closed platform identifiers.
+# Map the native kernel and architecture to cup's closed platform identifiers.
 cup_test_detect_platform() {
     _cup_test_os=$(uname -s) || return 1
     _cup_test_arch=$(uname -m) || return 1
@@ -63,6 +63,78 @@ cup_test_prepare_environment() {
     export CUP_TEST_PLATFORM DEPS_PREFIX
 }
 
+cup_test_project_root() {
+    if [ -n "${CUP_TEST_PROJECT_ROOT:-}" ]; then
+        printf '%s\n' "$CUP_TEST_PROJECT_ROOT"
+    elif [ -n "${PROJECT_ROOT:-}" ]; then
+        printf '%s\n' "$PROJECT_ROOT"
+    elif [ -n "${ROOT:-}" ]; then
+        printf '%s\n' "$ROOT"
+    elif [ -n "${TESTS_ROOT:-}" ]; then
+        CDPATH= cd -- "$TESTS_ROOT/.." && pwd
+    else
+        printf '%s\n' 'Test project root is not available.' >&2
+        return 1
+    fi
+}
+
+cup_test_build_root() {
+    _cup_test_root=$(cup_test_project_root) || return 1
+    _cup_test_build_root=${CUP_TEST_BUILD_ROOT:-$_cup_test_root/build}
+    case "$_cup_test_build_root" in
+        [A-Za-z]:[\\/]*)
+            command -v cygpath >/dev/null 2>&1 || {
+                printf 'cygpath is required for a Windows test build root: %s\n' \
+                    "$_cup_test_build_root" >&2
+                return 1
+            }
+            cygpath -u "$_cup_test_build_root"
+            ;;
+        *)
+            printf '%s\n' "$_cup_test_build_root"
+            ;;
+    esac
+}
+
+cup_test_load_path_safety() {
+    [ "${CUP_TEST_PATH_SAFETY_LOADED:-0}" -eq 1 ] && return 0
+    _cup_test_root=$(cup_test_project_root) || return 1
+    _cup_test_library=$_cup_test_root/scripts/lib/path-safety.sh
+    [ -f "$_cup_test_library" ] && [ ! -L "$_cup_test_library" ] || {
+        printf 'Path-safety library is missing: %s\n' "$_cup_test_library" >&2
+        return 1
+    }
+    # shellcheck disable=SC1090
+    . "$_cup_test_library"
+    CUP_TEST_PATH_SAFETY_LOADED=1
+}
+
+cup_test_build_root_owned() {
+    _cup_test_build_root=$(cup_test_build_root) || return 1
+    cup_test_load_path_safety || return 1
+    cup_path_require_build_root "$_cup_test_build_root" || {
+        printf 'Test build root is not safely owned: %s\n' \
+            "$_cup_test_build_root" >&2
+        return 1
+    }
+}
+
+cup_test_reset_output_directory() {
+    _cup_test_output=$1
+    _cup_test_build_root=$(cup_test_build_root) || return 1
+    cup_test_load_path_safety || return 1
+    cup_test_build_root_owned || return 1
+    cup_path_require_within "$_cup_test_build_root" "$_cup_test_output" \
+        'test output directory' || return 1
+
+    if [ -e "$_cup_test_output" ] || [ -L "$_cup_test_output" ]; then
+        cup_path_remove_child_tree "$_cup_test_build_root" "$_cup_test_output" \
+            'test output directory' || return 1
+    fi
+    cup_path_prepare_child_directory "$_cup_test_build_root" "$_cup_test_output" \
+        'test output directory'
+}
+
 cup_test_find_static_library() {
     _cup_test_name=$1
     for _cup_test_directory in "$DEPS_PREFIX/lib" "$DEPS_PREFIX/lib64"; do
@@ -79,47 +151,14 @@ cup_test_find_static_library() {
 }
 
 cup_test_dependencies_ready() {
-    [ -f "$DEPS_PREFIX/include/argtable3.h" ] &&
-        [ -f "$DEPS_PREFIX/include/uthash.h" ] &&
-        [ -f "$DEPS_PREFIX/include/ares.h" ] &&
-        [ -f "$DEPS_PREFIX/include/unity.h" ] &&
-        [ -f "$DEPS_PREFIX/include/unity_internals.h" ] &&
-        [ -f "$DEPS_PREFIX/include/event2/event.h" ] &&
-        [ -f "$DEPS_PREFIX/include/event2/http.h" ] &&
-        [ -f "$DEPS_PREFIX/include/event2/bufferevent.h" ] &&
-        [ -f "$DEPS_PREFIX/include/event2/listener.h" ] &&
-        [ -f "$DEPS_PREFIX/include/curl/curl.h" ] &&
-        [ -f "$DEPS_PREFIX/include/archive.h" ] &&
-        [ -f "$DEPS_PREFIX/include/archive_entry.h" ] &&
-        [ -f "$DEPS_PREFIX/include/zlib.h" ] &&
-        [ -f "$DEPS_PREFIX/include/lzma.h" ] &&
-        [ -x "$DEPS_PREFIX/bin/curl-config" ] &&
-        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libcares.pc" ] ||
-          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libcares.pc" ]; } &&
-        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libarchive.pc" ] ||
-          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libarchive.pc" ]; } &&
-        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_core.pc" ] ||
-          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libevent_core.pc" ]; } &&
-        { [ -f "$DEPS_PREFIX/lib/pkgconfig/libevent_extra.pc" ] ||
-          [ -f "$DEPS_PREFIX/lib64/pkgconfig/libevent_extra.pc" ]; } &&
-        cup_test_find_static_library argtable3 >/dev/null &&
-        cup_test_find_static_library cares >/dev/null &&
-        cup_test_find_static_library unity >/dev/null &&
-        cup_test_find_static_library event_core >/dev/null &&
-        cup_test_find_static_library event_extra >/dev/null &&
-        cup_test_find_static_library curl >/dev/null &&
-        cup_test_find_static_library archive >/dev/null &&
-        cup_test_find_static_library z >/dev/null &&
-        cup_test_find_static_library lzma >/dev/null || return 1
-
-    case "$CUP_TEST_PLATFORM" in
-        windows-x64)
-            return 0
-            ;;
-    esac
-    [ -f "$DEPS_PREFIX/include/openssl/ssl.h" ] &&
-        cup_test_find_static_library ssl >/dev/null &&
-        cup_test_find_static_library crypto >/dev/null
+    _cup_test_root=$(cup_test_project_root) || return 1
+    [ -x "$_cup_test_root/scripts/dependencies/verify.sh" ] || {
+        printf 'Dependency verifier is missing or not executable: %s\n' \
+            "$_cup_test_root/scripts/dependencies/verify.sh" >&2
+        return 1
+    }
+    "$_cup_test_root/scripts/dependencies/verify.sh" \
+        "$CUP_TEST_PLATFORM" "$DEPS_PREFIX" >/dev/null 2>&1
 }
 
 cup_test_require_dependencies() {
@@ -160,9 +199,6 @@ cup_test_tool_hint() {
             ;;
         macos-*)
             case "$_cup_test_tool" in
-                gcovr)
-                    printf '%s\n' "Install it with: brew install gcovr" >&2
-                    ;;
                 timeout|gtimeout)
                     printf '%s\n' "Install GNU timeout with: brew install coreutils" >&2
                     ;;

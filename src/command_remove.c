@@ -5,11 +5,12 @@
 
 #include "commands.h"
 #include "installed_package.h"
+#include "interrupt.h"
 
 #include "command_context.h"
-#include "runtime_journal.h"
 #include "package_selector.h"
 #include "package_request.h"
+#include "runtime_journal.h"
 #include "wrappers.h"
 #include "filesystem.h"
 #include "layout.h"
@@ -17,7 +18,6 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
-#include "registry.h"
 #include "text.h"
 
 #include <stdio.h>
@@ -32,61 +32,32 @@ typedef struct {
     char staging_path[MAX_PATH_LEN];
     int package_moved;
     int journal_started;
-    int removed_active;
+    SystemPathIdentity journal_identity;
+    int removed_default;
     WrapperPlan wrappers;
     int wrappers_ready;
 } RemoveOperation;
 
-static CupError normalize_remove_selection(const char *component_input,
-                                           const char *selector_input,
-                                           char *component,
-                                           size_t component_size,
-                                           char *tool,
+static CupError parse_remove_selection(const char *component,
+                                       const char *selector,
+                                       char *tool,
                                            size_t tool_size,
                                            char *release,
                                            size_t release_size,
                                            int *release_omitted) {
     CupError err;
-    char normalized_release[MAX_IDENTIFIER_LEN];
 
-    if (text_is_empty(selector_input) || component == NULL || component_size == 0 ||
-        tool == NULL || tool_size == 0 || release == NULL || release_size == 0 ||
-        release_omitted == NULL) {
+    if (text_is_empty(component) || text_is_empty(selector) || tool == NULL || tool_size == 0 ||
+        release == NULL || release_size == 0 || release_omitted == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    *release_omitted = strchr(selector_input, '@') == NULL;
+    *release_omitted = strchr(selector, '@') == NULL;
     if (*release_omitted) {
-        err = text_copy_lower_ascii(tool, tool_size, selector_input);
+        err = text_copy(tool, tool_size, selector);
         release[0] = '\0';
     } else {
-        err = package_selector_parse_parts(
-            selector_input, tool, tool_size, release, release_size);
-        if (err == CUP_OK) {
-            err = text_copy_lower_ascii(tool, tool_size, tool);
-        }
-        if (err == CUP_OK) {
-            err = text_copy_lower_ascii(
-                normalized_release, sizeof(normalized_release), release);
-        }
-        if (err == CUP_OK && strcmp(normalized_release, "stable") == 0) {
-            err = text_copy(release, release_size, "stable");
-        }
-    }
-    if (err != CUP_OK) {
-        fprintf(stderr,
-                "Error: invalid remove selector '%s'. Expected '<tool>[@<release>]'.\n",
-                selector_input);
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (text_is_empty(component_input)) {
-        err = registry_find_tool_component(tool, component, component_size);
-    } else {
-        err = text_copy_lower_ascii(component, component_size, component_input);
-        if (err == CUP_OK) {
-            err = registry_validate_tool(component, tool);
-        }
+        err = package_selector_parse_parts(selector, tool, tool_size, release, release_size);
     }
     return err;
 }
@@ -166,32 +137,19 @@ static CupError prepare_remove(RemoveOperation *operation,
                                const char *selector,
                                const char *target_override) {
     CupError err;
-    char normalized_component[MAX_IDENTIFIER_LEN];
     char tool[MAX_IDENTIFIER_LEN];
     char release[MAX_IDENTIFIER_LEN];
     char normalized_selector[MAX_SELECTOR_LEN];
     int release_omitted;
 
-    err = normalize_remove_selection(component,
-                                     selector,
-                                     normalized_component,
-                                     sizeof(normalized_component),
-                                     tool,
-                                     sizeof(tool),
-                                     release,
-                                     sizeof(release),
-                                     &release_omitted);
+    err = parse_remove_selection(
+        component, selector, tool, sizeof(tool), release, sizeof(release), &release_omitted);
     if (err != CUP_OK) {
         return err;
     }
 
     /* Resolve the request under one exclusive, transaction-free state snapshot. */
     err = command_context_begin(&operation->context, target_override, SYSTEM_LOCK_EXCLUSIVE);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = runtime_journal_require_none();
     if (err != CUP_OK) {
         return err;
     }
@@ -203,7 +161,7 @@ static CupError prepare_remove(RemoveOperation *operation,
 
     if (release_omitted) {
         err = resolve_unique_installed_release(&operation->context.state,
-                                               normalized_component,
+                                               component,
                                                tool,
                                                operation->context.host_platform,
                                                operation->context.target_platform,
@@ -216,8 +174,7 @@ static CupError prepare_remove(RemoveOperation *operation,
     err = package_selector_format_parts(
         normalized_selector, sizeof(normalized_selector), tool, release);
     if (err == CUP_OK) {
-        err = package_request_parse(
-            normalized_component, normalized_selector, &operation->request);
+        err = package_request_parse(component, normalized_selector, &operation->request);
     }
     if (err != CUP_OK) {
         return err;
@@ -240,7 +197,7 @@ static CupError prepare_remove(RemoveOperation *operation,
 
     err =
         package_request_resolve(operation->context.has_catalog ? &operation->context.catalog : NULL,
-                                normalized_component,
+                                component,
                                 operation->context.host_platform,
                                 operation->context.target_platform,
                                 &operation->request);
@@ -249,7 +206,7 @@ static CupError prepare_remove(RemoveOperation *operation,
     }
 
     err = package_identity_init(&operation->package,
-                                normalized_component,
+                                component,
                                 operation->request.selector.tool,
                                 operation->context.host_platform,
                                 operation->context.target_platform,
@@ -277,8 +234,19 @@ static CupError prepare_remove(RemoveOperation *operation,
         return err;
     }
 
-    err = package_transaction_begin(
-        PACKAGE_OPERATION_REMOVE, &operation->package, operation->staging_path);
+    err = interrupt_safe_point();
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    {
+        PackageTransaction journal;
+        err = package_transaction_begin(
+            PACKAGE_OPERATION_REMOVE, &operation->package, operation->staging_path, &journal);
+        if (err == CUP_OK) {
+            operation->journal_identity = journal.file_identity;
+        }
+    }
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
                 "Error: transaction journal was created, but its durability could "
@@ -300,6 +268,10 @@ static CupError stage_removal(RemoveOperation *operation) {
 
     printf("==> Moving package to temporary storage...\n");
 
+    err = interrupt_safe_point();
+    if (err != CUP_OK) {
+        return err;
+    }
     err = system_move_path(operation->install_path, operation->staging_path, &commit_state);
     if (err != CUP_OK && commit_state == SYSTEM_COMMIT_APPLIED) {
         operation->package_moved = 1;
@@ -320,18 +292,18 @@ static CupError stage_removal(RemoveOperation *operation) {
 static CupError commit_removal(RemoveOperation *operation) {
     CupError err;
     PackageScope scope;
-    const PackageIdentity *active_identity;
+    const PackageIdentity *default_identity;
     int cleanup_failed = 0;
 
     err = package_identity_get_scope(&operation->package, &scope);
     if (err != CUP_OK) {
         return err;
     }
-    active_identity = state_get_active(&operation->context.state, &scope);
-    operation->removed_active =
-        active_identity != NULL && package_identity_equals(active_identity, &operation->package);
+    default_identity = state_get_default(&operation->context.state, &scope);
+    operation->removed_default =
+        default_identity != NULL && package_identity_equals(default_identity, &operation->package);
 
-    err = state_clear_matching_active(&operation->context.state, &operation->package);
+    err = state_clear_matching_default(&operation->context.state, &operation->package);
     if (err != CUP_OK) {
         return err;
     }
@@ -341,7 +313,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         return err;
     }
 
-    if (operation->removed_active) {
+    if (operation->removed_default) {
         err = wrapper_plan_build(&operation->wrappers, &operation->context.state);
         if (err != CUP_OK) {
             return err;
@@ -349,7 +321,9 @@ static CupError commit_removal(RemoveOperation *operation) {
         operation->wrappers_ready = 1;
     }
 
-    err = state_save(&operation->context.state);
+    err = state_save(&operation->context.state,
+                     &operation->context.state_identity,
+                     &operation->context.state_identity);
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
@@ -367,7 +341,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         cleanup_failed = 1;
     }
 
-    if (runtime_journal_clear() != CUP_OK) {
+    if (runtime_journal_clear_if_identity(&operation->journal_identity) != CUP_OK) {
         fprintf(stderr,
                 "Warning: package removal committed, but transaction cleanup "
                 "failed. Run 'cup repair'.\n");
@@ -400,7 +374,7 @@ static CupError rollback_removal(RemoveOperation *operation) {
     }
 
     if (operation->journal_started) {
-        err = runtime_journal_clear();
+        err = runtime_journal_clear_if_identity(&operation->journal_identity);
         if (err != CUP_OK) {
             return CUP_ERR_ROLLBACK;
         }

@@ -1,92 +1,53 @@
-# Documentation
+# cup documentation
 
-`cup` is a user-space toolchain manager for prebuilt C development tools. This
-documentation describes the current implementation, its public behavior and the
-design constraints that keep installation and recovery deterministic.
+These documents describe cup as implemented in this repository. They are divided by
+audience so the user guide stays separate from internal design and from the
+build/release process.
 
-The rendered documentation is available at
-[coffee-clang.github.io/cup](https://coffee-clang.github.io/cup/). The root
-`README.md` is intentionally a short project introduction; this index is the
-starting point for complete user, design and development documentation.
-
-The documentation is organized by stable responsibility rather than by source
-file or development chronology. Each subject has one primary document and links
-to related contracts where a boundary is crossed.
+The documentation follows the product and repository contracts present here. It
+does not describe `cup-components` internals or proposed package formats.
 
 ## User guide
 
-- [INSTALLATION](user/INSTALLATION.md) explains the cup asset installers,
-  reinstallation, canonical paths and uninstall behavior.
-- [COMMANDS](user/COMMANDS.md) is the complete CLI reference, including state changes
-  and relevant failure conditions.
+- [Installation](user/INSTALLATION.md) explains the public installers, the
+  selected root, PATH handling, updates and uninstall.
+- [Commands](user/COMMANDS.md) lists every public command, its arguments and the
+  main failure cases.
+
+These two pages are enough for someone who only wants to use cup.
 
 ## Design
 
-- [ARCHITECTURE](design/ARCHITECTURE.md) defines the domain model, module boundaries and
-  the separation between runtime C code and operational scripts.
-- [PLATFORMS](design/PLATFORMS.md) describes platform identifiers and the differences
-  between POSIX and Windows implementations.
-- [PACKAGES](design/PACKAGES.md) defines `packages.cfg`, the verified
-  `install.cfg` policy, local installation preferences, package identities,
-  `info.txt`, cache names and the contract with `cup-components`.
-- [STATE](design/STATE.md) defines root selection, `state.txt`, defaults, locks and managed
-  package commands.
-- [TRANSACTIONS](design/TRANSACTIONS.md) defines journals, commit points, rollback,
-  recovery, `doctor`, `repair` and uninstall.
-- [SECURITY](design/SECURITY.md) collects the HTTPS, checksum, archive, path and
-  cup assets integrity rules.
+- [Architecture](design/ARCHITECTURE.md) gives the overall structure and maps the
+  C modules and script families to their responsibilities.
+- [Packages](design/PACKAGES.md) explains the catalog, package identity, archive
+  layout, metadata and cache.
+- [State](design/STATE.md) describes the managed root, `state.txt`, preferences,
+  wrappers and cup assets.
+- [Transactions](design/TRANSACTIONS.md) explains `transaction.txt`, commit
+  points, recovery and detached helpers.
+- [Platforms](design/PLATFORMS.md) covers Linux, macOS and Windows differences.
+- [Security](design/SECURITY.md) collects the trust, download, archive and path
+  checks used by the project.
 
-## Build, verification and release
+## Development
 
-- [BUILD](development/BUILD.md) describes build modes, dependencies, static cup assets and
-  generated sources.
-- [TESTING](development/TESTING.md) describes test layers, fixtures, coverage, sanitizers
-  and repository verification.
-- [RELEASES](development/RELEASES.md) describes version derivation, candidate artifacts,
-  release gates and resumable publication.
+- [Build](development/BUILD.md) covers Make targets, dependencies, generated
+  files, binary inspection and the documentation target.
+- [Testing](development/TESTING.md) explains test levels, local commands,
+  coverage, sanitizers and CI.
+- [Releases](development/RELEASES.md) describes versioning, evidence, candidate
+  assembly, native validation and publication.
 
-## Documentation paths
+## Project limits
 
-For users:
+The current project intentionally keeps a small scope:
 
-```text
-INSTALLATION -> COMMANDS -> PLATFORMS
-```
-
-For implementation and operational reference:
-
-```text
-ARCHITECTURE -> PLATFORMS -> PACKAGES -> STATE -> TRANSACTIONS -> SECURITY
-             -> BUILD -> TESTING -> RELEASES
-```
-
-## Project boundary
-
-This repository does not build GCC, Clang, GDB, LLDB, LLD, Valgrind or the
-other component packages during `cup install`. Those archives are produced and
-published by the separate
-[`cup-components`](https://github.com/coffee-clang/cup-components) project.
-
-The boundary is deliberate:
-
-```text
-cup-components
-  builds, tests and packages complete tool distributions
-
-cup
-  resolves, downloads, verifies, installs and manages those packages
-```
-
-[PACKAGES](design/PACKAGES.md) documents the shared artifact contract. Component build
-recipes, Docker images, MSYS2/Homebrew setup and tool-specific packaging belong
-to the `cup-components` repository and are not duplicated here.
-
-## Current scope
-
-The documentation describes the current supported behavior and design.
-Superseded command names, directory layouts and release models are not presented
-as active behavior.
-
-Design documents include rationale where it clarifies an implemented constraint,
-tradeoff or operational guarantee. They describe the current system rather than
-recording the development chronology.
+- cup works in user space and never requires `sudo` or administrator rights;
+- it installs complete prebuilt packages instead of building tools locally;
+- it does not manage a global sysroot;
+- it does not modify the system PATH;
+- it uses one local root and one transaction file;
+- it supports only the platforms and tools listed by the built-in registry;
+- `stable` is the only symbolic release selector;
+- package production remains in `cup-components`.
