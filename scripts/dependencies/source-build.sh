@@ -34,6 +34,10 @@ download_source() {
     cup_path_prepare_child_file "$DEPS_ROOT" "$output" \
         "dependency source archive" || return 1
     temp_base=${TMPDIR:-/tmp}
+    case "$temp_base" in
+        /) ;;
+        */) temp_base=${temp_base%/} ;;
+    esac
     case "$temp_base" in /*) ;; *) temp_base=$(pwd -P)/$temp_base ;; esac
     cup_path_check_directory_chain "$temp_base" 0 \
         'dependency download temporary parent' || return 1

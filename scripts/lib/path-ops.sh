@@ -120,6 +120,13 @@ COMPILER_PATH=$(command -v "$COMPILER") || fail "could not resolve compiler: $CO
 COMPILER_VERSION=$("$COMPILER_PATH" --version 2>&1 | sed -n '1p')
 [ -n "$COMPILER_VERSION" ] || fail "could not identify compiler: $COMPILER_PATH"
 
+HOST_CPPFLAGS=
+case "${OS:-}:$(uname -s 2>/dev/null || true)" in
+    Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
+        HOST_CPPFLAGS=-D_POSIX_C_SOURCE=200809L
+        ;;
+esac
+
 CURRENT_UID=$(id -u 2>/dev/null) || fail 'could not determine the current user id'
 SOURCE_ID=$(
     for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
@@ -132,6 +139,7 @@ BUILD_ID=$(printf '%s\n' \
     "sources=$SOURCE_ID" \
     "compiler=$COMPILER_PATH" \
     "compiler_version=$COMPILER_VERSION" \
+    "host_cppflags=$HOST_CPPFLAGS" \
     'flags=-std=c11 -O2 -Wall -Wextra -Werror -U_WIN32' | stream_sha256)
 HOST_ID=$(uname -s 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
 MACHINE_ID=$(uname -m 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
@@ -161,7 +169,8 @@ else
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    "$COMPILER_PATH" -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
+    "$COMPILER_PATH" ${HOST_CPPFLAGS:+"$HOST_CPPFLAGS"} \
+        -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
         -I"$PROJECT_ROOT/include" \
         "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
         "$PATH_SOURCE" "$TEXT_SOURCE" -o "$TEMPORARY" ||

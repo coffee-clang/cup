@@ -305,7 +305,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           artifact-ids: ${{ matrix.dependency_artifact_id }}
-          path: build/evidence/dependencies/${{ matrix.dependency_target }}
+          path: ${{ runner.temp }}/cup-release-inputs/evidence/dependencies/${{ matrix.dependency_target }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ needs.metadata.outputs.tests_run_id }}
@@ -313,7 +313,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           artifact-ids: ${{ matrix.source_artifact_id }}
-          path: build/evidence/source/${{ matrix.platform }}
+          path: ${{ runner.temp }}/cup-release-inputs/evidence/source/${{ matrix.platform }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ needs.metadata.outputs.tests_run_id }}
@@ -321,7 +321,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-common-attempt-${{ github.run_attempt }}
-          path: build/downloads/common
+          path: ${{ runner.temp }}/cup-release-inputs/common
 
       - name: Verify and build POSIX candidate
         if: matrix.family != 'windows'
@@ -334,10 +334,11 @@ jobs:
           CUP_RELEASE_COMMIT: ${{ needs.metadata.outputs.sha }}
         run: |
           set -euo pipefail
+          inputs="$RUNNER_TEMP/cup-release-inputs"
           dependency_evidence_name='cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-'
           dependency_evidence_name=$dependency_evidence_name'${{ needs.metadata.outputs.tests_run_attempt }}'
           scripts/ci/verify-dependency-evidence.sh \
-            build/evidence/dependencies/${{ matrix.dependency_target }}/evidence.txt \
+            "$inputs/evidence/dependencies/${{ matrix.dependency_target }}/evidence.txt" \
             '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
             '${{ matrix.profile }}' "$DEPS_PREFIX" '${{ github.repository }}' \
             '${{ needs.metadata.outputs.sha }}' '${{ needs.metadata.outputs.tests_run_id }}' \
@@ -345,9 +346,9 @@ jobs:
             "$dependency_evidence_name"
           make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
             DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
-            RELEASE_COMMON_DIR="$PWD/build/downloads/common" release-candidate
+            RELEASE_COMMON_DIR="$inputs/common" release-candidate
           scripts/ci/verify-source-evidence.sh \
-            build/evidence/source/${{ matrix.platform }} '${{ matrix.platform }}' \
+            "$inputs/evidence/source/${{ matrix.platform }}" '${{ matrix.platform }}' \
             '${{ github.repository }}' '${{ needs.metadata.outputs.sha }}' \
             '${{ needs.metadata.outputs.tests_run_id }}' '${{ needs.metadata.outputs.tests_run_attempt }}' \
             'cup-source-evidence-${{ matrix.platform }}-attempt-${{ needs.metadata.outputs.tests_run_attempt }}' \
@@ -365,19 +366,20 @@ jobs:
           CUP_RELEASE_COMMIT: ${{ needs.metadata.outputs.sha }}
         run: |
           set -euo pipefail
+          inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
           dependency_evidence_name='cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-'
           dependency_evidence_name=$dependency_evidence_name'${{ needs.metadata.outputs.tests_run_attempt }}'
           scripts/ci/verify-dependency-evidence.sh \
-            build/evidence/dependencies/${{ matrix.dependency_target }}/evidence.txt \
+            "$inputs/evidence/dependencies/${{ matrix.dependency_target }}/evidence.txt" \
             '${{ matrix.dependency_target }}' windows-x64 '${{ matrix.profile }}' "$DEPS_PREFIX" \
             '${{ github.repository }}' '${{ needs.metadata.outputs.sha }}' \
             '${{ needs.metadata.outputs.tests_run_id }}' '${{ needs.metadata.outputs.tests_run_attempt }}' \
             "$dependency_evidence_name"
           make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
             DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
-            RELEASE_COMMON_DIR="$PWD/build/downloads/common" release-candidate
+            RELEASE_COMMON_DIR="$inputs/common" release-candidate
           scripts/ci/verify-source-evidence.sh \
-            build/evidence/source/windows-x64 windows-x64 \
+            "$inputs/evidence/source/windows-x64" windows-x64 \
             '${{ github.repository }}' '${{ needs.metadata.outputs.sha }}' \
             '${{ needs.metadata.outputs.tests_run_id }}' '${{ needs.metadata.outputs.tests_run_attempt }}' \
             'cup-source-evidence-windows-x64-attempt-${{ needs.metadata.outputs.tests_run_attempt }}' \
@@ -391,9 +393,10 @@ jobs:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
+          inputs="$RUNNER_TEMP/cup-release-inputs"
           candidate="$RUNNER_TEMP/cup-release-${{ matrix.platform }}"
           scripts/release/assemble-candidate.sh "$candidate" \
-            "$PWD/build/downloads/common" \
+            "$inputs/common" \
             "$PWD/build/release/platforms/${{ matrix.platform }}/public"
           make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
             DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
@@ -408,9 +411,10 @@ jobs:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
+          inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
           candidate="$RUNNER_TEMP/cup-release-windows-x64"
           scripts/release/assemble-candidate.sh "$candidate" \
-            "$PWD/build/downloads/common" \
+            "$inputs/common" \
             "$PWD/build/release/platforms/windows-x64/public"
           make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
             DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
@@ -453,38 +457,38 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-common-attempt-${{ github.run_attempt }}
-          path: build/downloads/common
+          path: ${{ runner.temp }}/cup-release-downloads/common
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-linux-x64-attempt-${{ github.run_attempt }}
-          path: build/downloads/linux-x64
+          path: ${{ runner.temp }}/cup-release-downloads/linux-x64
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-linux-arm64-attempt-${{ github.run_attempt }}
-          path: build/downloads/linux-arm64
+          path: ${{ runner.temp }}/cup-release-downloads/linux-arm64
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-macos-x64-attempt-${{ github.run_attempt }}
-          path: build/downloads/macos-x64
+          path: ${{ runner.temp }}/cup-release-downloads/macos-x64
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-macos-arm64-attempt-${{ github.run_attempt }}
-          path: build/downloads/macos-arm64
+          path: ${{ runner.temp }}/cup-release-downloads/macos-arm64
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-release-windows-x64-attempt-${{ github.run_attempt }}
-          path: build/downloads/windows-x64
+          path: ${{ runner.temp }}/cup-release-downloads/windows-x64
 
       - name: Assemble exact flat candidate
         run: |
           set -euo pipefail
           scripts/release/assemble-candidate.sh "$RUNNER_TEMP/cup-release-candidate" \
-            "$PWD/build/downloads/common" \
-            "$PWD/build/downloads/linux-x64" \
-            "$PWD/build/downloads/linux-arm64" \
-            "$PWD/build/downloads/macos-x64" \
-            "$PWD/build/downloads/macos-arm64" \
-            "$PWD/build/downloads/windows-x64"
+            "$RUNNER_TEMP/cup-release-downloads/common" \
+            "$RUNNER_TEMP/cup-release-downloads/linux-x64" \
+            "$RUNNER_TEMP/cup-release-downloads/linux-arm64" \
+            "$RUNNER_TEMP/cup-release-downloads/macos-x64" \
+            "$RUNNER_TEMP/cup-release-downloads/macos-arm64" \
+            "$RUNNER_TEMP/cup-release-downloads/windows-x64"
 
       - name: Publish or resume release
         env:

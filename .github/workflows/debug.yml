@@ -84,7 +84,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-${{ github.run_attempt }}
-          path: build/dependency-evidence/${{ matrix.dependency_target }}
+          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.dependency_target }}
       - name: Build and package debug artifact
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/ci/verify-dependency-evidence.sh \
-            build/dependency-evidence/${{ matrix.dependency_target }}/evidence.txt \
+            "$RUNNER_TEMP/cup-dependency-evidence/${{ matrix.dependency_target }}/evidence.txt" \
             '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
             '${{ matrix.profile }}' "$DEPS_PREFIX"
           make PLATFORM='${{ matrix.platform }}' DEPS_ROOT="$DEPS_ROOT" \
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           name: cup-dependency-evidence-windows-x64-ucrt64-attempt-${{ github.run_attempt }}
-          path: build/dependency-evidence/windows-x64-ucrt64
+          path: ${{ runner.temp }}/cup-dependency-evidence/windows-x64-ucrt64
       - name: Build and package debug artifact
         shell: msys2 {0}
         env:
@@ -172,8 +172,9 @@ jobs:
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
         run: |
           set -euo pipefail
+          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
           scripts/ci/verify-dependency-evidence.sh \
-            build/dependency-evidence/windows-x64-ucrt64/evidence.txt \
+            "$evidence_root/windows-x64-ucrt64/evidence.txt" \
             windows-x64-ucrt64 windows-x64 ucrt64-gcc "$DEPS_PREFIX"
           make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" \
             DEPS_PREFIX="$DEPS_PREFIX" debug-artifact

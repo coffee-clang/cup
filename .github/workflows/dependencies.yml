@@ -261,7 +261,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/ci/write-dependency-evidence.sh \
-            "build/dependency-evidence/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
+            "$RUNNER_TEMP/cup-dependency-evidence/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
             "$PREFIX" "$CACHE_KEY" '${{ github.repository }}' '${{ github.sha }}' \
             '${{ github.run_id }}' '${{ github.run_attempt }}' "$ARTIFACT_NAME"
 
@@ -277,14 +277,15 @@ jobs:
           ARTIFACT_NAME: cup-dependency-evidence-${{ matrix.target }}-attempt-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
           scripts/ci/write-dependency-evidence.sh \
-            "build/dependency-evidence/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
+            "$evidence_root/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
             "$PREFIX" "$CACHE_KEY" '${{ github.repository }}' '${{ github.sha }}' \
             '${{ github.run_id }}' '${{ github.run_attempt }}' "$ARTIFACT_NAME"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: cup-dependency-evidence-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-          path: build/dependency-evidence/${{ matrix.target }}/evidence.txt
+          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.target }}/evidence.txt
           if-no-files-found: error
           retention-days: 14
