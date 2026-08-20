@@ -1146,6 +1146,18 @@ bash -eu -o pipefail -c '
 ' sh "$DEPENDENCY_COMMON"
 printf 'Normalized dependency build environment tests passed.\n'
 
+for dependency_script in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
+    grep -F 'require_tool cmp' "$dependency_script" >/dev/null || {
+        echo "$dependency_script does not declare its cmp requirement" >&2
+        exit 1
+    }
+done
+grep -F 'require_tool cmp' scripts/dependencies/verify.sh >/dev/null ||
+    fail 'dependency verifier does not declare its cmp requirement'
+grep -F "command -v cmp >/dev/null 2>&1 || fail 'required tool is unavailable: cmp'" \
+    scripts/ci/verify-dependency-evidence.sh >/dev/null ||
+    fail 'dependency evidence verifier does not declare its cmp requirement'
+
 for builder in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
     for option in --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-scripts --disable-doc; do
         grep -F -- "$option" "$builder" >/dev/null || {

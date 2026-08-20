@@ -234,6 +234,7 @@ main() {
     require_tool "$RANLIB"
     require_tool "$STRIP"
     require_tool "$WINDRES"
+    require_tool cmp
     require_sha256_tool
     compiler_target=$("$CC" -dumpmachine)
     case "$compiler_target" in

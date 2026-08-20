@@ -14,6 +14,7 @@ if [ "${1:-}" = --clean-root ]; then
         echo "Usage: $0 --clean-root <dependency-root>" >&2
         exit 2
     }
+    require_tool cmp
     dependency_clean_root "$2"
     exit 0
 fi
@@ -34,6 +35,7 @@ case "$MODE" in
         ;;
 esac
 
+require_tool cmp
 DEPS_PREFIX=$MODE
 metadata=$(dependency_metadata "$PLATFORM" "$profile")
 if ! dependency_prefix_matches "$DEPS_PREFIX" "$metadata" "$use_openssl"; then

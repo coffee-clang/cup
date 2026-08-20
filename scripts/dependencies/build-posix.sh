@@ -350,6 +350,7 @@ main() {
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
+    require_tool cmp
     require_sha256_tool
     compiler_target=$("$CC" -dumpmachine 2>/dev/null || "$CC" -print-target-triple 2>/dev/null)
     case "$PLATFORM:$compiler_target" in

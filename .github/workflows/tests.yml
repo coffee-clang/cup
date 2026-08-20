@@ -143,6 +143,7 @@ jobs:
           update: true
           install: >-
             ca-certificates
+            diffutils
             curl
             file
             git
@@ -318,6 +319,7 @@ jobs:
           update: true
           install: >-
             ca-certificates
+            diffutils
             coreutils
             curl
             file
@@ -487,6 +489,7 @@ jobs:
           update: true
           install: >-
             ca-certificates
+            diffutils
             coreutils
             curl
             file

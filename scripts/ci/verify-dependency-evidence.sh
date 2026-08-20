@@ -98,6 +98,8 @@ EOF_HEADER
 }
 
 verify_dependency_prefix() {
+    command -v cmp >/dev/null 2>&1 || fail 'required tool is unavailable: cmp'
+
     CUP_DEPENDENCY_PROFILE=$PROFILE \
         "$PROJECT_ROOT/scripts/dependencies/verify.sh" \
         "$PLATFORM" "$PREFIX" >/dev/null

@@ -236,6 +236,7 @@ jobs:
           update: true
           install: >-
             ca-certificates
+            diffutils
             curl
             file
             git

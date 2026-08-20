@@ -6,6 +6,7 @@
 #include "constants.h"
 #include "error.h"
 #include "system.h"
+#include "test_platform.h"
 #include "unity.h"
 
 void setUp(void);
@@ -24,7 +25,7 @@ void tearDown(void);
 
 /* Shared fixture state used by the cases in this suite. */
 
-static char temp_dir[] = "/tmp/cup-system-test-XXXXXX";
+static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char original_home[1024];
 static int had_home;
 
@@ -1540,7 +1541,8 @@ void register_system_posix_tests(void) {
         TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(original_home));
         had_home = 1;
     }
-    TEST_ASSERT_NOT_NULL(mkdtemp(temp_dir));
+    TEST_ASSERT_NOT_NULL(
+        test_make_temp_directory(temp_dir, sizeof(temp_dir), "cup-system-test"));
 
     RUN_TEST(test_home_process);
     RUN_TEST(test_path_and_walk);
