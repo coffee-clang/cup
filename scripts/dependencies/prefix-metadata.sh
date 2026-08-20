@@ -51,6 +51,27 @@ dependency_uses_openssl() {
     esac
 }
 
+# Build-contract values must be derived from platform/profile, never from the
+# environment of whichever caller happens to compute metadata or a cache key.
+dependency_macos_deployment_target() {
+    local platform="$1" profile="$2"
+
+    case "$platform:$profile" in
+        macos-x64:apple-clang|macos-arm64:apple-clang) printf '%s\n' 13.0 ;;
+        *) printf '%s\n' none ;;
+    esac
+}
+
+dependency_windows_msystem() {
+    local platform="$1" profile="$2"
+
+    case "$platform:$profile" in
+        windows-x64:ucrt64-gcc) printf '%s\n' UCRT64 ;;
+        windows-x64:clang64) printf '%s\n' CLANG64 ;;
+        *) printf '%s\n' none ;;
+    esac
+}
+
 dependency_tool_version_line() {
     local tool="$1"
     local output=
@@ -72,6 +93,7 @@ dependency_tool_version_line() {
 dependency_toolchain_sha256() {
     local platform="$1" profile="$2"
     local compiler archiver ranlib target compiler_version archiver_version ranlib_version sdk=none
+    local deployment_target canonical_msystem
 
     profile=$(CUP_DEPENDENCY_PROFILE="$profile" dependency_profile "$platform") || return 1
     # Dependency compatibility is tied to the canonical profile toolchain,
@@ -93,6 +115,8 @@ dependency_toolchain_sha256() {
             sdk=$(xcrun --sdk macosx --show-sdk-version 2>/dev/null) || return 1
             ;;
     esac
+    deployment_target=$(dependency_macos_deployment_target "$platform" "$profile") || return 1
+    canonical_msystem=$(dependency_windows_msystem "$platform" "$profile") || return 1
     {
         printf 'platform=%s\n' "$platform"
         printf 'profile=%s\n' "$profile"
@@ -101,8 +125,8 @@ dependency_toolchain_sha256() {
         printf 'archiver_version=%s\n' "$archiver_version"
         printf 'ranlib_version=%s\n' "$ranlib_version"
         printf 'sdk=%s\n' "$sdk"
-        printf 'macos_deployment_target=%s\n' "${MACOSX_DEPLOYMENT_TARGET:-none}"
-        printf 'msystem=%s\n' "${MSYSTEM:-none}"
+        printf 'macos_deployment_target=%s\n' "$deployment_target"
+        printf 'msystem=%s\n' "$canonical_msystem"
     } | stream_sha256
 }
 

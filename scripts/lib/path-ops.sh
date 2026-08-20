@@ -140,7 +140,7 @@ BUILD_ID=$(printf '%s\n' \
     "compiler=$COMPILER_PATH" \
     "compiler_version=$COMPILER_VERSION" \
     "host_cppflags=$HOST_CPPFLAGS" \
-    'flags=-std=c11 -O2 -Wall -Wextra -Werror -U_WIN32' | stream_sha256)
+    'flags=-std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 -DCUP_PATH_OPS_TRUSTED_ANCHOR' | stream_sha256)
 HOST_ID=$(uname -s 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
 MACHINE_ID=$(uname -m 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
 [ -n "$HOST_ID" ] || HOST_ID=unknown
@@ -171,6 +171,7 @@ else
     trap 'exit 143' TERM
     "$COMPILER_PATH" ${HOST_CPPFLAGS:+"$HOST_CPPFLAGS"} \
         -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
+        -DCUP_PATH_OPS_TRUSTED_ANCHOR \
         -I"$PROJECT_ROOT/include" \
         "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_POSIX_SOURCE" \
         "$PATH_SOURCE" "$TEXT_SOURCE" -o "$TEMPORARY" ||

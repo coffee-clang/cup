@@ -35,7 +35,7 @@ assert_contains "$(cat "$TMP_ROOT/backslash.out")" 'must use forward slashes'
 
 helper=$TMP_ROOT/path-ops-testing
 cc -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
-    -DCUP_PATH_OPS_TESTING -DCUP_SYSTEM_TESTING \
+    -DCUP_PATH_OPS_TESTING -DCUP_SYSTEM_TESTING -DCUP_PATH_OPS_TRUSTED_ANCHOR \
     -I"$PROJECT_ROOT/include" \
     "$PROJECT_ROOT/scripts/lib/path-ops.c" \
     "$PROJECT_ROOT/src/system.c" \
@@ -72,6 +72,43 @@ resolved_protocol=$(CUP_PATH_OPS_RESOLVED_HELPER="$ambient_resolved" sh -c \
     "$PROJECT_ROOT/scripts/lib/path-safety.sh")
 assert_equals "$resolved_protocol" 2
 assert_missing "$TMP_ROOT/ambient-resolved-used"
+
+# Host-managed aliases may be admitted only as an explicit outer anchor. The
+# helper follows that one boundary, pins the resulting directory, and keeps
+# O_NOFOLLOW semantics for every managed descendant.
+anchor_real=$TMP_ROOT/anchor-real
+anchor_alias=$TMP_ROOT/anchor-alias
+anchor_external=$TMP_ROOT/anchor-external
+mkdir "$anchor_real" "$anchor_external"
+ln -s "$anchor_real" "$anchor_alias"
+if CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" ensure-dir \
+        "$anchor_alias/managed" >"$TMP_ROOT/anchor-untrusted.out" 2>&1; then
+    fail 'untrusted host alias was followed without an explicit anchor'
+fi
+(
+    CUP_PATH_OPS_TESTING=1
+    CUP_PATH_OPS_HELPER=$helper
+    export CUP_PATH_OPS_TESTING CUP_PATH_OPS_HELPER
+    cup_path_set_trusted_anchor "$anchor_alias" 'test host anchor'
+    cup_path_prepare_directory_chain "$anchor_alias/managed/child" \
+        'anchored managed directory'
+    [ -d "$anchor_real/managed/child" ] ||
+        fail 'trusted host anchor did not create the managed descendant'
+    ln -s "$anchor_external" "$anchor_real/managed/link"
+    if cup_path_check_directory_chain "$anchor_alias/managed/link" 0 \
+            'anchored descendant' >"$TMP_ROOT/anchor-descendant.out" 2>&1; then
+        fail 'trusted host anchor allowed a symlink inside the managed subtree'
+    fi
+    assert_contains "$(cat "$TMP_ROOT/anchor-descendant.out")" \
+        'unsafe or invalid anchored descendant'
+)
+if CUP_PATH_OPS_TRUSTED_ANCHOR_INTERNAL="$anchor_alias" \
+        CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" ensure-dir \
+        "$anchor_alias/ambient-managed" >"$TMP_ROOT/anchor-ambient.out" 2>&1; then
+    fail 'ambient trusted-anchor state bypassed explicit anchor configuration'
+fi
 
 # A regular-file check must reject a symlink in any parent component, not only
 # a symlink in the final component.

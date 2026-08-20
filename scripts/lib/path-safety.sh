@@ -4,6 +4,10 @@
 # Never trust a helper path inherited from the ambient environment. This value
 # is an in-process cache populated only after launcher validation below.
 CUP_PATH_OPS_RESOLVED_HELPER=
+# Optional host anchor is set only through cup_path_set_trusted_anchor().
+# It permits host-managed aliases/mounts before the managed subtree while the
+# helper keeps no-follow traversal strict for every descendant component.
+CUP_PATH_OPS_TRUSTED_ANCHOR=
 
 cup_path_error() {
     printf 'Error: %s\n' "$*" >&2
@@ -77,9 +81,30 @@ cup_path_resolve_ops_helper() {
     fi
 }
 
+cup_path_set_trusted_anchor() {
+    _cup_path_anchor=$1
+    _cup_path_label=${2:-trusted host anchor}
+
+    cup_path_validate_absolute_clean "$_cup_path_anchor" "$_cup_path_label" || return 1
+    if ! (CDPATH= cd -- "$_cup_path_anchor" 2>/dev/null && [ -d . ]); then
+        cup_path_error "$_cup_path_label must be an existing directory: $_cup_path_anchor"
+        return 1
+    fi
+    CUP_PATH_OPS_TRUSTED_ANCHOR=$_cup_path_anchor
+}
+
+cup_path_clear_trusted_anchor() {
+    CUP_PATH_OPS_TRUSTED_ANCHOR=
+}
+
 cup_path_ops() {
     cup_path_resolve_ops_helper || return 1
-    "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+    if [ -n "${CUP_PATH_OPS_TRUSTED_ANCHOR:-}" ]; then
+        "$CUP_PATH_OPS_RESOLVED_HELPER" --trusted-anchor \
+            "$CUP_PATH_OPS_TRUSTED_ANCHOR" "$@"
+    else
+        "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+    fi
 }
 
 cup_path_validate_absolute_clean() (

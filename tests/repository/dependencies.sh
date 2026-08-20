@@ -888,6 +888,33 @@ leftovers=$(find "$TMP_ROOT" -name '.install.staging' -print)
 [ -z "$leftovers" ] || fail "dependency staging directories were not cleaned: $leftovers"
 printf 'Dependency-prefix transaction tests passed.\n'
 
+printf '==> Testing Windows host-anchor boundary...\n'
+HOST_ANCHOR_REAL="$TMP_ROOT/host-anchor-real"
+HOST_ANCHOR_ALIAS="$TMP_ROOT/host-anchor-alias"
+HOST_ANCHOR_EXTERNAL="$TMP_ROOT/host-anchor-external"
+mkdir "$HOST_ANCHOR_REAL" "$HOST_ANCHOR_EXTERNAL"
+ln -s "$HOST_ANCHOR_REAL" "$HOST_ANCHOR_ALIAS"
+OS=Windows_NT CUP_DEPENDENCY_HOST_ROOT="$HOST_ANCHOR_ALIAS" \
+    bash -eu -o pipefail -c '
+        common=$1
+        root=$2
+        external=$3
+        . "$common"
+        DEPS_ROOT=$root
+        dependency_prepare_root "$DEPS_ROOT"
+        [ -f "$DEPS_ROOT/.cup-dependencies-root" ]
+        cup_path_prepare_child_directory "$DEPS_ROOT" "$DEPS_ROOT/src" \
+            "dependency source directory"
+        ln -s "$external" "$DEPS_ROOT/link"
+        if cup_path_check_directory_chain "$DEPS_ROOT/link" 0 \
+                "managed dependency descendant" >/dev/null 2>&1; then
+            exit 1
+        fi
+    ' sh "$DEPENDENCY_COMMON" "$HOST_ANCHOR_ALIAS/deps" "$HOST_ANCHOR_EXTERNAL"
+[ -d "$HOST_ANCHOR_REAL/deps/src" ] ||
+    fail 'Windows host anchor did not prepare the managed dependency subtree'
+printf 'Windows host-anchor boundary tests passed.\n'
+
 printf '==> Testing failed dependency build cleanup and retry...\n'
 FAILED_DEPENDENCY_ROOT="$TMP_ROOT/failed-dependency-build"
 FAILED_DEPENDENCY_PREFIX="$FAILED_DEPENDENCY_ROOT/install"
@@ -956,6 +983,72 @@ custom_deps_command=$(
 )
 assert_contains "$custom_deps_command" "DEPS_PREFIX='$custom_deps_prefix'"
 printf 'Dependency diagnostic tests passed.\n'
+
+printf '==> Testing canonical dependency identity...\n'
+IDENTITY_BIN="$TMP_ROOT/identity-bin"
+mkdir -p "$IDENTITY_BIN"
+cat >"$IDENTITY_BIN/clang" <<'EOF_CLANG'
+#!/bin/sh
+case "${1:-}" in
+    -dumpmachine|-print-target-triple) printf '%s\n' x86_64-apple-darwin ;;
+    --version) printf '%s\n' 'Apple clang version 18.0.0' ;;
+    *) exit 2 ;;
+esac
+EOF_CLANG
+cat >"$IDENTITY_BIN/ar" <<'EOF_AR'
+#!/bin/sh
+[ "${1:-}" = --version ] || exit 2
+printf '%s\n' 'Apple ar 1.0'
+EOF_AR
+cat >"$IDENTITY_BIN/ranlib" <<'EOF_RANLIB'
+#!/bin/sh
+[ "${1:-}" = --version ] || exit 2
+printf '%s\n' 'Apple ranlib 1.0'
+EOF_RANLIB
+cat >"$IDENTITY_BIN/xcrun" <<'EOF_XCRUN'
+#!/bin/sh
+[ "$*" = '--sdk macosx --show-sdk-version' ] || exit 2
+printf '%s\n' 15.0
+EOF_XCRUN
+chmod +x "$IDENTITY_BIN/clang" "$IDENTITY_BIN/ar" "$IDENTITY_BIN/ranlib" "$IDENTITY_BIN/xcrun"
+identity_unset=$(
+    PATH="$IDENTITY_BIN:$PATH" bash -eu -c '
+        unset MACOSX_DEPLOYMENT_TARGET MSYSTEM
+        . "$1"
+        dependency_cache_key macos-x64 apple-clang
+    ' sh "$DEPENDENCY_COMMON"
+)
+identity_expected=$(
+    PATH="$IDENTITY_BIN:$PATH" MACOSX_DEPLOYMENT_TARGET=13.0 MSYSTEM=UCRT64 \
+        bash -eu -c '. "$1"; dependency_cache_key macos-x64 apple-clang' \
+        sh "$DEPENDENCY_COMMON"
+)
+identity_ambient_wrong=$(
+    PATH="$IDENTITY_BIN:$PATH" MACOSX_DEPLOYMENT_TARGET=12.0 MSYSTEM=CLANG64 \
+        bash -eu -c '. "$1"; dependency_cache_key macos-x64 apple-clang' \
+        sh "$DEPENDENCY_COMMON"
+)
+[ "$identity_unset" = "$identity_expected" ] ||
+    fail 'macOS dependency cache key changed with ambient deployment target/MSYSTEM'
+[ "$identity_unset" = "$identity_ambient_wrong" ] ||
+    fail 'macOS dependency cache key depends on non-canonical ambient state'
+metadata_unset=$(
+    PATH="$IDENTITY_BIN:$PATH" bash -eu -c '
+        unset MACOSX_DEPLOYMENT_TARGET MSYSTEM
+        . "$1"
+        dependency_metadata macos-x64 apple-clang
+    ' sh "$DEPENDENCY_COMMON"
+)
+metadata_ambient=$(
+    PATH="$IDENTITY_BIN:$PATH" MACOSX_DEPLOYMENT_TARGET=12.0 MSYSTEM=UCRT64 \
+        bash -eu -c '. "$1"; dependency_metadata macos-x64 apple-clang' \
+        sh "$DEPENDENCY_COMMON"
+)
+[ "$metadata_unset" = "$metadata_ambient" ] ||
+    fail 'macOS dependency metadata depends on non-canonical ambient state'
+[ "$(PATH="$IDENTITY_BIN:$PATH" bash -eu -c '. "$1"; dependency_macos_deployment_target macos-x64 apple-clang' sh "$DEPENDENCY_COMMON")" = 13.0 ] ||
+    fail 'canonical macOS deployment target changed unexpectedly'
+printf 'Canonical dependency identity tests passed.\n'
 
 printf '==> Testing dependency platform rejection...\n'
 DEPENDENCY_DIR="$ROOT/scripts/dependencies"

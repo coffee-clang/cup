@@ -6,6 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
 PLATFORM="${PLATFORM:-}"
 REQUESTED_MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-}"
 
@@ -98,18 +100,20 @@ esac
 
 case "$PLATFORM" in
     macos-*)
+        DEPENDENCY_PROFILE=$(dependency_profile "$PLATFORM")
+        CANONICAL_MACOSX_DEPLOYMENT_TARGET=$(
+            dependency_macos_deployment_target "$PLATFORM" "$DEPENDENCY_PROFILE"
+        )
         if [ -n "$REQUESTED_MACOSX_DEPLOYMENT_TARGET" ] &&
-            [ "$REQUESTED_MACOSX_DEPLOYMENT_TARGET" != 13.0 ]; then
-            echo "Error: macOS dependencies require MACOSX_DEPLOYMENT_TARGET=13.0." >&2
+            [ "$REQUESTED_MACOSX_DEPLOYMENT_TARGET" != "$CANONICAL_MACOSX_DEPLOYMENT_TARGET" ]; then
+            echo "Error: macOS dependencies require MACOSX_DEPLOYMENT_TARGET=$CANONICAL_MACOSX_DEPLOYMENT_TARGET." >&2
             exit 1
         fi
-        MACOSX_DEPLOYMENT_TARGET=13.0
+        MACOSX_DEPLOYMENT_TARGET=$CANONICAL_MACOSX_DEPLOYMENT_TARGET
         export MACOSX_DEPLOYMENT_TARGET
         ;;
 esac
 
-# shellcheck source=common.sh
-source "$SCRIPT_DIR/common.sh"
 dependency_normalize_build_environment
 JOBS="$(dependency_resolve_jobs)"
 
