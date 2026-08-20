@@ -936,6 +936,8 @@ if (
     fail 'deps-check accepted a missing dependency prefix'
 fi
 assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
+    'Dependency prefix check failed: metadata file is missing, empty or not a regular file:'
+assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
     'Pinned dependency prefix is missing, incomplete or incompatible'
 
 default_deps_prefix="$HOME/deps/linux-x64/install"

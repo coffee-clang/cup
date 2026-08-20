@@ -146,9 +146,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          user_home=$(cygpath -u "${USERPROFILE:?USERPROFILE is required}")
-          user_home=$(CDPATH= cd -- "$user_home" && pwd -P)
-          root="$user_home/deps/windows-x64"
+          root=/tmp/cup-dependencies/windows-x64
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
