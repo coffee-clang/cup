@@ -161,7 +161,9 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          root="$HOME/deps/windows-x64"
+          user_home=$(cygpath -u "${USERPROFILE:?USERPROFILE is required}")
+          user_home=$(CDPATH= cd -- "$user_home" && pwd -P)
+          root="$user_home/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -355,7 +357,9 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          user_home=$(cygpath -u "${USERPROFILE:?USERPROFILE is required}")
+          user_home=$(CDPATH= cd -- "$user_home" && pwd -P)
+          root="$user_home/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -524,7 +528,9 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          user_home=$(cygpath -u "${USERPROFILE:?USERPROFILE is required}")
+          user_home=$(CDPATH= cd -- "$user_home" && pwd -P)
+          root="$user_home/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"

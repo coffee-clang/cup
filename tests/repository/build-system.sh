@@ -1055,13 +1055,19 @@ cat > "$source_fixture/bin/make" <<'EOF_MAKE_SOURCE'
 set -eu
 target=
 secondary=0
+secondary_role=0
 for argument in "$@"; do
     case "$argument" in
         CC=clang) secondary=1 ;;
+        CUP_INTERNAL_TOOLCHAIN_ROLE=secondary) secondary_role=1 ;;
         *=*) ;;
         *) target=$argument ;;
     esac
 done
+if [ "$secondary" -eq 1 ] && [ "$secondary_role" -ne 1 ]; then
+    echo 'secondary compiler invocation omitted CUP_INTERNAL_TOOLCHAIN_ROLE=secondary' >&2
+    exit 3
+fi
 case "$target" in
     clean)
         rm -rf -- build

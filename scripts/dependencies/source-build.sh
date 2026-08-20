@@ -39,6 +39,12 @@ download_source() {
         */) temp_base=${temp_base%/} ;;
     esac
     case "$temp_base" in /*) ;; *) temp_base=$(pwd -P)/$temp_base ;; esac
+    cup_path_validate_absolute_clean "$temp_base" \
+        'dependency download temporary parent' || return 1
+    if ! temp_base=$(CDPATH= cd -- "$temp_base" 2>/dev/null && pwd -P); then
+        echo "Error: dependency download temporary parent is not an existing directory: $temp_base" >&2
+        return 1
+    fi
     cup_path_check_directory_chain "$temp_base" 0 \
         'dependency download temporary parent' || return 1
     tmp_dir=$(cup_path_create_unique_directory \

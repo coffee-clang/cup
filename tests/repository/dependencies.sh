@@ -305,7 +305,10 @@ grep -Fq 'cached dependency archive is not a safe regular file' "$TMP_ROOT/cache
 # Download transport limits are part of the dependency contract even when the
 # source checksum is valid.
 download_root=$TMP_ROOT/download-root
-mkdir -p "$download_root/src"
+download_temp=$TMP_ROOT/download-temp
+download_temp_alias=$TMP_ROOT/download-temp-alias
+mkdir -p "$download_root/src" "$download_temp"
+ln -s "$download_temp" "$download_temp_alias"
 (
     DEPS_ROOT=$download_root
     verify_source_checksum() { return 0; }
@@ -326,7 +329,7 @@ done
 dd if=/dev/zero of="$output" bs=1024 count=128 >/dev/null 2>&1
 EOF_DOWNLOAD_CURL
     chmod +x "$fake_download_bin/curl"
-    PATH="$fake_download_bin:$PATH" \
+    TMPDIR="$download_temp_alias/" PATH="$fake_download_bin:$PATH" \
         CUP_DOWNLOAD_ARGUMENTS="$TMP_ROOT/download-arguments" \
         download_source zlib "$download_root/src/zlib.tar.gz"
 )

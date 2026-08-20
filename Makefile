@@ -49,6 +49,9 @@ endif
 ifneq ($(filter environment environment\ override command\ line,$(origin CUP_INTERNAL_DEPS_TARGET)),)
 override CUP_INTERNAL_DEPS_TARGET := $(value CUP_INTERNAL_DEPS_TARGET)
 endif
+ifneq ($(filter environment environment\ override command\ line,$(origin CUP_INTERNAL_TOOLCHAIN_ROLE)),)
+override CUP_INTERNAL_TOOLCHAIN_ROLE := $(value CUP_INTERNAL_TOOLCHAIN_ROLE)
+endif
 ifneq ($(filter environment environment\ override command\ line,$(origin BUILD_DIR)),)
 override BUILD_DIR := $(value BUILD_DIR)
 endif
@@ -147,7 +150,8 @@ endif
 override RAW_MAKE_INPUTS := \
     PLATFORM OS PROCESSOR_ARCHITEW6432 PROCESSOR_ARCHITECTURE HOME \
     CUP_BUILD_CONFIGURATION CUP_OFFICIAL_BUILD CUP_INTERNAL_DEPS_TARGET \
-    BUILD_DIR DEPS_ROOT DEPS_PREFIX CC WINDRES JOBS MACOSX_DEPLOYMENT_TARGET \
+    CUP_INTERNAL_TOOLCHAIN_ROLE BUILD_DIR DEPS_ROOT DEPS_PREFIX CC WINDRES JOBS \
+    MACOSX_DEPLOYMENT_TARGET \
     CUP_TEST_CONFIGURATION RELEASE_DIR MDBOOK EXTRA_CPPFLAGS EXTRA_CFLAGS \
     EXTRA_LDFLAGS EXTRA_LDLIBS CUP_RELEASE_VERSION \
     CUP_RELEASE_TAG CUP_RELEASE_COMMIT SOURCE_REPOSITORY TESTS_RUN_ID \
@@ -239,19 +243,23 @@ ifneq ($(strip $(foreach variable,$(DIRECT_FLAG_VARIABLES),\
         EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS or EXTRA_LDLIBS)
 endif
 
-# CUP_BUILD_CONFIGURATION, CUP_OFFICIAL_BUILD and CUP_INTERNAL_DEPS_TARGET are
-# internal recursive-make inputs used by public targets and CI/release
-# consumers. They are not public user-facing selectors.
+# CUP_BUILD_CONFIGURATION, CUP_OFFICIAL_BUILD, CUP_INTERNAL_DEPS_TARGET and
+# CUP_INTERNAL_TOOLCHAIN_ROLE are internal recursive-make inputs used by public
+# targets and CI/release consumers. They are not public user-facing selectors.
 ifeq ($(origin CONFIGURATION),command line)
     $(error CONFIGURATION is internal; select make, debug, coverage, sanitizers or release)
 endif
 CUP_BUILD_CONFIGURATION ?= development
 CUP_OFFICIAL_BUILD ?= 0
 CUP_INTERNAL_DEPS_TARGET ?= deps
+CUP_INTERNAL_TOOLCHAIN_ROLE ?= primary
 override CONFIGURATION := $(CUP_BUILD_CONFIGURATION)
 
 ifneq ($(filter $(CUP_INTERNAL_DEPS_TARGET),deps deps-check),$(CUP_INTERNAL_DEPS_TARGET))
     $(error CUP_INTERNAL_DEPS_TARGET must be deps or deps-check)
+endif
+ifneq ($(filter $(CUP_INTERNAL_TOOLCHAIN_ROLE),primary secondary),$(CUP_INTERNAL_TOOLCHAIN_ROLE))
+    $(error CUP_INTERNAL_TOOLCHAIN_ROLE must be primary or secondary)
 endif
 
 VERSION_OFFICIAL_BUILD := 0
@@ -908,7 +916,8 @@ deps-clean:
 
 check-toolchain:
 	@./scripts/build/validate-toolchain.sh \
-		'$(PLATFORM)' '$(CC)' '$(WINDRES)' '$(CONFIGURATION)' primary
+		'$(PLATFORM)' '$(CC)' '$(WINDRES)' '$(CONFIGURATION)' \
+		'$(CUP_INTERNAL_TOOLCHAIN_ROLE)'
 
 check-binary: check-development
 check-development: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)

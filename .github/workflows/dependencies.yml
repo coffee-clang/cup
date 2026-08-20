@@ -205,7 +205,9 @@ jobs:
             windows-x64-clang64) profile=clang64; variant=windows-x64-clang64 ;;
             *) echo "Unsupported Windows target: $TARGET" >&2; exit 2 ;;
           esac
-          root="$HOME/deps/$variant"
+          user_home=$(cygpath -u "${USERPROFILE:?USERPROFILE is required}")
+          user_home=$(CDPATH= cd -- "$user_home" && pwd -P)
+          root="$user_home/deps/$variant"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"

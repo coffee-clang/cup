@@ -77,12 +77,15 @@ source_artifact="cup-source-evidence-$platform-attempt-$source_run_attempt"
 
 if [ "$platform" = linux-x64 ]; then
     make clean
-    make PLATFORM="$platform" CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check
+    make PLATFORM="$platform" CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check \
+        CUP_INTERNAL_TOOLCHAIN_ROLE=secondary
     PLATFORM="$platform" CUP_TEST_PLATFORM="$platform" \
         CUP_TEST_UNIT_TIMEOUT="$unit_timeout" \
-        make CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check test-unit
+        make CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check \
+            CUP_INTERNAL_TOOLCHAIN_ROLE=secondary test-unit
     ./scripts/build/validate-toolchain.sh "$platform" clang windres development secondary
-    make PLATFORM="$platform" CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check check-development
+    make PLATFORM="$platform" CC=clang CUP_INTERNAL_DEPS_TARGET=deps-check \
+        CUP_INTERNAL_TOOLCHAIN_ROLE=secondary check-development
 fi
 
 case "$platform" in
