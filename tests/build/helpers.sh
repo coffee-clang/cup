@@ -57,11 +57,11 @@ read -a TEST_LDFLAGS <<<"$CUP_TEST_LDFLAGS"
 case "$PLATFORM" in
     windows-x64)
         EXE_SUFFIX=.exe
-        PLATFORM_LIBS=(-lws2_32 -liphlpapi)
+        PLATFORM_LIBS='-lws2_32 -liphlpapi'
         ;;
     *)
         EXE_SUFFIX=
-        PLATFORM_LIBS=()
+        PLATFORM_LIBS=
         ;;
 esac
 TEST_BUILD_ROOT=$(cup_test_build_root) || exit 2
@@ -80,15 +80,10 @@ cup_path_prepare_child_directory "$TEST_BUILD_ROOT" "$OUT_PARENT" \
     'test-helper output parent' || exit 1
 OUT=$(cup_path_create_unique_directory \
     "$OUT_PARENT/.helpers.XXXXXX" 'test-helper staging' 0755) || exit 1
-GCOV_PROFILE_FLAGS=()
 GCOV_OUTPUT_DIR=
 case "$PLATFORM:$CONFIGURATION" in
     linux-*:coverage|windows-x64:coverage)
         GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$OUT") || exit 1
-        GCOV_PROFILE_FLAGS+=(
-            "-fprofile-dir=$OUT_FINAL"
-            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
-        )
         ;;
 esac
 cleanup_helper_staging() {
@@ -113,20 +108,25 @@ compile_helper() {
     output_arg=$output
     [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name$EXE_SUFFIX"
     printf '==> Compiling test helper: %s\n' "$name"
+    compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
+    if [ -n "$GCOV_OUTPUT_DIR" ]; then
+        compile_command+=(
+            "-fprofile-dir=$OUT_FINAL"
+            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
+        )
+    fi
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
         entry_name=${name//-/_}
         entry_name="cup_coverage_${entry_name}_main"
         coverage_entry_source=${COVERAGE_ENTRY_SOURCE#"$ROOT"/}
-        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
-            "${GCOV_PROFILE_FLAGS[@]}" \
+        (cd "$ROOT" && "${compile_command[@]}" \
             "-Dmain=$entry_name" \
             "-DCUP_COVERAGE_ENTRY=$entry_name" \
             -I"$DEPS_PREFIX/include" \
             "$source" "$coverage_entry_source" "${TEST_LDFLAGS[@]}" "$@" \
             -o "$output_arg")
     else
-        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
-            "${GCOV_PROFILE_FLAGS[@]}" \
+        (cd "$ROOT" && "${compile_command[@]}" \
             -I"$DEPS_PREFIX/include" "$source" "${TEST_LDFLAGS[@]}" "$@" \
             -o "$output_arg")
     fi
@@ -144,7 +144,7 @@ event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libevent_extra libevent_core)
 compile_helper network-helper "$ROOT/tests/helpers/network-helper.c" \
-    $event_libs "${PLATFORM_LIBS[@]}"
+    $event_libs $PLATFORM_LIBS
 compile_helper binary-patch "$ROOT/tests/helpers/binary-patch.c"
 
 expected_list="$OUT/.expected-helpers"

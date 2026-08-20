@@ -11,6 +11,7 @@
 #include "text.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,10 +19,10 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#include <windows.h>
 #include <bcrypt.h>
 #include <io.h>
 #include <process.h>
-#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>

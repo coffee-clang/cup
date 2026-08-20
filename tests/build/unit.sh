@@ -109,15 +109,10 @@ cup_path_prepare_child_directory "$TEST_BUILD_ROOT" "$TEST_BUILD_PARENT" \
     'unit-test output parent' || exit 1
 TEST_BUILD_DIR=$(cup_path_create_unique_directory \
     "$TEST_BUILD_PARENT/.unit.XXXXXX" 'unit-test staging' 0755) || exit 1
-GCOV_PROFILE_FLAGS=()
 GCOV_OUTPUT_DIR=
 case "$PLATFORM:$TEST_CONFIGURATION" in
     linux-*:coverage|windows-x64:coverage)
         GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$TEST_BUILD_DIR") || exit 1
-        GCOV_PROFILE_FLAGS+=(
-            "-fprofile-dir=$TEST_BUILD_FINAL"
-            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
-        )
         ;;
 esac
 cleanup_unit_staging() {
@@ -147,12 +142,18 @@ compile_test() {
         esac
     done
     printf '==> Compiling C unit test: %s\n' "$name"
+    compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
+    if [ -n "$GCOV_OUTPUT_DIR" ]; then
+        compile_command+=(
+            "-fprofile-dir=$TEST_BUILD_FINAL"
+            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
+        )
+    fi
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
         coverage_body="cup_coverage_${name}_main"
         coverage_entry="cup_coverage_${name}_entry"
         coverage_entry_source=${COVERAGE_ENTRY_SOURCE#"$ROOT"/}
-        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
-            "${GCOV_PROFILE_FLAGS[@]}" \
+        (cd "$ROOT" && "${compile_command[@]}" \
             "-Dmain=$coverage_body" \
             "-DCUP_COVERAGE_VOID_ENTRY=$coverage_body" \
             "-DCUP_COVERAGE_ENTRY=$coverage_entry" \
@@ -161,8 +162,7 @@ compile_test() {
             "${compile_args[@]}" "$coverage_entry_source" \
             "$UNITY_LIB" "${TEST_LDFLAGS[@]}" -o "$output_arg")
     else
-        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
-            "${GCOV_PROFILE_FLAGS[@]}" \
+        (cd "$ROOT" && "${compile_command[@]}" \
             -I"$ROOT/tests/unit/fixtures" \
             -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
             "${compile_args[@]}" "$UNITY_LIB" "${TEST_LDFLAGS[@]}" -o "$output_arg")
