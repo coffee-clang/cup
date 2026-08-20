@@ -225,6 +225,10 @@ mac_report=$TMP_ROOT/macos.txt
 FAKE_FORMAT=macho inspect macos-x64 release "$binary" "$mac_report"
 mac_text=$(cat "$mac_report")
 assert_contains "$mac_text" 'object_format=Mach-O'
+# Mach-O debug evidence is validated through the finalized dSYM.
+mac_debug_report=$TMP_ROOT/macos-debug.txt
+FAKE_FORMAT=macho inspect macos-x64 debug "$binary" "$mac_debug_report"
+assert_contains "$(cat "$mac_debug_report")" 'configuration=debug'
 assert_contains "$mac_text" 'architecture=x86_64'
 assert_contains "$mac_text" 'minimum_os=13.0'
 assert_contains "$mac_text" 'linkage=third-party-static-system-dynamic'

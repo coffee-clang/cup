@@ -205,7 +205,7 @@ jobs:
             windows-x64-clang64) profile=clang64; variant=windows-x64-clang64 ;;
             *) echo "Unsupported Windows target: $TARGET" >&2; exit 2 ;;
           esac
-          root="/tmp/cup-dependencies/$variant"
+          root="$HOME/deps/$variant"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"

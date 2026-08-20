@@ -73,24 +73,19 @@ resolved_protocol=$(CUP_PATH_OPS_RESOLVED_HELPER="$ambient_resolved" sh -c \
 assert_equals "$resolved_protocol" 2
 assert_missing "$TMP_ROOT/ambient-resolved-used"
 
-# The MSYS launcher must select the native Windows filesystem backend while
-# retaining the MSYS build-host compiler/process environment. A fake compiler
-# makes the routing contract testable on POSIX hosts without claiming native
-# Windows execution evidence.
-fake_cc=$TMP_ROOT/fake-msys-cc
-fake_log=$TMP_ROOT/fake-msys-cc.args
+# The MSYS launcher must select the native Windows filesystem helper.
+fake_cc=$TMP_ROOT/fake-native-windows-cc
+fake_log=$TMP_ROOT/fake-native-windows-cc.args
 cat > "$fake_cc" <<'EOF_FAKE_CC'
 #!/bin/sh
 set -eu
 if [ "${1:-}" = --version ]; then
-    printf '%s\n' 'fake-msys-gcc 1.0'
+    printf '%s\n' 'fake-native-windows-cc 1.0'
     exit 0
 fi
 printf '%s\n' '-- invocation --' "$@" >> "$CUP_FAKE_CC_LOG"
 out=
-compile=0
 while [ "$#" -gt 0 ]; do
-    [ "$1" = -c ] && compile=1
     if [ "$1" = -o ]; then
         shift
         out=${1:-}
@@ -99,15 +94,11 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 [ -n "$out" ] || exit 2
-if [ "$compile" -eq 1 ]; then
-    : > "$out"
-else
-    cat > "$out" <<'EOF_FAKE_HELPER'
+cat > "$out" <<'EOF_FAKE_HELPER'
 #!/bin/sh
 [ "${1:-}" = protocol ] || exit 2
 printf '%s\n' 2
 EOF_FAKE_HELPER
-fi
 exit 0
 EOF_FAKE_CC
 chmod 0700 "$fake_cc"
@@ -115,22 +106,35 @@ windows_helper=$(OS=Windows_NT CUP_PATH_OPS_TESTING=1 \
     CUP_PATH_OPS_CC="$fake_cc" CUP_FAKE_CC_LOG="$fake_log" \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper)
 [ -x "$windows_helper" ] || fail 'simulated MSYS launcher did not publish its helper'
-assert_contains "$(cat "$fake_log")" '-mwin32'
-assert_contains "$(cat "$fake_log")" '-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
-assert_contains "$(cat "$fake_log")" "$PROJECT_ROOT/src/system_windows.c"
-assert_contains "$(cat "$fake_log")" '-ladvapi32'
-if grep -F -- "$PROJECT_ROOT/src/system_posix.c" "$fake_log" >/dev/null; then
-    fail 'simulated MSYS launcher selected the POSIX filesystem backend'
-fi
-if grep -F -- '-U_WIN32' "$fake_log" >/dev/null; then
-    fail 'simulated MSYS launcher retained the POSIX-only feature mode'
-fi
-path_ops_invocation=$(awk '/-- invocation --/{block=""; next} {block=block $0 "\n"} /path-ops\.c/{print block; exit}' "$fake_log")
-assert_contains "$path_ops_invocation" '-D_POSIX_C_SOURCE=200809L'
-assert_not_contains "$path_ops_invocation" '-mwin32'
-windows_invocation=$(awk '/-- invocation --/{block=""; next} {block=block $0 "\n"} /system_windows\.c/{print block; exit}' "$fake_log")
-assert_contains "$windows_invocation" '-mwin32'
-assert_contains "$windows_invocation" '-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
+windows_compile=$(cat "$fake_log")
+assert_contains "$windows_compile" "$PROJECT_ROOT/scripts/lib/path-ops.c"
+assert_contains "$windows_compile" "$PROJECT_ROOT/src/system_windows.c"
+assert_contains "$windows_compile" "$PROJECT_ROOT/src/system.c"
+assert_contains "$windows_compile" "$PROJECT_ROOT/src/path.c"
+assert_contains "$windows_compile" "$PROJECT_ROOT/src/text.c"
+assert_contains "$windows_compile" '-lws2_32'
+assert_contains "$windows_compile" '-lcrypt32'
+assert_contains "$windows_compile" '-lbcrypt'
+assert_contains "$windows_compile" '-ladvapi32'
+assert_contains "$windows_compile" '-liphlpapi'
+assert_contains "$windows_compile" '-lsecur32'
+assert_contains "$windows_compile" '-D_WIN32_WINNT=0x0A00'
+assert_contains "$windows_compile" '-DWINVER=0x0A00'
+assert_not_contains "$windows_compile" "$PROJECT_ROOT/src/system_posix.c"
+assert_not_contains "$windows_compile" '-mwin32'
+assert_not_contains "$windows_compile" 'CUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
+assert_not_contains "$(cat "$PROJECT_ROOT/include/windows_utf.h")" '<sys/cygwin.h>'
+assert_not_contains "$(cat "$PROJECT_ROOT/include/windows_utf.h")" 'windows_prepare_utf8_path'
+launcher_winnt=$(sed -n 's/^WINDOWS_WINNT=//p' "$PROJECT_ROOT/scripts/lib/path-ops.sh")
+make_winnt=$(sed -n 's/^CUP_WINDOWS_WINNT := //p' "$PROJECT_ROOT/Makefile")
+assert_equals "$launcher_winnt" "$make_winnt"
+assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" '/ucrt64/bin/gcc'
+assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" '/clang64/bin/clang'
+assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" "MSYS2_ARG_CONV_EXCL='*' exec"
+path_ops_source=$(cat "$PROJECT_ROOT/scripts/lib/path-ops.c")
+assert_contains "$path_ops_source" '_putenv_s("MSYS2_ARG_CONV_EXCL", "")'
+assert_contains "$path_ops_source" 'return path_equal(parent, child_prefix) != 0;'
+assert_contains "$path_ops_source" 'if (path_equal(source, destination)'
 
 # A regular-file check must reject a symlink in any parent component, not only
 # a symlink in the final component.

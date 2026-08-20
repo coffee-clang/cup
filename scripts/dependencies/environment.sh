@@ -62,13 +62,18 @@ dependency_reproducible_cflags() {
     local compiler="$1"
     shift
     local work
+    local temp_base
     local source
     local object
     local path
     local flag
     local flags=
 
-    work=$(mktemp -d "${TMPDIR:-/tmp}/cup-prefix-map.XXXXXX") || return 1
+    temp_base=$(cup_path_resolve_host_temporary_directory \
+        'dependency compiler-probe temporary parent') || return 1
+    work=$(cup_path_create_unique_directory \
+        "$temp_base/cup-prefix-map.XXXXXX" \
+        'dependency compiler-probe directory' 0700) || return 1
     source="$work/probe.c"
     object="$work/probe.o"
     printf '%s\n' 'int cup_prefix_map_probe(void) { return 0; }' > "$source"
@@ -94,7 +99,7 @@ dependency_reproducible_cflags() {
             done
         done < <(dependency_path_variants "$path")
     done
-    cup_path_remove_directory_tree "$work" 'prefix-map probe directory' >/dev/null 2>&1 || true
+    cup_path_remove_directory_tree "$work" 'dependency compiler-probe directory' || return 1
     if [ -n "$flags" ]; then
         printf '%s\n' "-O2${flags}"
     else

@@ -62,9 +62,7 @@ cmp "$generated/ca_bundle.c" \
 
 printf '%s\n' 'CA bundle generation tests passed.'
 
-# macOS supplies TMPDIR with a trailing slash and may expose it through a
-# host-managed alias such as /var -> /private/var. The shared resolver must
-# canonicalize that outer host representation before strict path validation.
+# Host temporary aliases must be resolved before path validation.
 temp_real=$TMP_ROOT/ca-temp-real
 temp_alias=$TMP_ROOT/ca-temp-alias
 mkdir "$temp_real"
@@ -77,8 +75,7 @@ cmp "$generated/ca_bundle.h" "$alias_generated/ca_bundle.h" >/dev/null ||
 cmp "$generated/ca_bundle.c" "$alias_generated/ca_bundle.c" >/dev/null ||
     fail 'CA generation changed through a canonicalized host temporary alias'
 
-# Build-time CA generation owns scratch space below the managed build root and
-# therefore must not depend on an ambient TMPDIR representation.
+# Managed builds keep CA scratch space under the build root.
 build_generated=$test_build_root/$TEST_PLATFORM/development/generated-ca-temp-regression
 CUP_BUILD_ROOT=$test_build_root TMPDIR="$TMP_ROOT/nonexistent/../bad/" \
     "$PROJECT_ROOT/scripts/certs/generate-ca-bundle.sh" \

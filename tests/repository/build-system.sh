@@ -930,10 +930,17 @@ assert_not_contains "$consumer_test_command" "scripts/dependencies/build-"
 # gcovr discard otherwise valid unit coverage as outside the checkout root.
 unit_builder_text=$(cat "$PROJECT_ROOT/tests/build/unit.sh")
 assert_contains "$unit_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
-assert_contains "$unit_builder_text" '(cd "$ROOT" && "$CC"'
+assert_contains "$unit_builder_text" 'compile_command=("$CC"'
+assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
+assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
-assert_contains "$helper_builder_text" '(cd "$ROOT" && "$CC"'
+assert_contains "$helper_builder_text" 'compile_command=("$CC"'
+assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
+assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
+assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
+coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
+assert_not_contains "$coverage_runner_text" 'backend_args=()'
 assert_contains "$consumer_test_command" "CUP_TEST_CFLAGS='"
 case "$NATIVE_BUILD_PLATFORM" in
     macos-*) assert_contains "$consumer_test_command" '-fprofile-instr-generate' ;;

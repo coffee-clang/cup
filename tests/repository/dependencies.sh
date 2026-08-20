@@ -339,6 +339,22 @@ for required_option in --connect-timeout --max-time --speed-limit \
         fail "dependency download omitted $required_option"
 done
 
+# Compiler capability probes use the shared host-temporary resolver.
+prefix_map_temp=$TMP_ROOT/prefix-map-temp
+prefix_map_temp_alias=$TMP_ROOT/prefix-map-temp-alias
+mkdir -p "$prefix_map_temp"
+ln -s "$prefix_map_temp" "$prefix_map_temp_alias"
+prefix_map_flags=$(TMPDIR="$prefix_map_temp_alias/" \
+    dependency_reproducible_cflags cc "$TMP_ROOT") ||
+    fail 'dependency compiler probe rejected a canonicalizable host TMPDIR'
+case "$prefix_map_flags" in
+    -O2*) ;;
+    *) fail 'dependency compiler probe returned an invalid flag set' ;;
+esac
+if find "$prefix_map_temp" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    fail 'dependency compiler probe leaked its temporary directory'
+fi
+
 first_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
 second_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
 [ "$first_key" = "$second_key" ] || {
@@ -921,7 +937,7 @@ while [ "$attempt" -le 2 ]; do
 done
 printf 'Failed dependency build cleanup and retry tests passed.\n'
 
-printf '==> Testing dependency diagnostics...\n'
+printf '==> Testing dependency prefix rejection...\n'
 missing_prefix="$TMP_ROOT/missing-prefix"
 (
     cd "$ROOT"
@@ -935,8 +951,6 @@ if (
 ) >"$TMP_ROOT/deps-check-missing.out" 2>&1; then
     fail 'deps-check accepted a missing dependency prefix'
 fi
-assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
-    'Dependency prefix check failed: metadata file is missing, empty or not a regular file:'
 assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
     'Pinned dependency prefix is missing, incomplete or incompatible'
 
@@ -1019,8 +1033,12 @@ metadata_ambient=$(
 )
 [ "$metadata_unset" = "$metadata_ambient" ] ||
     fail 'macOS dependency metadata depends on non-canonical ambient state'
-[ "$(PATH="$IDENTITY_BIN:$PATH" bash -eu -c '. "$1"; dependency_macos_deployment_target macos-x64 apple-clang' sh "$DEPENDENCY_COMMON")" = 13.0 ] ||
+canonical_macos_target=$(PATH="$IDENTITY_BIN:$PATH" bash -eu -c     '. "$1"; dependency_macos_deployment_target macos-x64 apple-clang'     sh "$DEPENDENCY_COMMON")
+[ "$canonical_macos_target" = 13.0 ] ||
     fail 'canonical macOS deployment target changed unexpectedly'
+make_macos_target=$(sed -n 's/^CUP_MACOS_DEPLOYMENT_TARGET := //p' "$ROOT/Makefile")
+[ "$canonical_macos_target" = "$make_macos_target" ] ||
+    fail 'dependency metadata and Make disagree on the macOS deployment target'
 printf 'Canonical dependency identity tests passed.\n'
 
 printf '==> Testing dependency platform rejection...\n'

@@ -264,6 +264,7 @@ checks. A prefix is reusable only when its recorded data matches:
 - semantic digest of the source lock;
 - native compiler/toolchain fingerprint.
 
+Toolchain metadata is derived from the canonical platform/profile build contract.
 Comments or harmless formatting changes do not invalidate a prefix. A changed
 version, digest, recipe revision, platform, profile or compiler does.
 
@@ -326,14 +327,9 @@ Build, dependency and release scripts sometimes need filesystem operations that
 cannot be made race-safe with shell commands alone. `scripts/lib/path-ops.c`
 provides a small command-line frontend for those operations.
 
-It is compiled on demand together with only the required production modules:
-
-```text
-src/system.c
-src/system_posix.c
-src/path.c
-src/text.c
-```
+It is compiled on demand with the platform filesystem backend used by cup:
+`system_posix.c` on POSIX hosts and `system_windows.c` through a native Windows
+helper under MSYS2.
 
 The helper is cached in a private per-user runtime directory. Its cache identity
 includes the source digests, helper protocol, host, compiler and flags. It is not
@@ -364,8 +360,9 @@ certs/cacert.meta
 ```
 
 `scripts/certs/generate-ca-bundle.sh` creates `ca_bundle.h` and `ca_bundle.c`
-inside the build directory. The metadata records the source, source date,
-SHA-256, certificate count and accepted age.
+inside the build directory. Managed builds keep CA scratch data under the build
+root; standalone tools use the shared safe temporary-path handling. The metadata
+records the source, source date, SHA-256, certificate count and accepted age.
 
 Use:
 
@@ -478,13 +475,14 @@ with architecture, SHA-256 and linkage information.
   `RUNPATH` entries.
 - macOS binaries may reference only approved `/usr/lib` and
   `/System/Library/Frameworks` locations, must match the selected architecture
-  and deployment target, and must not contain `LC_RPATH`.
+  and deployment target, and must not contain `LC_RPATH`. Debug symbols are
+  validated through the finalized dSYM.
 - Windows binaries must be PE32+ x86-64 console programs, import only approved
   Windows system DLLs and contain the expected resource and mitigation flags.
 
 Release finalization also separates native symbols, strips the public executable
 and checks that repository, dependency and staging paths are not embedded in the
-published files.
+published files. Platform-specific symbol validation is part of finalization.
 
 ## Linux static-runtime test
 

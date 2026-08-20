@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Builds and executes the fd-relative filesystem helper used by build tooling.
+# Builds and executes the native filesystem helper used by build tooling.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -18,6 +18,7 @@ SYSTEM_HEADER=$PROJECT_ROOT/include/system.h
 TEXT_HEADER=$PROJECT_ROOT/include/text.h
 WINDOWS_UTF_HEADER=$PROJECT_ROOT/include/windows_utf.h
 PROTOCOL=2
+WINDOWS_WINNT=0x0A00
 
 HOST_SYSTEM=$(uname -s 2>/dev/null || true)
 case "${OS:-}:$HOST_SYSTEM" in
@@ -118,15 +119,21 @@ if [ -n "${CUP_PATH_OPS_HELPER:-}" ]; then
     exec "$HELPER" "$@"
 fi
 
+TEST_COMPILER_OVERRIDE=0
 if [ -n "${CUP_PATH_OPS_CC:-}" ]; then
     [ "${CUP_PATH_OPS_TESTING:-0}" = 1 ] ||
         fail 'CUP_PATH_OPS_CC is reserved for repository tests'
     COMPILER=$CUP_PATH_OPS_CC
+    TEST_COMPILER_OVERRIDE=1
 elif [ -n "${CC_FOR_BUILD:-}" ]; then
     COMPILER=$CC_FOR_BUILD
 else
     if [ "$HOST_MODE" = windows-msys ]; then
-        COMPILER=/usr/bin/gcc
+        case "${MSYSTEM:-}" in
+            UCRT64) COMPILER=/ucrt64/bin/gcc ;;
+            CLANG64) COMPILER=/clang64/bin/clang ;;
+            *) fail 'Windows filesystem helper requires an MSYS2 UCRT64 or CLANG64 environment' ;;
+        esac
     else
         COMPILER=
         for candidate in cc gcc clang; do
@@ -144,8 +151,16 @@ COMPILER_VERSION=$("$COMPILER_PATH" --version 2>&1 | sed -n '1p')
 [ -n "$COMPILER_VERSION" ] || fail "could not identify compiler: $COMPILER_PATH"
 
 if [ "$HOST_MODE" = windows-msys ]; then
-    HOST_FLAGS='posix-tu=-D_POSIX_C_SOURCE=200809L;windows-tu=-mwin32,-DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND'
-    HOST_LIBS=-ladvapi32
+    if [ "$TEST_COMPILER_OVERRIDE" -eq 0 ]; then
+        case "$COMPILER_PATH" in
+            /ucrt64/bin/*|/clang64/bin/*) ;;
+            *)
+                fail "Windows filesystem helper compiler is outside a native UCRT toolchain: $COMPILER_PATH"
+                ;;
+        esac
+    fi
+    HOST_FLAGS="native-windows-ucrt;winnt=$WINDOWS_WINNT"
+    HOST_LIBS='-lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -liphlpapi -lsecur32'
 else
     HOST_FLAGS=-U_WIN32
     HOST_LIBS=
@@ -184,7 +199,12 @@ if [ -n "${XDG_RUNTIME_DIR:-}" ] && owned_private_directory "$XDG_RUNTIME_DIR"; 
     CACHE_BASE=$XDG_RUNTIME_DIR
 fi
 CACHE_ROOT=$CACHE_BASE/cup-path-ops-$CURRENT_UID
-HELPER=$CACHE_ROOT/path-ops-$HOST_ID-$MACHINE_ID-$BUILD_ID
+if [ "$HOST_MODE" = windows-msys ]; then
+    HELPER_SUFFIX=.exe
+else
+    HELPER_SUFFIX=
+fi
+HELPER=$CACHE_ROOT/path-ops-$HOST_ID-$MACHINE_ID-$BUILD_ID$HELPER_SUFFIX
 
 umask 077
 if [ ! -e "$CACHE_ROOT" ] && [ ! -L "$CACHE_ROOT" ]; then
@@ -196,46 +216,28 @@ if [ -e "$HELPER" ] || [ -L "$HELPER" ]; then
     owned_private_helper "$HELPER" ||
         fail "invalid cached helper was preserved: $HELPER"
 else
-    TEMPORARY=$(mktemp "$CACHE_ROOT/.path-ops.XXXXXX") || fail 'could not allocate helper output'
+    if [ "$HOST_MODE" = windows-msys ]; then
+        TEMPORARY=$(mktemp --suffix=.exe "$CACHE_ROOT/.path-ops.XXXXXX") ||
+            fail 'could not allocate helper output'
+    else
+        TEMPORARY=$(mktemp "$CACHE_ROOT/.path-ops.XXXXXX") ||
+            fail 'could not allocate helper output'
+    fi
     cleanup() { rm -f -- "$TEMPORARY"; }
     trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
+
     if [ "$HOST_MODE" = windows-msys ]; then
-        # Keep path-ops itself in the MSYS/POSIX compilation environment so
-        # fork/exec/wait and the shell-facing protocol retain their native MSYS
-        # semantics. Compile only the filesystem backend with the Win32 view;
-        # all objects still target the same MSYS/Cygwin runtime and are linked
-        # together by the build-host compiler.
-        OBJECT_DIR=$(mktemp -d "$CACHE_ROOT/.path-ops-build.XXXXXX") ||
-            fail 'could not allocate filesystem-helper object directory'
-        cleanup() { rm -f -- "$TEMPORARY"; rm -rf -- "$OBJECT_DIR"; }
-        for source_spec in \
-            "$SOURCE:path-ops.o" \
-            "$SYSTEM_SOURCE:system.o" \
-            "$PATH_SOURCE:path.o" \
-            "$TEXT_SOURCE:text.o"; do
-            source_path=${source_spec%:*}
-            object_name=${source_spec##*:}
-            "$COMPILER_PATH" -D_POSIX_C_SOURCE=200809L \
-                -std=c11 -O2 -Wall -Wextra -Werror \
-                -I"$PROJECT_ROOT/include" -c "$source_path" \
-                -o "$OBJECT_DIR/$object_name" ||
-                fail "could not compile filesystem-helper source: $source_path"
-        done
-        "$COMPILER_PATH" -mwin32 -D_POSIX_C_SOURCE=200809L \
-            -DCUP_PATH_OPS_MSYS_WINDOWS_BACKEND \
-            -std=c11 -O2 -Wall -Wextra -Werror \
-            -I"$PROJECT_ROOT/include" -c "$SYSTEM_WINDOWS_SOURCE" \
-            -o "$OBJECT_DIR/system-windows.o" ||
-            fail 'could not compile native Windows filesystem backend'
-        "$COMPILER_PATH" \
-            "$OBJECT_DIR/path-ops.o" "$OBJECT_DIR/system.o" \
-            "$OBJECT_DIR/system-windows.o" "$OBJECT_DIR/path.o" \
-            "$OBJECT_DIR/text.o" -ladvapi32 -o "$TEMPORARY" ||
-            fail 'could not link native Windows filesystem helper'
-        rm -rf -- "$OBJECT_DIR"
+        # Use the native Windows backend so helper filesystem semantics match cup.
+        "$COMPILER_PATH" -std=c11 -O2 -Wall -Wextra -Werror \
+            "-D_WIN32_WINNT=$WINDOWS_WINNT" "-DWINVER=$WINDOWS_WINNT" \
+            -I"$PROJECT_ROOT/include" \
+            "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_WINDOWS_SOURCE" \
+            "$PATH_SOURCE" "$TEXT_SOURCE" \
+            $HOST_LIBS -o "$TEMPORARY" ||
+            fail 'could not build native Windows filesystem helper'
     else
         "$COMPILER_PATH" -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
             -I"$PROJECT_ROOT/include" \
@@ -252,10 +254,31 @@ else
     fi
     trap - EXIT HUP INT TERM
 fi
-
 owned_private_helper "$HELPER" || fail "invalid cached helper: $HELPER"
 if [ "$PRINT_HELPER" -eq 1 ]; then
     printf '%s\n' "$HELPER"
     exit 0
 fi
+if [ "$HOST_MODE" = windows-msys ]; then
+    command -v cygpath >/dev/null 2>&1 ||
+        fail 'cygpath is required at the MSYS/native filesystem boundary'
+
+    if [ "${1:-}" = run-build ]; then
+        [ "$#" -ge 4 ] && [ "${3:-}" = -- ] ||
+            fail 'run-build requires a root, -- and a command'
+        NATIVE_BUILD_ROOT=$(cygpath -m "$2") ||
+            fail "could not convert build root to native Windows form: $2"
+        shift 3
+        # Preserve shell arguments while crossing the native helper boundary.
+        MSYS2_ARG_CONV_EXCL='*' exec "$HELPER" run-build "$NATIVE_BUILD_ROOT" -- "$@"
+    fi
+
+    if [ "${1:-}" = mkdir-unique ]; then
+        NATIVE_UNIQUE=$("$HELPER" "$@") || exit $?
+        cygpath -u "$NATIVE_UNIQUE" ||
+            fail "could not convert unique directory to MSYS form: $NATIVE_UNIQUE"
+        exit 0
+    fi
+fi
+
 exec "$HELPER" "$@"

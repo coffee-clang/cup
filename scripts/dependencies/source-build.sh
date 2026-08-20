@@ -33,19 +33,8 @@ download_source() {
 
     cup_path_prepare_child_file "$DEPS_ROOT" "$output" \
         "dependency source archive" || return 1
-    case "${OS:-}:$(uname -s 2>/dev/null || true)" in
-        Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*)
-            # Keep download staging below the managed dependency root on MSYS2
-            # so native Windows filesystem checks cover every temporary descendant.
-            temp_base=${BUILD_DIR:-$DEPS_ROOT/build}
-            ;;
-        *)
-            temp_base=$(cup_path_resolve_host_temporary_directory \
-                'dependency download temporary parent') || return 1
-            ;;
-    esac
-    cup_path_check_directory_chain "$temp_base" 0 \
-        'dependency download temporary parent' || return 1
+    temp_base=$(cup_path_resolve_host_temporary_directory \
+        'dependency download temporary parent') || return 1
     tmp_dir=$(cup_path_create_unique_directory \
         "$temp_base/cup-dependency-download.XXXXXX" \
         'dependency download directory' 0700) || return 1

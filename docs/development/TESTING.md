@@ -139,8 +139,8 @@ make PLATFORM=<platform> test
 ```
 
 For Linux and macOS this builds cup, the unit binaries and the test helpers, then
-runs the POSIX unit and integration runners. For Windows it uses the UCRT64 build
-and the native PowerShell integration runner.
+runs the POSIX unit and integration runners. The Bash-based build/test scripts remain compatible with the Bash version
+available on supported macOS runners. For Windows it uses the UCRT64 build and the native PowerShell integration runner.
 
 The focused build target is:
 

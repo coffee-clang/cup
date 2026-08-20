@@ -303,8 +303,7 @@ inspect_macho() {
     symbols=$(nm -a "$binary" 2>/dev/null || true)
     case "$configuration" in
         debug)
-            printf '%s\n' "$load_commands" | grep -Eq '__debug_info|__DWARF' ||
-                fail 'debug executable contains no DWARF information'
+            # macOS debug symbols are validated in the finalized dSYM.
             ;;
         coverage)
             printf '%s\n' "$symbols" | grep -Eq '___llvm_profile|__llvm_profile' ||

@@ -51,8 +51,7 @@ dependency_uses_openssl() {
     esac
 }
 
-# Build-contract values must be derived from platform/profile, never from the
-# environment of whichever caller happens to compute metadata or a cache key.
+# Build-contract values are derived from platform/profile, not ambient state.
 dependency_macos_deployment_target() {
     local platform="$1" profile="$2"
 
@@ -491,113 +490,6 @@ dependency_prefix_complete() {
             dependency_library_exists "$prefix" ssl &&
             dependency_library_exists "$prefix" crypto
     fi
-}
-
-dependency_prefix_diagnostic() {
-    local prefix="$1" metadata="$2" use_openssl="${3:-1}"
-    local config="$prefix/.cup-dependencies" link
-
-    dependency_metadata_valid "$metadata" || {
-        echo "Dependency prefix check failed: expected metadata is invalid." >&2
-        return 0
-    }
-    dependency_regular_nonempty_file "$config" || {
-        echo "Dependency prefix check failed: metadata file is missing, empty or not a regular file: $config" >&2
-        return 0
-    }
-    if [ -e "$prefix/.cup-deps-building" ] || [ -L "$prefix/.cup-deps-building" ]; then
-        echo "Dependency prefix check failed: build-in-progress marker is present: $prefix/.cup-deps-building" >&2
-        return 0
-    fi
-    printf '%s\n' "$metadata" | dependency_stream_matches_file "$config" || {
-        echo "Dependency prefix check failed: metadata content does not match the expected platform/profile." >&2
-        return 0
-    }
-
-    if ! dependency_tree_has_no_symlinks "$prefix"; then
-        if [ ! -d "$prefix" ] || [ -L "$prefix" ]; then
-            echo "Dependency prefix check failed: prefix directory is missing or is a symlink: $prefix" >&2
-        else
-            link=$(find "$prefix" -type l -print -quit 2>/dev/null || true)
-            echo "Dependency prefix check failed: symlink found in prefix: ${link:-$prefix}" >&2
-        fi
-        return 0
-    fi
-
-    for path in \
-        "$prefix/include/argtable3.h" \
-        "$prefix/include/uthash.h" \
-        "$prefix/include/ares.h" \
-        "$prefix/include/unity.h" \
-        "$prefix/include/unity_internals.h" \
-        "$prefix/include/event2/event.h" \
-        "$prefix/include/event2/http.h" \
-        "$prefix/include/event2/bufferevent.h" \
-        "$prefix/include/event2/listener.h" \
-        "$prefix/bin/curl-config" \
-        "$prefix/include/curl/curl.h" \
-        "$prefix/include/archive.h" \
-        "$prefix/include/archive_entry.h" \
-        "$prefix/include/zlib.h" \
-        "$prefix/include/lzma.h"; do
-        dependency_regular_nonempty_file "$path" || {
-            echo "Dependency prefix check failed: required file is missing, empty or not a regular file: $path" >&2
-            return 0
-        }
-    done
-    [ -x "$prefix/bin/curl-config" ] || {
-        echo "Dependency prefix check failed: curl-config is not executable: $prefix/bin/curl-config" >&2
-        return 0
-    }
-
-    for library in argtable3 cares unity event_core event_extra curl archive z lzma; do
-        dependency_library_exists "$prefix" "$library" || {
-            echo "Dependency prefix check failed: required static library is missing or unreadable: $library" >&2
-            return 0
-        }
-    done
-
-    { dependency_regular_nonempty_file "$prefix/lib/pkgconfig/libevent_core.pc" ||
-      dependency_regular_nonempty_file "$prefix/lib64/pkgconfig/libevent_core.pc"; } || {
-        echo "Dependency prefix check failed: libevent_core pkg-config metadata is missing or invalid." >&2
-        return 0
-    }
-    { dependency_regular_nonempty_file "$prefix/lib/pkgconfig/libevent_extra.pc" ||
-      dependency_regular_nonempty_file "$prefix/lib64/pkgconfig/libevent_extra.pc"; } || {
-        echo "Dependency prefix check failed: libevent_extra pkg-config metadata is missing or invalid." >&2
-        return 0
-    }
-    { dependency_regular_nonempty_file "$prefix/lib/pkgconfig/libcares.pc" ||
-      dependency_regular_nonempty_file "$prefix/lib64/pkgconfig/libcares.pc"; } || {
-        echo "Dependency prefix check failed: c-ares pkg-config metadata is missing or invalid." >&2
-        return 0
-    }
-    { dependency_regular_nonempty_file "$prefix/lib/pkgconfig/libarchive.pc" ||
-      dependency_regular_nonempty_file "$prefix/lib64/pkgconfig/libarchive.pc"; } || {
-        echo "Dependency prefix check failed: libarchive pkg-config metadata is missing or invalid." >&2
-        return 0
-    }
-
-    dependency_link_metadata_valid "$prefix" "$prefix" || {
-        echo "Dependency prefix check failed: static link metadata is incompatible with the restored prefix." >&2
-        return 0
-    }
-
-    if [ "$use_openssl" = 1 ]; then
-        dependency_regular_nonempty_file "$prefix/include/openssl/ssl.h" || {
-            echo "Dependency prefix check failed: OpenSSL header is missing, empty or not a regular file: $prefix/include/openssl/ssl.h" >&2
-            return 0
-        }
-        for library in ssl crypto; do
-            dependency_library_exists "$prefix" "$library" || {
-                echo "Dependency prefix check failed: required OpenSSL static library is missing or unreadable: $library" >&2
-                return 0
-            }
-        done
-    fi
-
-    echo "Dependency prefix check failed: completeness predicate failed without a more specific diagnostic." >&2
-    return 0
 }
 
 dependency_prefix_matches() {

@@ -250,7 +250,6 @@ common_args=(
     --exclude 'tests/'
     --exclude 'build/'
 )
-backend_args=()
 search_root=$counter_root
 
 if [ "$COVERAGE_BACKEND" = llvm ]; then
@@ -267,7 +266,7 @@ if [ "$COVERAGE_BACKEND" = llvm ]; then
         -type f -perm -111 -size +0c | sort)
 
     printf '%s\n' "${llvm_binaries[@]}" >"$REPORT_DIR/llvm-binaries.txt"
-    backend_args+=(--llvm-profdata-executable "$LLVM_PROFDATA")
+    backend_args=(--llvm-profdata-executable "$LLVM_PROFDATA")
     for binary in "${llvm_binaries[@]}"; do
         backend_args+=(--llvm-cov-binary "$binary")
     done
@@ -275,13 +274,23 @@ fi
 
 run_gcovr() {
     jobs=$1
-    "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
-        gcovr -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
-        --txt "$REPORT_DIR/summary.txt" \
-        --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
-        --json "$REPORT_DIR/coverage.json" --json-pretty \
-        --json-summary "$REPORT_DIR/coverage-summary.json" --json-summary-pretty \
-        "$search_root"
+    if [ "$COVERAGE_BACKEND" = llvm ]; then
+        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
+            gcovr -j "$jobs" "${common_args[@]}" "${backend_args[@]}" \
+            --txt "$REPORT_DIR/summary.txt" \
+            --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
+            --json "$REPORT_DIR/coverage.json" --json-pretty \
+            --json-summary "$REPORT_DIR/coverage-summary.json" --json-summary-pretty \
+            "$search_root"
+    else
+        "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=10s "$REPORT_TIMEOUT" \
+            gcovr -j "$jobs" "${common_args[@]}" \
+            --txt "$REPORT_DIR/summary.txt" \
+            --xml "$REPORT_DIR/coverage.xml" --xml-pretty \
+            --json "$REPORT_DIR/coverage.json" --json-pretty \
+            --json-summary "$REPORT_DIR/coverage-summary.json" --json-summary-pretty \
+            "$search_root"
+    fi
 }
 
 if [ "$generation_status" -eq 0 ]; then

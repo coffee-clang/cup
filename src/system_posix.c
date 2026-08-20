@@ -154,7 +154,6 @@ static CupError open_directory_path_no_follow_options(const char *path,
     char copy[MAX_PATH_LEN];
     char *save = NULL;
     char *component;
-    char *component_start;
     int current;
     int path_missing = 0;
 
@@ -183,9 +182,8 @@ static CupError open_directory_path_no_follow_options(const char *path,
     if (current < 0) {
         return CUP_ERR_FILESYSTEM;
     }
-    component_start = copy + (path[0] == '/' ? 1 : 0);
 
-    component = strtok_r(component_start, "/", &save);
+    component = strtok_r(copy + (path[0] == '/' ? 1 : 0), "/", &save);
     while (component != NULL) {
         int created = 0;
         int next;

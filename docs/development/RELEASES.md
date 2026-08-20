@@ -192,7 +192,8 @@ contains:
 
 - the native executable;
 - platform-specific checksum data;
-- native debug symbols;
+- native debug symbols (`cup.debug` on Linux/Windows and an UUID-matched,
+  `dwarfdump --verify`-validated `cup.dSYM` on macOS);
 - build and release metadata;
 - the files needed by the native release test.
 

@@ -37,7 +37,6 @@ esac
 DEPS_PREFIX=$MODE
 metadata=$(dependency_metadata "$PLATFORM" "$profile")
 if ! dependency_prefix_matches "$DEPS_PREFIX" "$metadata" "$use_openssl"; then
-    dependency_prefix_diagnostic "$DEPS_PREFIX" "$metadata" "$use_openssl"
     echo "Pinned dependency prefix is missing, incomplete or incompatible: $DEPS_PREFIX" >&2
     echo "Expected platform/profile: $PLATFORM/$profile" >&2
     echo "Expected prefix format: $CUP_DEPENDENCY_PREFIX_FORMAT" >&2

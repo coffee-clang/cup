@@ -146,7 +146,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          root=/tmp/cup-dependencies/windows-x64
+          root="$HOME/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"

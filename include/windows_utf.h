@@ -7,15 +7,11 @@
 #include "error.h"
 #include "path.h"
 
-#include <errno.h>
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
 #include <windows.h>
 #include <wchar.h>
-#if defined(CUP_PATH_OPS_MSYS_WINDOWS_BACKEND)
-#include <sys/cygwin.h>
-#endif
 
 /* Preserve the useful distinction between malformed text, insufficient storage and native I/O
  * failures at the Windows API boundary. */
@@ -47,59 +43,6 @@ static inline CupError windows_utf8_to_wide(const char *input,
     return written == 0 ? windows_text_conversion_error() : CUP_OK;
 }
 
-
-static inline CupError windows_prepare_utf8_path(const char *input,
-                                                 char *output,
-                                                 size_t output_size) {
-    size_t input_length;
-
-    if (input == NULL || output == NULL || output_size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-#if defined(CUP_PATH_OPS_MSYS_WINDOWS_BACKEND)
-    if (input[0] == '/') {
-        wchar_t native[MAX_PATH_LEN];
-        ssize_t required = cygwin_conv_path(CCP_POSIX_TO_WIN_W, input, NULL, 0);
-        int written;
-
-        if (required < 0) {
-            return errno == ENAMETOOLONG || errno == ENOSPC
-                       ? CUP_ERR_BUFFER_TOO_SMALL
-                       : CUP_ERR_FILESYSTEM;
-        }
-        if ((size_t)required > sizeof(native)) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        if (cygwin_conv_path(CCP_POSIX_TO_WIN_W, input, native, sizeof(native)) != 0) {
-            return errno == ENAMETOOLONG || errno == ENOSPC
-                       ? CUP_ERR_BUFFER_TOO_SMALL
-                       : CUP_ERR_FILESYSTEM;
-        }
-        if (output_size > INT_MAX) {
-            return CUP_ERR_INVALID_INPUT;
-        }
-        written = WideCharToMultiByte(CP_UTF8,
-                                      WC_ERR_INVALID_CHARS,
-                                      native,
-                                      -1,
-                                      output,
-                                      (int)output_size,
-                                      NULL,
-                                      NULL);
-        if (written == 0) {
-            return windows_text_conversion_error();
-        }
-        return path_normalize(output);
-    }
-#endif
-    input_length = strlen(input);
-    if (input_length >= output_size) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(output, input, input_length + 1);
-    return path_normalize(output);
-}
-
 /* Convert a UTF-8 filesystem path to one absolute Windows long-path name. */
 static inline CupError windows_utf8_to_wide_path(const char *input,
                                                   wchar_t *output,
@@ -108,14 +51,20 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
     wchar_t converted[MAX_PATH_LEN];
     wchar_t absolute[MAX_PATH_LEN];
     DWORD length;
+    size_t input_length;
     size_t i;
     size_t required;
 
     if (input == NULL || output == NULL || output_count == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
+    input_length = strlen(input);
+    if (input_length >= sizeof(normalized)) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(normalized, input, input_length + 1);
     {
-        CupError err = windows_prepare_utf8_path(input, normalized, sizeof(normalized));
+        CupError err = path_normalize(normalized);
 
         if (err != CUP_OK) {
             return err;
@@ -166,14 +115,20 @@ static inline CupError windows_utf8_to_wide_process_path(const char *input,
     wchar_t converted[MAX_PATH_LEN];
     wchar_t absolute[MAX_PATH_LEN];
     DWORD length;
+    size_t input_length;
     size_t i;
     size_t required;
 
     if (input == NULL || output == NULL || output_count == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
+    input_length = strlen(input);
+    if (input_length >= sizeof(normalized)) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(normalized, input, input_length + 1);
     {
-        CupError err = windows_prepare_utf8_path(input, normalized, sizeof(normalized));
+        CupError err = path_normalize(normalized);
 
         if (err != CUP_OK) {
             return err;

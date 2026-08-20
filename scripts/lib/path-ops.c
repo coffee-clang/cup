@@ -1,7 +1,9 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #include "constants.h"
 #include "path.h"
@@ -9,17 +11,25 @@
 #include "text.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <bcrypt.h>
+#include <io.h>
+#include <process.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#endif
 
 #define CUP_PATH_OPS_PROTOCOL 2
 #define CUP_PATH_OPS_MAX_DEPTH 128u
@@ -65,7 +75,9 @@ static void test_pause(const char *point) {
     const char *expected = getenv("CUP_PATH_OPS_TEST_POINT");
     const char *ready = getenv("CUP_PATH_OPS_TEST_READY");
     const char *resume = getenv("CUP_PATH_OPS_TEST_CONTINUE");
+#if !defined(_WIN32)
     struct timespec delay = {0, 10000000L};
+#endif
     unsigned int attempt;
     FILE *file;
 
@@ -83,13 +95,23 @@ static void test_pause(const char *point) {
     fclose(file);
 
     for (attempt = 0; attempt < 3000; ++attempt) {
+#if defined(_WIN32)
+        if (_access(resume, 0) == 0) {
+            return;
+        }
+#else
         if (access(resume, F_OK) == 0) {
             return;
         }
+#endif
         if (errno != ENOENT) {
             fail_message("could not inspect test continuation at %s", point);
         }
+#if defined(_WIN32)
+        Sleep(10);
+#else
         nanosleep(&delay, NULL);
+#endif
     }
     fail_message("timed out waiting for test continuation at %s", point);
 }
@@ -104,21 +126,45 @@ static bool path_is_clean_absolute(const char *path) {
     const char *cursor;
     size_t length;
 
-    if (path == NULL || path[0] != '/' || path[1] == '\0') {
+    if (path == NULL) {
         return false;
     }
-
     length = strlen(path);
-    if (path[length - 1] == '/' || strstr(path, "//") != NULL ||
+
+#if defined(_WIN32)
+    if (length >= 3 &&
+        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':' && path[2] == '/') {
+        cursor = path + 3;
+        if (length == 3) {
+            return true;
+        }
+    } else if (length >= 5 && path[0] == '/' && path[1] == '/') {
+        cursor = path + 2;
+    } else {
+        return false;
+    }
+#else
+    if (path[0] != '/' || path[1] == '\0') {
+        return false;
+    }
+    cursor = path + 1;
+#endif
+
+    if (path[length - 1] == '/' ||
         strchr(path, '\\') != NULL || strchr(path, '\n') != NULL ||
         strchr(path, '\r') != NULL) {
         return false;
     }
 
-    cursor = path + 1;
     while (*cursor != '\0') {
         component = cursor;
         while (*cursor != '\0' && *cursor != '/') {
+#if defined(_WIN32)
+            if (*cursor == ':') {
+                return false;
+            }
+#endif
             cursor++;
         }
 
@@ -136,12 +182,12 @@ static bool path_is_clean_absolute(const char *path) {
 
 static void require_clean_path(const char *path) {
     if (!path_is_clean_absolute(path)) {
-        fail_message("path is not an absolute clean POSIX path: %s",
+        fail_message("path is not an absolute clean path: %s",
                      path == NULL ? "(null)" : path);
     }
 }
 
-static mode_t parse_mode(const char *value) {
+static unsigned int parse_mode(const char *value) {
     unsigned int mode = 0;
     size_t index;
 
@@ -154,13 +200,19 @@ static mode_t parse_mode(const char *value) {
         }
         mode = mode * 8u + (unsigned int)(value[index] - '0');
     }
-    return (mode_t)mode;
+    return mode;
 }
 
 static bool path_contains(const char *parent, const char *child) {
+    char child_prefix[MAX_PATH_LEN];
     size_t length = strlen(parent);
 
-    return strncmp(parent, child, length) == 0 && child[length] == '/';
+    if (strlen(child) <= length || child[length] != '/' || length >= sizeof(child_prefix)) {
+        return false;
+    }
+    memcpy(child_prefix, child, length);
+    child_prefix[length] = '\0';
+    return path_equal(parent, child_prefix) != 0;
 }
 
 static void check_directory(const char *path, int allow_missing) {
@@ -206,12 +258,23 @@ static void fill_unique_suffix(char *suffix, size_t count) {
     static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz234567";
     unsigned char random_bytes[CUP_PATH_OPS_UNIQUE_CHARS];
     size_t offset = 0;
+#if !defined(_WIN32)
     int descriptor;
+#endif
 
     if (suffix == NULL || count == 0 || count > sizeof(random_bytes)) {
         fail_message("invalid unique suffix request");
     }
 
+#if defined(_WIN32)
+    if (count > ULONG_MAX ||
+        BCryptGenRandom(NULL,
+                        random_bytes,
+                        (ULONG)count,
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        fail_message("could not read system random source");
+    }
+#else
     descriptor = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (descriptor < 0) {
         fail_message("could not open system random source");
@@ -232,6 +295,7 @@ static void fill_unique_suffix(char *suffix, size_t count) {
     if (close(descriptor) != 0) {
         fail_message("could not close system random source");
     }
+#endif
 
     for (offset = 0; offset < count; ++offset) {
         suffix[offset] = alphabet[random_bytes[offset] & 31u];
@@ -259,7 +323,7 @@ static void build_unique_candidate(const char *template_path,
 }
 
 static void create_unique_directory_path(const char *template_path,
-                                         mode_t mode,
+                                         unsigned int mode,
                                          char *path,
                                          size_t path_size) {
     char parent[MAX_PATH_LEN];
@@ -295,7 +359,7 @@ static void create_unique_directory_path(const char *template_path,
     fail_message("could not allocate a unique directory from %s", template_path);
 }
 
-static void create_unique_directory(const char *template_path, mode_t mode) {
+static void create_unique_directory(const char *template_path, unsigned int mode) {
     char path[MAX_PATH_LEN];
 
     create_unique_directory_path(template_path, mode, path, sizeof(path));
@@ -479,7 +543,7 @@ static int files_equal(const char *left_path, const char *right_path) {
 }
 
 static FILE *create_temporary_file(const char *destination,
-                                   mode_t mode,
+                                   unsigned int mode,
                                    char *path,
                                    size_t path_size) {
     char parent[MAX_PATH_LEN];
@@ -518,10 +582,14 @@ static FILE *create_temporary_file(const char *destination,
         fclose(file);
         fail_message("temporary destination path is too long: %s", destination);
     }
-    if (fchmod(fileno(file), mode) != 0) {
+#if defined(_WIN32)
+    (void)mode;
+#else
+    if (fchmod(fileno(file), (mode_t)mode) != 0) {
         fclose(file);
         fail_message("could not set temporary file mode: %s", destination);
     }
+#endif
     return file;
 }
 
@@ -593,7 +661,7 @@ static void commit_temporary(const char *destination, FileCommitPolicy policy) {
 
 static void copy_stream_to_destination(FILE *source,
                                        const char *destination,
-                                       mode_t mode,
+                                       unsigned int mode,
                                        FileCommitPolicy policy) {
     char temporary[MAX_PATH_LEN];
     FILE *output;
@@ -615,7 +683,7 @@ static void copy_stream_to_destination(FILE *source,
 
 static void copy_file(const char *source_path,
                       const char *destination,
-                      mode_t mode,
+                      unsigned int mode,
                       FileCommitPolicy policy) {
     SystemPathIdentity identity;
     FILE *source = NULL;
@@ -636,7 +704,7 @@ static void copy_file(const char *source_path,
 }
 
 static void write_stdin(const char *destination,
-                        mode_t mode,
+                        unsigned int mode,
                         FileCommitPolicy policy) {
     require_clean_path(destination);
     copy_stream_to_destination(stdin, destination, mode, policy);
@@ -656,12 +724,12 @@ static void copy_observed_file(const char *source_path,
                                const SystemPathIdentity *expected_identity,
                                const char *destination_path) {
     SystemPathIdentity opened_identity;
-    struct stat information;
     FILE *source = NULL;
     uint64_t source_size = 0;
     int missing = 0;
+    int executable = 0;
     CupError err;
-    mode_t mode;
+    unsigned int mode;
 
     if (expected_identity == NULL || !expected_identity->valid ||
         expected_identity->kind != SYSTEM_PATH_REGULAR_FILE) {
@@ -677,12 +745,13 @@ static void copy_observed_file(const char *source_path,
         }
         fail_message("source file identity changed during copy: %s", source_path);
     }
-    if (fstat(fileno(source), &information) != 0 || !S_ISREG(information.st_mode)) {
+    err = system_file_is_executable(source, source_path, &executable);
+    if (err != CUP_OK) {
         fclose(source);
-        fail_message("could not inspect opened source file: %s", source_path);
+        fail_system("inspect opened source file", source_path, err);
     }
 
-    mode = (information.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0 ? 0755 : 0644;
+    mode = executable ? 0755u : 0644u;
     copy_stream_to_destination(source, destination_path, mode, FILE_COMMIT_REPLACE);
     (void)fclose(source);
 }
@@ -764,7 +833,7 @@ static void copy_tree(const char *source, const char *destination) {
 
     require_clean_path(source);
     require_clean_path(destination);
-    if (strcmp(source, destination) == 0 || path_contains(source, destination) ||
+    if (path_equal(source, destination) || path_contains(source, destination) ||
         path_contains(destination, source)) {
         fail_message("tree copy paths must not overlap: %s -> %s", source, destination);
     }
@@ -1005,9 +1074,11 @@ static void prepare_build_root(const char *root) {
                file) != strlen(CUP_BUILD_ROOT_MARKER_CONTENT)) {
         err = CUP_ERR_FILESYSTEM;
     }
+#if !defined(_WIN32)
     if (err == CUP_OK && fchmod(fileno(file), 0644) != 0) {
         err = CUP_ERR_FILESYSTEM;
     }
+#endif
     if (err == CUP_OK) {
         err = system_sync_file(file);
     }
@@ -1050,8 +1121,6 @@ static void prepare_build_root(const char *root) {
 
 static int run_build_locked(const char *root, char *const command[]) {
     BuildRootLock locked;
-    int wait_status;
-    pid_t child;
 
     if (command == NULL || command[0] == NULL) {
         fail_message("run-build requires a command");
@@ -1061,37 +1130,65 @@ static int run_build_locked(const char *root, char *const command[]) {
     test_pause("after-build-lock");
     require_locked_root_unchanged(root, &locked);
 
-    child = fork();
-    if (child < 0) {
-        system_lock_release(&locked.lock);
-        fail_message("could not start locked build command: %s", command[0]);
-    }
-    if (child == 0) {
-        execvp(command[0], command);
-        fprintf(stderr,
-                "path ops: execute locked build command '%s': %s\n",
-                command[0],
-                strerror(errno));
-        _exit(127);
-    }
+#if defined(_WIN32)
+    {
+        intptr_t child_status;
 
-    while (waitpid(child, &wait_status, 0) < 0) {
-        if (errno != EINTR) {
+        /* Re-enable MSYS argument conversion before starting the shell command. */
+        if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0) {
             system_lock_release(&locked.lock);
-            fail_message("could not wait for locked build command: %s", command[0]);
+            fail_message("could not restore MSYS argument conversion for locked build command");
         }
-    }
+        child_status = _spawnvp(_P_WAIT,
+                                command[0],
+                                (const char *const *)command);
+        if (child_status < 0) {
+            system_lock_release(&locked.lock);
+            fail_message("could not start locked build command: %s", command[0]);
+        }
 
-    require_locked_root_unchanged(root, &locked);
-    system_lock_release(&locked.lock);
+        require_locked_root_unchanged(root, &locked);
+        system_lock_release(&locked.lock);
+        return (int)child_status;
+    }
+#else
+    {
+        int wait_status;
+        pid_t child;
 
-    if (WIFEXITED(wait_status)) {
-        return WEXITSTATUS(wait_status);
+        child = fork();
+        if (child < 0) {
+            system_lock_release(&locked.lock);
+            fail_message("could not start locked build command: %s", command[0]);
+        }
+        if (child == 0) {
+            execvp(command[0], command);
+            fprintf(stderr,
+                    "path ops: execute locked build command '%s': %s\n",
+                    command[0],
+                    strerror(errno));
+            _exit(127);
+        }
+
+        while (waitpid(child, &wait_status, 0) < 0) {
+            if (errno != EINTR) {
+                system_lock_release(&locked.lock);
+                fail_message("could not wait for locked build command: %s", command[0]);
+            }
+        }
+
+        require_locked_root_unchanged(root, &locked);
+        system_lock_release(&locked.lock);
+
+        if (WIFEXITED(wait_status)) {
+            return WEXITSTATUS(wait_status);
+        }
+        if (WIFSIGNALED(wait_status)) {
+            return 128 + WTERMSIG(wait_status);
+        }
+        return 1;
     }
-    if (WIFSIGNALED(wait_status)) {
-        return 128 + WTERMSIG(wait_status);
-    }
-    return 1;
+#endif
 }
 
 static void clean_build_root(const char *root) {

@@ -227,10 +227,11 @@ scripts/lib/            safe repository-path frontend used by scripts
 
 `scripts/lib/path-ops.c` is the native path frontend used by repository scripts.
 It links the required filesystem modules from `src/` instead of keeping another
-copy of the no-follow and identity logic. It also owns repository-only policy,
-such as build-root markers, build locks and the publication modes required by
-shell callers. Its dispatch is kept in one place so those operations do not
-become a set of unrelated helper programs.
+copy of the no-follow and identity logic. POSIX hosts use the POSIX backend;
+MSYS2 crosses explicitly to the native Windows backend. It also owns
+repository-only policy, such as build-root markers, build locks and the
+publication modes required by shell callers. Its dispatch is kept in one place
+so those operations do not become a set of unrelated helper programs.
 
 Dependency scripts are split by responsibility: `environment.sh` prepares the
 controlled build environment, `root-transaction.sh` owns the managed prefix
