@@ -1,8 +1,9 @@
 # Provides shared fd-relative path operations for owned build and release trees.
 # This library is sourced by Makefile recipes and repository scripts.
 
-# Never trust a helper path inherited from the ambient environment. This value
-# is an in-process cache populated only after launcher validation below.
+# Never trust launcher/helper paths inherited from the ambient environment.
+# These in-process caches are populated only after launcher validation below.
+CUP_PATH_OPS_RESOLVED_LAUNCHER=
 CUP_PATH_OPS_RESOLVED_HELPER=
 
 cup_path_error() {
@@ -56,8 +57,8 @@ cup_path_resolve_ops_helper() {
         return 0
     fi
 
-    _cup_path_launcher=$(cup_path_find_ops_launcher) || return 1
-    CUP_PATH_OPS_RESOLVED_HELPER=$("$_cup_path_launcher" --print-helper) || return 1
+    CUP_PATH_OPS_RESOLVED_LAUNCHER=$(cup_path_find_ops_launcher) || return 1
+    CUP_PATH_OPS_RESOLVED_HELPER=$("$CUP_PATH_OPS_RESOLVED_LAUNCHER" --print-helper) || return 1
     case "$CUP_PATH_OPS_RESOLVED_HELPER" in
         /*) ;;
         *)
@@ -79,7 +80,14 @@ cup_path_resolve_ops_helper() {
 
 cup_path_ops() {
     cup_path_resolve_ops_helper || return 1
-    "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+    case "${1:-}" in
+        mkdir-unique|run-build)
+            "$CUP_PATH_OPS_RESOLVED_LAUNCHER" "$@"
+            ;;
+        *)
+            "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+            ;;
+    esac
 }
 
 cup_path_resolve_host_temporary_directory() {

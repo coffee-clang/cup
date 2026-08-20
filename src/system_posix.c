@@ -444,6 +444,8 @@ CupError system_start_uninstall(const char *cup_root,
                                 const char *detached_root,
                                 const char *lock_path) {
     CupError err;
+    char *resolved_temp_directory = NULL;
+    char temporary_directory[MAX_PATH_LEN];
     char temporary_script[MAX_PATH_LEN];
     FILE *file = NULL;
     pid_t pid;
@@ -457,8 +459,17 @@ CupError system_start_uninstall(const char *cup_root,
         return CUP_ERR_INVALID_INPUT;
     }
 
+    resolved_temp_directory = realpath("/tmp", NULL);
+    if (resolved_temp_directory == NULL) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    err = text_copy(temporary_directory, sizeof(temporary_directory), resolved_temp_directory);
+    free(resolved_temp_directory);
+    if (err != CUP_OK) {
+        return err;
+    }
     err = system_create_temp_file(
-        "/tmp", "cup-uninstall", temporary_script, sizeof(temporary_script), &file);
+        temporary_directory, "cup-uninstall", temporary_script, sizeof(temporary_script), &file);
     if (err != CUP_OK) {
         fprintf(stderr, "Error: could not create temporary uninstall script.\n");
         return err;

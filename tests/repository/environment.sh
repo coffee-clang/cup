@@ -84,6 +84,18 @@ EOF_VERIFY
     assert_equals "$DEPS_PREFIX" "$TMP_ROOT/custom-prefix"
 )
 
+# Host-provided POSIX temp aliases are resolved once before C unit fixtures use
+# them; managed descendants remain subject to their normal no-follow checks.
+mkdir "$TMP_ROOT/physical-temp"
+ln -s "$TMP_ROOT/physical-temp" "$TMP_ROOT/temp-alias"
+(
+    CUP_TEST_PLATFORM=macos-x64
+    TMPDIR="$TMP_ROOT/temp-alias/"
+    export CUP_TEST_PLATFORM TMPDIR
+    cup_test_prepare_environment
+    assert_equals "$TMPDIR" "$TMP_ROOT/physical-temp"
+)
+
 if (
     CUP_TEST_PLATFORM=linux/amd64
     export CUP_TEST_PLATFORM

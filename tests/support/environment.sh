@@ -46,6 +46,7 @@ cup_test_detect_platform() {
 # Resolve the explicit pinned dependency prefix used by all test runners.
 cup_test_prepare_environment() {
     _cup_test_platform=${CUP_TEST_PLATFORM:-}
+    _cup_test_temp=
 
     if [ -z "$_cup_test_platform" ]; then
         _cup_test_platform=$(cup_test_detect_platform) || return 1
@@ -55,6 +56,29 @@ cup_test_prepare_environment() {
         *)
             printf 'Unsupported CUP_TEST_PLATFORM: %s\n' "$_cup_test_platform" >&2
             return 1
+            ;;
+    esac
+
+    case "$_cup_test_platform" in
+        linux-*|macos-*)
+            _cup_test_temp=${TMPDIR:-/tmp}
+            while [ "$_cup_test_temp" != / ]; do
+                case "$_cup_test_temp" in
+                    */) _cup_test_temp=${_cup_test_temp%/} ;;
+                    *) break ;;
+                esac
+            done
+            case "$_cup_test_temp" in
+                /*) ;;
+                *) _cup_test_temp=$(pwd -P)/$_cup_test_temp ;;
+            esac
+            if ! _cup_test_temp=$(CDPATH= cd -- "$_cup_test_temp" 2>/dev/null && pwd -P); then
+                printf 'Test temporary directory is unavailable: %s\n' \
+                    "${TMPDIR:-/tmp}" >&2
+                return 1
+            fi
+            TMPDIR=$_cup_test_temp
+            export TMPDIR
             ;;
     esac
 

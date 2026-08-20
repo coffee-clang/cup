@@ -73,6 +73,83 @@ resolved_protocol=$(CUP_PATH_OPS_RESOLVED_HELPER="$ambient_resolved" sh -c \
 assert_equals "$resolved_protocol" 2
 assert_missing "$TMP_ROOT/ambient-resolved-used"
 
+# Operations whose representation changes at the MSYS/native boundary must
+# stay routed through the validated launcher after helper resolution. Ordinary
+# operations still execute the already validated helper directly.
+boundary_helper=$TMP_ROOT/boundary-helper
+boundary_launcher=$TMP_ROOT/boundary-launcher
+boundary_log=$TMP_ROOT/boundary-launcher.log
+boundary_created=$TMP_ROOT/boundary/work.created
+mkdir "$TMP_ROOT/boundary"
+cat > "$boundary_helper" <<'EOF_BOUNDARY_HELPER'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    protocol)
+        printf '%s\n' 2
+        ;;
+    check-dir)
+        exit 0
+        ;;
+    mkdir-unique|run-build)
+        printf '%s\n' 'special operation bypassed launcher' >&2
+        exit 97
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF_BOUNDARY_HELPER
+cat > "$boundary_launcher" <<'EOF_BOUNDARY_LAUNCHER'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = --print-helper ]; then
+    printf '%s\n' "$CUP_BOUNDARY_HELPER"
+    exit 0
+fi
+printf '%s\n' "${1:-}" >> "$CUP_BOUNDARY_LOG"
+case "${1:-}" in
+    mkdir-unique)
+        mkdir "$CUP_BOUNDARY_CREATED"
+        printf '%s\n' "$CUP_BOUNDARY_CREATED"
+        ;;
+    run-build)
+        exit 0
+        ;;
+    *)
+        exec "$CUP_BOUNDARY_HELPER" "$@"
+        ;;
+esac
+EOF_BOUNDARY_LAUNCHER
+chmod 0700 "$boundary_helper" "$boundary_launcher"
+boundary_result=$(CUP_PATH_OPS_TESTING=1 \
+    CUP_PATH_OPS_LAUNCHER="$boundary_launcher" \
+    CUP_BOUNDARY_HELPER="$boundary_helper" \
+    CUP_BOUNDARY_LOG="$boundary_log" \
+    CUP_BOUNDARY_CREATED="$boundary_created" \
+    sh -c '. "$1"; cup_path_create_unique_directory "$2/work.XXXXXX" "boundary unique" 0700' \
+    sh "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$TMP_ROOT/boundary")
+assert_equals "$boundary_result" "$boundary_created"
+assert_contains "$(cat "$boundary_log")" 'mkdir-unique'
+CUP_PATH_OPS_TESTING=1 \
+CUP_PATH_OPS_LAUNCHER="$boundary_launcher" \
+CUP_BOUNDARY_HELPER="$boundary_helper" \
+CUP_BOUNDARY_LOG="$boundary_log" \
+CUP_BOUNDARY_CREATED="$boundary_created" \
+    sh -c '. "$1"; cup_path_run_build "$2" -- true' \
+    sh "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$TMP_ROOT/boundary"
+assert_contains "$(cat "$boundary_log")" 'run-build'
+boundary_log_before=$(cat "$boundary_log")
+boundary_protocol=$(CUP_PATH_OPS_TESTING=1 \
+    CUP_PATH_OPS_LAUNCHER="$boundary_launcher" \
+    CUP_BOUNDARY_HELPER="$boundary_helper" \
+    CUP_BOUNDARY_LOG="$boundary_log" \
+    CUP_BOUNDARY_CREATED="$boundary_created" \
+    sh -c '. "$1"; cup_path_ops protocol' \
+    sh "$PROJECT_ROOT/scripts/lib/path-safety.sh")
+assert_equals "$boundary_protocol" 2
+assert_equals "$(cat "$boundary_log")" "$boundary_log_before"
+
 # The MSYS launcher must select the native Windows filesystem helper.
 fake_cc=$TMP_ROOT/fake-native-windows-cc
 fake_log=$TMP_ROOT/fake-native-windows-cc.args
