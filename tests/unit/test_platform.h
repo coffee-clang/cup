@@ -20,6 +20,7 @@
 
 typedef struct _stat64 TestPlatformStat;
 
+#define TEST_PLATFORM_STDIN_FD 0
 #define TEST_PLATFORM_STDOUT_FD 1
 #define TEST_PLATFORM_STDERR_FD 2
 
@@ -268,6 +269,7 @@ static inline int test_sync_file(FILE *file) {
 
 typedef struct stat TestPlatformStat;
 
+#define TEST_PLATFORM_STDIN_FD STDIN_FILENO
 #define TEST_PLATFORM_STDOUT_FD STDOUT_FILENO
 #define TEST_PLATFORM_STDERR_FD STDERR_FILENO
 

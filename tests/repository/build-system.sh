@@ -927,6 +927,12 @@ for coverage_build_script in tests/build/unit.sh tests/build/helpers.sh; do
     assert_contains "$coverage_build_text" '-fprofile-prefix-path='
 done
 
+. "$PROJECT_ROOT/tests/support/posix/coverage.sh"
+mingw_profile_prefix=$(cup_coverage_mingw_profile_prefix \
+    'D:/a/cup/cup' 'build/windows-x64/coverage/tests/.unit.example')
+assert_equals 'D:/a/cup/cup\build/windows-x64/coverage/tests/.unit.example/' \
+    "$mingw_profile_prefix"
+
 gcov_fixture=$TMP_ROOT/gcov-profile-ownership
 mkdir -p "$gcov_fixture/unit" "$gcov_fixture/helpers"
 printf '%s\n' note > "$gcov_fixture/unit/test_alpha-source.gcno"
@@ -980,7 +986,7 @@ assert_contains "$unit_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
 assert_contains "$unit_builder_text" 'compile_command=("$CC"'
 assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_contains "$unit_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
-assert_contains "$unit_builder_text" 'GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX")'
+assert_contains "$unit_builder_text" 'cup_coverage_mingw_profile_prefix'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
@@ -995,7 +1001,7 @@ assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_contains "$helper_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
-assert_contains "$helper_builder_text" 'GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX")'
+assert_contains "$helper_builder_text" 'cup_coverage_mingw_profile_prefix'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
 coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")

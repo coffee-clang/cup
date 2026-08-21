@@ -129,12 +129,15 @@ case "$PLATFORM:$TEST_CONFIGURATION" in
         GCOV_PROFILE_DIR=$TEST_BUILD_FINAL
         GCOV_PROFILE_PREFIX="$ROOT/$GCOV_OUTPUT_DIR"
         if [ "$PLATFORM" = windows-x64 ]; then
+            . "$ROOT/tests/support/posix/coverage.sh"
             command -v cygpath >/dev/null 2>&1 || {
                 printf 'cygpath is required for Windows coverage paths.\n' >&2
                 exit 2
             }
             GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR") || exit 1
-            GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX") || exit 1
+            gcov_native_root=$(cygpath -m "$ROOT") || exit 1
+            GCOV_PROFILE_PREFIX=$(cup_coverage_mingw_profile_prefix \
+                "$gcov_native_root" "$GCOV_OUTPUT_DIR") || exit 1
         fi
         ;;
 esac

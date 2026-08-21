@@ -48,6 +48,7 @@ static int journal_clear_calls;
 static CupError interrupt_results[3];
 static size_t interrupt_calls;
 static int interrupt_pending;
+static int saved_stdin = -1;
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -96,6 +97,10 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+    if (saved_stdin >= 0) {
+        TEST_ASSERT_TRUE(test_dup2_fd(saved_stdin, TEST_PLATFORM_STDIN_FD) >= 0);
+        clearerr(stdin);
+    }
 }
 
 static CupError test_path(char *buffer, size_t size, const char *name) {
@@ -418,14 +423,28 @@ static void test_journal_and_handoff_failures(void) {
 }
 
 int main(void) {
+    int cleanup_status = 0;
+    int test_status;
+
     TEST_ASSERT_NOT_NULL(test_make_temp_directory(
         temp_dir, sizeof(temp_dir), "cup-uninstall-test"));
+    saved_stdin = test_dup_fd(TEST_PLATFORM_STDIN_FD);
+    TEST_ASSERT_TRUE(saved_stdin >= 0);
+
     UNITY_BEGIN();
     RUN_TEST(test_invalid_runtime);
     RUN_TEST(test_pending_or_missing);
     RUN_TEST(test_confirmation_and_success);
     RUN_TEST(test_interrupt_safe_points);
     RUN_TEST(test_journal_and_handoff_failures);
-    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
-    return UNITY_END();
+    test_status = UNITY_END();
+
+    if (test_close_fd(saved_stdin) != 0) {
+        cleanup_status = 1;
+    }
+    saved_stdin = -1;
+    if (test_remove_tree(temp_dir) != 0) {
+        cleanup_status = 1;
+    }
+    return test_status != 0 ? test_status : cleanup_status;
 }

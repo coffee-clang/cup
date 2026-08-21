@@ -1,4 +1,12 @@
-# Coverage-only filesystem checks shared by the runner and repository regressions.
+# Coverage mechanics shared by build scripts, the runner and repository regressions.
+
+# MinGW GCC combines its native getpwd() result with a relative output using a
+# DOS separator before applying -fprofile-prefix-path. The trailing POSIX
+# separator belongs to the relative output path and must be part of the prefix.
+cup_coverage_mingw_profile_prefix() {
+    [ "$#" -eq 2 ] && [ -n "$1" ] && [ -n "$2" ] || return 2
+    printf '%s\\%s/\n' "$1" "$2"
+}
 
 cup_coverage_verify_gcov_profile_owners() {
     cup_gcov_tests_root=$1
