@@ -606,7 +606,7 @@ static void test_detached_uninstall_start(void) {
     TEST_ASSERT_TRUE(temp_length > 0 && temp_length < sizeof(expected_working_directory));
     write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", marker));
-    TEST_ASSERT_TRUE(snprintf(lock_path, sizeof(lock_path), "%s/cup.lock", temp_dir) > 0);
+    TEST_ASSERT_TRUE(snprintf(lock_path, sizeof(lock_path), "%s/uninstall.lock", temp_dir) > 0);
     write_text(lock_path, "");
     written = snprintf(prefixed_root, sizeof(prefixed_root), "\\\\?\\%s", temp_dir);
     TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(prefixed_root));

@@ -101,9 +101,9 @@ try {
         "http-server", "--root", $serverRoot, "--port", "$port",
         "--ready-file", $ready, "--request-file", $requestReady,
         "--delay-ms", "3000"
-    )
+    ) | ForEach-Object { ConvertTo-NativeArgument -Argument $_ }
     $server = Start-TestHelperProcess -FilePath $helper `
-        -ArgumentList $serverArguments `
+        -ArgumentList @(($serverArguments -join ' ')) `
         -RedirectStandardOutput $serverLog -RedirectStandardError "$serverLog.err" `
         -Hidden
 
