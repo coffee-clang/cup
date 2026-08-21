@@ -22,7 +22,6 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <io.h>
-#include <process.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -1120,6 +1119,156 @@ static void prepare_build_root(const char *root) {
     validate_build_root(root);
 }
 
+#if defined(_WIN32)
+#define CUP_WINDOWS_COMMAND_LINE_CAP 32767u
+
+static wchar_t *windows_wide_argument(const char *argument) {
+    int count;
+    wchar_t *wide;
+
+    if (argument == NULL) {
+        fail_message("locked build command contains a null argument");
+    }
+    count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, argument, -1, NULL, 0);
+    if (count <= 0) {
+        fail_message("locked build command contains invalid UTF-8");
+    }
+    wide = malloc((size_t)count * sizeof(*wide));
+    if (wide == NULL) {
+        fail_message("could not allocate locked build command argument");
+    }
+    if (MultiByteToWideChar(CP_UTF8,
+                            MB_ERR_INVALID_CHARS,
+                            argument,
+                            -1,
+                            wide,
+                            count) != count) {
+        free(wide);
+        fail_message("could not convert locked build command argument");
+    }
+    return wide;
+}
+
+static void windows_command_append(wchar_t *line,
+                                   size_t capacity,
+                                   size_t *length,
+                                   wchar_t value) {
+    if (*length + 1 >= capacity) {
+        fail_message("locked build command line is too long");
+    }
+    line[(*length)++] = value;
+}
+
+/* Encode one argv element using the Windows C-runtime command-line rules.
+ * Quoting every element keeps empty strings, whitespace, quotes and trailing
+ * backslashes lossless when CreateProcess hands the command line to the child. */
+static void windows_command_append_argument(wchar_t *line,
+                                            size_t capacity,
+                                            size_t *length,
+                                            const wchar_t *argument) {
+    const wchar_t *cursor = argument;
+
+    windows_command_append(line, capacity, length, L'"');
+    for (;;) {
+        size_t backslashes = 0;
+
+        while (*cursor == L'\\') {
+            ++backslashes;
+            ++cursor;
+        }
+        if (*cursor == L'\0') {
+            while (backslashes-- > 0) {
+                windows_command_append(line, capacity, length, L'\\');
+                windows_command_append(line, capacity, length, L'\\');
+            }
+            break;
+        }
+        if (*cursor == L'"') {
+            size_t count = backslashes * 2u + 1u;
+
+            while (count-- > 0) {
+                windows_command_append(line, capacity, length, L'\\');
+            }
+            windows_command_append(line, capacity, length, L'"');
+            ++cursor;
+            continue;
+        }
+        while (backslashes-- > 0) {
+            windows_command_append(line, capacity, length, L'\\');
+        }
+        windows_command_append(line, capacity, length, *cursor++);
+    }
+    windows_command_append(line, capacity, length, L'"');
+}
+
+static wchar_t *windows_build_command_line(char *const command[]) {
+    wchar_t *line;
+    size_t length = 0;
+    size_t index;
+
+    line = calloc(CUP_WINDOWS_COMMAND_LINE_CAP, sizeof(*line));
+    if (line == NULL) {
+        fail_message("could not allocate locked build command line");
+    }
+    for (index = 0; command[index] != NULL; ++index) {
+        wchar_t *argument = windows_wide_argument(command[index]);
+
+        if (index > 0) {
+            windows_command_append(line,
+                                   CUP_WINDOWS_COMMAND_LINE_CAP,
+                                   &length,
+                                   L' ');
+        }
+        windows_command_append_argument(line,
+                                        CUP_WINDOWS_COMMAND_LINE_CAP,
+                                        &length,
+                                        argument);
+        free(argument);
+    }
+    line[length] = L'\0';
+    return line;
+}
+
+static int windows_run_command(char *const command[]) {
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    wchar_t *command_line;
+    DWORD wait_result;
+    DWORD exit_code;
+
+    memset(&startup, 0, sizeof(startup));
+    memset(&process, 0, sizeof(process));
+    startup.cb = sizeof(startup);
+    command_line = windows_build_command_line(command);
+
+    if (!CreateProcessW(NULL,
+                        command_line,
+                        NULL,
+                        NULL,
+                        TRUE,
+                        0,
+                        NULL,
+                        NULL,
+                        &startup,
+                        &process)) {
+        free(command_line);
+        fail_message("could not start locked build command: %s", command[0]);
+    }
+    free(command_line);
+
+    wait_result = WaitForSingleObject(process.hProcess, INFINITE);
+    if (wait_result != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(process.hProcess, &exit_code)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        fail_message("could not wait for locked build command: %s", command[0]);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return (int)exit_code;
+}
+#endif
+
 static int run_build_locked(const char *root, char *const command[]) {
     BuildRootLock locked;
 
@@ -1133,24 +1282,19 @@ static int run_build_locked(const char *root, char *const command[]) {
 
 #if defined(_WIN32)
     {
-        intptr_t child_status;
+        int child_status;
 
-        /* Re-enable MSYS argument conversion before starting the shell command. */
+        /* The launcher suppresses MSYS rewriting while entering this native helper.
+         * Restore normal conversion for the actual nested MSYS build command. */
         if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0) {
             system_lock_release(&locked.lock);
             fail_message("could not restore MSYS argument conversion for locked build command");
         }
-        child_status = _spawnvp(_P_WAIT,
-                                command[0],
-                                (const char *const *)command);
-        if (child_status < 0) {
-            system_lock_release(&locked.lock);
-            fail_message("could not start locked build command: %s", command[0]);
-        }
+        child_status = windows_run_command(command);
 
         require_locked_root_unchanged(root, &locked);
         system_lock_release(&locked.lock);
-        return (int)child_status;
+        return child_status;
     }
 #else
     {

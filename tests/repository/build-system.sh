@@ -15,6 +15,22 @@ test_begin build-system
 # the isolated dry runs below. Every scenario supplies the inputs it owns.
 unset MAKEFLAGS MAKEOVERRIDES BUILD_DIR
 
+# A recursive make's long --no-print-directory option is not the short -n flag.
+# The build lock must remain active for that normal recursive invocation, while
+# a genuine dry run still bypasses execution of the native lock helper.
+normal_lock_prefix=$(
+    cd "$PROJECT_ROOT"
+    make -p -s PLATFORM=linux-x64 MAKEFLAGS=--no-print-directory help 2>/dev/null |
+        sed -n 's/^BUILD_LOCK_PREFIX = //p' | sed -n '1p'
+)
+assert_contains "$normal_lock_prefix" 'cup_path_run_build'
+dry_lock_prefix=$(
+    cd "$PROJECT_ROOT"
+    make -p -s PLATFORM=linux-x64 MAKEFLAGS=n help 2>/dev/null |
+        sed -n 's/^BUILD_LOCK_PREFIX = //p' | sed -n '1p'
+)
+[ -z "$dry_lock_prefix" ] || fail 'GNU make -n did not disable the build lock command'
+
 NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
     fail 'could not resolve native build platform for build-system tests'
 
@@ -965,12 +981,24 @@ assert_contains "$unit_builder_text" 'compile_command=("$CC"'
 assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
+windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
+assert_contains "$windows_helper_list" 'binary-patch.exe'
+assert_contains "$windows_helper_list" 'network-helper.exe'
+assert_not_contains "$windows_helper_list" 'process-group'
+assert_not_contains "$windows_helper_list" 'archive-fixture'
+posix_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list linux-x64)
+assert_contains "$posix_helper_list" 'archive-fixture'
+assert_contains "$posix_helper_list" 'process-group'
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
 coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
+assert_contains "$coverage_runner_text" 'gcov) REPORT_JOBS=1'
+assert_contains "$coverage_runner_text" 'llvm) REPORT_JOBS=2'
+assert_contains "$coverage_runner_text" '[ "$REPORT_JOBS" -gt 1 ]'
+assert_contains "$coverage_runner_text" 'report_jobs=%s'
 assert_not_contains "$coverage_runner_text" 'backend_args=()'
 assert_contains "$consumer_test_command" "CUP_TEST_CFLAGS='"
 case "$NATIVE_BUILD_PLATFORM" in

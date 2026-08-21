@@ -580,6 +580,27 @@ CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" clean-build-root "$build_lock_root"
 assert_missing "$build_lock_root"
 
+# run-build must preserve each shell argv element across the MSYS/native boundary.
+# In particular, one environment assignment containing several compiler flags
+# must not be split into a command named after the second flag.
+argv_root=$TMP_ROOT/build-argv
+mkdir "$argv_root"
+printf '%s\n' \
+    'format=1' \
+    'product=coffee-clang/cup' \
+    'kind=build-root' \
+    'layout=1' > "$argv_root/.cup-build-root"
+argv_value='-DLEFT -DCURL_STATICLIB -DRIGHT=two'
+CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" run-build "$argv_root" -- \
+    env "CUP_PATH_OPS_ARGV_PROBE=$argv_value" \
+    sh -c '[ "$CUP_PATH_OPS_ARGV_PROBE" = "$1" ]' sh "$argv_value" \
+    >"$TMP_ROOT/build-argv.out" 2>&1 || \
+    fail 'run-build did not preserve an argv element containing spaces'
+CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" clean-build-root "$argv_root"
+assert_missing "$argv_root"
+
 # A root replacement after the marker is locked must be rejected before the
 # requested command is started, not merely noticed after the child exits.
 build_swap_root=$TMP_ROOT/build-swap

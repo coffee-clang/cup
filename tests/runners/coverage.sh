@@ -34,7 +34,7 @@ BRANCH_THRESHOLD="${CUP_COVERAGE_MIN_BRANCHES:-70}"
 FUNCTION_THRESHOLD="${CUP_COVERAGE_MIN_FUNCTIONS:-97}"
 UNIT_TIMEOUT="${CUP_COVERAGE_UNIT_TIMEOUT:-1200}"
 SUITE_TIMEOUT="${CUP_COVERAGE_SUITE_TIMEOUT:-300}"
-REPORT_JOBS="${CUP_COVERAGE_REPORT_JOBS:-1}"
+REPORT_JOBS="${CUP_COVERAGE_REPORT_JOBS:-}"
 REPORT_TIMEOUT="${CUP_COVERAGE_REPORT_TIMEOUT:-600}"
 HTML_TIMEOUT="${CUP_COVERAGE_HTML_TIMEOUT:-60}"
 
@@ -56,6 +56,13 @@ case "$PLATFORM" in
         exit 2
         ;;
 esac
+
+if [ -z "$REPORT_JOBS" ]; then
+    case "$COVERAGE_BACKEND" in
+        gcov) REPORT_JOBS=1 ;;
+        llvm) REPORT_JOBS=2 ;;
+    esac
+fi
 
 for value in "$LINE_THRESHOLD" "$BRANCH_THRESHOLD" "$FUNCTION_THRESHOLD"; do
     case "$value" in
@@ -154,6 +161,7 @@ cp "$test_build_log" "$REPORT_DIR/test-build.log"
     printf 'build_root=%s\n' "$TEST_BUILD_ROOT"
     printf 'unit_timeout_seconds=%s\n' "$UNIT_TIMEOUT"
     printf 'suite_timeout_seconds=%s\n' "$SUITE_TIMEOUT"
+    printf 'report_jobs=%s\n' "$REPORT_JOBS"
     printf 'report_timeout_seconds=%s\n' "$REPORT_TIMEOUT"
 } >"$REPORT_DIR/environment.txt"
 
@@ -297,8 +305,10 @@ if [ "$generation_status" -eq 0 ]; then
     printf '==> Generating %s coverage reports with gcovr...\n' "$COVERAGE_BACKEND"
     (cd "$ROOT" && run_gcovr "$REPORT_JOBS") >"$coverage_log" 2>&1 || generation_status=$?
 fi
-if [ "$generation_status" -eq 124 ] || [ "$generation_status" -eq 137 ]; then
-    printf 'gcovr timed out; retrying with one worker.\n' >>"$coverage_log"
+if { [ "$generation_status" -eq 124 ] || [ "$generation_status" -eq 137 ]; } && \
+        [ "$REPORT_JOBS" -gt 1 ]; then
+    printf 'gcovr timed out with %s workers; retrying with one worker.\n' \
+        "$REPORT_JOBS" >>"$coverage_log"
     generation_status=0
     (cd "$ROOT" && run_gcovr 1) >>"$coverage_log" 2>&1 || generation_status=$?
 fi

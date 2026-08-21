@@ -769,7 +769,11 @@ BUILD_RECURSE = $(MAKE) --no-print-directory _build \
     PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
     CC='$(CC)' WINDRES='$(WINDRES)' \
     CUP_OFFICIAL_BUILD='$(CUP_OFFICIAL_BUILD)'
-ifneq ($(findstring n,$(firstword $(MAKEFLAGS))),)
+CUP_INTERNAL_MAKE_FLAG_WORD := $(firstword $(MAKEFLAGS))
+CUP_INTERNAL_MAKE_SHORT_FLAGS := $(if $(filter -%,$(CUP_INTERNAL_MAKE_FLAG_WORD)),,$(CUP_INTERNAL_MAKE_FLAG_WORD))
+CUP_INTERNAL_MAKE_DRY_RUN := $(findstring n,$(CUP_INTERNAL_MAKE_SHORT_FLAGS)) \
+    $(filter -n --just-print --dry-run --recon,$(CUP_INTERNAL_MAKE_FLAG_WORD))
+ifneq ($(strip $(CUP_INTERNAL_MAKE_DRY_RUN)),)
 BUILD_LOCK_PREFIX =
 else
 BUILD_LOCK_PREFIX = . '$(PATH_SAFETY)'; cup_path_run_build '$(BUILD_ROOT)' --

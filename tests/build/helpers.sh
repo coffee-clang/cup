@@ -5,16 +5,37 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 
+helper_scope_applies() {
+    local scope=$1
+    local platform=$2
+
+    case "$scope:$platform" in
+        all:*) return 0 ;;
+        posix:windows-x64) return 1 ;;
+        posix:*) return 0 ;;
+        *)
+            printf 'Unsupported helper scope: %s\n' "$scope" >&2
+            return 2
+            ;;
+    esac
+}
+
 list_registered_helpers() {
     local platform=$1
+    local scope
     local name
-    awk '/^[[:space:]]*compile_helper[[:space:]]+[A-Za-z0-9_-]+/ { print $2 }' "$0" |
-        while IFS= read -r name; do
-            case "$platform:$name" in
-                windows-x64:archive-fixture) continue ;;
-                windows-x64:*) printf '%s.exe\n' "$name" ;;
-                *) printf '%s\n' "$name" ;;
-            esac
+
+    awk '/^[[:space:]]*compile_helper[[:space:]]+(all|posix)[[:space:]]+[A-Za-z0-9_-]+/ { print $2, $3 }' "$0" |
+        while read -r scope name; do
+            if helper_scope_applies "$scope" "$platform"; then
+                case "$platform" in
+                    windows-x64) printf '%s.exe\n' "$name" ;;
+                    *) printf '%s\n' "$name" ;;
+                esac
+            else
+                status=$?
+                [ "$status" -eq 1 ] || exit "$status"
+            fi
         done
 }
 
@@ -98,9 +119,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 compile_helper() {
-    name=$1
-    source=$2
-    shift 2
+    scope=$1
+    name=$2
+    source=$3
+    shift 3
+    helper_scope_applies "$scope" "$PLATFORM" || {
+        status=$?
+        [ "$status" -eq 1 ] && return 0
+        exit "$status"
+    }
     case "$source" in
         "$ROOT"/*) source=${source#"$ROOT"/} ;;
     esac
@@ -132,20 +159,20 @@ compile_helper() {
     fi
 }
 
-if [ "$PLATFORM" != windows-x64 ]; then
+if helper_scope_applies posix "$PLATFORM"; then
     archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
         PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
-    compile_helper archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
+    compile_helper posix archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
         $archive_libs
-    compile_helper process-group "$ROOT/tests/helpers/process-group.c"
 fi
+compile_helper posix process-group "$ROOT/tests/helpers/process-group.c"
 
 event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libevent_extra libevent_core)
-compile_helper network-helper "$ROOT/tests/helpers/network-helper.c" \
+compile_helper all network-helper "$ROOT/tests/helpers/network-helper.c" \
     $event_libs $PLATFORM_LIBS
-compile_helper binary-patch "$ROOT/tests/helpers/binary-patch.c"
+compile_helper all binary-patch "$ROOT/tests/helpers/binary-patch.c"
 
 expected_list="$OUT/.expected-helpers"
 actual_list="$OUT/.actual-helpers"
