@@ -564,6 +564,7 @@ function Invoke-Cup {
 function Assert-CupStatus {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [string[]]$CommandArgs,
 
         [Parameter(Mandatory = $true)]

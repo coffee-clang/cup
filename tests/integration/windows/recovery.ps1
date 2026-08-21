@@ -61,6 +61,53 @@ function Install-CupAssetsFixture {
     )
 }
 
+function Copy-CupUpdateBackups {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CupRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Staging
+    )
+
+    Copy-Item -LiteralPath (Join-Path $CupRoot "bin\cup.exe") `
+        -Destination (Join-Path $Staging "binary.old")
+    Copy-Item -LiteralPath (Join-Path $CupRoot "helpers\uninstall.ps1") `
+        -Destination (Join-Path $Staging "uninstall.old")
+    Copy-Item -LiteralPath (Join-Path $CupRoot "config\SHA256SUMS.windows-x64") `
+        -Destination (Join-Path $Staging "platform-checksums.old")
+    Copy-Item -LiteralPath (Join-Path $CupRoot "config\packages.cfg") `
+        -Destination (Join-Path $Staging "package-catalog.old")
+    Copy-Item -LiteralPath (Join-Path $CupRoot "config\install.cfg") `
+        -Destination (Join-Path $Staging "install-config.old")
+    Copy-Item -LiteralPath (Join-Path $CupRoot "config\SHA256SUMS.common") `
+        -Destination (Join-Path $Staging "common-checksums.old")
+}
+
+function Write-CupUpdateGenerationMarker {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CupRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Staging,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    Write-Utf8NoBom -Path (Join-Path $Staging "committed") -Lines @(
+        "format=1",
+        "version=$Version",
+        "binary_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'bin\cup.exe'))",
+        "uninstall_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'helpers\uninstall.ps1'))",
+        "platform_checksums_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\SHA256SUMS.windows-x64'))",
+        "packages_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\packages.cfg'))",
+        "install_policy_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\install.cfg'))",
+        "common_checksums_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\SHA256SUMS.common'))"
+    )
+}
+
 function Write-CupUpdateJournal {
     param(
         [Parameter(Mandatory = $true)]
@@ -152,11 +199,9 @@ try {
     $safeName = "cup-update-safe-rollback-test"
     $safeStaging = Join-Path $stagingRoot $safeName
     New-Item -ItemType Directory -Force -Path $safeStaging | Out-Null
-    Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $safeStaging "binary.old")
-    Copy-Item -LiteralPath $uninstallPath -Destination (Join-Path $safeStaging "uninstall.old")
-    Copy-Item -LiteralPath $platformChecksumsPath `
-        -Destination (Join-Path $safeStaging "platform-checksums.old")
-    New-Item -ItemType File -Path (Join-Path $safeStaging "committed") | Out-Null
+    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $safeStaging
+    Write-CupUpdateGenerationMarker `
+        -CupRoot $cupRoot -Staging $safeStaging -Version "0.0.0"
     $safeBinaryHash = Get-Sha256Lower -Path $binaryPath
     $safeUninstallHash = Get-Sha256Lower -Path $uninstallPath
     $safeChecksumsHash = Get-Sha256Lower -Path $platformChecksumsPath
@@ -182,10 +227,7 @@ try {
     $unsafeName = "cup-update-unsafe-rollback-test"
     $unsafeStaging = Join-Path $stagingRoot $unsafeName
     New-Item -ItemType Directory -Force -Path $unsafeStaging | Out-Null
-    Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $unsafeStaging "binary.old")
-    Copy-Item -LiteralPath $uninstallPath -Destination (Join-Path $unsafeStaging "uninstall.old")
-    Copy-Item -LiteralPath $platformChecksumsPath `
-        -Destination (Join-Path $unsafeStaging "platform-checksums.old")
+    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $unsafeStaging
 
     (Get-Item -LiteralPath $uninstallPath).IsReadOnly = $false
     (Get-Item -LiteralPath $platformChecksumsPath).IsReadOnly = $false
@@ -228,13 +270,9 @@ try {
     $committedName = "cup-update-committed-test"
     $committedStaging = Join-Path $stagingRoot $committedName
     New-Item -ItemType Directory -Force -Path $committedStaging | Out-Null
-    Copy-Item -LiteralPath $binaryPath `
-        -Destination (Join-Path $committedStaging "binary.old")
-    Copy-Item -LiteralPath $uninstallPath `
-        -Destination (Join-Path $committedStaging "uninstall.old")
-    Copy-Item -LiteralPath $platformChecksumsPath `
-        -Destination (Join-Path $committedStaging "platform-checksums.old")
-    New-Item -ItemType File -Path (Join-Path $committedStaging "committed") | Out-Null
+    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $committedStaging
+    Write-CupUpdateGenerationMarker `
+        -CupRoot $cupRoot -Staging $committedStaging -Version "0.0.0"
     $committedBinaryHash = Get-Sha256Lower -Path $binaryPath
     Write-CupUpdateJournal -Path $transactionPath -TemporaryName $committedName `
         -Token "recovery-cup-update-committed-test" -Phase "committing"

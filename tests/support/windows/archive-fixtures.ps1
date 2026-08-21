@@ -37,6 +37,7 @@ function Get-PackageEntrySpecs {
         [string]$Platform,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$ExtraEntries
     )
 
@@ -83,6 +84,7 @@ function New-CustomZipPackage {
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$ExtraEntries
     )
 
