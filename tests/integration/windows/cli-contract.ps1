@@ -134,7 +134,8 @@ function Test-ForeignAndLegacyRootSelection {
             -Value "unrelated" -Encoding Ascii
 
         $env:USERPROFILE = $foreignHome
-        Invoke-Cup -CommandArgs @("repair") | Out-Null
+        Write-Host "==> Checking foreign-primary fallback repair."
+        Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
         Assert-PathExists (Join-Path $foreignPrimary "foreign.txt")
         $foreignMarker = Join-Path $foreignHome ".coffee-cup\root.txt"
         Assert-PathExists $foreignMarker
@@ -155,7 +156,8 @@ function Test-ForeignAndLegacyRootSelection {
         $legacyStateHash = (Get-FileHash -LiteralPath $legacyState -Algorithm SHA256).Hash
 
         $env:USERPROFILE = $legacyHome
-        Invoke-Cup -CommandArgs @("repair") | Out-Null
+        Write-Host "==> Checking markerless-state fallback repair."
+        Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
         Assert-Equals (Get-FileHash -LiteralPath $legacyState -Algorithm SHA256).Hash `
             $legacyStateHash
         Assert-PathMissing (Join-Path $legacyHome ".cup\root.txt")
@@ -197,7 +199,8 @@ function Test-LookalikeRootSelection {
     $stateHash = (Get-FileHash -LiteralPath $lookalikeState -Algorithm SHA256).Hash
 
     $env:USERPROFILE = $lookalikeHome
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Write-Host "==> Checking lookalike-primary fallback repair."
+    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
     Assert-Equals (Get-FileHash -LiteralPath $lookalikeState -Algorithm SHA256).Hash $stateHash
     Assert-PathMissing (Join-Path $lookalikeHome ".cup\root.txt")
     Assert-PathExists (Join-Path $lookalikeHome ".coffee-cup\root.txt")
@@ -207,7 +210,8 @@ function Test-LookalikeRootSelection {
 function Test-CorruptRecognizedRootPreservation {
     $corruptHome = Join-Path $Script:CupTestRoot "corrupt-root-home"
     $env:USERPROFILE = $corruptHome
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Write-Host "==> Checking recognized-root setup repair."
+    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
 
     $corruptRoot = Join-Path $corruptHome ".cup"
     $corruptState = Join-Path $corruptRoot "state.txt"
@@ -228,7 +232,8 @@ function Test-CorruptRecognizedRootPreservation {
 }
 
 function Test-SyntaxPrecedesRuntimePreflight {
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Write-Host "==> Checking primary-root setup repair for syntax precedence."
+    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
     $transactionPath = Join-Path $Script:CupTestHome ".cup\transaction.txt"
     Set-Content -LiteralPath $transactionPath -Value "invalid journal" -Encoding Ascii
 

@@ -587,7 +587,13 @@ function Invoke-Cup {
             Fail-Test "command unexpectedly succeeded: cup $($CommandArgs -join ' ')"
         }
     } elseif ($result.ExitCode -ne 0) {
-        Fail-Test "command failed: cup $($CommandArgs -join ' ')`n$($result.Output)"
+        $profile = $env:USERPROFILE
+        if ($null -eq $profile) {
+            $profile = "<unset>"
+        }
+        $message = "command failed: cup $($CommandArgs -join ' ') " +
+            "[status $($result.ExitCode), USERPROFILE='$profile']`n$($result.Output)"
+        Fail-Test $message
     }
     return $result.Output
 }
@@ -608,8 +614,12 @@ function Assert-CupStatus {
         -Arguments $CommandArgs -WorkingDirectory $Script:CupTestDevRoot
     if ($result.ExitCode -ne $ExpectedStatus) {
         $commandText = $CommandArgs -join ' '
+        $profile = $env:USERPROFILE
+        if ($null -eq $profile) {
+            $profile = "<unset>"
+        }
         $message = "cup $commandText returned status $($result.ExitCode), " +
-            "expected $ExpectedStatus`n$($result.Output)"
+            "expected $ExpectedStatus [USERPROFILE='$profile']`n$($result.Output)"
         Fail-Test $message
     }
     if (-not [string]::IsNullOrEmpty($ExpectedText)) {

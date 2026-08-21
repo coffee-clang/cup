@@ -20,6 +20,28 @@ if ([string]::IsNullOrWhiteSpace($resolvedCup)) {
 }
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$syntaxErrors = [System.Collections.Generic.List[string]]::new()
+foreach ($tree in @("scripts", "tests")) {
+    $treeRoot = Join-Path $projectRoot $tree
+    foreach ($file in Get-ChildItem -LiteralPath $treeRoot -Recurse -Filter '*.ps1' -File) {
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile(
+            $file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+        foreach ($parseError in $errors) {
+            $syntaxErrors.Add(
+                "$($file.FullName):$($parseError.Extent.StartLineNumber): $($parseError.Message)")
+        }
+    }
+}
+if ($syntaxErrors.Count -ne 0) {
+    foreach ($syntaxError in $syntaxErrors) {
+        Write-Error $syntaxError
+    }
+    throw "$($syntaxErrors.Count) PowerShell syntax error(s) found"
+}
+Write-Host "PowerShell syntax validation passed."
+
 . (Join-Path $projectRoot "tests\support\windows\common.ps1")
 $suiteRoot = Join-Path $projectRoot "tests\integration\windows"
 $env:CUP_TEST_CONFIGURATION = $Configuration

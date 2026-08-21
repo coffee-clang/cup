@@ -250,6 +250,77 @@ static void test_root_selection(void) {
     TEST_ASSERT_TRUE(path_equal(fallback, path));
 }
 
+#if defined(_WIN32)
+static void test_fallback_snapshot_lock_runtime_sequence(void) {
+    char home[1024];
+    char primary[1024];
+    char fallback[1024];
+    char lock_path[1024];
+    char sentinel_path[1024];
+    char selected[1024];
+    const char *stage = "layout_root_snapshot_begin";
+    CupError err;
+    SystemLock lock = {0};
+
+    TEST_ASSERT_TRUE(
+        snprintf(home, sizeof(home), "%s/fallback-snapshot-lock", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(home));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(home));
+    TEST_ASSERT_TRUE(snprintf(primary, sizeof(primary), "%s/.cup", home) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(fallback, sizeof(fallback), "%s/.coffee-cup", home) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(primary));
+    TEST_ASSERT_TRUE(
+        snprintf(sentinel_path, sizeof(sentinel_path), "%s/foreign.txt", primary) > 0);
+    write_text_file(sentinel_path, "foreign\n");
+
+    /* Match main + repair: freeze a missing fallback, create it, lock it, revalidate the
+     * same native identity, re-ensure the root while locked, then initialize runtime dirs. */
+    err = layout_root_snapshot_begin();
+    if (err == CUP_OK) {
+        stage = "layout_get_root";
+        err = layout_get_root(selected, sizeof(selected));
+    }
+    if (err == CUP_OK && !path_equal(fallback, selected)) {
+        stage = "fallback selection";
+        err = CUP_ERR_INCONSISTENT_STATE;
+    }
+    if (err == CUP_OK) {
+        stage = "layout_ensure_root before lock";
+        err = layout_ensure_root();
+    }
+    if (err == CUP_OK) {
+        stage = "layout_get_lock_path";
+        err = layout_get_lock_path(lock_path, sizeof(lock_path));
+    }
+    if (err == CUP_OK) {
+        stage = "system_lock_acquire";
+        err = system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+    }
+    if (err == CUP_OK) {
+        stage = "layout_root_snapshot_validate after lock";
+        err = layout_root_snapshot_validate();
+    }
+    if (err == CUP_OK) {
+        stage = "layout_ensure_root while locked";
+        err = layout_ensure_root();
+    }
+    if (err == CUP_OK) {
+        stage = "layout_ensure_runtime while locked";
+        err = layout_ensure_runtime();
+    }
+
+    if (lock.active) {
+        system_lock_release(&lock);
+    }
+    layout_root_snapshot_end();
+    if (err != CUP_OK) {
+        fprintf(stderr, "fallback snapshot/lock/runtime stage failed: %s (%d)\n", stage, err);
+    }
+    TEST_ASSERT_EQUAL_INT(CUP_OK, err);
+}
+#endif
+
 static void test_corrupt_owned_root_marker_blocks_fallback(void) {
     char home[1024];
     char primary[1024];
@@ -788,5 +859,8 @@ void register_layout_tests(void) {
     RUN_TEST(test_invalid_marker_blocks_fallback_without_other_traces);
     RUN_TEST(test_invalid_marker_shape_is_classified);
     RUN_TEST(test_fallback_unmarked_cup_root_blocks_primary);
+#if defined(_WIN32)
+    RUN_TEST(test_fallback_snapshot_lock_runtime_sequence);
+#endif
     TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));
 }
