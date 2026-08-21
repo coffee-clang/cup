@@ -29,7 +29,7 @@ static void build_path(char *out, size_t size, const char *name) {
 }
 
 static void write_text(const char *path, const char *text) {
-    FILE *file = fopen(path, "w");
+    FILE *file = fopen(path, "wb");
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_TRUE(fputs(text, file) >= 0);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));

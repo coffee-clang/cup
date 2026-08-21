@@ -95,7 +95,7 @@ static void build_path(char *out, size_t size, const char *name) {
 }
 
 static void write_text(const char *path, const char *text) {
-    FILE *file = fopen(path, "w");
+    FILE *file = fopen(path, "wb");
 
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_EQUAL_size_t(strlen(text), fwrite(text, 1, strlen(text), file));
@@ -153,7 +153,7 @@ static void write_tuple(FILE *file,
 }
 
 static void write_valid_catalog(const char *path) {
-    FILE *file = fopen(path, "w");
+    FILE *file = fopen(path, "wb");
 
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0);
@@ -179,7 +179,7 @@ static void assert_rejected_format_marker(const char *name, const char *marker) 
     FILE *file;
 
     build_path(path, sizeof(path), name);
-    file = fopen(path, "w");
+    file = fopen(path, "wb");
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_TRUE(fprintf(file, "%s\n", marker) > 0);
     write_tuple(file,
@@ -391,7 +391,7 @@ static void test_tuple_growth(void) {
 
     package_catalog_init(&catalog);
     build_path(path, sizeof(path), "many.cfg");
-    file = fopen(path, "w");
+    file = fopen(path, "wb");
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0);
     for (i = 0; i < 17; ++i) {
@@ -562,7 +562,7 @@ static void test_template_errors(void) {
 #define WRITE_BAD(name, url, checksum) \
     do { \
         build_path(path, sizeof(path), (name)); \
-        file = fopen(path, "w"); \
+        file = fopen(path, "wb"); \
         TEST_ASSERT_NOT_NULL(file); \
         TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0); \
         write_tuple(file, \

@@ -102,9 +102,21 @@ cup_path_prepare_child_directory "$TEST_BUILD_ROOT" "$OUT_PARENT" \
 OUT=$(cup_path_create_unique_directory \
     "$OUT_PARENT/.helpers.XXXXXX" 'test-helper staging' 0755) || exit 1
 GCOV_OUTPUT_DIR=
+GCOV_PROFILE_DIR=
+GCOV_PROFILE_PREFIX=
 case "$PLATFORM:$CONFIGURATION" in
     linux-*:coverage|windows-x64:coverage)
         GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$OUT") || exit 1
+        GCOV_PROFILE_DIR=$OUT_FINAL
+        GCOV_PROFILE_PREFIX="$ROOT/$GCOV_OUTPUT_DIR"
+        if [ "$PLATFORM" = windows-x64 ]; then
+            command -v cygpath >/dev/null 2>&1 || {
+                printf 'cygpath is required for Windows coverage paths.\n' >&2
+                exit 2
+            }
+            GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR") || exit 1
+            GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX") || exit 1
+        fi
         ;;
 esac
 cleanup_helper_staging() {
@@ -138,8 +150,8 @@ compile_helper() {
     compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
     if [ -n "$GCOV_OUTPUT_DIR" ]; then
         compile_command+=(
-            "-fprofile-dir=$OUT_FINAL"
-            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
+            "-fprofile-dir=$GCOV_PROFILE_DIR"
+            "-fprofile-prefix-path=$GCOV_PROFILE_PREFIX"
         )
     fi
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then

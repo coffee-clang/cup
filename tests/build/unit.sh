@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
 
-# Compiles the C unit-test binaries selected by the Makefile.
+# Compiles C unit-test binaries under the Makefile-owned build policy.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 PERSISTENT_FILE_FIXTURE="$ROOT/tests/unit/persistent_file_fixture.c"
+
+test_applies_to_platform() {
+    local name=$1
+    local platform=$2
+
+    case "$name:$platform" in
+        test_storage:windows-x64)
+            return 1
+            ;;
+        test_system_windows:windows-x64|test_storage_windows:windows-x64)
+            return 0
+            ;;
+        test_system_windows:*|test_storage_windows:*)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
 
 list_registered_tests() {
     local platform=$1
     local name
     awk '/^[[:space:]]*compile_test[[:space:]]+test_[A-Za-z0-9_]+/ { print $2 }' "$0" |
         while IFS= read -r name; do
-            case "$platform:$name" in
-                windows-x64:test_storage)
-                    continue
-                    ;;
-                windows-x64:*)
-                    printf '%s.exe\n' "$name"
-                    ;;
-                *:test_system_windows|*:test_storage_windows)
-                    continue
-                    ;;
-                *)
-                    printf '%s\n' "$name"
-                    ;;
+            test_applies_to_platform "$name" "$platform" || continue
+            case "$platform" in
+                windows-x64) printf '%s.exe\n' "$name" ;;
+                *) printf '%s\n' "$name" ;;
             esac
         done
 }
@@ -110,9 +121,21 @@ cup_path_prepare_child_directory "$TEST_BUILD_ROOT" "$TEST_BUILD_PARENT" \
 TEST_BUILD_DIR=$(cup_path_create_unique_directory \
     "$TEST_BUILD_PARENT/.unit.XXXXXX" 'unit-test staging' 0755) || exit 1
 GCOV_OUTPUT_DIR=
+GCOV_PROFILE_DIR=
+GCOV_PROFILE_PREFIX=
 case "$PLATFORM:$TEST_CONFIGURATION" in
     linux-*:coverage|windows-x64:coverage)
         GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$TEST_BUILD_DIR") || exit 1
+        GCOV_PROFILE_DIR=$TEST_BUILD_FINAL
+        GCOV_PROFILE_PREFIX="$ROOT/$GCOV_OUTPUT_DIR"
+        if [ "$PLATFORM" = windows-x64 ]; then
+            command -v cygpath >/dev/null 2>&1 || {
+                printf 'cygpath is required for Windows coverage paths.\n' >&2
+                exit 2
+            }
+            GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR") || exit 1
+            GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX") || exit 1
+        fi
         ;;
 esac
 cleanup_unit_staging() {
@@ -131,6 +154,7 @@ trap 'exit 143' TERM
 compile_test() {
     name=$1
     shift
+    test_applies_to_platform "$name" "$PLATFORM" || return 0
     output="$TEST_BUILD_DIR/$name"
     output_arg=$output
     [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name"
@@ -145,8 +169,8 @@ compile_test() {
     compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
     if [ -n "$GCOV_OUTPUT_DIR" ]; then
         compile_command+=(
-            "-fprofile-dir=$TEST_BUILD_FINAL"
-            "-fprofile-prefix-path=$ROOT/$GCOV_OUTPUT_DIR"
+            "-fprofile-dir=$GCOV_PROFILE_DIR"
+            "-fprofile-prefix-path=$GCOV_PROFILE_PREFIX"
         )
     fi
     if [ -n "$COVERAGE_ENTRY_SOURCE" ]; then
@@ -169,8 +193,8 @@ compile_test() {
     fi
 }
 
-# Suite registration remains explicit so the Makefile can request individual binaries.
-# Platform-neutral decision suites compile on every native target.
+# Suite registration remains explicit; --list and compilation use the same
+# platform applicability predicate. Platform-neutral suites compile everywhere.
 compile_test test_command_queries \
     "$ROOT/tests/unit/test_command_queries.c" \
     "$ROOT/src/command_list.c" \
@@ -426,68 +450,63 @@ compile_test test_package_extract_registration \
     "$ROOT/src/text.c" \
     $UNIT_ARCHIVE_LIBS
 
-if [ "$PLATFORM" != windows-x64 ]; then
-    compile_test test_storage \
-        "$ROOT/tests/unit/test_storage.c" \
-        "$ROOT/tests/unit/test_system_posix.c" \
-        "$ROOT/tests/unit/test_filesystem.c" \
-        "$ROOT/tests/unit/test_layout.c" \
-        "$ROOT/src/layout.c" \
-        "$ROOT/src/filesystem.c" \
-        "$ROOT/src/system.c" \
-        "$ROOT/src/system_posix.c" \
-        "$ROOT/src/interrupt.c" \
-        "$ROOT/src/checksum.c" \
-        "$ROOT/src/third_party/sha256.c" \
-        "$ROOT/src/package_catalog.c" \
-        "$ROOT/src/package_archive_format.c" \
-        "$ROOT/src/install_policy.c" \
-        "$ROOT/src/tool_preferences.c" \
-        "$ROOT/src/state.c" \
-        "$ROOT/src/package.c" \
-        "$ROOT/src/package_selector.c" \
-        "$ROOT/src/package_metadata.c" \
-        "$ROOT/src/registry.c" \
-        "$ROOT/src/platform.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c"
+compile_test test_storage \
+    "$ROOT/tests/unit/test_storage.c" \
+    "$ROOT/tests/unit/test_system_posix.c" \
+    "$ROOT/tests/unit/test_filesystem.c" \
+    "$ROOT/tests/unit/test_layout.c" \
+    "$ROOT/src/layout.c" \
+    "$ROOT/src/filesystem.c" \
+    "$ROOT/src/system.c" \
+    "$ROOT/src/system_posix.c" \
+    "$ROOT/src/interrupt.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/third_party/sha256.c" \
+    "$ROOT/src/package_catalog.c" \
+    "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/install_policy.c" \
+    "$ROOT/src/tool_preferences.c" \
+    "$ROOT/src/state.c" \
+    "$ROOT/src/package.c" \
+    "$ROOT/src/package_selector.c" \
+    "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/registry.c" \
+    "$ROOT/src/platform.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
-else
-    compile_test test_system_windows \
-        "$ROOT/tests/unit/test_system_windows.c" \
-        "$ROOT/src/system.c" \
-        "$ROOT/src/system_windows.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c" \
-        -ladvapi32
+compile_test test_system_windows \
+    "$ROOT/tests/unit/test_system_windows.c" \
+    "$ROOT/src/system.c" \
+    "$ROOT/src/system_windows.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    -ladvapi32
 
-    compile_test test_storage_windows \
-        "$ROOT/tests/unit/test_storage_windows.c" \
-        "$ROOT/tests/unit/test_filesystem.c" \
-        "$ROOT/tests/unit/test_layout.c" \
-        "$ROOT/src/layout.c" \
-        "$ROOT/src/filesystem.c" \
-        "$ROOT/src/system.c" \
-        "$ROOT/src/system_windows.c" \
-        "$ROOT/src/interrupt.c" \
-        "$ROOT/src/checksum.c" \
-        "$ROOT/src/third_party/sha256.c" \
-        "$ROOT/src/package_catalog.c" \
-        "$ROOT/src/package_archive_format.c" \
-        "$ROOT/src/install_policy.c" \
-        "$ROOT/src/tool_preferences.c" \
-        "$ROOT/src/state.c" \
-        "$ROOT/src/package.c" \
-        "$ROOT/src/package_selector.c" \
-        "$ROOT/src/package_metadata.c" \
-        "$ROOT/src/registry.c" \
-        "$ROOT/src/platform.c" \
-        "$ROOT/src/path.c" \
-        "$ROOT/src/text.c" \
-        -ladvapi32
-fi
-
-
+compile_test test_storage_windows \
+    "$ROOT/tests/unit/test_storage_windows.c" \
+    "$ROOT/tests/unit/test_filesystem.c" \
+    "$ROOT/tests/unit/test_layout.c" \
+    "$ROOT/src/layout.c" \
+    "$ROOT/src/filesystem.c" \
+    "$ROOT/src/system.c" \
+    "$ROOT/src/system_windows.c" \
+    "$ROOT/src/interrupt.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/third_party/sha256.c" \
+    "$ROOT/src/package_catalog.c" \
+    "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/install_policy.c" \
+    "$ROOT/src/tool_preferences.c" \
+    "$ROOT/src/state.c" \
+    "$ROOT/src/package.c" \
+    "$ROOT/src/package_selector.c" \
+    "$ROOT/src/package_metadata.c" \
+    "$ROOT/src/registry.c" \
+    "$ROOT/src/platform.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    -ladvapi32
 compile_test test_wrappers \
     "$ROOT/tests/unit/test_wrappers.c" \
     "$ROOT/src/wrappers.c" \

@@ -580,9 +580,8 @@ CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" clean-build-root "$build_lock_root"
 assert_missing "$build_lock_root"
 
-# run-build must preserve each shell argv element across the MSYS/native boundary.
-# In particular, one environment assignment containing several compiler flags
-# must not be split into a command named after the second flag.
+# run-build must preserve each argv element across the MSYS/native boundary,
+# including one environment assignment whose value contains spaces.
 argv_root=$TMP_ROOT/build-argv
 mkdir "$argv_root"
 printf '%s\n' \
@@ -590,7 +589,7 @@ printf '%s\n' \
     'product=coffee-clang/cup' \
     'kind=build-root' \
     'layout=1' > "$argv_root/.cup-build-root"
-argv_value='-DLEFT -DCURL_STATICLIB -DRIGHT=two'
+argv_value='-DLEFT -DMIDDLE -DRIGHT=two'
 CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" run-build "$argv_root" -- \
     env "CUP_PATH_OPS_ARGV_PROBE=$argv_value" \

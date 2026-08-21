@@ -35,7 +35,7 @@ invalid_action_refs=$(find .github/workflows -type f -name '*.yml' ! -name 'stat
 [ -z "$invalid_action_refs" ] ||
     fail "modifiable workflow actions must use readable numeric version refs:\n$invalid_action_refs"
 
-msys2_setup_count=$(grep -h 'uses: msys2/setup-msys2@v2.32.0' .github/workflows/*.yml | wc -l | tr -d ' ')
+msys2_setup_count=$(grep -h 'uses: msys2/setup-msys2@' .github/workflows/*.yml | wc -l | tr -d ' ')
 msys2_diffutils_count=$(grep -h '^[[:space:]]*diffutils[[:space:]]*$' .github/workflows/*.yml | wc -l | tr -d ' ')
 [ "$msys2_setup_count" -eq "$msys2_diffutils_count" ] ||
     fail 'Every MSYS2 workflow environment must install diffutils for cmp.'

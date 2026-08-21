@@ -173,8 +173,11 @@ The raw instrumentation remains native to the compiler:
 For macOS, cup and every instrumented test/helper use the common external
 coverage entry wrapper with a distinct internal entry symbol. This allows all
 executables to be supplied to the LLVM backend without merging incompatible
-`main` definitions. A failure to merge profiles or read an object is an ordinary
-coverage failure; there is no repository rule tied to an old warning string.
+`main` definitions. Repeated executions of one instrumented binary use LLVM's
+`%m` online raw-profile merging, so report generation receives one synchronized
+profile per binary signature instead of one file per process. Profile merging
+and object-reading failures are ordinary coverage failures; the gate relies on
+command status and report completeness rather than matching diagnostic text.
 
 ## Third-party dependencies
 
@@ -205,23 +208,10 @@ published executable.
 
 ## Dependency lock and source definitions
 
-`config/dependencies.lock` contains the format, the manual build revision, each
-source version and its SHA-256 value. The current lock selects:
-
-| Dependency | Version |
-|---|---|
-| zlib | 1.3.2 |
-| XZ | 5.8.3 |
-| OpenSSL | 3.5.7 |
-| c-ares | 1.34.8 |
-| curl | 8.21.0 |
-| libarchive | 3.8.8 |
-| Argtable3 | 3.3.1 |
-| uthash | 2.3.0 |
-| Unity | 2.6.1 |
-| libevent | 2.1.13-stable |
-
-`scripts/dependencies/sources.sh` owns the source identities and download URLs.
+`config/dependencies.lock` is the authority for the lock format, manual build
+revision, active source versions and SHA-256 values.
+`scripts/dependencies/sources.sh` owns the corresponding source identities and
+download URLs.
 The remaining shared code is split by responsibility:
 
 - `environment.sh` prepares deterministic tools and flags;
@@ -449,11 +439,10 @@ make check-ca-bundle
 make update-ca-bundle
 ```
 
-`docs-assets` runs the existing website helper that fetches the optional mdBook
-theme template. `docs` and `serve` depend on that target and then invoke mdBook.
-The website files and the Pages workflow are kept separate from cup's build,
-test and release mechanisms because that surface belongs to the existing
-project website.
+`docs-assets` runs the website helper that fetches the optional mdBook theme
+template. `docs` and `serve` depend on that target and then invoke mdBook. The
+website files and protected Pages workflow remain separate from cup's build,
+test and release mechanisms.
 
 ### Guarded local cleanup
 

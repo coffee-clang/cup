@@ -172,7 +172,7 @@ one. Its checks cover:
 - dependency lock, build recipes and prefix compatibility;
 - CA-bundle metadata and generation;
 - Make targets and build configuration;
-- immutable GitHub Action commit refs and workflow permissions;
+- readable numeric GitHub Action version refs and workflow permissions;
 - dependency, source and evidence-index formats;
 - native binary inspection rules;
 - version generation and official-version policy;
@@ -231,6 +231,13 @@ All platforms use the same `gcovr` report, saved-tracefile and threshold flow.
 Linux and Windows feed it GCC/gcov `.gcda` data. macOS feeds it Clang `.profraw`
 profiles together with matching `llvm-profdata`, `llvm-cov` and every
 instrumented executable resolved from the current build.
+
+macOS names raw profiles with LLVM's `%m` merge-pool pattern. The profiling
+runtime serializes updates for repeated executions of the same instrumented
+binary, avoiding a separate `.profraw` for every short-lived test process while
+preserving distinct profiles for distinct binary signatures. Report processing
+uses one worker by default on every backend; an explicit higher
+`CUP_COVERAGE_REPORT_JOBS` may fall back to one worker after a timeout.
 
 On macOS, the product, unit tests and helpers share one external coverage entry
 wrapper but keep distinct internal entry symbols. This lets the LLVM backend
@@ -322,7 +329,7 @@ The workflows have separate responsibilities:
 - `release.yml` accepts evidence from one successful Tests run, builds official
   candidates, tests those candidates natively and publishes them;
 - `debug.yml` creates diagnostic artifacts;
-- `static.yml` belongs to the existing website/Pages surface and is not part of
+- `static.yml` belongs to the protected website/Pages surface and is not part of
   cup source or release validation.
 
 The Tests workflow runs on pushes to `main`, pull requests and manual dispatch.
@@ -332,8 +339,8 @@ The final gate checks the result of every required job directly.
 
 A successful Tests run produces dependency evidence for the six dependency
 profiles and source evidence for the five supported platform identifiers. The
-single inventory in `scripts/ci/tests-evidence-artifacts.sh` defines those eleven
-release-authorizing artifact names.
+single inventory in `scripts/ci/tests-evidence-artifacts.sh` defines the
+release-authorizing artifact set.
 
 After those jobs succeed, the evidence-index job records the GitHub artifact ID,
 name and SHA-256 digest for the current run attempt. Release later selects one

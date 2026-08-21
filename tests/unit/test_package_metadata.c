@@ -84,7 +84,7 @@ static void test_storage_growth(void) {
 
     package_metadata_init(&info);
     build_path(path, sizeof(path), "many.txt");
-    file = fopen(path, "w");
+    file = fopen(path, "wb");
     TEST_ASSERT_NOT_NULL(file);
     for (i = 0; i < 20; ++i) {
         TEST_ASSERT_TRUE(fprintf(file, "config.key%zu=value%zu\n", i, i) > 0);

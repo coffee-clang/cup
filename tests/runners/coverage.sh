@@ -34,7 +34,7 @@ BRANCH_THRESHOLD="${CUP_COVERAGE_MIN_BRANCHES:-70}"
 FUNCTION_THRESHOLD="${CUP_COVERAGE_MIN_FUNCTIONS:-97}"
 UNIT_TIMEOUT="${CUP_COVERAGE_UNIT_TIMEOUT:-1200}"
 SUITE_TIMEOUT="${CUP_COVERAGE_SUITE_TIMEOUT:-300}"
-REPORT_JOBS="${CUP_COVERAGE_REPORT_JOBS:-}"
+REPORT_JOBS="${CUP_COVERAGE_REPORT_JOBS:-1}"
 REPORT_TIMEOUT="${CUP_COVERAGE_REPORT_TIMEOUT:-600}"
 HTML_TIMEOUT="${CUP_COVERAGE_HTML_TIMEOUT:-60}"
 
@@ -57,12 +57,6 @@ case "$PLATFORM" in
         ;;
 esac
 
-if [ -z "$REPORT_JOBS" ]; then
-    case "$COVERAGE_BACKEND" in
-        gcov) REPORT_JOBS=1 ;;
-        llvm) REPORT_JOBS=2 ;;
-    esac
-fi
 
 for value in "$LINE_THRESHOLD" "$BRANCH_THRESHOLD" "$FUNCTION_THRESHOLD"; do
     case "$value" in
@@ -170,7 +164,7 @@ export CUP_TEST_BINARY="$TEST_BUILD_ROOT/$PLATFORM/coverage/bin/cup"
 [ "$PLATFORM" != windows-x64 ] || CUP_TEST_BINARY="$CUP_TEST_BINARY.exe"
 if [ "$COVERAGE_BACKEND" = llvm ]; then
     mkdir -p "$REPORT_DIR/profiles"
-    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m-%p.profraw"
+    export LLVM_PROFILE_FILE="$REPORT_DIR/profiles/%m.profraw"
 fi
 
 cup_test_run_logged 'Running instrumented C unit tests...' "$REPORT_DIR/unit.log" \

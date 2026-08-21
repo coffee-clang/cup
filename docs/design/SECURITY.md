@@ -286,9 +286,8 @@ changes are reviewed explicitly in workflow diffs, and the repository does not u
 automatic dependency-update bot. The separate Pages workflow belongs to the protected
 website surface and does not participate in the cup build, test or release trust chain.
 
-Checkout credentials are disabled in cup build/test/release workflows that were
-added by this project. The existing Pages workflow is kept as part of the
-separate website setup.
+Checkout credentials are disabled in the cup build, test and release
+workflows.
 
 The Tests workflow produces source and dependency evidence containing:
 

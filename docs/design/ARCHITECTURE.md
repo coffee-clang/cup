@@ -302,6 +302,7 @@ The C source files are grouped below by responsibility.
 | `checksum.c` | checksum-document parsing |
 | `third_party/sha256.c` | adapted third-party incremental SHA-256 implementation |
 | `download.c` | HTTPS transfer and size/time limits |
+| `download_url.c` | CURLU parsing and loopback-only insecure test URL policy |
 | `package_archive_format.c` | archive format names and extensions |
 | `package_archive.c` | archive reader setup and structural preflight |
 | `package_extract.c` | safe extraction of a verified stream |

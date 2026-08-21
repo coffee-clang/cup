@@ -447,8 +447,8 @@ graph_make
 assert_contains "$(cat "$graph_trace")" 'LINK '
 assert_not_contains "$(grep '^LINK ' "$graph_trace")" '/registry.o'
 
-# Metadata values are single-line and dependency fields are unique, including
-# empty duplicates that older parsers could silently ignore.
+# Metadata values are single-line and dependency fields are unique; empty
+# duplicate fields must not be ignored.
 carriage_platform=$(printf 'linux-x64\rforged')
 if PATH="$fake_bin:$PATH" \
         CUP_BUILD_PLATFORM="$carriage_platform" \
@@ -555,8 +555,8 @@ fi
 assert_contains "$(cat "$TMP_ROOT/windows-sanitizer-runtime.out")" \
     'sanitizers require MSYSTEM=CLANG64'
 
-# llvm-windres prints its compatibility banner before the LLVM version. Build
-# evidence keeps the banner but must extract the complete later numeric version.
+# A resource compiler may place a compatibility banner before its version.
+# Build evidence keeps the banner but extracts the complete numeric version.
 # Keep path-ops on this repository-test host; CUP_BUILD_PLATFORM only controls
 # the build-config semantics exercised below.
 printf '%s\n' Linux >"$TMP_ROOT/host-system"
@@ -979,6 +979,8 @@ unit_builder_text=$(cat "$PROJECT_ROOT/tests/build/unit.sh")
 assert_contains "$unit_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
 assert_contains "$unit_builder_text" 'compile_command=("$CC"'
 assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
+assert_contains "$unit_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
+assert_contains "$unit_builder_text" 'GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX")'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
@@ -992,11 +994,17 @@ assert_contains "$posix_helper_list" 'process-group'
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
+assert_contains "$helper_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
+assert_contains "$helper_builder_text" 'GCOV_PROFILE_PREFIX=$(cygpath -m "$GCOV_PROFILE_PREFIX")'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
 coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
-assert_contains "$coverage_runner_text" 'gcov) REPORT_JOBS=1'
-assert_contains "$coverage_runner_text" 'llvm) REPORT_JOBS=2'
+assert_contains "$coverage_runner_text" 'CUP_COVERAGE_REPORT_JOBS:-1'
+profile_assignment=$(printf '%s\n' "$coverage_runner_text" | grep 'export LLVM_PROFILE_FILE=')
+if ! printf '%s\n' "$profile_assignment" | grep -Eq '%[0-9]*m'; then
+    fail 'LLVM coverage profiles are not merged by binary signature'
+fi
+assert_not_contains "$profile_assignment" '%p'
 assert_contains "$coverage_runner_text" '[ "$REPORT_JOBS" -gt 1 ]'
 assert_contains "$coverage_runner_text" 'report_jobs=%s'
 assert_not_contains "$coverage_runner_text" 'backend_args=()'

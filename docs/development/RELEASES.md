@@ -111,8 +111,9 @@ The release-authorizing set contains:
 - six dependency-evidence artifacts;
 - five source-evidence artifacts.
 
-`scripts/ci/tests-evidence-artifacts.sh` is the single inventory of those eleven
-names. The index stores the artifact IDs and SHA-256 values returned by GitHub.
+`scripts/ci/tests-evidence-artifacts.sh` is the single inventory of the
+release-authorizing artifact names. The index stores the artifact IDs and
+SHA-256 values returned by GitHub.
 
 ### Release
 
@@ -131,7 +132,7 @@ Repository quality, coverage and sanitizers are not repeated inside Release.
 Their evidence already belongs to the selected Tests run. Candidate-specific
 checks remain in Release because they must examine the final assembled files.
 
-The existing Pages workflow is unrelated to this process. Website deployment
+The protected Pages workflow is unrelated to this process. Website deployment
 does not authorize a cup release and is not included in the release gate.
 
 ## Source evidence
@@ -156,8 +157,8 @@ normalized platform target and numeric version because installation paths and
 vendor wording can differ without changing compiler identity. Windows candidates
 apply the same rule to the tested resource compiler.
 
-The verifier has one interface for the current evidence format. It does not
-carry alternate parsing paths for formats that are no longer produced.
+The verifier accepts only the repository evidence schema. Unsupported schema
+versions are rejected rather than routed through compatibility parsing.
 
 ## Building common assets
 
