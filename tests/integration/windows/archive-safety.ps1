@@ -12,6 +12,27 @@ try {
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
+    # Invalid cached archives refresh through a bounded loopback target so this
+    # native integration never contacts the public release service.
+    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
+    $updatedCatalog = foreach ($line in (Get-Content -LiteralPath $catalog)) {
+        if ($line.StartsWith(
+                "compiler.clang.windows-x64.windows-x64.url_template=",
+                [System.StringComparison]::Ordinal)) {
+            "compiler.clang.windows-x64.windows-x64.url_template=" +
+                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/" +
+                "clang-{version}-{host_platform}-{target_platform}.{format}"
+        } elseif ($line.StartsWith(
+                "compiler.clang.windows-x64.windows-x64.checksum_url_template=",
+                [System.StringComparison]::Ordinal)) {
+            "compiler.clang.windows-x64.windows-x64.checksum_url_template=" +
+                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/SHA256SUMS"
+        } else {
+            $line
+        }
+    }
+    Write-Utf8NoBom -Path $catalog -Lines $updatedCatalog
+
     $caseVersion = "30.1.1"
     Set-PackageCatalogField `
         -Component "compiler" `
@@ -77,27 +98,6 @@ try {
     Assert-ZipContainsExactEntries -Archive $backslashFixture.Archive -Names @(
         $backslashEntry)
     [void](Assert-InstallRejected $backslashVersion)
-
-    # Invalid cached formats use a bounded loopback refresh target so this native
-    # integration never contacts the public release service.
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $updatedCatalog = foreach ($line in (Get-Content -LiteralPath $catalog)) {
-        if ($line.StartsWith(
-                "compiler.clang.windows-x64.windows-x64.url_template=",
-                [System.StringComparison]::Ordinal)) {
-            "compiler.clang.windows-x64.windows-x64.url_template=" +
-                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/" +
-                "clang-{version}-{host_platform}-{target_platform}.{format}"
-        } elseif ($line.StartsWith(
-                "compiler.clang.windows-x64.windows-x64.checksum_url_template=",
-                [System.StringComparison]::Ordinal)) {
-            "compiler.clang.windows-x64.windows-x64.checksum_url_template=" +
-                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/SHA256SUMS"
-        } else {
-            $line
-        }
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $updatedCatalog
 
     $mismatchVersion = "30.1.3"
     Set-PackageCatalogField `

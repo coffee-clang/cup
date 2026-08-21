@@ -436,6 +436,7 @@ function Start-TestHelperProcess {
 }
 
 # Isolated runtime setup and teardown.
+# CUP persistent fixture text is canonical LF regardless of the Windows host newline.
 function Write-Utf8NoBom {
     param(
         [Parameter(Mandatory = $true)]
@@ -448,7 +449,8 @@ function Write-Utf8NoBom {
     )
 
     $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllLines($Path, $Lines, $encoding)
+    $text = if ($Lines.Count -eq 0) { "" } else { ($Lines -join "`n") + "`n" }
+    [System.IO.File]::WriteAllText($Path, $text, $encoding)
 }
 
 function Initialize-TestEnvironment {

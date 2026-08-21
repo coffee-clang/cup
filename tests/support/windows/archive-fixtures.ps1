@@ -176,11 +176,12 @@ function Assert-ZipContainsExactEntries {
     }
 }
 
-# Rejecting one fixture must not register a partial package.
+# Rejection must reach cached archive validation and must not register a partial package.
 function Assert-InstallRejected([string]$Version) {
     $output = Invoke-Cup `
         -CommandArgs @("install", "compiler", "clang@$Version") `
         -ExpectFailure
+    Assert-Contains $output "Cached package is invalid; downloading it again..."
     Assert-NotContains `
         (Invoke-Cup -CommandArgs @("list", "compiler")) `
         "compiler:clang@$Version"
