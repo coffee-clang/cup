@@ -8,6 +8,7 @@
 #include "error.h"
 #include "layout.h"
 #include "package.h"
+#include "path.h"
 #include "platform.h"
 #include "system.h"
 #include "unity.h"
@@ -228,7 +229,7 @@ static void test_root_selection(void) {
     TEST_ASSERT_TRUE(fputs("foreign\n", file) >= 0);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_STRING(fallback, path);
+    TEST_ASSERT_TRUE(path_equal(fallback, path));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_root());
     get_root_marker_path_for_test(marker, sizeof(marker));
     TEST_ASSERT_TRUE(strstr(marker, "/.coffee-cup/root.txt") != NULL);
@@ -246,7 +247,7 @@ static void test_root_selection(void) {
 
     /* Once owned, the fallback remains selected even if the primary name is unavailable. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_STRING(fallback, path);
+    TEST_ASSERT_TRUE(path_equal(fallback, path));
 }
 
 static void test_corrupt_owned_root_marker_blocks_fallback(void) {
@@ -331,7 +332,7 @@ static void test_markerless_state_only_directory_uses_fallback(void) {
     write_text_file(path, "format=1\n");
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_STRING(fallback, path);
+    TEST_ASSERT_TRUE(path_equal(fallback, path));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_root_candidates(&issues));
     TEST_ASSERT_EQUAL_size_t(0, issues);
 }
@@ -606,11 +607,11 @@ static void test_root_snapshot_is_stable_and_identity_bound(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_begin());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(first_root, sizeof(first_root)));
     TEST_ASSERT_TRUE(snprintf(selected, sizeof(selected), "%s/.cup", first_home) > 0);
-    TEST_ASSERT_EQUAL_STRING(selected, first_root);
+    TEST_ASSERT_TRUE(path_equal(selected, first_root));
 
     TEST_ASSERT_EQUAL_INT(0, test_set_home(second_home));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(selected, sizeof(selected)));
-    TEST_ASSERT_EQUAL_STRING(first_root, selected);
+    TEST_ASSERT_TRUE(path_equal(first_root, selected));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_root());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_validate());
 
@@ -625,7 +626,7 @@ static void test_root_snapshot_is_stable_and_identity_bound(void) {
         char expected_root[1024];
 
         TEST_ASSERT_TRUE(snprintf(expected_root, sizeof(expected_root), "%s/.cup", second_home) > 0);
-        TEST_ASSERT_EQUAL_STRING(expected_root, selected);
+        TEST_ASSERT_TRUE(path_equal(expected_root, selected));
     }
 }
 

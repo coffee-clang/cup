@@ -3,6 +3,7 @@
  * layout tests. Native system primitives remain in test_system_windows.
  */
 
+#include "layout.h"
 #include "unity.h"
 
 void register_filesystem_tests(void);
@@ -12,6 +13,7 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+    layout_root_snapshot_end();
 }
 
 int main(void) {

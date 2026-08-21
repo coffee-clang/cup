@@ -3,6 +3,7 @@
  * that require one process-wide storage environment.
  */
 
+#include "layout.h"
 #include "unity.h"
 
 void register_system_posix_tests(void);
@@ -15,6 +16,7 @@ void setUp(void) {
 }
 
 void tearDown(void) {
+    layout_root_snapshot_end();
 }
 
 
