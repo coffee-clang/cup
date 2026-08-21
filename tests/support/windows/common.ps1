@@ -297,6 +297,44 @@ function ConvertTo-NativeArgument {
     return $builder.ToString()
 }
 
+function Stop-TestProcessTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process,
+
+        [ValidateRange(1, 60000)]
+        [int]$WaitMilliseconds = 10000
+    )
+
+    if ($Process.HasExited) {
+        return
+    }
+
+    $treeStopped = $false
+    try {
+        & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+        $treeStopped = ($LASTEXITCODE -eq 0)
+    } catch {
+        $treeStopped = $false
+    }
+
+    if (-not $treeStopped -and -not $Process.HasExited) {
+        try {
+            $Process.Kill()
+        } catch {
+            # Cleanup is best effort.
+        }
+    }
+    if (-not $Process.WaitForExit($WaitMilliseconds) -and -not $Process.HasExited) {
+        try {
+            $Process.Kill()
+        } catch {
+            # Cleanup is best effort.
+        }
+        [void]$Process.WaitForExit($WaitMilliseconds)
+    }
+}
+
 function Invoke-NativeProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -343,16 +381,7 @@ function Invoke-NativeProcess {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            try {
-                & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
-            } catch {
-                try {
-                    $process.Kill()
-                } catch {
-                    # Cleanup is best effort.
-                }
-            }
-            [void]$process.WaitForExit(10000)
+            Stop-TestProcessTree -Process $process
             Fail-Test "native process timed out after $TimeoutSeconds seconds: $FilePath"
         }
         $process.WaitForExit()
@@ -405,9 +434,12 @@ function Start-TestHelperProcess {
             $env:GCOV_PREFIX = $env:CUP_TEST_GCOV_HELPER_PREFIX
             $env:GCOV_PREFIX_STRIP = $env:CUP_TEST_GCOV_HELPER_STRIP
         }
+        $nativeArguments = (($ArgumentList | ForEach-Object {
+            ConvertTo-NativeArgument -Argument $_
+        }) -join ' ')
         $parameters = @{
             FilePath = $FilePath
-            ArgumentList = $ArgumentList
+            ArgumentList = $nativeArguments
             RedirectStandardOutput = $RedirectStandardOutput
             RedirectStandardError = $RedirectStandardError
             PassThru = $true
@@ -473,8 +505,7 @@ function Initialize-TestEnvironment {
     $Script:CupTestOriginalEnvironment = @{}
     foreach ($variable in @(
         'CUP_INSTALL_BASE_URL', 'CUP_INSTALL_ALLOW_INSECURE',
-        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-        'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')) {
+        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {
         $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
         $Script:CupTestOriginalEnvironment[$variable] = if ($null -eq $item) {
             $null

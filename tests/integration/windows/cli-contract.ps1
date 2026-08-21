@@ -11,16 +11,17 @@ function Test-ReadOnlyNoInitialization {
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     Assert-PathMissing $cupRoot
 
-    foreach ($arguments in @(
-        ,@("--version"),
-        ,@("help"),
-        ,@("search", "compiler"),
-        ,@("config"),
-        ,@("list"),
-        ,@("info"),
-        ,@("doctor")
-    )) {
-        Invoke-Cup -CommandArgs $arguments | Out-Null
+    $cases = @(
+        @{ Arguments = @("--version") },
+        @{ Arguments = @("help") },
+        @{ Arguments = @("search", "compiler") },
+        @{ Arguments = @("config") },
+        @{ Arguments = @("list") },
+        @{ Arguments = @("info") },
+        @{ Arguments = @("doctor") }
+    )
+    foreach ($case in $cases) {
+        Invoke-Cup -CommandArgs $case.Arguments | Out-Null
         Assert-PathMissing $cupRoot
     }
 
@@ -84,12 +85,13 @@ function Test-HelpAliases {
         "default", "info", "inspect", "doctor", "repair", "uninstall"
     )) {
         Assert-Contains $topHelp ("  {0}" -f $command)
-        foreach ($arguments in @(
-            ,@("help", $command),
-            ,@($command, "-h"),
-            ,@($command, "--help")
-        )) {
-            $help = Invoke-Cup -CommandArgs $arguments
+        $helpCases = @(
+            @{ Arguments = @("help", $command) },
+            @{ Arguments = @($command, "-h") },
+            @{ Arguments = @($command, "--help") }
+        )
+        foreach ($case in $helpCases) {
+            $help = Invoke-Cup -CommandArgs $case.Arguments
             foreach ($section in @(
                 "Usage:", "Description:", "Arguments:", "Options:",
                 "Defaults:", "Examples:", "Effects:"
@@ -149,7 +151,7 @@ function Test-ForeignAndLegacyRootSelection {
                 -Path (Join-Path $legacyHome ".cup\$directory") | Out-Null
         }
         $legacyState = Join-Path $legacyHome ".cup\state.txt"
-        Set-Content -LiteralPath $legacyState -Value "format=1" -Encoding Ascii
+        Write-Utf8NoBom -Path $legacyState -Lines @("format=1")
         $legacyStateHash = (Get-FileHash -LiteralPath $legacyState -Algorithm SHA256).Hash
 
         $env:USERPROFILE = $legacyHome
@@ -231,18 +233,18 @@ function Test-SyntaxPrecedesRuntimePreflight {
     Set-Content -LiteralPath $transactionPath -Value "invalid journal" -Encoding Ascii
 
     $cases = @(
-        ,@("install"),
-        ,@("install", "compiler", "@stable"),
-        ,@("install", "profile"),
-        ,@("list", "--target", "windows-arm64"),
-        ,@("config", "change", "compiler", "clang"),
-        ,@("config", "set", "compiler", "clang@stable"),
-        ,@("inspect", "compiler", "clang@RC1"),
-        ,@("default", "compiler", "clang@../x"),
-        ,@("search", ("x" * 512))
+        @{ Arguments = @("install") },
+        @{ Arguments = @("install", "compiler", "@stable") },
+        @{ Arguments = @("install", "profile") },
+        @{ Arguments = @("list", "--target", "windows-arm64") },
+        @{ Arguments = @("config", "change", "compiler", "clang") },
+        @{ Arguments = @("config", "set", "compiler", "clang@stable") },
+        @{ Arguments = @("inspect", "compiler", "clang@RC1") },
+        @{ Arguments = @("default", "compiler", "clang@../x") },
+        @{ Arguments = @("search", ("x" * 512)) }
     )
-    foreach ($arguments in $cases) {
-        $syntax = Assert-CupStatus -CommandArgs $arguments -ExpectedStatus 2 `
+    foreach ($case in $cases) {
+        $syntax = Assert-CupStatus -CommandArgs $case.Arguments -ExpectedStatus 2 `
             -ExpectedText "Usage:"
         Assert-NotContains $syntax "transaction journal is invalid"
     }

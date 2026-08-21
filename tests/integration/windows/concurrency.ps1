@@ -39,12 +39,7 @@ function Complete-CupCapture {
 
     try {
         if (-not $Capture.Process.WaitForExit(30000)) {
-            try {
-                & taskkill.exe /PID $Capture.Process.Id /T /F 2>&1 | Out-Null
-            } catch {
-                # Cleanup is best effort.
-            }
-            [void]$Capture.Process.WaitForExit(10000)
+            Stop-TestProcessTree -Process $Capture.Process
             Fail-Test "concurrent cup process did not exit"
         }
         $stdout = $Capture.Stdout.Result.TrimEnd([char[]]"`r`n")
@@ -210,12 +205,7 @@ try {
     if ($null -ne $captureA) {
         try {
             if (-not $captureA.Process.HasExited) {
-                try {
-                    & taskkill.exe /PID $captureA.Process.Id /T /F 2>&1 | Out-Null
-                } catch {
-                    # Cleanup is best effort.
-                }
-                [void]$captureA.Process.WaitForExit(10000)
+                Stop-TestProcessTree -Process $captureA.Process
             }
         } catch {
             # Cleanup is best effort.
@@ -229,12 +219,7 @@ try {
     if ($null -ne $server) {
         try {
             if (-not $server.HasExited) {
-                try {
-                    & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
-                } catch {
-                    # Cleanup is best effort.
-                }
-                [void]$server.WaitForExit(10000)
+                Stop-TestProcessTree -Process $server
             }
         } catch {
             # Cleanup is best effort.

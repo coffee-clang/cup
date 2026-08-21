@@ -23,6 +23,57 @@ $temporaryParent = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
 }
 $testWorkRoot = $null
 
+function Stop-ReleaseProcessTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process,
+
+        [ValidateRange(1, 60000)]
+        [int]$WaitMilliseconds = 10000
+    )
+
+    if ($Process.HasExited) {
+        return
+    }
+
+    $treeStopped = $false
+    try {
+        & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+        $treeStopped = ($LASTEXITCODE -eq 0)
+    } catch {
+        $treeStopped = $false
+    }
+    if (-not $treeStopped -and -not $Process.HasExited) {
+        try {
+            $Process.Kill()
+        } catch {
+            # Cleanup is best effort.
+        }
+    }
+    if (-not $Process.WaitForExit($WaitMilliseconds) -and -not $Process.HasExited) {
+        try {
+            $Process.Kill()
+        } catch {
+            # Cleanup is best effort.
+        }
+        [void]$Process.WaitForExit($WaitMilliseconds)
+    }
+}
+
+function Write-CanonicalAsciiLines {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Lines
+    )
+
+    $text = if ($Lines.Count -eq 0) { '' } else { ($Lines -join "`n") + "`n" }
+    [IO.File]::WriteAllText($Path, $text, [Text.Encoding]::ASCII)
+}
+
 # Run child PowerShell scripts while preserving expected stderr and exit status.
 function Invoke-PowerShellScript {
     param(
@@ -47,12 +98,7 @@ function Invoke-PowerShellScript {
             -NoNewWindow `
             -PassThru
         if (-not $process.WaitForExit(300000)) {
-            try {
-                & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
-            } catch {
-                # Cleanup is best effort.
-            }
-            [void]$process.WaitForExit(10000)
+            Stop-ReleaseProcessTree -Process $process
             throw "PowerShell release fixture timed out: $ScriptPath"
         }
 
@@ -132,7 +178,7 @@ function Assert-ChecksumFile {
         if ($name.Contains('/') -or $name.Contains('\\') -or $name.Contains('..')) {
             throw "Unsafe checksum entry in ${ChecksumFile}: $name"
         }
-        if ($ExpectedNames -notcontains $name) {
+        if ($ExpectedNames -cnotcontains $name) {
             throw "Unexpected checksum entry in ${ChecksumFile}: $name"
         }
 
@@ -193,8 +239,8 @@ function Test-InstallerMetadataFailure {
         )) {
             Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $fixture
         }
-        Set-Content -LiteralPath (Join-Path $fixture 'release.txt') `
-            -Value $Lines -Encoding Ascii
+        Write-CanonicalAsciiLines -Path (Join-Path $fixture 'release.txt') `
+            -Lines $Lines
 
         $platformNames = @('cup-windows-x64.exe', 'uninstall.ps1', 'release.txt', 'SHA256SUMS.common')
         $checksumLines = foreach ($asset in $platformNames) {
@@ -202,8 +248,9 @@ function Test-InstallerMetadataFailure {
                 -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $asset"
         }
-        Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.windows-x64') `
-            -Value $checksumLines -Encoding Ascii
+        Write-CanonicalAsciiLines `
+            -Path (Join-Path $fixture 'SHA256SUMS.windows-x64') `
+            -Lines $checksumLines
 
         $env:USERPROFILE = $profile
         $env:CUP_INSTALL_ALLOW_INSECURE = '1'
@@ -310,12 +357,7 @@ function Test-InstallerFinalLowSpeedWindow {
         }
         if ($null -ne $serverProcess) {
             if (-not $serverProcess.HasExited) {
-                try {
-                    & taskkill.exe /PID $serverProcess.Id /T /F 2>&1 | Out-Null
-                } catch {
-                    # Cleanup is best effort.
-                }
-                [void]$serverProcess.WaitForExit(10000)
+                Stop-ReleaseProcessTree -Process $serverProcess
             }
             $serverProcess.Dispose()
         }
@@ -375,7 +417,7 @@ try {
     New-Item -ItemType Directory -Path $testWorkRoot | Out-Null
 
     $ready = Join-Path $testWorkRoot "http-ready"
-    $serverArgs = @('http-server', '--root', $root, '--port', "$port", '--ready-file', $ready)
+    $serverArgs = "http-server --root `"$root`" --port $port --ready-file `"$ready`""
     $server = Start-Process -FilePath $helper `
         -ArgumentList $serverArgs `
         -PassThru `
@@ -560,8 +602,8 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $corruptRoot $directory) |
             Out-Null
     }
-    Set-Content -LiteralPath (Join-Path $corruptRoot "state.txt") `
-        -Value "format=1" -Encoding Ascii
+    Write-CanonicalAsciiLines -Path (Join-Path $corruptRoot "state.txt") `
+        -Lines @("format=1")
     Set-Content -LiteralPath (Join-Path $corruptRoot "root.txt") `
         -Value "corrupt" -Encoding Ascii
     $corruptStateHash = (Get-FileHash -LiteralPath (Join-Path $corruptRoot "state.txt") `
@@ -594,7 +636,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $residueRoot "bin") | Out-Null
     Set-Content -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
         -Value "binary" -Encoding Ascii
-    Set-Content -LiteralPath (Join-Path $residueRoot "transaction.txt") -Encoding Ascii -Value @(
+    Write-CanonicalAsciiLines -Path (Join-Path $residueRoot "transaction.txt") -Lines @(
         "format=1",
         "operation=uninstall",
         "phase=failed",
@@ -770,8 +812,8 @@ try {
         "version=$nextVersion",
         "commit=$SourceSha"
     )
-    Set-Content -LiteralPath (Join-Path $versionRoot "release.txt") `
-        -Value $updatedMetadata -Encoding ascii
+    Write-CanonicalAsciiLines -Path (Join-Path $versionRoot "release.txt") `
+        -Lines $updatedMetadata
     Copy-Item -LiteralPath (Join-Path $versionRoot "release.txt") `
         -Destination (Join-Path $updateRoot "release.txt")
 
@@ -782,15 +824,16 @@ try {
             -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $asset"
     }
-    Set-Content -LiteralPath (Join-Path $versionRoot "SHA256SUMS.common") `
-        -Value $commonLines -Encoding ascii
+    Write-CanonicalAsciiLines -Path (Join-Path $versionRoot "SHA256SUMS.common") `
+        -Lines $commonLines
     $platformLines = foreach ($asset in @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
             -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $asset"
     }
-    Set-Content -LiteralPath (Join-Path $versionRoot "SHA256SUMS.windows-x64") `
-        -Value $platformLines -Encoding ascii
+    Write-CanonicalAsciiLines `
+        -Path (Join-Path $versionRoot "SHA256SUMS.windows-x64") `
+        -Lines $platformLines
 
     $updatedVersionOutput = & $updatedBinary --version
     if ($LASTEXITCODE -ne 0 -or $updatedVersionOutput -ne "cup $nextVersion") {
@@ -903,12 +946,7 @@ try {
 
     if ($null -ne $server) {
         if (-not $server.HasExited) {
-            try {
-                & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
-            } catch {
-                # Cleanup is best effort.
-            }
-            [void]$server.WaitForExit(10000)
+            Stop-ReleaseProcessTree -Process $server
         }
         $server.Dispose()
     }

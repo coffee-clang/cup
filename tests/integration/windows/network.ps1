@@ -9,7 +9,7 @@ param(
 
 $server = $null
 $originalEnvironment = @{}
-foreach ($name in @('CUP_INSTALL_ALLOW_INSECURE', 'NO_PROXY', 'no_proxy')) {
+foreach ($name in @('CUP_INSTALL_ALLOW_INSECURE', 'NO_PROXY')) {
     $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     $originalEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
 }
@@ -61,9 +61,9 @@ try {
     $arguments = @(
         'http-server', '--root', $serverRoot, '--port', '0',
         '--ready-file', $readyFile
-    ) | ForEach-Object { ConvertTo-NativeArgument -Argument $_ }
+    )
     $server = Start-TestHelperProcess -FilePath $helper `
-        -ArgumentList @(($arguments -join ' ')) `
+        -ArgumentList $arguments `
         -WorkingDirectory $Script:CupTestRoot `
         -RedirectStandardOutput $stdoutFile `
         -RedirectStandardError $stderrFile
@@ -104,7 +104,6 @@ try {
 
     $env:CUP_INSTALL_ALLOW_INSECURE = '1'
     $env:NO_PROXY = 'localhost,127.0.0.1'
-    $env:no_proxy = 'localhost,127.0.0.1'
 
     $validVersion = '97.0.1'
     Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
@@ -137,12 +136,7 @@ try {
 } finally {
     if ($null -ne $server) {
         if (-not $server.HasExited) {
-            try {
-                & taskkill.exe /PID $server.Id /T /F 2>&1 | Out-Null
-            } catch {
-                # Cleanup is best effort.
-            }
-            [void]$server.WaitForExit(5000)
+            Stop-TestProcessTree -Process $server -WaitMilliseconds 5000
         }
         $server.Dispose()
     }
