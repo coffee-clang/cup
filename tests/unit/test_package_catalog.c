@@ -1056,8 +1056,15 @@ static void test_load_failures(void) {
     memset(long_path, 'p', sizeof(long_path) - 1);
     long_path[sizeof(long_path) - 1] = '\0';
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM,
+        CUP_ERR_BUFFER_TOO_SMALL,
         package_catalog_load_path(&catalog, long_path));
+
+    build_path(path, sizeof(path), "directory");
+    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
 
     build_path(path, sizeof(path), "bad-byte.cfg");
     file = fopen(path, "wb");

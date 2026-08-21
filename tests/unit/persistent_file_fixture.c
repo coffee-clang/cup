@@ -1,4 +1,5 @@
 /* Test-only snapshot implementation for parser suites with mocked system APIs. */
+#include "constants.h"
 #include "filesystem.h"
 #include "test_platform.h"
 
@@ -94,6 +95,10 @@ CupError system_open_regular_file(const char *path,
     *file_size = 0;
     *missing = 0;
     memset(identity, 0, sizeof(*identity));
+    /* Preserve the CUP path bound before host CRT path handling can reinterpret it. */
+    if (strlen(path) >= MAX_PATH_LEN) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
     if (test_stat_path(path, &status) != 0) {
         if (errno == ENOENT) {
             *missing = 1;

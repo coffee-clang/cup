@@ -1076,6 +1076,35 @@ static CupError validate_parent_directory_chain(const char *path) {
     return err == CUP_OK ? validate_directory_chain(parent) : err;
 }
 
+/* Read-only open reports an absent parent through missing, while unsafe parent chains fail. */
+static CupError validate_open_parent_directory_chain(const char *path, int *missing) {
+    char absolute[MAX_PATH_LEN];
+    char parent[MAX_PATH_LEN];
+    CupError err;
+
+    if (missing == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *missing = 0;
+    err = absolute_normalized_path(path, absolute, sizeof(absolute));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = path_parent(parent, sizeof(parent), absolute);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = validate_directory_chain(parent);
+    if (err != CUP_ERR_FILESYSTEM) {
+        return err;
+    }
+    err = process_directory_chain(parent, 0, 1);
+    if (err == CUP_OK) {
+        *missing = 1;
+    }
+    return err;
+}
+
 CupError system_check_directory_chain(const char *path, int allow_missing) {
     return process_directory_chain(path, 0, allow_missing);
 }
@@ -2045,8 +2074,8 @@ CupError system_open_regular_file(const char *path,
     *file_size = 0;
     *missing = 0;
     memset(identity, 0, sizeof(*identity));
-    err = validate_parent_directory_chain(path);
-    if (err != CUP_OK) {
+    err = validate_open_parent_directory_chain(path, missing);
+    if (err != CUP_OK || *missing) {
         return err;
     }
     err = windows_utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);

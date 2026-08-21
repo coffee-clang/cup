@@ -366,6 +366,49 @@ static void test_paths_permissions_and_traversal(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_set_executable(executable, -1));
 }
 
+static void test_regular_file_missing_contract(void) {
+    char existing_parent[CUP_TEST_TEMP_PATH_SIZE];
+    char missing_file[CUP_TEST_TEMP_PATH_SIZE];
+    char missing_parent_file[CUP_TEST_TEMP_PATH_SIZE];
+    FILE *file = NULL;
+    SystemPathIdentity identity;
+    uint64_t size = 99;
+    int missing = 0;
+
+    build_path(existing_parent, sizeof(existing_parent), "open-existing-parent");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(existing_parent));
+    TEST_ASSERT_TRUE(snprintf(missing_file,
+                              sizeof(missing_file),
+                              "%s/missing.txt",
+                              existing_parent) > 0);
+    build_path(missing_parent_file,
+               sizeof(missing_parent_file),
+               "open-missing-parent/missing.txt");
+
+    memset(&identity, 0xff, sizeof(identity));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_open_regular_file(missing_file, &file, &identity, &size, &missing));
+    TEST_ASSERT_TRUE(missing);
+    TEST_ASSERT_NULL(file);
+    TEST_ASSERT_FALSE(identity.valid);
+    TEST_ASSERT_EQUAL_UINT64(0, size);
+
+    memset(&identity, 0xff, sizeof(identity));
+    size = 99;
+    missing = 0;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_open_regular_file(
+            missing_parent_file, &file, &identity, &size, &missing));
+    TEST_ASSERT_TRUE(missing);
+    TEST_ASSERT_NULL(file);
+    TEST_ASSERT_FALSE(identity.valid);
+    TEST_ASSERT_EQUAL_UINT64(0, size);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(existing_parent));
+}
+
 static void test_reparse_points_are_not_followed(void) {
     char root[CUP_TEST_TEMP_PATH_SIZE];
     char external[CUP_TEST_TEMP_PATH_SIZE];
@@ -1024,6 +1067,7 @@ int main(void) {
     RUN_TEST(test_home_and_process_identity);
     RUN_TEST(test_utf_and_identity_contract);
     RUN_TEST(test_paths_permissions_and_traversal);
+    RUN_TEST(test_regular_file_missing_contract);
     RUN_TEST(test_reparse_points_are_not_followed);
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
