@@ -211,6 +211,7 @@ static const PackageIssue *find_issue(const PackageList *packages,
     return NULL;
 }
 
+#if !defined(_WIN32)
 static const PackageIssue *find_issue_suffix(const PackageList *packages,
                                              PackageIssueReason reason,
                                              int can_quarantine,
@@ -230,6 +231,7 @@ static const PackageIssue *find_issue_suffix(const PackageList *packages,
     }
     return NULL;
 }
+#endif
 
 /*
  * Test cases exercise the real production entry point while changing only controlled boundary

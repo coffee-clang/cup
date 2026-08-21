@@ -116,6 +116,17 @@ static void reset_scenario(void) {
     make_dir(bin);
     make_dir(packages);
 
+    {
+        char case_probe[MAX_PATH_LEN];
+        char case_alternate[MAX_PATH_LEN];
+
+        join_test_path(case_probe, sizeof(case_probe), root, ".cup-case-probe");
+        join_test_path(case_alternate, sizeof(case_alternate), root, ".CUP-CASE-PROBE");
+        write_file(case_probe, "probe");
+        namespace_case_sensitive = !test_access_exists(case_alternate);
+        TEST_ASSERT_EQUAL_INT(0, test_unlink(case_probe));
+    }
+
     layout_result = CUP_OK;
     validate_result = CUP_OK;
     temp_result = CUP_OK;
@@ -128,7 +139,6 @@ static void reset_scenario(void) {
     operation_sequence = 0;
     mode_sequence = 0;
     sync_sequence = 0;
-    namespace_case_sensitive = 1;
 }
 
 void setUp(void) {
@@ -779,7 +789,7 @@ static void test_empty_plan_reconciles_bin(void) {
     join_test_path(stale, sizeof(stale), root, "bin/stale");
     write_file(stale, "stale");
 #if !defined(_WIN32)
-    {
+    if (namespace_case_sensitive) {
         char case_alias[MAX_PATH_LEN];
         join_test_path(case_alias, sizeof(case_alias), root, "bin/CUP");
         write_file(case_alias, "stale alias");
@@ -793,7 +803,11 @@ static void test_empty_plan_reconciles_bin(void) {
     {
         char case_alias[MAX_PATH_LEN];
         join_test_path(case_alias, sizeof(case_alias), root, "bin/CUP");
-        TEST_ASSERT_FALSE(test_access_exists(case_alias));
+        if (namespace_case_sensitive) {
+            TEST_ASSERT_FALSE(test_access_exists(case_alias));
+        } else {
+            TEST_ASSERT_TRUE(test_access_exists(case_alias));
+        }
     }
 #endif
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_exact_matches(&plan, &matches));

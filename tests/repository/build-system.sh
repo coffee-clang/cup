@@ -508,13 +508,17 @@ if FAKE_COMPILER_NAME=gcc MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 MSYSTEM_CARCH=x8
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-runtime.out")" 'development requires MSYSTEM=UCRT64'
 
-if FAKE_COMPILER_NAME=gcc MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 MSYSTEM_CARCH=x86_64 \
+if (
+    unset MINGW_PREFIX
+    FAKE_COMPILER_NAME=gcc MSYSTEM=UCRT64 MSYSTEM_CARCH=x86_64 \
         PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" \
-        windows-x64 fakecc fakewindres development >"$TMP_ROOT/windows-path.out" 2>&1; then
+        windows-x64 fakecc fakewindres development >"$TMP_ROOT/windows-path.out" 2>&1
+); then
     fail 'Windows toolchain accepted a compiler outside its selected MSYS2 prefix'
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-path.out")" \
     'compiler is outside the selected MSYS2 toolchain'
+assert_not_contains "$(cat "$TMP_ROOT/windows-path.out")" 'MINGW_PREFIX'
 
 if FAKE_COMPILER_NAME=clang MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 \
         MSYSTEM_CARCH=x86_64 PATH="$fake_bin:$PATH" \

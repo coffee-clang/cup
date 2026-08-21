@@ -130,13 +130,11 @@ case "$platform" in
         case "$configuration" in
             sanitizers)
                 [ "${MSYSTEM:-}" = CLANG64 ] || fail 'windows-x64 sanitizers require MSYSTEM=CLANG64'
-                [ "${MINGW_PREFIX:-}" = /clang64 ] || fail 'windows-x64 sanitizers require MINGW_PREFIX=/clang64'
                 require_clang
                 expected_prefix=/clang64/bin/
                 ;;
             *)
                 [ "${MSYSTEM:-}" = UCRT64 ] || fail "windows-x64 $configuration requires MSYSTEM=UCRT64"
-                [ "${MINGW_PREFIX:-}" = /ucrt64 ] || fail "windows-x64 $configuration requires MINGW_PREFIX=/ucrt64"
                 require_gcc
                 expected_prefix=/ucrt64/bin/
                 ;;
