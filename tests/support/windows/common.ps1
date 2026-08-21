@@ -376,6 +376,65 @@ function Invoke-NativeProcess {
     }
 }
 
+function Start-TestHelperProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList,
+
+        [string]$WorkingDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RedirectStandardOutput,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RedirectStandardError,
+
+        [switch]$Hidden
+    )
+
+    $savedPrefix = Get-Item -LiteralPath Env:GCOV_PREFIX -ErrorAction SilentlyContinue
+    $savedStrip = Get-Item -LiteralPath Env:GCOV_PREFIX_STRIP -ErrorAction SilentlyContinue
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($env:CUP_TEST_GCOV_HELPER_PREFIX)) {
+            if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_GCOV_HELPER_STRIP)) {
+                Fail-Test 'helper GCOV prefix is present without a strip count'
+            }
+            $env:GCOV_PREFIX = $env:CUP_TEST_GCOV_HELPER_PREFIX
+            $env:GCOV_PREFIX_STRIP = $env:CUP_TEST_GCOV_HELPER_STRIP
+        }
+        $parameters = @{
+            FilePath = $FilePath
+            ArgumentList = $ArgumentList
+            RedirectStandardOutput = $RedirectStandardOutput
+            RedirectStandardError = $RedirectStandardError
+            PassThru = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+            $parameters.WorkingDirectory = $WorkingDirectory
+        }
+        if ($Hidden) {
+            $parameters.WindowStyle = 'Hidden'
+        } else {
+            $parameters.NoNewWindow = $true
+        }
+        return Start-Process @parameters
+    } finally {
+        if ($null -eq $savedPrefix) {
+            Remove-Item -LiteralPath Env:GCOV_PREFIX -ErrorAction SilentlyContinue
+        } else {
+            $env:GCOV_PREFIX = $savedPrefix.Value
+        }
+        if ($null -eq $savedStrip) {
+            Remove-Item -LiteralPath Env:GCOV_PREFIX_STRIP -ErrorAction SilentlyContinue
+        } else {
+            $env:GCOV_PREFIX_STRIP = $savedStrip.Value
+        }
+    }
+}
+
 # Isolated runtime setup and teardown.
 function Write-Utf8NoBom {
     param(

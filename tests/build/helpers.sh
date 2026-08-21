@@ -105,21 +105,13 @@ GCOV_OUTPUT_DIR=
 GCOV_PROFILE_DIR=
 GCOV_PROFILE_PREFIX=
 case "$PLATFORM:$CONFIGURATION" in
-    linux-*:coverage|windows-x64:coverage)
+    linux-*:coverage)
         GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$OUT") || exit 1
         GCOV_PROFILE_DIR=$OUT_FINAL
         GCOV_PROFILE_PREFIX="$ROOT/$GCOV_OUTPUT_DIR"
-        if [ "$PLATFORM" = windows-x64 ]; then
-            . "$ROOT/tests/support/posix/coverage.sh"
-            command -v cygpath >/dev/null 2>&1 || {
-                printf 'cygpath is required for Windows coverage paths.\n' >&2
-                exit 2
-            }
-            GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR") || exit 1
-            gcov_native_root=$(cygpath -m "$ROOT") || exit 1
-            GCOV_PROFILE_PREFIX=$(cup_coverage_mingw_profile_prefix \
-                "$gcov_native_root" "$GCOV_OUTPUT_DIR") || exit 1
-        fi
+        ;;
+    windows-x64:coverage)
+        GCOV_OUTPUT_DIR=$(realpath --relative-to="$ROOT" "$OUT") || exit 1
         ;;
 esac
 cleanup_helper_staging() {
@@ -151,7 +143,7 @@ compile_helper() {
     [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name$EXE_SUFFIX"
     printf '==> Compiling test helper: %s\n' "$name"
     compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
-    if [ -n "$GCOV_OUTPUT_DIR" ]; then
+    if [ -n "$GCOV_PROFILE_DIR" ]; then
         compile_command+=(
             "-fprofile-dir=$GCOV_PROFILE_DIR"
             "-fprofile-prefix-path=$GCOV_PROFILE_PREFIX"

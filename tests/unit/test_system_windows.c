@@ -400,6 +400,8 @@ static void test_parent_reparse_components_are_rejected(void) {
     char linked_parent[CUP_TEST_TEMP_PATH_SIZE];
     char linked_child[CUP_TEST_TEMP_PATH_SIZE];
     char linked_new_file[CUP_TEST_TEMP_PATH_SIZE];
+    char temporary[CUP_TEST_TEMP_PATH_SIZE];
+    char temporary_directory[CUP_TEST_TEMP_PATH_SIZE];
     char safe_source[CUP_TEST_TEMP_PATH_SIZE];
     char safe_destination[CUP_TEST_TEMP_PATH_SIZE];
     FILE *file = NULL;
@@ -442,6 +444,17 @@ static void test_parent_reparse_components_are_rejected(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           system_create_file_exclusive(linked_new_file, &file));
     TEST_ASSERT_NULL(file);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        system_create_temp_file(
+            linked_parent, "file", temporary, sizeof(temporary), &file));
+    TEST_ASSERT_NULL(file);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        system_create_temp_directory(linked_parent,
+                                     "directory",
+                                     temporary_directory,
+                                     sizeof(temporary_directory)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_remove_file(linked_child));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_sync_parent_directory(linked_child));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -645,6 +658,7 @@ static void test_copy_replace_and_temporary_objects(void) {
     char identity_original[CUP_TEST_TEMP_PATH_SIZE];
     char identity_source[CUP_TEST_TEMP_PATH_SIZE];
     char exclusive[CUP_TEST_TEMP_PATH_SIZE];
+    char missing_owner[CUP_TEST_TEMP_PATH_SIZE];
     char temporary[CUP_TEST_TEMP_PATH_SIZE];
     char temporary_directory[CUP_TEST_TEMP_PATH_SIZE];
     char unique[CUP_TEST_TEMP_PATH_SIZE];
@@ -662,6 +676,7 @@ static void test_copy_replace_and_temporary_objects(void) {
     build_path(identity_original, sizeof(identity_original), "identity-original.exe");
     build_path(identity_source, sizeof(identity_source), "identity-source.exe");
     build_path(exclusive, sizeof(exclusive), "exclusive.tmp");
+    build_path(missing_owner, sizeof(missing_owner), "missing-temp-owner");
     write_text(source, "source-data");
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(source, copy));
@@ -776,6 +791,26 @@ static void test_copy_replace_and_temporary_objects(void) {
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     file = NULL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, system_create_file_exclusive(exclusive, &file));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TEMPORARY,
+        system_create_temp_file(
+            missing_owner, "file", temporary, sizeof(temporary), &file));
+    TEST_ASSERT_NULL(file);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TEMPORARY,
+        system_create_temp_directory(missing_owner,
+                                     "directory",
+                                     temporary_directory,
+                                     sizeof(temporary_directory)));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        system_create_temp_file(exclusive, "file", temporary, sizeof(temporary), &file));
+    TEST_ASSERT_NULL(file);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        system_create_temp_directory(
+            exclusive, "directory", temporary_directory, sizeof(temporary_directory)));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_create_temp_file(

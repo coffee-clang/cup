@@ -34,6 +34,89 @@ dry_lock_prefix=$(
 NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
     fail 'could not resolve native build platform for build-system tests'
 
+# Exercise GCC's runtime profile relocation with the same lifecycle used by
+# transactionally built test binaries: compile in staging, publish, remove the
+# staging pathname, execute, then consume paired final-owner notes/counters.
+gcov_probe_cc=$(command -v gcc || true)
+gcov_probe_tool=$(command -v gcov || true)
+if [ -n "$gcov_probe_cc" ] && [ -n "$gcov_probe_tool" ]; then
+    gcov_probe_identity=$($gcov_probe_cc --version 2>/dev/null | sed -n '1p')
+    case "$gcov_probe_identity" in
+        *GCC*|*gcc*)
+            . "$PROJECT_ROOT/tests/support/posix/coverage.sh"
+            gcov_probe_root=$TMP_ROOT/gcov-runtime-relocation
+            gcov_probe_source=$gcov_probe_root/probe.c
+            mkdir -p "$gcov_probe_root/tests"
+            cat >"$gcov_probe_source" <<'EOF_GCOV_PROBE'
+int probe_value(int value) { return value ? 7 : 3; }
+int main(void) { return probe_value(1) == 7 ? 0 : 1; }
+EOF_GCOV_PROBE
+
+            run_gcov_relocation_probe() {
+                family=$1
+                stage=$gcov_probe_root/tests/.$family.semantic
+                final=$gcov_probe_root/tests/$family
+                mkdir -p "$stage"
+                "$gcov_probe_cc" -O0 -g --coverage -fprofile-abs-path \
+                    "$gcov_probe_source" -o "$stage/probe"
+                mv "$stage" "$final"
+                [ ! -e "$stage" ] ||
+                    fail "GCC $family relocation probe retained its staging pathname"
+                prefix=$final
+                case "$NATIVE_BUILD_PLATFORM" in
+                    windows-x64)
+                        command -v cygpath >/dev/null 2>&1 ||
+                            fail 'Windows GCC relocation probe requires cygpath'
+                        prefix=$(cygpath -m "$final")
+                        ;;
+                esac
+                strip=$(cup_coverage_gcov_strip_components "$prefix") ||
+                    fail "could not derive GCC $family relocation strip count"
+                binary=$(find "$final" -maxdepth 1 -type f \
+                    \( -name probe -o -name 'probe.exe' \) -print -quit)
+                [ -n "$binary" ] || fail "GCC $family relocation probe binary is missing"
+                env GCOV_PREFIX="$prefix" GCOV_PREFIX_STRIP="$strip" "$binary" ||
+                    fail "GCC $family relocation probe binary failed"
+                data=$(find "$final" -maxdepth 1 -type f -name '*.gcda' -print -quit)
+                [ -n "$data" ] ||
+                    fail "GCC runtime relocation did not write a $family final-owner counter"
+                note=${data%.gcda}.gcno
+                [ -f "$note" ] ||
+                    fail "GCC $family counter is not paired with its final-owner note"
+                "$gcov_probe_tool" -n -o "$note" "$gcov_probe_source" \
+                    >"$TMP_ROOT/gcov-runtime-$family.log" 2>&1 ||
+                    fail "GCC $family relocated note/counter pair is not consumable"
+            }
+
+            run_gcov_relocation_probe unit
+            run_gcov_relocation_probe helpers
+
+            gcov_product_root=$gcov_probe_root/product
+            mkdir -p "$gcov_product_root/obj" "$gcov_product_root/bin"
+            "$gcov_probe_cc" -O0 -g --coverage -fprofile-abs-path -c \
+                "$gcov_probe_source" -o "$gcov_product_root/obj/probe.o"
+            "$gcov_probe_cc" --coverage "$gcov_product_root/obj/probe.o" \
+                -o "$gcov_product_root/bin/probe"
+            gcov_product_binary=$(find "$gcov_product_root/bin" -maxdepth 1 \
+                -type f \( -name probe -o -name 'probe.exe' \) -print -quit)
+            [ -n "$gcov_product_binary" ] || fail 'GCC product probe binary is missing'
+            (unset GCOV_PREFIX GCOV_PREFIX_STRIP; "$gcov_product_binary") ||
+                fail 'GCC product coverage probe binary failed'
+            gcov_product_data=$(find "$gcov_product_root/obj" -maxdepth 1 \
+                -type f -name '*.gcda' -print -quit)
+            [ -n "$gcov_product_data" ] ||
+                fail 'GCC product counter did not stay with its final object owner'
+            gcov_product_note=${gcov_product_data%.gcda}.gcno
+            [ -f "$gcov_product_note" ] ||
+                fail 'GCC product counter is not paired with its final object note'
+            "$gcov_probe_tool" -n -o "$gcov_product_note" "$gcov_probe_source" \
+                >"$TMP_ROOT/gcov-runtime-product.log" 2>&1 ||
+                fail 'GCC product final-owner note/counter pair is not consumable'
+            printf 'GCC runtime relocation semantic probes passed.\n'
+            ;;
+    esac
+fi
+
 fake_bin=$TMP_ROOT/bin
 prefix=$TMP_ROOT/prefix
 build_root=$TMP_ROOT/build
@@ -917,21 +1000,30 @@ assert_contains "$coverage_runner_command" "CUP_TEST_PLATFORM='macos-arm64'"
 assert_contains "$coverage_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
 
 
-# GCC coverage test binaries are still compiled transactionally, but their
-# runtime counters must belong directly to the atomically published unit/helper
-# directories. The build scripts pin both the profile directory and the staging
-# prefix so libgcov never recreates a retired .unit/.helpers directory.
+# Linux keeps its proven compile-time profile mapping. Windows GCC instead
+# leaves the staging path hardwired and relocates counters at execution time.
 for coverage_build_script in tests/build/unit.sh tests/build/helpers.sh; do
     coverage_build_text=$(cat "$PROJECT_ROOT/$coverage_build_script")
+    assert_contains "$coverage_build_text" 'linux-*:coverage)'
+    assert_contains "$coverage_build_text" 'windows-x64:coverage)'
     assert_contains "$coverage_build_text" '-fprofile-dir='
     assert_contains "$coverage_build_text" '-fprofile-prefix-path='
+    assert_contains "$coverage_build_text" 'if [ -n "$GCOV_PROFILE_DIR" ]'
+    windows_coverage_block=$(printf '%s\n' "$coverage_build_text" | awk '
+        /windows-x64:coverage\)/ { capture = 1 }
+        capture { print }
+        capture && /^[[:space:]]*;;[[:space:]]*$/ { exit }
+    ')
+    assert_contains "$windows_coverage_block" 'GCOV_OUTPUT_DIR='
+    assert_not_contains "$windows_coverage_block" 'GCOV_PROFILE_DIR='
+    assert_not_contains "$windows_coverage_block" 'GCOV_PROFILE_PREFIX='
 done
 
 . "$PROJECT_ROOT/tests/support/posix/coverage.sh"
-mingw_profile_prefix=$(cup_coverage_mingw_profile_prefix \
-    'D:/a/cup/cup' 'build/windows-x64/coverage/tests/.unit.example')
-assert_equals 'D:/a/cup/cup\build/windows-x64/coverage/tests/.unit.example/' \
-    "$mingw_profile_prefix"
+assert_equals 8 "$(cup_coverage_gcov_strip_components \
+    'D:/a/cup/cup/build/windows-x64/coverage/tests/unit')"
+assert_equals 8 "$(cup_coverage_gcov_strip_components \
+    '/a/cup/cup/build/windows-x64/coverage/tests/unit')"
 
 gcov_fixture=$TMP_ROOT/gcov-profile-ownership
 mkdir -p "$gcov_fixture/unit" "$gcov_fixture/helpers"
@@ -985,8 +1077,6 @@ unit_builder_text=$(cat "$PROJECT_ROOT/tests/build/unit.sh")
 assert_contains "$unit_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
 assert_contains "$unit_builder_text" 'compile_command=("$CC"'
 assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
-assert_contains "$unit_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
-assert_contains "$unit_builder_text" 'cup_coverage_mingw_profile_prefix'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
@@ -1000,11 +1090,19 @@ assert_contains "$posix_helper_list" 'process-group'
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
-assert_contains "$helper_builder_text" 'GCOV_PROFILE_DIR=$(cygpath -m "$GCOV_PROFILE_DIR")'
-assert_contains "$helper_builder_text" 'cup_coverage_mingw_profile_prefix'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
 coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
+unit_runner_text=$(cat "$PROJECT_ROOT/tests/runners/unit.sh")
+windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
+assert_contains "$unit_runner_text" 'env GCOV_PREFIX="$GCOV_PREFIX_VALUE"'
+assert_contains "$unit_runner_text" 'GCOV_PREFIX_STRIP="$GCOV_PREFIX_STRIP_VALUE"'
+assert_contains "$coverage_runner_text" 'CUP_TEST_GCOV_HELPER_PREFIX="$helper_profile_prefix"'
+assert_contains "$coverage_runner_text" 'CUP_TEST_GCOV_HELPER_STRIP="$helper_profile_strip"'
+assert_not_contains "$coverage_runner_text" 'export GCOV_PREFIX='
+assert_contains "$windows_common_text" 'function Start-TestHelperProcess'
+assert_contains "$windows_common_text" '$env:GCOV_PREFIX = $env:CUP_TEST_GCOV_HELPER_PREFIX'
+assert_contains "$windows_common_text" 'Remove-Item -LiteralPath Env:GCOV_PREFIX'
 assert_contains "$coverage_runner_text" 'CUP_COVERAGE_REPORT_JOBS:-1'
 profile_assignment=$(printf '%s\n' "$coverage_runner_text" | grep 'export LLVM_PROFILE_FILE=')
 if ! printf '%s\n' "$profile_assignment" | grep -Eq '%[0-9]*m'; then

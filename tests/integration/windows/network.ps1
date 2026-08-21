@@ -62,12 +62,11 @@ try {
         'http-server', '--root', $serverRoot, '--port', '0',
         '--ready-file', $readyFile
     ) | ForEach-Object { ConvertTo-NativeArgument -Argument $_ }
-    $server = Start-Process -FilePath $helper `
-        -ArgumentList ($arguments -join ' ') `
+    $server = Start-TestHelperProcess -FilePath $helper `
+        -ArgumentList @(($arguments -join ' ')) `
         -WorkingDirectory $Script:CupTestRoot `
         -RedirectStandardOutput $stdoutFile `
-        -RedirectStandardError $stderrFile `
-        -NoNewWindow -PassThru
+        -RedirectStandardError $stderrFile
 
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while ($true) {

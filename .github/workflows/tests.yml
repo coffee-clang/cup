@@ -44,7 +44,7 @@ jobs:
   posix:
     name: Source tests (${{ matrix.platform }})
     needs: dependencies
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 100
     strategy:
@@ -129,7 +129,7 @@ jobs:
   windows:
     name: Source tests (windows-x64)
     needs: dependencies
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: windows-2025
     timeout-minutes: 100
     steps:
@@ -265,7 +265,7 @@ jobs:
   coverage:
     name: Coverage (${{ matrix.platform }})
     needs: dependencies
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -440,7 +440,7 @@ jobs:
   sanitizers:
     name: Sanitizers (${{ matrix.platform }})
     needs: dependencies
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -603,7 +603,7 @@ jobs:
 
   gate:
     name: Tests gate
-    if: always()
+    if: ${{ !cancelled() }}
     needs:
       - dependencies
       - quality

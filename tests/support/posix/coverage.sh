@@ -1,11 +1,26 @@
 # Coverage mechanics shared by build scripts, the runner and repository regressions.
 
-# MinGW GCC combines its native getpwd() result with a relative output using a
-# DOS separator before applying -fprofile-prefix-path. The trailing POSIX
-# separator belongs to the relative output path and must be part of the prefix.
-cup_coverage_mingw_profile_prefix() {
-    [ "$#" -eq 2 ] && [ -n "$1" ] && [ -n "$2" ] || return 2
-    printf '%s\\%s/\n' "$1" "$2"
+# GCC runtime profile relocation strips directory components from the hardwired
+# data-file path before adding the destination prefix. Drive letters are not
+# directory components in libgcov.
+cup_coverage_gcov_strip_components() {
+    [ "$#" -eq 1 ] && [ -n "$1" ] || return 2
+    cup_gcov_path=$(printf '%s\n' "$1" | tr '\\' '/') || return 2
+    case "$cup_gcov_path" in
+        [A-Za-z]:/*) cup_gcov_path=${cup_gcov_path#??} ;;
+        /*) cup_gcov_path=${cup_gcov_path#/} ;;
+        *) return 2 ;;
+    esac
+    [ -n "$cup_gcov_path" ] || return 2
+    printf '%s\n' "$cup_gcov_path" | awk -F/ '{
+        count = 0
+        for (field = 1; field <= NF; field++) {
+            if (length($field) != 0) {
+                count++
+            }
+        }
+        print count
+    }'
 }
 
 cup_coverage_verify_gcov_profile_owners() {

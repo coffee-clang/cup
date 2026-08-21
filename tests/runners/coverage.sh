@@ -176,11 +176,17 @@ if [ "$PLATFORM" = windows-x64 ]; then
     windows_runner=$(cygpath -w "$ROOT/tests/runners/integration-windows.ps1")
     windows_binary=$(cygpath -w "$CUP_TEST_BINARY")
     windows_build_root=$(cygpath -w "$TEST_BUILD_ROOT")
+    helper_profile_owner="$TEST_BUILD_ROOT/$PLATFORM/coverage/tests/helpers"
+    helper_profile_prefix=$(cygpath -m "$helper_profile_owner") || exit 1
+    helper_profile_strip=$(
+        cup_coverage_gcov_strip_components "$helper_profile_prefix") || exit 1
     cup_test_run_logged \
         'Running instrumented Windows integration tests...' \
         "$REPORT_DIR/integration.log" \
         env CUP_TEST_BUILD_ROOT="$windows_build_root" \
             CUP_TEST_SUITE_TIMEOUT="$SUITE_TIMEOUT" \
+            CUP_TEST_GCOV_HELPER_PREFIX="$helper_profile_prefix" \
+            CUP_TEST_GCOV_HELPER_STRIP="$helper_profile_strip" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_runner" \
         -CupPath "$windows_binary" -Configuration coverage
 else

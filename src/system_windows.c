@@ -50,6 +50,7 @@ static unsigned char ascii_lower(unsigned char value) {
 
 static CupError process_directory_chain(const char *path, int create, int allow_missing);
 static CupError validate_directory_chain(const char *path);
+static CupError validate_temp_directory(const char *path);
 static CupError validate_parent_directory_chain(const char *path);
 
 static void print_windows_error(const char *message, const char *path) {
@@ -157,7 +158,7 @@ static CupError open_temp_handle(const char *directory,
         return CUP_ERR_INVALID_INPUT;
     }
     {
-        CupError err = validate_directory_chain(directory);
+        CupError err = validate_temp_directory(directory);
 
         if (err != CUP_OK) {
             return err;
@@ -1051,6 +1052,17 @@ static CupError validate_directory_chain(const char *path) {
     return process_directory_chain(path, 0, 0);
 }
 
+static CupError validate_temp_directory(const char *path) {
+    CupError err = validate_directory_chain(path);
+
+    if (err != CUP_ERR_FILESYSTEM) {
+        return err;
+    }
+    /* Missing temp owners are temporary; unsafe or wrong-kind chains remain filesystem errors. */
+    err = process_directory_chain(path, 0, 1);
+    return err == CUP_OK ? CUP_ERR_TEMPORARY : err;
+}
+
 static CupError validate_parent_directory_chain(const char *path) {
     char absolute[MAX_PATH_LEN];
     char parent[MAX_PATH_LEN];
@@ -1937,7 +1949,7 @@ CupError system_create_temp_directory(const char *directory,
         path_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = validate_directory_chain(directory);
+    err = validate_temp_directory(directory);
     if (err != CUP_OK) {
         return err;
     }

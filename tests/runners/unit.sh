@@ -10,6 +10,18 @@ PLATFORM=$CUP_TEST_PLATFORM
 CONFIGURATION=${CUP_TEST_CONFIGURATION:-development}
 TEST_BUILD_ROOT=$(cup_test_build_root) || exit 2
 TEST_BUILD_DIR="$TEST_BUILD_ROOT/$PLATFORM/$CONFIGURATION/tests/unit"
+GCOV_PREFIX_VALUE=
+GCOV_PREFIX_STRIP_VALUE=
+if [ "$PLATFORM:$CONFIGURATION" = windows-x64:coverage ]; then
+    . "$ROOT/tests/support/posix/coverage.sh"
+    command -v cygpath >/dev/null 2>&1 || {
+        printf 'cygpath is required for Windows GCC coverage relocation.\n' >&2
+        exit 2
+    }
+    GCOV_PREFIX_VALUE=$(cygpath -m "$TEST_BUILD_DIR") || exit 1
+    GCOV_PREFIX_STRIP_VALUE=$(
+        cup_coverage_gcov_strip_components "$GCOV_PREFIX_VALUE") || exit 1
+fi
 
 [ -d "$TEST_BUILD_DIR" ] || {
     printf 'Unit tests are not built: %s\n' "$TEST_BUILD_DIR" >&2
@@ -66,7 +78,17 @@ while IFS= read -r test_name; do
     [ -n "$test_name" ] || continue
     test_binary="$TEST_BUILD_DIR/$test_name"
     printf '==> Running C unit test: %s\n' "$test_name"
-    if [ -n "$TIMEOUT_COMMAND" ]; then
+    if [ -n "$GCOV_PREFIX_VALUE" ]; then
+        if [ -n "$TIMEOUT_COMMAND" ]; then
+            env GCOV_PREFIX="$GCOV_PREFIX_VALUE" \
+                GCOV_PREFIX_STRIP="$GCOV_PREFIX_STRIP_VALUE" \
+                "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s \
+                "$UNIT_TIMEOUT" "$test_binary"
+        else
+            env GCOV_PREFIX="$GCOV_PREFIX_VALUE" \
+                GCOV_PREFIX_STRIP="$GCOV_PREFIX_STRIP_VALUE" "$test_binary"
+        fi
+    elif [ -n "$TIMEOUT_COMMAND" ]; then
         "$TIMEOUT_COMMAND" --foreground --signal=TERM --kill-after=30s \
             "$UNIT_TIMEOUT" "$test_binary"
     else

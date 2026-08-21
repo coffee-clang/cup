@@ -47,6 +47,55 @@ write_permissions=$(
 [ "$write_permissions" -eq 1 ] ||
     fail 'contents: write must appear only in the release publisher'
 
+tests_job_condition() {
+    file=$1
+    job=$2
+    awk -v job="$job" '
+        $0 == "  " job ":" { in_job = 1; next }
+        in_job && $0 ~ /^  [^ ]/ { exit }
+        in_job && $0 ~ /^    if:[[:space:]]*/ {
+            sub(/^    if:[[:space:]]*/, "")
+            print
+            found = 1
+            exit
+        }
+        END { if (!found) exit 1 }
+    ' "$file"
+}
+
+tests_cancellation_policy() {
+    file=$1
+    for job in posix windows coverage sanitizers gate; do
+        condition=$(tests_job_condition "$file" "$job") || return 1
+        [ "$condition" = '${{ !cancelled() }}' ] || return 1
+    done
+}
+
+tests_cancellation_policy "$workflows/tests.yml" ||
+    fail 'Tests diagnostic jobs do not preserve failure diagnostics while respecting cancellation'
+
+cancel_fixture=$TMP_ROOT/tests-cancellation.yml
+cat >"$cancel_fixture" <<'EOF_CANCEL_FIXTURE'
+jobs:
+  posix:
+    if: ${{ !cancelled() }}
+  windows:
+    if: ${{ !cancelled() }}
+  coverage:
+    if: ${{ !cancelled() }}
+  sanitizers:
+    if: ${{ !cancelled() }}
+  gate:
+    if: ${{ !cancelled() }}
+EOF_CANCEL_FIXTURE
+tests_cancellation_policy "$cancel_fixture" ||
+    fail 'Tests cancellation-policy checker rejected its valid control fixture'
+awk '!changed && /!cancelled\(\)/ { sub(/!cancelled\(\)/, "always()"); changed = 1 }
+    { print }' "$cancel_fixture" >"$cancel_fixture.bad"
+if tests_cancellation_policy "$cancel_fixture.bad"; then
+    fail 'Tests cancellation-policy checker accepted an always-run diagnostic job'
+fi
+
 grep -Fq 'cup-tests-evidence-index-attempt-${{ github.run_attempt }}' "$workflows/tests.yml" ||
     fail 'Tests workflow does not publish run-attempt-bound evidence index'
 grep -Fq 'artifact-ids: ${{ matrix.dependency_artifact_id }}' "$workflows/release.yml" ||

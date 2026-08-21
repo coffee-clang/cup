@@ -102,9 +102,10 @@ try {
         "--ready-file", $ready, "--request-file", $requestReady,
         "--delay-ms", "3000"
     )
-    $server = Start-Process -FilePath $helper -ArgumentList $serverArguments `
+    $server = Start-TestHelperProcess -FilePath $helper `
+        -ArgumentList $serverArguments `
         -RedirectStandardOutput $serverLog -RedirectStandardError "$serverLog.err" `
-        -PassThru -WindowStyle Hidden
+        -Hidden
 
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $ready) -and
