@@ -83,7 +83,19 @@ normalize_compiler_target() {
 }
 
 extract_numeric_version() {
-    printf '%s\n' "$1" | sed -n 's/.*[^0-9]\([0-9][0-9]*\(\.[0-9][0-9]*\)\{1,3\}\).*/\1/p' | sed -n '1p'
+    printf '%s\n' "$1" | awk '
+        {
+            for (i = 1; i <= NF; ++i) {
+                value = $i
+                sub(/^[^0-9]*/, "", value)
+                sub(/[^0-9.].*$/, "", value)
+                if (value ~ /^[0-9]+[.][0-9]+([.][0-9]+)?([.][0-9]+)?$/) {
+                    print value
+                    exit
+                }
+            }
+        }
+    '
 }
 
 set -- $CUP_BUILD_CC
@@ -110,8 +122,9 @@ if [ -n "$windres_command" ]; then
     set -- $windres_command
     windres_program=${1:-}
     windres_path=$(command -v "$windres_program" 2>/dev/null || printf missing)
-    windres_version=$($windres_command --version 2>/dev/null | first_line || true)
-    windres_numeric=$(extract_numeric_version "$windres_version")
+    windres_version_output=$($windres_command --version 2>/dev/null || true)
+    windres_version=$(printf '%s\n' "$windres_version_output" | first_line)
+    windres_numeric=$(extract_numeric_version "$windres_version_output")
     [ "$windres_path" != missing ] || fail "windres command was not found: $windres_program"
     [ -n "$windres_version" ] || fail 'windres version is empty'
     [ -n "$windres_numeric" ] || fail 'windres numeric version is empty'

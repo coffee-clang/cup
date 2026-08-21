@@ -1208,10 +1208,10 @@ static void clean_build_root(const char *root) {
     require_locked_root_unchanged(root, &locked);
 
     err = system_remove_file_if_identity(locked.marker, &locked.marker_identity);
+    system_lock_release(&locked.lock);
     if (err == CUP_OK) {
         err = system_remove_directory(root);
     }
-    system_lock_release(&locked.lock);
     if (err != CUP_OK) {
         fail_system("remove cleaned build root", root, err);
     }

@@ -117,12 +117,14 @@ Load command 1
     minos ${FAKE_MAC_MINOS:-13.0}
 EOF_LOAD
         fi
-        if [ "${FAKE_MAC_RPATH:-0}" = 1 ]; then
-            cat <<'EOF_RPATH'
+        if [ "${FAKE_MAC_RPATH:-0}" != 0 ]; then
+            rpath=${FAKE_MAC_RPATH}
+            [ "$rpath" != 1 ] || rpath=/tmp/lib
+            cat <<EOF_RPATH
 Load command 2
           cmd LC_RPATH
       cmdsize 32
-         path /tmp/lib (offset 12)
+         path $rpath (offset 12)
 EOF_RPATH
         fi
         ;;
@@ -322,8 +324,20 @@ assert_contains "$(cat "$TMP_ROOT/pe-nx.out")" 'is missing NX_COMPAT'
 # UndefinedBehaviorSanitizer on every supported object format.
 FAKE_FORMAT=macho \
 FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
+FAKE_MAC_RPATH='@executable_path' \
 FAKE_NM_SYMBOLS='__asan_init __ubsan_handle_type_mismatch_v1' \
     inspect macos-x64 sanitizers "$binary" "$TMP_ROOT/mac-sanitizers.txt"
+if FAKE_FORMAT=macho \
+        FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
+        FAKE_MAC_RPATH='/tmp/lib' \
+        FAKE_NM_SYMBOLS='__asan_init __ubsan_handle_type_mismatch_v1' \
+        inspect macos-x64 sanitizers "$binary" "$TMP_ROOT/mac-sanitizer-rpath.txt" \
+        >"$TMP_ROOT/mac-sanitizer-rpath.out" 2>&1; then
+    fail 'Mach-O sanitizer binary accepted an arbitrary LC_RPATH'
+fi
+assert_contains "$(cat "$TMP_ROOT/mac-sanitizer-rpath.out")" \
+    'unexpected sanitizer LC_RPATH: /tmp/lib'
+
 if FAKE_FORMAT=macho \
         FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
         FAKE_NM_SYMBOLS='__asan_init' \

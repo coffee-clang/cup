@@ -265,6 +265,7 @@ inspect_macho() {
         [ "$configuration" = sanitizers ] || fail "LC_RPATH is not allowed: $(printf '%s' "$rpaths" | tr '\n' ' ')"
         printf '%s\n' "$rpaths" | while IFS= read -r path; do
             case "$path" in
+                @executable_path|\
                 *Xcode*.app*/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/*/lib/darwin)
                     ;;
                 *)

@@ -136,7 +136,16 @@ cat >"$fake_bin/fakewindres" <<'EOF_WINDRES'
 #!/bin/sh
 case "${1:-}" in
     --version)
-        printf '%s\n' 'fakewindres 1.0'
+        case "${0##*/}" in
+            llvm-windres)
+                printf '%s\n' \
+                    'llvm-windres, compatible with GNU windres' \
+                    'LLVM version 22.1.8'
+                ;;
+            *)
+                printf '%s\n' 'fakewindres 1.0'
+                ;;
+        esac
         ;;
     *)
         exit 0
@@ -530,6 +539,22 @@ fi
 assert_contains "$(cat "$TMP_ROOT/windows-sanitizer-runtime.out")" \
     'sanitizers require MSYSTEM=CLANG64'
 
+# llvm-windres prints its compatibility banner before the LLVM version. Build
+# evidence keeps the banner but must extract the complete later numeric version.
+# Keep path-ops on this repository-test host; CUP_BUILD_PLATFORM only controls
+# the build-config semantics exercised below.
+printf '%s\n' Linux >"$TMP_ROOT/host-system"
+printf '%s\n' x86_64 >"$TMP_ROOT/host-machine"
+windres_config=$TMP_ROOT/windows-windres-config.txt
+PATH="$fake_bin:$PATH" \
+CUP_BUILD_PLATFORM=windows-x64 CUP_BUILD_CONFIGURATION=sanitizers \
+CUP_BUILD_CC=fakecc CUP_BUILD_WINDRES=llvm-windres \
+CUP_BUILD_DEPS_PREFIX="$prefix" CUP_BUILD_OFFICIAL=0 \
+    "$PROJECT_ROOT/scripts/build/write-config.sh" "$windres_config"
+assert_contains "$(cat "$windres_config")" \
+    'windres_version=llvm-windres, compatible with GNU windres'
+assert_contains "$(cat "$windres_config")" 'windres_numeric=22.1.8'
+
 if make -C "$PROJECT_ROOT" --no-print-directory -n \
         PLATFORM=macos-x64 MACOSX_DEPLOYMENT_TARGET=12.0 help \
         >"$TMP_ROOT/macos-target.out" 2>&1; then
@@ -855,6 +880,8 @@ for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
     case "$coverage_platform" in
         macos-*)
             assert_contains "$coverage_command" '-fprofile-instr-generate'
+            assert_contains "$coverage_command" \
+                "-fcoverage-prefix-map=$PROJECT_ROOT=$PROJECT_ROOT"
             ;;
         *)
             assert_contains "$coverage_command" '--coverage'

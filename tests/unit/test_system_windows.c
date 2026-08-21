@@ -517,6 +517,7 @@ static void test_identity_bound_path_removal(void) {
 static void test_detached_uninstall_start(void) {
     char script[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
+    char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char prefixed_root[CUP_TEST_TEMP_PATH_SIZE + 8];
     char script_text[CUP_TEST_TEMP_PATH_SIZE * 4];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 2];
@@ -818,10 +819,14 @@ static void test_shared_script_primitives(void) {
     char remove[MAX_PATH_LEN];
     char lock_path[MAX_PATH_LEN];
     char buffer[32];
+    FILE *lock_reader = NULL;
     SystemCommitState state;
     SystemPathIdentity identity;
+    SystemPathIdentity reader_identity;
     SystemLock lock = {0, 0};
     SystemPathKind kind;
+    uint64_t reader_size = 0;
+    int missing = 0;
     size_t size;
 
     build_path(parent, sizeof(parent), "chain");
@@ -867,7 +872,24 @@ static void test_shared_script_primitives(void) {
     TEST_ASSERT_EQUAL_size_t(strlen("format=1\n"), size);
     buffer[size] = '\0';
     TEST_ASSERT_EQUAL_STRING("format=1\n", buffer);
+
+    /* An exclusive SystemLock must coordinate other locks without making the
+     * file contents unreadable or preventing identity-bound unlink. */
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_open_regular_file(
+            lock_path, &lock_reader, &reader_identity, &reader_size, &missing));
+    TEST_ASSERT_FALSE(missing);
+    TEST_ASSERT_TRUE(system_path_identity_equal(&identity, &reader_identity));
+    TEST_ASSERT_EQUAL_UINT64(strlen("format=1\n"), reader_size);
+    TEST_ASSERT_NOT_NULL(lock_reader);
+    TEST_ASSERT_EQUAL_size_t(strlen("format=1\n"),
+                             fread(buffer, 1, sizeof(buffer), lock_reader));
+    TEST_ASSERT_EQUAL_INT(0, fclose(lock_reader));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file_if_identity(lock_path, &identity));
     system_lock_release(&lock);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(lock_path, &kind));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_MISSING, kind);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           system_lock_acquire_existing(

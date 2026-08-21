@@ -2596,7 +2596,7 @@ static CupError lock_acquire_common(SystemLock *lock,
     disposition = create ? OPEN_ALWAYS : OPEN_EXISTING;
     handle = CreateFileW(wide_path,
                          mode == SYSTEM_LOCK_SHARED ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          NULL,
                          disposition,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -2617,8 +2617,12 @@ static CupError lock_acquire_common(SystemLock *lock,
     if (mode == SYSTEM_LOCK_EXCLUSIVE) {
         flags |= LOCKFILE_EXCLUSIVE_LOCK;
     }
+    /* SystemLock is an advisory coordination primitive. Lock one sentinel byte
+     * beyond ordinary CUP lock-file contents so Windows byte-range locking does
+     * not make marker/config contents unreadable through independent handles. */
     ZeroMemory(&overlapped, sizeof(overlapped));
-    if (!LockFileEx(handle, flags, 0, MAXDWORD, MAXDWORD, &overlapped)) {
+    overlapped.OffsetHigh = 1;
+    if (!LockFileEx(handle, flags, 0, 1, 0, &overlapped)) {
         DWORD error = GetLastError();
 
         CloseHandle(handle);
@@ -2706,7 +2710,8 @@ void system_lock_release(SystemLock *lock) {
     }
     handle = (HANDLE)lock->handle;
     ZeroMemory(&overlapped, sizeof(overlapped));
-    UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
+    overlapped.OffsetHigh = 1;
+    UnlockFileEx(handle, 0, 1, 0, &overlapped);
     CloseHandle(handle);
     lock->handle = 0;
     lock->active = 0;

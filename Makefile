@@ -472,7 +472,8 @@ ifneq ($(filter $(PLATFORM),macos-x64 macos-arm64),)
     # dependency-defined order and silence only the corresponding diagnostic.
     PLATFORM_LDFLAGS += -mmacosx-version-min=$(CUP_MACOS_DEPLOYMENT_TARGET) \
         -Wl,-no_warn_duplicate_libraries
-    CONFIG_CFLAGS_coverage := -O0 -g3 -fprofile-instr-generate -fcoverage-mapping
+    CONFIG_CFLAGS_coverage := -O0 -g3 -fprofile-instr-generate -fcoverage-mapping \
+        -fcoverage-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=$(call escape_spaces,$(PROJECT_ROOT))
     CONFIG_LDFLAGS_coverage := -fprofile-instr-generate -fcoverage-mapping
     ifeq ($(CONFIGURATION),coverage)
         # Apple LLVM merges profiles from every instrumented executable. Give
