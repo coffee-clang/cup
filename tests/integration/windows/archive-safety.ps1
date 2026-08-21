@@ -46,11 +46,37 @@ try {
             Content = "escape`n"
         }
     )
-    [void](New-CustomZipPackage -Version $traversalVersion -ExtraEntries $traversalEntries)
+    $traversalFixture = New-CustomZipPackage `
+        -Version $traversalVersion `
+        -ExtraEntries $traversalEntries
+    Assert-ZipContainsExactEntries -Archive $traversalFixture.Archive -Names @(
+        "$traversalPackage/../escape.txt")
     [void](Assert-InstallRejected $traversalVersion)
     $escapedPath = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\escape.txt")
     Assert-PathMissing $escapedPath
+
+    $backslashVersion = "30.1.5"
+    Set-PackageCatalogField `
+        -Component "compiler" `
+        -Tool "clang" `
+        -Field "available_versions" `
+        -Value $backslashVersion `
+        -Mode "Prepend"
+    $backslashPackage = "clang-$backslashVersion-windows-x64-windows-x64"
+    $backslashEntry = "$backslashPackage/bin\escape.cmd"
+    $backslashEntries = @(
+        [pscustomobject]@{
+            Name = $backslashEntry
+            Content = "escape`n"
+        }
+    )
+    $backslashFixture = New-CustomZipPackage `
+        -Version $backslashVersion `
+        -ExtraEntries $backslashEntries
+    Assert-ZipContainsExactEntries -Archive $backslashFixture.Archive -Names @(
+        $backslashEntry)
+    [void](Assert-InstallRejected $backslashVersion)
 
     # Invalid cached formats use a bounded loopback refresh target so this native
     # integration never contacts the public release service.

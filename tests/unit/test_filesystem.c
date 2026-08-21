@@ -185,7 +185,11 @@ static void test_atomic_file_publication(void) {
     size_t after;
     int executable;
 
+#if defined(_WIN32)
+    build_path(created, sizeof(created), "published-new.cmd");
+#else
     build_path(created, sizeof(created), "published-new");
+#endif
     build_path(replaced, sizeof(replaced), "published-replaced");
     TEST_ASSERT_TRUE(snprintf(outside_directory,
                               sizeof(outside_directory),
@@ -434,7 +438,11 @@ static void test_file_policy(void) {
                           filesystem_apply_required_permissions(path, 0, -1));
     TEST_ASSERT_EQUAL_INT(CUP_OK, filesystem_apply_required_permissions(path, 0, 0));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_executable(path, &executable));
+#if defined(_WIN32)
+    TEST_ASSERT_TRUE(executable);
+#else
     TEST_ASSERT_FALSE(executable);
+#endif
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_read_only(path, &read_only));
     TEST_ASSERT_FALSE(read_only);
 

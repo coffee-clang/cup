@@ -318,9 +318,13 @@ static void test_unsafe_paths(void) {
     const TestEntry drive[] = {
         {TEST_FILE, "C:/pkg/tool", "x", NULL, 0},
     };
+#ifndef _WIN32
+    /* The native Windows libarchive writer normalizes backslashes before CUP can observe them.
+     * Windows exercises this boundary with an exact ZIP fixture in archive-safety.ps1. */
     const TestEntry backslash[] = {
         {TEST_FILE, "pkg\\tool", "x", NULL, 0},
     };
+#endif
     TestEntry deep = {TEST_FILE, NULL, "x", NULL, 0};
     char deep_path[1024] = "pkg";
     char output[1024];
@@ -341,8 +345,10 @@ static void test_unsafe_paths(void) {
                           extract_entries(duplicate, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(drive, 1, output, sizeof(output)));
+#ifndef _WIN32
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(backslash, 1, output, sizeof(output)));
+#endif
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(&deep, 1, output, sizeof(output)));
 }
