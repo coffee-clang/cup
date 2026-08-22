@@ -31,7 +31,23 @@ try {
         }
         Start-Sleep -Milliseconds 100
     }
-    Assert-PathMissing $cupRoot
+    if (Test-Path -LiteralPath $cupRoot) {
+        $journalPath = Join-Path $cupRoot "transaction.txt"
+        $journalText = if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+            Get-Content -LiteralPath $journalPath -Raw -ErrorAction SilentlyContinue
+        } else {
+            "<missing>"
+        }
+        $leftoverText = if ($leftovers.Count -eq 0) {
+            "<none>"
+        } else {
+            ($leftovers | ForEach-Object { $_.FullName }) -join "`n"
+        }
+        $message = "uninstall did not detach the canonical root within 20 seconds: $cupRoot`n" +
+            "Canonical journal:`n$journalText`n" +
+            "Detached residue candidates:`n$leftoverText"
+        Fail-Test $message
+    }
     $leftovers = @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force `
         -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like ".cup-uninstall.*" -or $_.Name -like ".cup-uninstall-*"

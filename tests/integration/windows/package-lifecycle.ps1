@@ -112,7 +112,7 @@ function Test-TargetScopes {
 
     $crossInfo = Invoke-Cup -CommandArgs @("info", "--target", "linux-x64")
     Assert-Contains $crossInfo "compiler [linux-x64]: clang@22.1.5 (stable)"
-    Assert-Contains $crossInfo "commands: linux-x64-clang, linux-x64-clang++"
+    Assert-Contains $crossInfo "commands: linux-x64-clang.cmd, linux-x64-clang++.cmd"
     Assert-Equals (Invoke-ManagedCommand -Name "linux-x64-clang") `
         "clang-22.1.5-linux-x64:clang"
 }
