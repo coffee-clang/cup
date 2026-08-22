@@ -3,7 +3,7 @@
 
 cup_test_uninstall_residue() {
     parent=$1
-    for candidate in "$parent"/.cup-uninstall.* "$parent"/.cup-uninstall-*; do
+    for candidate in "$parent"/.cup-uninstall-*; do
         if [ -e "$candidate" ] || [ -L "$candidate" ]; then
             printf '%s\n' "$candidate"
             return 0

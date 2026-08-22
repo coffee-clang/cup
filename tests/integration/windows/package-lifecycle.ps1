@@ -79,7 +79,7 @@ function Test-InstallDefaults {
     Invoke-Cup -CommandArgs @("install", "debugger", "gdb@16.1") | Out-Null
 }
 
-function Test-DevelopmentCupUpdate {
+function Test-DevelopmentUpdate {
     $embeddedVersion = Invoke-Cup -CommandArgs @("--version")
     if ($embeddedVersion -like "*-dev*") {
         $failure = Invoke-Cup -CommandArgs @("update", "cup") -ExpectFailure
@@ -162,7 +162,7 @@ function Test-Updates {
 }
 
 function Test-RemoveDefaultWithoutPromotion {
-    $ambiguous = Invoke-Cup -CommandArgs @("remove", "clang") -ExpectFailure
+    $ambiguous = Assert-CupStatus -CommandArgs @("remove", "clang") -ExpectedStatus 2
     Assert-Contains $ambiguous "remove selection 'compiler:clang' is ambiguous"
     Assert-Contains $ambiguous "clang@21.1.5"
     Assert-Contains $ambiguous "clang@22.1.5"
@@ -184,13 +184,20 @@ function Test-RemoveDefaultWithoutPromotion {
     Assert-Contains (Invoke-Cup -CommandArgs @(
         "info", "compiler", "--target", "windows-x64")) `
         "No default for component 'compiler' on host 'windows-x64', target 'windows-x64'."
-    Assert-Contains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@21.1.5"
-    Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@22.1.5"
+    $nativeInstalled = Invoke-Cup -CommandArgs @(
+        "list", "compiler", "--target", "windows-x64")
+    Assert-Contains $nativeInstalled "compiler:clang@21.1.5"
+    Assert-NotContains $nativeInstalled "compiler:clang@22.1.5"
+    Assert-Contains (Invoke-Cup -CommandArgs @(
+        "list", "compiler", "--target", "linux-x64")) "compiler:clang@22.1.5"
     Assert-CupHealthy
 
     $removed = Invoke-Cup -CommandArgs @("remove", "clang")
     Assert-Contains $removed "Removed compiler clang -> clang@21.1.5"
-    Assert-NotContains (Invoke-Cup -CommandArgs @("list", "compiler")) "compiler:clang@"
+    Assert-NotContains (Invoke-Cup -CommandArgs @(
+        "list", "compiler", "--target", "windows-x64")) "compiler:clang@"
+    Assert-Contains (Invoke-Cup -CommandArgs @(
+        "list", "compiler", "--target", "linux-x64")) "compiler:clang@22.1.5"
     Assert-CupHealthy
 }
 
@@ -198,7 +205,7 @@ try {
     Initialize-TestEnvironment -Name "package-lifecycle" -ExecutablePath $CupExecutablePath
     Initialize-LifecycleFixture
     Test-InstallDefaults
-    Test-DevelopmentCupUpdate
+    Test-DevelopmentUpdate
     Test-CatalogViews
     Test-MissingDefault
     Test-Updates

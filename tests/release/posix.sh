@@ -16,7 +16,7 @@ release_dir=${1:-release}
 verify_checksum_file_exact "$release_dir" SHA256SUMS.common \
     packages.cfg install.cfg install.sh install.ps1
 verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" \
-    "cup-$PLATFORM" uninstall.sh release.txt SHA256SUMS.common
+    "cup-$PLATFORM" release.txt SHA256SUMS.common
 
 test "$(sed -n 's/^format=//p' "$release_dir/release.txt")" = 1
 test "$(sed -n 's/^version=//p' "$release_dir/release.txt")" = "$VERSION"
@@ -176,10 +176,11 @@ test -d "$test_home/.cup/staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 
-# An official installation can restore its packaged uninstall asset without changing cup.
-uninstall_asset="$test_home/.cup/helpers/uninstall.sh"
-rm -f "$uninstall_asset"
-if asset_repair_output=$(
+# The update helper is derived from the installed executable, not a release asset. Repair
+# regenerates a missing copy without changing the running executable.
+update_helper="$test_home/.cup/helpers/update-helper"
+rm -f "$update_helper"
+if helper_repair_output=$(
     cd "$test_home"
     HOME="$test_home" \
     CUP_INSTALL_ALLOW_INSECURE=1 \
@@ -189,18 +190,16 @@ if asset_repair_output=$(
     :
 else
     repair_status=$?
-    printf '%s\n' "$asset_repair_output" >&2
-    fail "installed cup asset repair failed with exit code $repair_status"
+    printf '%s\n' "$helper_repair_output" >&2
+    fail "installed cup helper repair failed with exit code $repair_status"
 fi
-printf '%s\n' "$asset_repair_output"
-printf '%s\n' "$asset_repair_output" | grep -F 'Restoring uninstall script.' >/dev/null
-test -f "$uninstall_asset"
-test -x "$uninstall_asset"
-uninstall_mode=$(ls -ld "$uninstall_asset" | awk '{print $1}')
-case "$uninstall_mode" in
-    *w*) fail 'release repair did not restore read-only uninstall.sh' ;;
-esac
+printf '%s\n' "$helper_repair_output"
+printf '%s\n' "$helper_repair_output" | \
+    grep -F 'Regenerated native update helper from the installed executable.' >/dev/null
+test -x "$update_helper"
+test "$(hash_file "$update_helper")" = "$binary_hash_before"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
+helper_hash_before_update=$(hash_file "$update_helper")
 
 # A pending or malformed canonical journal blocks bootstrap before any managed mutation.
 # The installer must preserve both the journal evidence and the installed executable.
@@ -230,9 +229,6 @@ if find "$test_home/.cup/staging" -mindepth 1 -print -quit | grep -q .; then
 fi
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
-update_helper="$test_home/.cup/helpers/cup-update-helper"
-helper_hash_before_update=$(hash_file "$update_helper")
-test "$helper_hash_before_update" = "$binary_hash_before"
 
 # A local immutable release fixture exercises the complete detached update path. The binary
 # patcher changes only same-length embedded version strings, so the served executable remains the
@@ -250,10 +246,9 @@ cp "$release_dir/packages.cfg" "$version_root/packages.cfg"
 cp "$release_dir/install.cfg" "$version_root/install.cfg"
 cp "$release_dir/install.sh" "$version_root/install.sh"
 cp "$release_dir/install.ps1" "$version_root/install.ps1"
-cp "$release_dir/uninstall.sh" "$version_root/uninstall.sh"
 "$patch_helper" "$release_dir/cup-$PLATFORM" \
     "$version_root/cup-$PLATFORM" "$VERSION" "$next_version" >/dev/null
-chmod +x "$version_root/cup-$PLATFORM" "$version_root/uninstall.sh"
+chmod +x "$version_root/cup-$PLATFORM"
 {
     printf 'format=1\n'
     printf 'version=%s\n' "$next_version"
@@ -267,7 +262,7 @@ cp "$version_root/release.txt" "$update_root/release.txt"
         printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> SHA256SUMS.common
     done
     : > "SHA256SUMS.$PLATFORM"
-    for asset in "cup-$PLATFORM" uninstall.sh release.txt SHA256SUMS.common; do
+    for asset in "cup-$PLATFORM" release.txt SHA256SUMS.common; do
         printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> "SHA256SUMS.$PLATFORM"
     done
 )

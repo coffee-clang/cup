@@ -3,7 +3,7 @@
  * without duplicating filesystem recovery.
  */
 
-#include "cup_assets.h"
+#include "assets.h"
 #include "constants.h"
 #include "download.h"
 #include "checksum.h"
@@ -18,8 +18,8 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
-#include "cup_update_journal.h"
-#include "cup_update_helper.h"
+#include "update_journal.h"
+#include "update_helper.h"
 #include "runtime_journal.h"
 #include "uninstall_journal.h"
 #include "unity.h"
@@ -51,8 +51,10 @@ static UninstallJournal uninstall_journals[MAX_STEPS];
 static UninstallJournalStatus uninstall_statuses[MAX_STEPS];
 static CupError uninstall_load_results[MAX_STEPS];
 static CupError uninstall_recover_result;
+static CupError uninstall_helper_cleanup_result;
 static size_t uninstall_load_calls;
 static int uninstall_recover_calls;
+static int uninstall_helper_cleanup_calls;
 static CupError state_load_result;
 static CupError state_validate_result;
 static CupError transaction_results[MAX_STEPS];
@@ -61,13 +63,13 @@ static PackageTransaction transactions[MAX_STEPS];
 static size_t transaction_calls;
 static CupError recover_result;
 static CupError update_load_result;
-static CupUpdateJournalStatus update_load_status;
-static CupAssetsInspection cup_assets_inspection;
-static CupError cup_assets_result;
+static UpdateJournalStatus update_load_status;
+static AssetsInspection assets_inspection;
+static CupError assets_result;
 static int has_installed_assets;
 static int development_valid;
 static int installed_valid;
-static CupError ensure_cup_assets_result;
+static CupError ensure_assets_result;
 static PackageList scan_lists[MAX_STEPS];
 static CupError scan_results[MAX_STEPS];
 static size_t scan_calls;
@@ -82,10 +84,10 @@ static CupError staging_path_result;
 static CupError transaction_path_result;
 static int metadata_read_only;
 static CupError set_metadata_result;
-static int cup_assets_read_only;
-static int cup_assets_executable;
+static int assets_read_only;
+static int assets_executable;
 static int verify_matches;
-static int cup_assets_files_regular;
+static int assets_files_regular;
 static int binary_regular;
 static int binary_verify_matches[2];
 static CupError binary_verify_results[2];
@@ -162,20 +164,22 @@ static void reset_scenario(void) {
     runtime_result = CUP_OK;
     uninstall_load_calls = 0;
     uninstall_recover_result = CUP_OK;
+    uninstall_helper_cleanup_result = CUP_OK;
     uninstall_recover_calls = 0;
+    uninstall_helper_cleanup_calls = 0;
     state_load_result = CUP_OK;
     state_validate_result = CUP_OK;
     transaction_calls = 0;
     recover_result = CUP_OK;
     update_load_result = CUP_OK;
     update_load_status = CUP_UPDATE_JOURNAL_LOADED;
-    /* cup asset, package-scan, and reconciliation outcomes. */
-    memset(&cup_assets_inspection, 0, sizeof(cup_assets_inspection));
-    cup_assets_result = CUP_OK;
+    /* Asset, package-scan, and reconciliation outcomes. */
+    memset(&assets_inspection, 0, sizeof(assets_inspection));
+    assets_result = CUP_OK;
     has_installed_assets = 0;
     development_valid = 1;
     installed_valid = 1;
-    ensure_cup_assets_result = CUP_OK;
+    ensure_assets_result = CUP_OK;
     scan_calls = 0;
     quarantine_result = CUP_OK;
     state_save_result = CUP_OK;
@@ -188,10 +192,10 @@ static void reset_scenario(void) {
     transaction_path_result = CUP_OK;
     metadata_read_only = 1;
     set_metadata_result = CUP_OK;
-    cup_assets_read_only = 1;
-    cup_assets_executable = 1;
+    assets_read_only = 1;
+    assets_executable = 1;
     verify_matches = 1;
-    cup_assets_files_regular = 1;
+    assets_files_regular = 1;
     binary_regular = 1;
     binary_verify_matches[0] = 1;
     binary_verify_matches[1] = 1;
@@ -279,7 +283,7 @@ CupError platform_get_host(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "linux-x64"), size);
 }
 
-CupError cup_update_helper_prepare(void) {
+CupError update_helper_prepare(void) {
     update_helper_prepare_calls++;
     return CUP_OK;
 }
@@ -436,21 +440,33 @@ CupError uninstall_journal_recover(const UninstallJournal *journal) {
     return uninstall_recover_result;
 }
 
-void cup_update_journal_init(CupUpdateJournal *journal) {
+CupError uninstall_helper_remove_stale(const char *root,
+                                       const char *token,
+                                       const SystemLock *lock) {
+    TEST_ASSERT_EQUAL_STRING("/tmp/.cup", root);
+    TEST_ASSERT_NOT_NULL(token);
+    TEST_ASSERT_NOT_NULL(lock);
+    TEST_ASSERT_TRUE(lock->active);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock->mode);
+    uninstall_helper_cleanup_calls++;
+    return uninstall_helper_cleanup_result;
+}
+
+void update_journal_init(UpdateJournal *journal) {
     if (journal != NULL) {
         memset(journal, 0, sizeof(*journal));
     }
 }
 
-CupError cup_update_journal_load(CupUpdateJournal *journal, CupUpdateJournalStatus *status) {
+CupError update_journal_load(UpdateJournal *journal, UpdateJournalStatus *status) {
     (void)journal;
     *status = update_load_status;
     return update_load_result;
 }
 
-CupError cup_update_journal_recover(const CupUpdateJournal *journal,
-                                    CupUpdateRecoveryMode mode,
-                                    CupUpdateRecoveryResult *result) {
+CupError update_journal_recover(const UpdateJournal *journal,
+                                    UpdateRecoveryMode mode,
+                                    UpdateRecoveryResult *result) {
     (void)journal;
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_PRESERVE_BINARY, mode);
     if (result != NULL) {
@@ -496,8 +512,8 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "/tmp/transaction.txt"), size);
 }
 
-CupError layout_get_cup_update_helper_path(char *buffer, size_t size) {
-    return buffer_write_result(snprintf(buffer, size, "/tmp/cup-update-helper"), size);
+CupError layout_get_update_helper_path(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "/tmp/update-helper"), size);
 }
 
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
@@ -510,7 +526,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
         *kind = root_path_kind;
     } else if (strcmp(path, "/tmp/cup.lock") == 0) {
         *kind = lock_path_kind;
-    } else if (strcmp(path, "/tmp/cup-update-helper") == 0) {
+    } else if (strcmp(path, "/tmp/update-helper") == 0) {
         *kind = update_helper_kind;
     } else {
         TEST_FAIL_MESSAGE("unexpected path kind query");
@@ -536,28 +552,28 @@ CupError filesystem_backup_invalid_if_identity(const char *path,
     return filesystem_backup_invalid(path, backup_path, backup_size);
 }
 
-CupError cup_assets_inspect(CupAssetsInspection *inspection) {
-    *inspection = cup_assets_inspection;
-    return cup_assets_result;
+CupError assets_inspect(AssetsInspection *inspection) {
+    *inspection = assets_inspection;
+    return assets_result;
 }
 
-int cup_assets_has_installed_assets(const CupAssetsInspection *inspection) {
+int assets_has_installed_assets(const AssetsInspection *inspection) {
     (void)inspection;
     return has_installed_assets;
 }
 
-int cup_assets_development_is_valid(const CupAssetsInspection *inspection) {
+int assets_development_is_valid(const AssetsInspection *inspection) {
     (void)inspection;
     return development_valid;
 }
 
-int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
+int assets_installed_is_valid(const AssetsInspection *inspection) {
     (void)inspection;
     return installed_valid;
 }
 
-CupError layout_ensure_cup_assets(void) {
-    return ensure_cup_assets_result;
+CupError layout_ensure_assets(void) {
+    return ensure_assets_result;
 }
 
 CupError package_scan(PackageList *packages, FILE *diagnostics) {
@@ -805,11 +821,6 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
         snprintf(buffer, size, "/tmp/%s", CUP_BINARY_FILENAME), size);
 }
 
-CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return buffer_write_result(
-        snprintf(buffer, size, "/tmp/%s", CUP_UNINSTALL_FILENAME), size);
-}
-
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "/tmp/packages.cfg"), size);
 }
@@ -818,11 +829,11 @@ CupError layout_get_install_policy_path(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "/tmp/install.cfg"), size);
 }
 
-CupError cup_assets_platform_checksums_name(char *name, size_t size) {
+CupError assets_platform_checksums_name(char *name, size_t size) {
     return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
 }
 
-CupError cup_assets_binary_asset_name(char *name, size_t size) {
+CupError assets_binary_asset_name(char *name, size_t size) {
     return buffer_write_result(snprintf(name, size, "cup-linux-x64"), size);
 }
 
@@ -842,7 +853,7 @@ CupError system_is_regular_file(const char *path, int *is_regular) {
         *is_regular = install_policy_regular;
         return install_policy_regular_result;
     }
-    *is_regular = cup_assets_files_regular;
+    *is_regular = assets_files_regular;
     return CUP_OK;
 }
 
@@ -870,9 +881,8 @@ CupError checksum_validate_assets(const char *path,
 
     TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, required_count);
     TEST_ASSERT_EQUAL_STRING("cup-linux-x64", required_assets[0]);
-    TEST_ASSERT_EQUAL_STRING(CUP_UNINSTALL_FILENAME, required_assets[1]);
-    TEST_ASSERT_EQUAL_STRING(CUP_RELEASE_METADATA_FILENAME, required_assets[2]);
-    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, required_assets[3]);
+    TEST_ASSERT_EQUAL_STRING(CUP_RELEASE_METADATA_FILENAME, required_assets[1]);
+    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, required_assets[2]);
     return CUP_OK;
 }
 
@@ -890,13 +900,13 @@ CupError system_is_read_only(const char *path, int *is_read_only) {
             return CUP_OK;
         }
     }
-    *is_read_only = cup_assets_read_only;
+    *is_read_only = assets_read_only;
     return CUP_OK;
 }
 
 CupError system_is_executable(const char *path, int *is_executable) {
     (void)path;
-    *is_executable = cup_assets_executable;
+    *is_executable = assets_executable;
     return CUP_OK;
 }
 
@@ -1115,7 +1125,7 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
  * Test cases exercise the real production entry point while changing only controlled boundary
  * outcomes.
  */
-static void prepare_installed_official_cup_assets(void);
+static void prepare_installed_assets(void);
 
 static void test_success_reconciles(void) {
     PackageList *packages = &scan_lists[0];
@@ -1158,7 +1168,7 @@ static void test_preserve_invalid(void) {
 
 static void test_malformed_update_blocks_invalid_state_preservation(void) {
     state_load_result = CUP_ERR_STATE_LOAD;
-    runtime_kinds[0] = RUNTIME_JOURNAL_CUP_UPDATE;
+    runtime_kinds[0] = RUNTIME_JOURNAL_UPDATE;
     update_load_result = CUP_ERR_TRANSACTION;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_repair());
@@ -1188,6 +1198,7 @@ static void test_recover_transaction(void) {
     uninstall_journals[0].stage = UNINSTALL_STAGE_HANDOFF;
     uninstall_journals[0].error_code = 7;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, uninstall_helper_cleanup_calls);
     TEST_ASSERT_EQUAL_INT(1, uninstall_recover_calls);
 
     reset_scenario();
@@ -1195,6 +1206,7 @@ static void test_recover_transaction(void) {
     uninstall_statuses[0] = UNINSTALL_JOURNAL_LOADED;
     uninstall_journals[0].phase = UNINSTALL_PHASE_SCHEDULED;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, uninstall_helper_cleanup_calls);
     TEST_ASSERT_EQUAL_INT(1, uninstall_recover_calls);
 }
 
@@ -1211,7 +1223,7 @@ static void test_recovery_rejects_ambiguous_journals(void) {
     TEST_ASSERT_EQUAL_INT(0, recover_calls);
 
     reset_scenario();
-    runtime_kinds[0] = RUNTIME_JOURNAL_CUP_UPDATE;
+    runtime_kinds[0] = RUNTIME_JOURNAL_UPDATE;
     update_load_status = CUP_UPDATE_JOURNAL_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_repair());
 
@@ -1229,6 +1241,16 @@ static void test_recovery_rejects_ambiguous_journals(void) {
     uninstall_journals[0].error_code = 7;
     uninstall_recover_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
+
+    reset_scenario();
+    runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
+    uninstall_statuses[0] = UNINSTALL_JOURNAL_LOADED;
+    uninstall_journals[0].phase = UNINSTALL_PHASE_SCHEDULED;
+    strcpy(uninstall_journals[0].token, "token");
+    uninstall_helper_cleanup_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
+    TEST_ASSERT_EQUAL_INT(1, uninstall_helper_cleanup_calls);
+    TEST_ASSERT_EQUAL_INT(0, uninstall_recover_calls);
 }
 
 static void test_scan_limits(void) {
@@ -1321,17 +1343,17 @@ static void test_package_repair_failures(void) {
     TEST_ASSERT_EQUAL_INT(1, set_metadata_calls);
 }
 
-static void prepare_installed_official_cup_assets(void);
+static void prepare_installed_assets(void);
 
 static void test_asset_permissions(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_read_only = 0;
-    cup_assets_executable = 0;
+    assets_read_only = 0;
+    assets_executable = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(set_read_only_calls >= 3);
-    TEST_ASSERT_TRUE(set_executable_calls >= (1 + CUP_UNINSTALL_EXECUTABLE));
+    TEST_ASSERT_TRUE(set_executable_calls >= 1);
     TEST_ASSERT_EQUAL_INT(1, update_helper_prepare_calls);
 
     reset_scenario();
@@ -1343,19 +1365,19 @@ static void test_asset_permissions(void) {
     TEST_ASSERT_EQUAL_INT(1, update_helper_prepare_calls);
 }
 
-static void test_cup_assets_restores(void) {
+static void test_assets_restores(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(fetch_calls >= 6);
     TEST_ASSERT_TRUE(set_read_only_calls >= 4);
-    TEST_ASSERT_TRUE(set_executable_calls >= CUP_UNINSTALL_EXECUTABLE);
+    TEST_ASSERT_EQUAL_INT(0, set_executable_calls);
 }
 
 static void test_binary_preserved_after_checksum_refresh(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     binary_verify_matches[0] = 0;
     binary_verify_matches[1] = 1;
 
@@ -1365,7 +1387,7 @@ static void test_binary_preserved_after_checksum_refresh(void) {
 }
 
 static void test_binary_mismatch_is_not_replaced(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     binary_verify_matches[0] = 0;
     binary_verify_matches[1] = 0;
 
@@ -1376,7 +1398,7 @@ static void test_binary_mismatch_is_not_replaced(void) {
 }
 
 static void test_missing_binary_is_not_restored(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     binary_regular = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
@@ -1389,7 +1411,7 @@ static void test_missing_binary_is_not_restored(void) {
 static void test_asset_commit_with_existing_destination(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
     destination_exists = 1;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
@@ -1398,7 +1420,7 @@ static void test_asset_commit_with_existing_destination(void) {
     reset_scenario();
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
     destination_exists = 1;
     replace_result = CUP_ERR_FILESYSTEM;
     replace_state = SYSTEM_COMMIT_APPLIED;
@@ -1410,7 +1432,7 @@ static void test_asset_commit_with_existing_destination(void) {
 static void test_asset_rollback(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
     destination_exists = 1;
     replace_result = CUP_ERR_FILESYSTEM;
     replace_state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -1423,7 +1445,7 @@ static void test_asset_rollback(void) {
 static void test_asset_restore(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
     destination_exists = 1;
     replace_result = CUP_ERR_FILESYSTEM;
     replace_state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -1434,65 +1456,65 @@ static void test_asset_restore(void) {
 }
 
 static void test_checksum_repair_boundaries(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_staged_invalid = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
     TEST_ASSERT_TRUE(fetch_calls >= 1);
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_staged_read_only_failure = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_hash_fail_call = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_hash_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(checksum_hash_calls >= 2);
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_staged_remove_failure = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_destination_read_only_failure = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     checksum_destination_invalid = 1;
     checksum_destination_writable = 1;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_TRUE(set_read_only_calls >= 2);
 }
 
-static void prepare_installed_official_cup_assets(void) {
+static void prepare_installed_assets(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 1;
+    assets_files_regular = 1;
 }
 
 static void test_config_repair(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_read_only_override = 1;
     install_policy_read_only_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_load_override = 1;
     install_policy_load_results[0] = CUP_ERR_VALIDATION;
     install_policy_load_results[1] = CUP_OK;
@@ -1500,7 +1522,7 @@ static void test_config_repair(void) {
     TEST_ASSERT_EQUAL_UINT(2, install_policy_load_calls);
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_verify_override = 1;
     install_policy_verify_matches[0] = 0;
     install_policy_verify_matches[1] = 1;
@@ -1508,14 +1530,14 @@ static void test_config_repair(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_verify_override = 1;
     install_policy_verify_matches[0] = 0;
     install_policy_verify_matches[1] = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_verify_override = 1;
     install_policy_verify_matches[0] = 0;
     install_policy_verify_matches[1] = 1;
@@ -1524,7 +1546,7 @@ static void test_config_repair(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
 
     reset_scenario();
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_verify_override = 1;
     install_policy_verify_matches[0] = 0;
     install_policy_verify_matches[1] = 1;
@@ -1535,7 +1557,7 @@ static void test_config_repair(void) {
 }
 
 static void test_repair_uses_explicit_loopback_candidate_base(void) {
-    prepare_installed_official_cup_assets();
+    prepare_installed_assets();
     install_policy_verify_override = 1;
     install_policy_verify_matches[0] = 0;
     install_policy_verify_matches[1] = 1;
@@ -1555,10 +1577,10 @@ static void test_repair_uses_explicit_loopback_candidate_base(void) {
     TEST_ASSERT_TRUE(strstr(last_fetch_url, "18080//") == NULL);
 }
 
-static void test_cup_assets_rejects(void) {
+static void test_assets_rejects(void) {
     has_installed_assets = 1;
     development_valid = 0;
-    cup_assets_files_regular = 0;
+    assets_files_regular = 0;
     verify_matches = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_repair());
@@ -1647,13 +1669,13 @@ static void test_state_and_asset_phase_failures(void) {
     TEST_ASSERT_EQUAL_INT(1, backup_calls);
 
     reset_scenario();
-    cup_assets_result = CUP_ERR_FILESYSTEM;
+    assets_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
     has_installed_assets = 1;
     development_valid = 0;
-    ensure_cup_assets_result = CUP_ERR_FILESYSTEM;
+    ensure_assets_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 
     reset_scenario();
@@ -1709,7 +1731,7 @@ int main(void) {
     RUN_TEST(test_quarantine_rescans);
     RUN_TEST(test_package_repair_failures);
     RUN_TEST(test_asset_permissions);
-    RUN_TEST(test_cup_assets_restores);
+    RUN_TEST(test_assets_restores);
     RUN_TEST(test_binary_preserved_after_checksum_refresh);
     RUN_TEST(test_binary_mismatch_is_not_replaced);
     RUN_TEST(test_missing_binary_is_not_restored);
@@ -1719,7 +1741,7 @@ int main(void) {
     RUN_TEST(test_checksum_repair_boundaries);
     RUN_TEST(test_config_repair);
     RUN_TEST(test_repair_uses_explicit_loopback_candidate_base);
-    RUN_TEST(test_cup_assets_rejects);
+    RUN_TEST(test_assets_rejects);
     RUN_TEST(test_lock_path_recovery);
     RUN_TEST(test_interrupt_phase_boundaries);
     RUN_TEST(test_early_failures);

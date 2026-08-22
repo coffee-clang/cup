@@ -20,9 +20,7 @@ typedef enum {
 
 typedef enum {
     UNINSTALL_STAGE_HANDOFF,
-    UNINSTALL_STAGE_PARENT_WAIT,
-    UNINSTALL_STAGE_DETACH,
-    UNINSTALL_STAGE_CLEANUP
+    UNINSTALL_STAGE_DETACH
 } UninstallStage;
 
 typedef struct {
@@ -39,6 +37,14 @@ const char *uninstall_phase_name(UninstallPhase phase);
 const char *uninstall_stage_name(UninstallStage stage);
 CupError uninstall_journal_begin(const char *temporary_path, const char *token);
 CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatus *status);
+CupError uninstall_journal_load_at(const char *root,
+                                   UninstallJournal *journal,
+                                   UninstallJournalStatus *status);
+CupError uninstall_journal_set_at(const char *root,
+                                  UninstallJournal *journal,
+                                  UninstallPhase phase,
+                                  UninstallStage stage,
+                                  int error_code);
 /* Recover a stale uninstall journal while the caller owns the canonical exclusive cup lock.
  * Recovery never touches a detached root and succeeds only while that sibling is absent. */
 CupError uninstall_journal_recover(const UninstallJournal *journal);

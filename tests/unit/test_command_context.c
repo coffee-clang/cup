@@ -3,7 +3,7 @@
  * installed-package requirements through boundary stubs.
  */
 
-#include "cup_assets.h"
+#include "assets.h"
 #include "command_context.h"
 #include "installed_package.h"
 #include "package_selector.h"
@@ -37,11 +37,11 @@ static CupError platform_validation_result;
 static CupError runtime_result;
 static LayoutRuntimeStatus runtime_statuses[4];
 static size_t runtime_calls;
-static CupError cup_assets_result;
-static int cup_assets_fail_call;
-static int cup_assets_calls;
-static int installed_cup_assets_valid;
-static int development_cup_assets_valid;
+static CupError assets_result;
+static int assets_fail_call;
+static int assets_calls;
+static int installed_assets_valid;
+static int development_assets_valid;
 static CupError ensure_root_result;
 static CupError root_snapshot_result;
 static int ensure_root_calls;
@@ -94,11 +94,11 @@ static void reset_scenario(void) {
     runtime_statuses[2] = LAYOUT_RUNTIME_READY;
     runtime_statuses[3] = LAYOUT_RUNTIME_READY;
     runtime_calls = 0;
-    cup_assets_result = CUP_OK;
-    cup_assets_fail_call = 0;
-    cup_assets_calls = 0;
-    installed_cup_assets_valid = 1;
-    development_cup_assets_valid = 0;
+    assets_result = CUP_OK;
+    assets_fail_call = 0;
+    assets_calls = 0;
+    installed_assets_valid = 1;
+    development_assets_valid = 0;
     ensure_root_result = CUP_OK;
     root_snapshot_result = CUP_OK;
     ensure_root_calls = 0;
@@ -191,21 +191,21 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
     return CUP_OK;
 }
 
-CupError cup_assets_inspect(CupAssetsInspection *inspection) {
+CupError assets_inspect(AssetsInspection *inspection) {
     TEST_ASSERT_NOT_NULL(inspection);
     memset(inspection, 0, sizeof(*inspection));
-    cup_assets_calls++;
-    return cup_assets_fail_call == cup_assets_calls ? CUP_ERR_FILESYSTEM : cup_assets_result;
+    assets_calls++;
+    return assets_fail_call == assets_calls ? CUP_ERR_FILESYSTEM : assets_result;
 }
 
-int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
+int assets_installed_is_valid(const AssetsInspection *inspection) {
     TEST_ASSERT_NOT_NULL(inspection);
-    return installed_cup_assets_valid;
+    return installed_assets_valid;
 }
 
-int cup_assets_development_is_valid(const CupAssetsInspection *inspection) {
+int assets_development_is_valid(const AssetsInspection *inspection) {
     TEST_ASSERT_NOT_NULL(inspection);
-    return development_cup_assets_valid;
+    return development_assets_valid;
 }
 
 CupError layout_ensure_root(void) {
@@ -493,20 +493,20 @@ static void test_missing_runtime(void) {
     CommandContext context;
 
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    cup_assets_result = CUP_ERR_FILESYSTEM;
+    assets_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    installed_cup_assets_valid = 0;
+    installed_assets_valid = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    installed_cup_assets_valid = 0;
-    development_cup_assets_valid = 1;
+    installed_assets_valid = 0;
+    development_assets_valid = 1;
     ensure_root_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -520,10 +520,10 @@ static void test_missing_runtime(void) {
     reset_scenario();
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
-    cup_assets_fail_call = 2;
+    assets_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
-    TEST_ASSERT_EQUAL_INT(2, cup_assets_calls);
+    TEST_ASSERT_EQUAL_INT(2, assets_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
     TEST_ASSERT_EQUAL_INT(0, state_save_calls);
 

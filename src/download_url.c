@@ -140,4 +140,3 @@ CupError download_copy_release_base_override(char *base, size_t size) {
     }
     return normalize_insecure_loopback_url(value, base, size);
 }
-

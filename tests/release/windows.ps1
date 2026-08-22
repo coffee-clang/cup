@@ -353,7 +353,6 @@ function Test-InstallerMetadataFailure {
             'cup-windows-x64.exe',
             'packages.cfg',
             'install.cfg',
-            'uninstall.ps1',
             'SHA256SUMS.common'
         )) {
             Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $fixture
@@ -361,7 +360,7 @@ function Test-InstallerMetadataFailure {
         Write-CanonicalAsciiLines -Path (Join-Path $fixture 'release.txt') `
             -Lines $Lines
 
-        $platformNames = @('cup-windows-x64.exe', 'uninstall.ps1', 'release.txt', 'SHA256SUMS.common')
+        $platformNames = @('cup-windows-x64.exe', 'release.txt', 'SHA256SUMS.common')
         $checksumLines = foreach ($asset in $platformNames) {
             $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $asset) `
                 -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -489,7 +488,7 @@ Test-ChecksumFileAssertions
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
-    -ExpectedNames @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")
+    -ExpectedNames @("cup-windows-x64.exe", "release.txt", "SHA256SUMS.common")
 
 $releaseMetadataPath = Join-Path $ReleaseDir "release.txt"
 $releaseMetadata = @(Get-CanonicalAsciiLines -Path $releaseMetadataPath)
@@ -717,7 +716,7 @@ try {
     $foreignDeadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
         $foreignResidues = @(Get-ChildItem -LiteralPath $foreignProfile -Force `
-            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall-*" })
         if (-not (Test-Path -LiteralPath $foreignRoot) -and $foreignResidues.Count -eq 0) {
             break
         }
@@ -767,18 +766,18 @@ try {
     # A superficially shaped uninstall sibling is not ownership proof. Installation ignores it
     # and must not modify it while selecting the normal canonical root.
     $residueProfile = Join-Path $testRoot "unowned-residue-profile"
-    $residueRoot = Join-Path $residueProfile ".cup-uninstall.fixture"
+    $residueRoot = Join-Path $residueProfile ".cup-uninstall-fixture"
     New-Item -ItemType Directory -Force -Path (Join-Path $residueRoot "bin") | Out-Null
     Set-Content -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
         -Value "binary" -Encoding Ascii
     Write-CanonicalAsciiLines -Path (Join-Path $residueRoot "transaction.txt") -Lines @(
         "format=1",
         "operation=uninstall",
-        "phase=failed",
-        "temporary_name=.cup-uninstall.fixture",
+        "phase=detaching",
+        "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=cleanup",
-        "error=1"
+        "stage=detach",
+        "error=0"
     )
     $residueBinaryHash = (Get-FileHash -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
         -Algorithm SHA256).Hash
@@ -833,38 +832,40 @@ try {
         throw "Installed cup was not usable after repair"
     }
 
-    # An official installation can restore its packaged uninstall asset without changing cup.exe.
-    $uninstallAsset = Join-Path $env:USERPROFILE ".cup\helpers\uninstall.ps1"
-    Remove-Item -LiteralPath $uninstallAsset -Force
-    $assetRepairOutput = @(& $installed repair 2>&1)
-    $assetRepairStatus = $LASTEXITCODE
-    $assetRepairText = $assetRepairOutput -join [Environment]::NewLine
-    if (-not [string]::IsNullOrEmpty($assetRepairText)) {
-        Write-Host $assetRepairText
+    # The update helper is derived from the installed executable, not a release asset. Repair
+    # regenerates a missing copy without changing the running executable.
+    $updateHelper = Join-Path $env:USERPROFILE ".cup\helpers\update-helper.exe"
+    Remove-Item -LiteralPath $updateHelper -Force
+    $helperRepairOutput = @(& $installed repair 2>&1)
+    $helperRepairStatus = $LASTEXITCODE
+    $helperRepairText = $helperRepairOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($helperRepairText)) {
+        Write-Host $helperRepairText
     }
-    if ($assetRepairStatus -ne 0) {
+    if ($helperRepairStatus -ne 0) {
         throw (
-            "Installed cup asset repair failed with exit code " +
-            "$assetRepairStatus`n$assetRepairText")
+            "Installed cup helper repair failed with exit code " +
+            "$helperRepairStatus`n$helperRepairText")
     }
-    if ($assetRepairText -notlike "*Restoring uninstall script.*") {
-        throw "Installed cup repair did not report restoring uninstall.ps1"
+    if ($helperRepairText -notlike
+        "*Regenerated native update helper from the installed executable.*") {
+        throw "Installed cup repair did not report regenerating update-helper.exe"
     }
-    if (-not (Test-Path -LiteralPath $uninstallAsset -PathType Leaf)) {
-        throw "Installed cup repair did not restore uninstall.ps1"
+    if (-not (Test-Path -LiteralPath $updateHelper -PathType Leaf)) {
+        throw "Installed cup repair did not regenerate update-helper.exe"
     }
-    if (-not (Get-Item -LiteralPath $uninstallAsset).IsReadOnly) {
-        throw "Installed cup repair did not restore read-only uninstall.ps1"
+    if ((Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash -ne
+        $binaryHashBeforeRepair) {
+        throw "Regenerated update-helper.exe does not match cup.exe"
     }
     if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
         $binaryHashBeforeRepair) {
-        throw "Installed cup asset repair changed cup.exe"
+        throw "Installed cup helper repair changed cup.exe"
     }
 
     # A malformed canonical journal blocks bootstrap before any managed mutation.
     # The failed transport preserves the journal evidence and the installed executable.
     $transaction = Join-Path $env:USERPROFILE ".cup\transaction.txt"
-    $updateHelper = Join-Path $env:USERPROFILE ".cup\helpers\cup-update-helper.exe"
     [IO.File]::WriteAllText($transaction, "invalid=1`n", [Text.Encoding]::ASCII)
     $incompleteResult = Invoke-PowerShellScript `
         -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
@@ -932,7 +933,7 @@ try {
 
     $installedAssets = @(
         "packages.cfg", "install.cfg", "install.sh",
-        "install.ps1", "uninstall.ps1")
+        "install.ps1")
     foreach ($asset in $installedAssets) {
         Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $versionRoot
     }
@@ -961,7 +962,7 @@ try {
     }
     Write-CanonicalAsciiLines -Path (Join-Path $versionRoot "SHA256SUMS.common") `
         -Lines $commonLines
-    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")) {
+    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "release.txt", "SHA256SUMS.common")) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
             -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $asset"
@@ -1054,7 +1055,7 @@ try {
     $residues = @()
     while ([DateTime]::UtcNow -lt $deadline) {
         $residues = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force `
-            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall-*" })
         if (-not (Test-Path -LiteralPath $cupRoot) -and $residues.Count -eq 0) {
             break
         }
@@ -1064,7 +1065,7 @@ try {
         throw "Release uninstall did not remove the cup root"
     }
     $residues = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force `
-        -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall.*" })
+        -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".cup-uninstall-*" })
     if ($residues.Count -ne 0) {
         throw "Release uninstall left staging behind: $($residues[0].FullName)"
     }

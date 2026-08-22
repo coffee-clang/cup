@@ -16,7 +16,7 @@ function Get-Sha256Lower {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Install-CupAssetsFixture {
+function Install-AssetsFixture {
     param(
         [Parameter(Mandatory = $true)]
         [string]$CupRoot
@@ -28,8 +28,7 @@ function Install-CupAssetsFixture {
     New-Item -ItemType Directory -Force -Path $bin, $config, $helpers | Out-Null
 
     $binary = Join-Path $bin "cup.exe"
-    $helper = Join-Path $helpers "cup-update-helper.exe"
-    $uninstall = Join-Path $helpers "uninstall.ps1"
+    $helper = Join-Path $helpers "update-helper.exe"
     $packages = Join-Path $config "packages.cfg"
     $installPolicy = Join-Path $config "install.cfg"
     $commonChecksums = Join-Path $config "SHA256SUMS.common"
@@ -41,12 +40,8 @@ function Install-CupAssetsFixture {
         -Destination $packages -Force
     Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "config\install.cfg") `
         -Destination $installPolicy -Force
-    Copy-Item -LiteralPath (
-        Join-Path $Script:CupTestProjectRoot "scripts\install\uninstall-cup-windows.ps1") `
-        -Destination $uninstall -Force
-
-    $installSh = Join-Path $Script:CupTestProjectRoot "scripts\install\install-cup.sh"
-    $installPs1 = Join-Path $Script:CupTestProjectRoot "scripts\install\install-cup-windows.ps1"
+    $installSh = Join-Path $Script:CupTestProjectRoot "scripts\install\install.sh"
+    $installPs1 = Join-Path $Script:CupTestProjectRoot "scripts\install\install.ps1"
     Write-Utf8NoBom -Path $commonChecksums -Lines @(
         "$(Get-Sha256Lower -Path $packages)  packages.cfg",
         "$(Get-Sha256Lower -Path $installPolicy)  install.cfg",
@@ -55,13 +50,12 @@ function Install-CupAssetsFixture {
     )
     Write-Utf8NoBom -Path $platformChecksums -Lines @(
         "$(Get-Sha256Lower -Path $binary)  cup-windows-x64.exe",
-        "$(Get-Sha256Lower -Path $uninstall)  uninstall.ps1",
         ("{0}  release.txt" -f ("0" * 64)),
         "$(Get-Sha256Lower -Path $commonChecksums)  SHA256SUMS.common"
     )
 }
 
-function Copy-CupUpdateBackups {
+function Copy-UpdateBackups {
     param(
         [Parameter(Mandatory = $true)]
         [string]$CupRoot,
@@ -72,8 +66,6 @@ function Copy-CupUpdateBackups {
 
     Copy-Item -LiteralPath (Join-Path $CupRoot "bin\cup.exe") `
         -Destination (Join-Path $Staging "binary.old")
-    Copy-Item -LiteralPath (Join-Path $CupRoot "helpers\uninstall.ps1") `
-        -Destination (Join-Path $Staging "uninstall.old")
     Copy-Item -LiteralPath (Join-Path $CupRoot "config\SHA256SUMS.windows-x64") `
         -Destination (Join-Path $Staging "platform-checksums.old")
     Copy-Item -LiteralPath (Join-Path $CupRoot "config\packages.cfg") `
@@ -84,7 +76,7 @@ function Copy-CupUpdateBackups {
         -Destination (Join-Path $Staging "common-checksums.old")
 }
 
-function Write-CupUpdateGenerationMarker {
+function Write-UpdateGenerationMarker {
     param(
         [Parameter(Mandatory = $true)]
         [string]$CupRoot,
@@ -100,7 +92,6 @@ function Write-CupUpdateGenerationMarker {
         "format=1",
         "version=$Version",
         "binary_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'bin\cup.exe'))",
-        "uninstall_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'helpers\uninstall.ps1'))",
         "platform_checksums_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\SHA256SUMS.windows-x64'))",
         "packages_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\packages.cfg'))",
         "install_policy_sha256=$(Get-Sha256Lower -Path (Join-Path $CupRoot 'config\install.cfg'))",
@@ -108,7 +99,7 @@ function Write-CupUpdateGenerationMarker {
     )
 }
 
-function Write-CupUpdateJournal {
+function Write-UpdateJournal {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -185,11 +176,11 @@ try {
     Assert-Contains $stillBlocked "transaction journal is invalid"
     Remove-Item -LiteralPath $transactionPath -Force
 
-    Install-CupAssetsFixture -CupRoot $cupRoot
+    Install-AssetsFixture -CupRoot $cupRoot
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
     $binaryPath = Join-Path $cupRoot "bin\cup.exe"
-    $uninstallPath = Join-Path $cupRoot "helpers\uninstall.ps1"
+    $catalogPath = Join-Path $cupRoot "config\packages.cfg"
     $platformChecksumsPath = Join-Path $cupRoot "config\SHA256SUMS.windows-x64"
     $stagingRoot = Join-Path $cupRoot "staging"
 
@@ -199,24 +190,24 @@ try {
     $safeName = "cup-update-safe-rollback-test"
     $safeStaging = Join-Path $stagingRoot $safeName
     New-Item -ItemType Directory -Force -Path $safeStaging | Out-Null
-    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $safeStaging
-    Write-CupUpdateGenerationMarker `
+    Copy-UpdateBackups -CupRoot $cupRoot -Staging $safeStaging
+    Write-UpdateGenerationMarker `
         -CupRoot $cupRoot -Staging $safeStaging -Version "0.0.0"
     $safeBinaryHash = Get-Sha256Lower -Path $binaryPath
-    $safeUninstallHash = Get-Sha256Lower -Path $uninstallPath
+    $safeCatalogHash = Get-Sha256Lower -Path $catalogPath
     $safeChecksumsHash = Get-Sha256Lower -Path $platformChecksumsPath
 
-    (Get-Item -LiteralPath $uninstallPath).IsReadOnly = $false
+    (Get-Item -LiteralPath $catalogPath).IsReadOnly = $false
     (Get-Item -LiteralPath $platformChecksumsPath).IsReadOnly = $false
-    Write-Utf8NoBom -Path $uninstallPath -Lines @("broken uninstall")
+    Write-Utf8NoBom -Path $catalogPath -Lines @("broken catalog")
     Write-Utf8NoBom -Path $platformChecksumsPath -Lines @("broken checksums")
-    Write-CupUpdateJournal -Path $transactionPath -TemporaryName $safeName `
+    Write-UpdateJournal -Path $transactionPath -TemporaryName $safeName `
         -Token "recovery-cup-update-safe-rollback-test" -Phase "committing"
 
     $safeRepair = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $safeRepair "Rolled back interrupted cup update transaction."
     Assert-Equals (Get-Sha256Lower -Path $binaryPath) $safeBinaryHash
-    Assert-Equals (Get-Sha256Lower -Path $uninstallPath) $safeUninstallHash
+    Assert-Equals (Get-Sha256Lower -Path $catalogPath) $safeCatalogHash
     Assert-Equals (Get-Sha256Lower -Path $platformChecksumsPath) $safeChecksumsHash
     Assert-PathMissing $transactionPath
     Assert-PathMissing $safeStaging
@@ -227,17 +218,17 @@ try {
     $unsafeName = "cup-update-unsafe-rollback-test"
     $unsafeStaging = Join-Path $stagingRoot $unsafeName
     New-Item -ItemType Directory -Force -Path $unsafeStaging | Out-Null
-    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $unsafeStaging
+    Copy-UpdateBackups -CupRoot $cupRoot -Staging $unsafeStaging
 
-    (Get-Item -LiteralPath $uninstallPath).IsReadOnly = $false
+    (Get-Item -LiteralPath $catalogPath).IsReadOnly = $false
     (Get-Item -LiteralPath $platformChecksumsPath).IsReadOnly = $false
     Write-Utf8NoBom -Path $binaryPath -Lines @("broken binary")
-    Write-Utf8NoBom -Path $uninstallPath -Lines @("broken uninstall")
+    Write-Utf8NoBom -Path $catalogPath -Lines @("broken catalog")
     Write-Utf8NoBom -Path $platformChecksumsPath -Lines @("broken checksums")
     $brokenBinaryHash = Get-Sha256Lower -Path $binaryPath
-    $brokenUninstallHash = Get-Sha256Lower -Path $uninstallPath
+    $brokenCatalogHash = Get-Sha256Lower -Path $catalogPath
     $brokenChecksumsHash = Get-Sha256Lower -Path $platformChecksumsPath
-    Write-CupUpdateJournal -Path $transactionPath -TemporaryName $unsafeName `
+    Write-UpdateJournal -Path $transactionPath -TemporaryName $unsafeName `
         -Token "recovery-cup-update-unsafe-rollback-test" -Phase "committing"
 
     $unsafeRepair = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
@@ -245,21 +236,21 @@ try {
         "interrupted cup update recovery would replace the running executable"
     Assert-Contains $unsafeRepair "interrupted operation cannot be repaired safely"
     Assert-Equals (Get-Sha256Lower -Path $binaryPath) $brokenBinaryHash
-    Assert-Equals (Get-Sha256Lower -Path $uninstallPath) $brokenUninstallHash
+    Assert-Equals (Get-Sha256Lower -Path $catalogPath) $brokenCatalogHash
     Assert-Equals (Get-Sha256Lower -Path $platformChecksumsPath) $brokenChecksumsHash
     Assert-PathExists $transactionPath
     Assert-PathExists (Join-Path $unsafeStaging "binary.old")
-    Assert-PathExists (Join-Path $unsafeStaging "uninstall.old")
+    Assert-PathExists (Join-Path $unsafeStaging "package-catalog.old")
     Assert-PathExists (Join-Path $unsafeStaging "platform-checksums.old")
 
     # Reset the isolated fixture after verifying that repair preserved every file.
     Copy-Item -LiteralPath (Join-Path $unsafeStaging "binary.old") `
         -Destination $binaryPath -Force
-    Copy-Item -LiteralPath (Join-Path $unsafeStaging "uninstall.old") `
-        -Destination $uninstallPath -Force
+    Copy-Item -LiteralPath (Join-Path $unsafeStaging "package-catalog.old") `
+        -Destination $catalogPath -Force
     Copy-Item -LiteralPath (Join-Path $unsafeStaging "platform-checksums.old") `
         -Destination $platformChecksumsPath -Force
-    (Get-Item -LiteralPath $uninstallPath).IsReadOnly = $true
+    (Get-Item -LiteralPath $catalogPath).IsReadOnly = $true
     (Get-Item -LiteralPath $platformChecksumsPath).IsReadOnly = $true
     Remove-Item -LiteralPath $transactionPath -Force
     Remove-Item -LiteralPath $unsafeStaging -Recurse -Force
@@ -270,11 +261,11 @@ try {
     $committedName = "cup-update-committed-test"
     $committedStaging = Join-Path $stagingRoot $committedName
     New-Item -ItemType Directory -Force -Path $committedStaging | Out-Null
-    Copy-CupUpdateBackups -CupRoot $cupRoot -Staging $committedStaging
-    Write-CupUpdateGenerationMarker `
+    Copy-UpdateBackups -CupRoot $cupRoot -Staging $committedStaging
+    Write-UpdateGenerationMarker `
         -CupRoot $cupRoot -Staging $committedStaging -Version "0.0.0"
     $committedBinaryHash = Get-Sha256Lower -Path $binaryPath
-    Write-CupUpdateJournal -Path $transactionPath -TemporaryName $committedName `
+    Write-UpdateJournal -Path $transactionPath -TemporaryName $committedName `
         -Token "recovery-cup-update-committed-test" -Phase "committing"
 
     $committedRepair = Invoke-Cup -CommandArgs @("repair")

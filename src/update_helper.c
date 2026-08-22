@@ -3,12 +3,12 @@
  * releases the executable and lock.
  */
 
-#include "cup_update_helper.h"
+#include "update_helper.h"
 
 #include "constants.h"
 #include "checksum.h"
-#include "cup_assets.h"
-#include "cup_update_journal.h"
+#include "assets.h"
+#include "update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
@@ -18,9 +18,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-#define HELPER_LOCK_ATTEMPTS 600
-#define HELPER_LOCK_DELAY_MS 100
 
 typedef struct {
     const char *new_name;
@@ -33,7 +30,7 @@ typedef struct {
 
 /* Fixed generation asset table. The helper replaces only the official cup assets described here. */
 static CupError initialize_assets(HelperAsset *assets, size_t count) {
-    if (assets == NULL || count != 6) {
+    if (assets == NULL || count != 5) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -46,48 +43,39 @@ static CupError initialize_assets(HelperAsset *assets, size_t count) {
         return CUP_ERR_TRANSACTION;
     }
 
-    assets[1].new_name = CUP_UPDATE_UNINSTALL_NEW;
-    assets[1].old_name = CUP_UPDATE_UNINSTALL_OLD;
-    assets[1].absent_name = CUP_UPDATE_UNINSTALL_ABSENT;
-    assets[1].executable = CUP_UNINSTALL_EXECUTABLE;
+    assets[1].new_name = CUP_UPDATE_PLATFORM_CHECKSUMS_NEW;
+    assets[1].old_name = CUP_UPDATE_PLATFORM_CHECKSUMS_OLD;
+    assets[1].absent_name = CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT;
     assets[1].read_only = 1;
-    if (layout_get_uninstall_path(assets[1].destination, sizeof(assets[1].destination)) != CUP_OK) {
+    if (layout_get_platform_checksums_path(assets[1].destination,
+                                           sizeof(assets[1].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
-    assets[2].new_name = CUP_UPDATE_PLATFORM_CHECKSUMS_NEW;
-    assets[2].old_name = CUP_UPDATE_PLATFORM_CHECKSUMS_OLD;
-    assets[2].absent_name = CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT;
+    assets[2].new_name = CUP_UPDATE_PACKAGES_NEW;
+    assets[2].old_name = CUP_UPDATE_PACKAGES_OLD;
+    assets[2].absent_name = CUP_UPDATE_PACKAGES_ABSENT;
     assets[2].read_only = 1;
-    if (layout_get_platform_checksums_path(assets[2].destination,
-                                           sizeof(assets[2].destination)) != CUP_OK) {
+    if (layout_get_package_catalog_path(assets[2].destination,
+                                        sizeof(assets[2].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
-    assets[3].new_name = CUP_UPDATE_PACKAGES_NEW;
-    assets[3].old_name = CUP_UPDATE_PACKAGES_OLD;
-    assets[3].absent_name = CUP_UPDATE_PACKAGES_ABSENT;
+    assets[3].new_name = CUP_UPDATE_INSTALL_POLICY_NEW;
+    assets[3].old_name = CUP_UPDATE_INSTALL_POLICY_OLD;
+    assets[3].absent_name = CUP_UPDATE_INSTALL_POLICY_ABSENT;
     assets[3].read_only = 1;
-    if (layout_get_package_catalog_path(assets[3].destination,
-                                        sizeof(assets[3].destination)) != CUP_OK) {
+    if (layout_get_install_policy_path(assets[3].destination,
+                                       sizeof(assets[3].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
-    assets[4].new_name = CUP_UPDATE_INSTALL_POLICY_NEW;
-    assets[4].old_name = CUP_UPDATE_INSTALL_POLICY_OLD;
-    assets[4].absent_name = CUP_UPDATE_INSTALL_POLICY_ABSENT;
+    assets[4].new_name = CUP_UPDATE_COMMON_CHECKSUMS_NEW;
+    assets[4].old_name = CUP_UPDATE_COMMON_CHECKSUMS_OLD;
+    assets[4].absent_name = CUP_UPDATE_COMMON_CHECKSUMS_ABSENT;
     assets[4].read_only = 1;
-    if (layout_get_install_policy_path(assets[4].destination,
-                                       sizeof(assets[4].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
-    assets[5].new_name = CUP_UPDATE_COMMON_CHECKSUMS_NEW;
-    assets[5].old_name = CUP_UPDATE_COMMON_CHECKSUMS_OLD;
-    assets[5].absent_name = CUP_UPDATE_COMMON_CHECKSUMS_ABSENT;
-    assets[5].read_only = 1;
-    if (layout_get_common_checksums_path(assets[5].destination,
-                                         sizeof(assets[5].destination)) != CUP_OK) {
+    if (layout_get_common_checksums_path(assets[4].destination,
+                                         sizeof(assets[4].destination)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
@@ -194,7 +182,7 @@ static CupError install_staged_asset(const char *staging, const HelperAsset *ass
         asset->destination, asset->executable, asset->read_only);
     if (err != CUP_OK) {
         fprintf(stderr,
-                "Error: could not apply permissions to cup update asset '%s'.\n",
+                "Error: could not apply permissions to update asset '%s'.\n",
                 asset->destination);
         return CUP_ERR_COMMIT;
     }
@@ -216,8 +204,8 @@ static CupError install_supporting_assets(const char *staging,
     return CUP_OK;
 }
 
-static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
-    HelperAsset assets[6];
+static CupError commit_update(UpdateJournal *journal, const char *staging) {
+    HelperAsset assets[5];
     char staged_binary[MAX_PATH_LEN];
     CupError err;
 
@@ -232,7 +220,7 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
      * this publication succeeds, canonical CUP assets are unchanged and scheduled recovery may
      * discard the staging tree without trying to restore it. */
     if (err == CUP_OK) {
-        err = cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_COMMITTING, 0);
+        err = update_journal_set_phase(journal, CUP_UPDATE_PHASE_COMMITTING, 0);
     }
     if (err == CUP_OK) {
         err = install_supporting_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
@@ -242,7 +230,7 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
             staged_binary, sizeof(staged_binary), staging, CUP_UPDATE_BINARY_NEW);
     }
     if (err == CUP_OK) {
-        err = cup_update_write_generation_marker(staging, journal->version, staged_binary);
+        err = update_write_generation_marker(staging, journal->version, staged_binary);
     }
     /* The executable is replaced last, after every supporting asset and the durable marker are in
      * place. Until that final replacement, the old executable remains present and the journal plus
@@ -251,10 +239,10 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
         err = install_staged_asset(staging, &assets[0]);
     }
     if (err == CUP_OK) {
-        CupAssetsInspection inspection;
+        AssetsInspection inspection;
 
-        err = cup_assets_inspect(&inspection);
-        if (err == CUP_OK && !cup_assets_installed_is_valid(&inspection)) {
+        err = assets_inspect(&inspection);
+        if (err == CUP_OK && !assets_installed_is_valid(&inspection)) {
             err = CUP_ERR_VALIDATION;
         }
     }
@@ -272,20 +260,20 @@ static CupError commit_update(CupUpdateJournal *journal, const char *staging) {
 }
 
 /* Persist one detached failure in transaction.txt before attempting deterministic recovery. */
-static CupError record_helper_failure(CupUpdateJournal *journal,
+static CupError record_helper_failure(UpdateJournal *journal,
                                       CupError error,
                                       int recover) {
     CupError err;
-    CupUpdateRecoveryResult recovery_result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateRecoveryResult recovery_result = CUP_UPDATE_RECOVERY_NONE;
 
     if (journal == NULL || error == CUP_OK) {
         return error;
     }
 
-    err = cup_update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
+    err = update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
     if (err != CUP_OK) {
         fprintf(stderr,
-                "Error: the cup update failure could not be persisted; transaction evidence "
+                "Error: the update failure could not be persisted; transaction evidence "
                 "was preserved.\n");
         return err;
     }
@@ -293,40 +281,12 @@ static CupError record_helper_failure(CupUpdateJournal *journal,
         return error;
     }
 
-    err = cup_update_journal_recover(
+    err = update_journal_recover(
         journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &recovery_result);
     if (err != CUP_OK) {
         return error;
     }
     return recovery_result == CUP_UPDATE_RECOVERY_FINALIZED ? CUP_OK : error;
-}
-
-static CupError acquire_helper_lock(SystemLock *lock) {
-    char lock_path[MAX_PATH_LEN];
-    int attempt;
-
-    if (layout_get_lock_path(lock_path, sizeof(lock_path)) != CUP_OK) {
-        return CUP_ERR_LOCK;
-    }
-    for (attempt = 0; attempt < HELPER_LOCK_ATTEMPTS; ++attempt) {
-        CupError err = system_lock_acquire(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
-        if (err == CUP_OK) {
-            err = layout_root_snapshot_validate();
-            if (err == CUP_OK) {
-                return CUP_OK;
-            }
-            system_lock_release(lock);
-            return err;
-        }
-        if (err != CUP_ERR_LOCK) {
-            return err;
-        }
-        err = system_sleep_milliseconds(HELPER_LOCK_DELAY_MS);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-    return CUP_ERR_LOCK;
 }
 
 /* Parent-side handoff. Ensure the canonical helper matches the running cup binary before the
@@ -362,7 +322,7 @@ static CupError helper_matches_binary(const char *binary, const char *helper, in
     return CUP_OK;
 }
 
-CupError cup_update_helper_prepare_from(const char *source_binary) {
+CupError update_helper_prepare_from(const char *source_binary) {
     char helper[MAX_PATH_LEN];
     CupError err;
     int matches = 0;
@@ -370,9 +330,9 @@ CupError cup_update_helper_prepare_from(const char *source_binary) {
     if (text_is_empty(source_binary)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = layout_ensure_cup_assets();
+    err = layout_ensure_assets();
     if (err == CUP_OK) {
-        err = layout_get_cup_update_helper_path(helper, sizeof(helper));
+        err = layout_get_update_helper_path(helper, sizeof(helper));
     }
     if (err == CUP_OK) {
         err = helper_matches_binary(source_binary, helper, &matches);
@@ -390,56 +350,84 @@ CupError cup_update_helper_prepare_from(const char *source_binary) {
         err = CUP_ERR_VALIDATION;
     }
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not prepare the native cup update helper.\n");
+        fprintf(stderr, "Error: could not prepare the native update helper.\n");
     }
     return err;
 }
 
-CupError cup_update_helper_prepare(void) {
+CupError update_helper_prepare(void) {
     char binary[MAX_PATH_LEN];
     CupError err = layout_get_binary_path(binary, sizeof(binary));
 
-    return err == CUP_OK ? cup_update_helper_prepare_from(binary) : err;
+    return err == CUP_OK ? update_helper_prepare_from(binary) : err;
 }
 
-CupError cup_update_helper_start(const char *token) {
+CupError update_helper_start(const char *root, const char *token, SystemLock *lock) {
     char helper[MAX_PATH_LEN];
 
-    if (text_is_empty(token) ||
-        layout_get_cup_update_helper_path(helper, sizeof(helper)) != CUP_OK) {
+    if (text_is_empty(root) || text_is_empty(token) || lock == NULL ||
+        layout_get_update_helper_path(helper, sizeof(helper)) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return system_start_cup_update_helper(helper, token);
+    return system_start_update_helper(helper, root, token, lock);
 }
 
-/* Detached helper execution. The parent handshake, token and global lock are all verified before
- * committing assets. */
-CupError cup_update_helper_run(const char *token, const char *wait_value) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
+/* Detached helper execution. Handoff authority remains continuous while the parent exits and this
+ * helper returns to the canonical lock before it touches update state. */
+CupError update_helper_run(const char *root,
+                           const char *token,
+                           const char *parent_signal_value,
+                           const char *authority_value) {
+    UpdateJournal journal;
+    UpdateJournalStatus status;
+    SystemHandoff handoff = {0};
     SystemLock lock = {0};
+    char selected_root[MAX_PATH_LEN];
+    char lock_path[MAX_PATH_LEN];
     char staging[MAX_PATH_LEN];
     CupError err;
 
-    err = system_wait_for_parent_exit(wait_value);
-    if (err != CUP_OK) {
-        return err;
+    if (text_is_empty(root) || text_is_empty(token)) {
+        return CUP_ERR_INVALID_INPUT;
     }
-    err = acquire_helper_lock(&lock);
+    err = system_handoff_accept(&handoff, parent_signal_value, authority_value);
+    if (err == CUP_OK) {
+        err = layout_build_lock_path(lock_path, sizeof(lock_path), root);
+    }
+    if (err == CUP_OK) {
+        err = system_handoff_acquire_lock(&handoff, &lock, lock_path);
+    }
     if (err != CUP_OK) {
-        /* Without the global lock, the helper must not read or rewrite transaction authority that
-         * repair or another process may already be changing. */
+        system_handoff_release(&handoff);
         return err;
     }
 
-    err = cup_update_journal_load(&journal, &status);
+    err = layout_root_snapshot_begin();
+    if (err == CUP_OK) {
+        err = layout_get_root(selected_root, sizeof(selected_root));
+    }
+    if (err == CUP_OK && strcmp(selected_root, root) != 0) {
+        err = CUP_ERR_TRANSACTION;
+    }
+    if (err == CUP_OK) {
+        err = layout_root_snapshot_validate();
+    }
+    if (err != CUP_OK) {
+        layout_root_snapshot_end();
+        system_lock_release(&lock);
+        return err;
+    }
+
+    err = update_journal_load(&journal, &status);
     if (err != CUP_OK || status != CUP_UPDATE_JOURNAL_LOADED || strcmp(journal.token, token) != 0 ||
         journal.phase != CUP_UPDATE_PHASE_SCHEDULED) {
+        layout_root_snapshot_end();
         system_lock_release(&lock);
         return CUP_ERR_TRANSACTION;
     }
-    err = cup_update_journal_get_staging_path(&journal, staging, sizeof(staging));
+    err = update_journal_get_staging_path(&journal, staging, sizeof(staging));
     if (err != CUP_OK) {
+        layout_root_snapshot_end();
         system_lock_release(&lock);
         return err;
     }
@@ -448,6 +436,7 @@ CupError cup_update_helper_run(const char *token, const char *wait_value) {
     if (err != CUP_OK && journal.phase != CUP_UPDATE_PHASE_SCHEDULED) {
         err = record_helper_failure(&journal, err, 1);
     }
+    layout_root_snapshot_end();
     system_lock_release(&lock);
     return err;
 }

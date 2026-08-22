@@ -24,7 +24,7 @@ try {
     while ([DateTime]::UtcNow -lt $deadline) {
         $leftovers = @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force `
             -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like ".cup-uninstall.*" -or $_.Name -like ".cup-uninstall-*"
+                $_.Name -like ".cup-uninstall-*"
             })
         if (-not (Test-Path -LiteralPath $cupRoot) -and $leftovers.Count -eq 0) {
             break
@@ -50,14 +50,13 @@ try {
     }
     $leftovers = @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force `
         -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like ".cup-uninstall.*" -or $_.Name -like ".cup-uninstall-*"
+            $_.Name -like ".cup-uninstall-*"
         })
     if ($leftovers.Count -ne 0) {
         Fail-Test "uninstall helper left staging behind: $($leftovers[0].FullName)"
     }
 
-    # A cleanup failure must preserve the root marker, executable, journal and
-    # untouched component data so the detached residue remains identifiable.
+    # A native cleanup failure must preserve transaction.txt while managed residue remains.
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $blockedComponents = Join-Path $cupRoot "components"
@@ -88,15 +87,15 @@ try {
     while ([DateTime]::UtcNow -lt $deadline) {
         $candidate = @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force `
             -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like ".cup-uninstall.*" -or $_.Name -like ".cup-uninstall-*"
+                $_.Name -like ".cup-uninstall-*"
             } |
             Select-Object -First 1)
         if ($candidate.Count -eq 1) {
             $journal = Join-Path $candidate[0].FullName "transaction.txt"
             if (Test-Path -LiteralPath $journal -PathType Leaf) {
                 $journalText = Get-Content -LiteralPath $journal -Raw
-                if ($journalText.Contains("phase=failed") -and
-                    $journalText.Contains("stage=cleanup")) {
+                if ($journalText.Contains("phase=detaching") -and
+                    $journalText.Contains("stage=detach")) {
                     $failedResidue = $candidate[0].FullName
                     break
                 }
@@ -108,8 +107,6 @@ try {
         Fail-Test "failed uninstall did not leave an identifiable detached residue"
     }
     Assert-PathMissing $cupRoot
-    Assert-PathExists (Join-Path $failedResidue "root.txt")
-    Assert-PathExists (Join-Path $failedResidue "bin\cup.exe")
     Assert-PathExists (Join-Path $failedResidue "transaction.txt")
     Assert-PathExists (Join-Path $failedResidue "components\fixture.txt")
 

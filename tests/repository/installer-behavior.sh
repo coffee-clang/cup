@@ -26,7 +26,7 @@ fail() {
 check_shell_syntax() {
     label=$1
     shift
-    "$@" -n "$ROOT/scripts/install/install-cup.sh" ||
+    "$@" -n "$ROOT/scripts/install/install.sh" ||
         fail "$label rejected the POSIX installer"
 }
 check_shell_syntax sh sh
@@ -40,18 +40,18 @@ fi
 # The transporters must not contain a second managed transaction implementation.
 for forbidden in '.bootstrap' 'binary.old' 'platform-checksums.old' \
         'File.Replace' 'Move-Item'; do
-    ! grep -F "$forbidden" "$ROOT/scripts/install/install-cup.sh" \
-        "$ROOT/scripts/install/install-cup-windows.ps1" >/dev/null ||
+    ! grep -F "$forbidden" "$ROOT/scripts/install/install.sh" \
+        "$ROOT/scripts/install/install.ps1" >/dev/null ||
         fail "installer still contains managed transaction state: $forbidden"
 done
-grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install-cup.sh" >/dev/null
-grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install-cup-windows.ps1" >/dev/null
-grep -F -- '$MaxRedirects = if ($BaseUrlOverridden) { 0 } else { 10 }' "$ROOT/scripts/install/install-cup-windows.ps1" >/dev/null
+grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.sh" >/dev/null
+grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.ps1" >/dev/null
+grep -F -- '$MaxRedirects = if ($BaseUrlOverridden) { 0 } else { 10 }' "$ROOT/scripts/install/install.ps1" >/dev/null
 
 SCRIPT_DIR="$ROOT/scripts/release"
 # shellcheck source=scripts/release/common.sh
 . "$SCRIPT_DIR/common.sh"
-prepare_installer "$ROOT/scripts/install/install-cup.sh" "$WORK/install.sh" 0755
+prepare_installer "$ROOT/scripts/install/install.sh" "$WORK/install.sh" 0755
 chmod 0755 "$WORK/install.sh"
 
 mkdir -p "$WORK/mock-bin"
@@ -145,7 +145,7 @@ for entry in "$source_directory"/*; do
     [ -f "$entry" ] && [ ! -L "$entry" ] || exit 82
     count=$((count + 1))
 done
-[ "$count" -eq 9 ] || exit 83
+[ "$count" -eq 8 ] || exit 83
 printf '%s\n' "$source_directory" > "$CUP_BOOTSTRAP_TRACE"
 primary=$HOME/.cup
 fallback=$HOME/.coffee-cup
@@ -164,8 +164,6 @@ printf 'CUP_BOOTSTRAP_ROOT=%s\n' "$root"
 printf 'Verified cup installation scheduled.\n'
 FAKE_CUP
     chmod 0755 "$fixture/cup-linux-x64"
-    printf '#!/usr/bin/env sh\nexit 0\n' > "$fixture/uninstall.sh"
-    chmod 0755 "$fixture/uninstall.sh"
     cat > "$fixture/release.txt" <<EOF_METADATA
 format=1
 version=$VERSION
@@ -181,7 +179,7 @@ EOF_METADATA
         done
     } > "$fixture/SHA256SUMS.common"
     {
-        for asset in cup-linux-x64 uninstall.sh release.txt SHA256SUMS.common; do
+        for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
             printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
         done
     } > "$fixture/SHA256SUMS.linux-x64"
@@ -190,16 +188,15 @@ EOF_METADATA
 prepare_windows_handoff_fixture() {
     fixture=$1
     prepare_fixture "$fixture"
-    prepare_installer "$ROOT/scripts/install/install-cup-windows.ps1" "$fixture/install.ps1" 0644
+    prepare_installer "$ROOT/scripts/install/install.ps1" "$fixture/install.ps1" 0644
     printf 'fake Windows binary\n' > "$fixture/cup-windows-x64.exe"
-    printf '# generated Windows uninstall fixture\n' > "$fixture/uninstall.ps1"
     {
         for asset in packages.cfg install.cfg install.sh install.ps1; do
             printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
         done
     } > "$fixture/SHA256SUMS.common"
     {
-        for asset in cup-windows-x64.exe uninstall.ps1 release.txt SHA256SUMS.common; do
+        for asset in cup-windows-x64.exe release.txt SHA256SUMS.common; do
             printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
         done
     } > "$fixture/SHA256SUMS.windows-x64"
@@ -225,7 +222,7 @@ run_success() {
         printf '%s\n' "$output" >&2
         fail "valid transport did not complete under $shell_label"
     }
-    [ "$(wc -l < "$downloads")" -eq 9 ] || fail "$shell_label did not download exactly nine assets"
+    [ "$(wc -l < "$downloads")" -eq 8 ] || fail "$shell_label did not download exactly eight assets"
     [ -s "$trace" ] || fail "$shell_label did not invoke the hidden bootstrap"
     source_directory=$(tr -d '\n' < "$trace")
     [ ! -e "$source_directory" ] || fail "$shell_label did not remove the private transport directory"
@@ -390,7 +387,7 @@ prepare_fixture "$fixture"
 printf 'format=1\nversion=9.9.9\ncommit=%s\n' "$SHA" > "$fixture/release.txt"
 # Re-authenticate the intentionally wrong metadata so the identity check, not SHA, rejects it.
 {
-    for asset in cup-linux-x64 uninstall.sh release.txt SHA256SUMS.common; do
+    for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
         printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
     done
 } > "$fixture/SHA256SUMS.linux-x64"
@@ -435,7 +432,7 @@ home=$WORK/trailing-checksum-home
 prepare_fixture "$fixture"
 printf 'evil' >> "$fixture/SHA256SUMS.common"
 {
-    for asset in cup-linux-x64 uninstall.sh release.txt SHA256SUMS.common; do
+    for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
         printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
     done
 } > "$fixture/SHA256SUMS.linux-x64"

@@ -28,7 +28,7 @@ Tests are expected to:
 - use the narrowest suitable level;
 - avoid changing production code only to make a line executable;
 - avoid depending on private function names or source ordering;
-- avoid freezing the name of a helper script unless that name is public;
+- avoid freezing a private helper path or name unless it is part of a public contract;
 - keep POSIX and Windows scenarios aligned where the user-visible behavior is
   the same;
 - keep native differences in native tests rather than simulating them on another
@@ -189,8 +189,9 @@ have completed.
 
 ## Installer portability checks
 
-The public POSIX installer and uninstall script run on machines that the project
-does not control. Their tests therefore do more than parse them with Bash.
+The public POSIX installer runs on machines that the project does not control.
+Its tests therefore do more than parse it with Bash. Uninstall is implemented by
+the native executable and is covered by unit, integration and native platform tests.
 
 Where available, the repository suite checks syntax with:
 
@@ -205,8 +206,9 @@ exact root reported by the bootstrap, the exact installed version, permissions,
 marker and cleanup results. Commands that the installer requires are
 declared and checked before the installation starts.
 
-Windows installer and uninstall behavior is exercised by the native PowerShell
-release and integration tests.
+The Windows installer is exercised by PowerShell release and integration tests.
+Windows uninstall is native and is exercised through the executable, including its
+handoff, detach, cleanup and recovery behavior.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may

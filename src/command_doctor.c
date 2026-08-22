@@ -5,7 +5,7 @@
 
 #include "commands.h"
 
-#include "cup_assets.h"
+#include "assets.h"
 #include "package_selector.h"
 #include "wrappers.h"
 #include "filesystem.h"
@@ -16,7 +16,7 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
-#include "cup_update_journal.h"
+#include "update_journal.h"
 #include "runtime_journal.h"
 #include "uninstall_journal.h"
 
@@ -40,7 +40,7 @@ static void report_incomplete(DoctorReport *report, const char *description) {
 
 static void report_asset_status(DoctorReport *report,
                                 const char *description,
-                                CupAssetStatus status) {
+                                AssetStatus status) {
     if (status == CUP_ASSET_VALID) {
         printf("OK: %s is valid.\n", description);
         return;
@@ -50,15 +50,15 @@ static void report_asset_status(DoctorReport *report,
     report->issue_count++;
 }
 
-static void report_update_helper_status(DoctorReport *report, CupAssetStatus status) {
+static void report_update_helper_status(DoctorReport *report, AssetStatus status) {
     if (status == CUP_ASSET_VALID) {
-        printf("OK: derived native cup update helper is available.\n");
+        printf("OK: derived native update helper is available.\n");
     } else if (status == CUP_ASSET_MISSING) {
-        printf("Warning: derived native cup update helper is missing; it will be recreated "
+        printf("Warning: derived native update helper is missing; it will be recreated "
                "before the next cup update.\n");
         report->warning_count++;
     } else {
-        printf("Issue: derived native cup update helper path is invalid and blocks "
+        printf("Issue: derived native update helper path is invalid and blocks "
                "regeneration.\n");
         report->issue_count++;
     }
@@ -75,7 +75,7 @@ static void check_read_only_path(const char *path, const char *description, Doct
     }
 }
 
-static CupError load_diagnostic_catalog(const CupAssetsInspection *inspection,
+static CupError load_diagnostic_catalog(const AssetsInspection *inspection,
                                         PackageCatalog *catalog,
                                         int *has_catalog) {
     CupError err;
@@ -99,23 +99,22 @@ static CupError load_diagnostic_catalog(const CupAssetsInspection *inspection,
     return err;
 }
 
-static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, int *has_catalog) {
-    CupAssetsInspection inspection;
+static CupError check_assets(PackageCatalog *catalog, DoctorReport *report, int *has_catalog) {
+    AssetsInspection inspection;
     CupError err;
     char path[MAX_PATH_LEN];
 
-    err = cup_assets_inspect(&inspection);
+    err = assets_inspect(&inspection);
     if (err != CUP_OK) {
         report_incomplete(report, "cup assets");
         return CUP_OK;
     }
 
-    if (cup_assets_has_installed_assets(&inspection)) {
+    if (assets_has_installed_assets(&inspection)) {
         report_asset_status(report, "installed cup executable", inspection.binary);
         report_update_helper_status(report, inspection.helper);
         report_asset_status(report, "installed package catalog", inspection.catalog);
         report_asset_status(report, "installation configuration", inspection.install_policy);
-        report_asset_status(report, "uninstall script", inspection.uninstall);
         report_asset_status(report, "common checksum file", inspection.common_checksums);
         report_asset_status(report, "platform checksum file", inspection.platform_checksums);
 
@@ -127,10 +126,6 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
             layout_get_install_policy_path(path, sizeof(path)) == CUP_OK) {
             check_read_only_path(path, "installation configuration", report);
         }
-        if (inspection.uninstall == CUP_ASSET_VALID &&
-            layout_get_uninstall_path(path, sizeof(path)) == CUP_OK) {
-            check_read_only_path(path, "uninstall script", report);
-        }
         if (inspection.common_checksums == CUP_ASSET_VALID &&
             layout_get_common_checksums_path(path, sizeof(path)) == CUP_OK) {
             check_read_only_path(path, "common checksum file", report);
@@ -139,7 +134,7 @@ static CupError check_cup_assets(PackageCatalog *catalog, DoctorReport *report, 
             layout_get_platform_checksums_path(path, sizeof(path)) == CUP_OK) {
             check_read_only_path(path, "platform checksum file", report);
         }
-    } else if (cup_assets_development_is_valid(&inspection)) {
+    } else if (assets_development_is_valid(&inspection)) {
         printf("OK: development cup assets are available.\n");
     } else {
         printf("Issue: neither installed nor development cup assets "
@@ -462,15 +457,15 @@ static void load_and_check_state(CupState *state,
 static void check_transaction_journal(DoctorReport *report) {
     PackageTransaction package_transaction;
     PackageTransactionStatus package_status;
-    CupUpdateJournal cup_update_journal;
-    CupUpdateJournalStatus cup_update_status;
+    UpdateJournal update_journal;
+    UpdateJournalStatus update_status;
     UninstallJournal uninstall_journal;
     UninstallJournalStatus uninstall_status;
     RuntimeJournalKind journal_kind;
     CupError err;
 
     package_transaction_init(&package_transaction);
-    cup_update_journal_init(&cup_update_journal);
+    update_journal_init(&update_journal);
     uninstall_journal_init(&uninstall_journal);
 
     err = runtime_journal_detect(&journal_kind);
@@ -491,19 +486,19 @@ static void check_transaction_journal(DoctorReport *report) {
                    package_transaction.package.version);
         }
         report->issue_count++;
-    } else if (journal_kind == RUNTIME_JOURNAL_CUP_UPDATE) {
-        err = cup_update_journal_load(&cup_update_journal, &cup_update_status);
-        if (err != CUP_OK || cup_update_status != CUP_UPDATE_JOURNAL_LOADED) {
+    } else if (journal_kind == RUNTIME_JOURNAL_UPDATE) {
+        err = update_journal_load(&update_journal, &update_status);
+        if (err != CUP_OK || update_status != CUP_UPDATE_JOURNAL_LOADED) {
             printf("Issue: cup update journal is invalid.\n");
-        } else if (cup_update_journal.phase == CUP_UPDATE_PHASE_FAILED) {
+        } else if (update_journal.phase == CUP_UPDATE_PHASE_FAILED) {
             printf("Issue: the previous cup update to version %s failed with error %d; "
                    "recovery is %s.\n",
-                   cup_update_journal.version,
-                   cup_update_journal.error_code,
-                   cup_update_failure_recovery_name(cup_update_journal.recovery));
+                   update_journal.version,
+                   update_journal.error_code,
+                   update_failure_recovery_name(update_journal.recovery));
         } else {
             printf("Issue: interrupted cup update transaction detected in phase '%s'.\n",
-                   cup_update_phase_name(cup_update_journal.phase));
+                   update_phase_name(update_journal.phase));
         }
         report->issue_count++;
     } else if (journal_kind == RUNTIME_JOURNAL_UNINSTALL) {
@@ -609,7 +604,7 @@ CupError command_doctor(void) {
     DoctorReport report = {0, 0, 0};
     PackageCatalog catalog;
     CupState state;
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     CupError err;
     char current_host[MAX_PLATFORM_LEN];
     int state_loaded;
@@ -650,7 +645,7 @@ CupError command_doctor(void) {
         DoctorRuntimeSnapshot snapshot = acquire_runtime_snapshot(&report, &lock);
 
         if (snapshot == DOCTOR_RUNTIME_MISSING) {
-            err = check_cup_assets(&catalog, &report, &has_catalog);
+            err = check_assets(&catalog, &report, &has_catalog);
             if (err == CUP_OK) {
                 err = print_doctor_summary(&report);
             }
@@ -661,7 +656,7 @@ CupError command_doctor(void) {
             goto done;
         }
     }
-    err = check_cup_assets(&catalog, &report, &has_catalog);
+    err = check_assets(&catalog, &report, &has_catalog);
     if (err != CUP_OK) {
         goto done;
     }

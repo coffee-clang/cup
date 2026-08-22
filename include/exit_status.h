@@ -17,6 +17,6 @@ enum {
 };
 
 /* Collapse detailed internal failures into the stable CLI status set above. */
-int cup_error_to_exit_status(CupError error);
+int exit_status_from_error(CupError error);
 
 #endif /* CUP_EXIT_STATUS_H */

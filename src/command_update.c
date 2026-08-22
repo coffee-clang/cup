@@ -6,7 +6,7 @@
 #include "commands.h"
 
 #include "command_context.h"
-#include "cup_update.h"
+#include "self_update.h"
 #include "package_selector.h"
 #include "package_install.h"
 #include "registry.h"
@@ -167,7 +167,7 @@ CupError command_update(const char *selector) {
     size_t skipped_count = 0;
 
     if (!text_is_empty(name) && strcmp(name, "cup") == 0) {
-        return cup_update_start();
+        return self_update_start();
     }
 
     label = text_is_empty(name) ? "all installed tools" : name;

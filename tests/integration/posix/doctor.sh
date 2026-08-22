@@ -138,19 +138,19 @@ cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
 operation=uninstall
 phase=failed
-temporary_name=.cup-uninstall.fixture
+temporary_name=.cup-uninstall-fixture
 token=fixture
-stage=cleanup
+stage=detach
 error=1
 JOURNAL
 uninstall_journal_hash=$(hash_file "$TEST_HOME/.cup/transaction.txt")
 run_cup_expect_failure "$TMP_ROOT/doctor-uninstall-failed.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-uninstall-failed.out")" \
-    "the previous cup uninstall failed during 'cleanup' with error 1"
+    "the previous cup uninstall failed during 'detach' with error 1"
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$uninstall_journal_hash"
 run_cup_expect_failure "$TMP_ROOT/doctor-uninstall-failed-again.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-uninstall-failed-again.out")" \
-    "the previous cup uninstall failed during 'cleanup' with error 1"
+    "the previous cup uninstall failed during 'detach' with error 1"
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$uninstall_journal_hash"
 rm -f "$TEST_HOME/.cup/transaction.txt"
 

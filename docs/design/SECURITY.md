@@ -106,7 +106,6 @@ The platform file covers:
 
 ```text
 cup or cup.exe
-uninstall helper
 release.txt
 SHA256SUMS.common
 ```
@@ -200,14 +199,11 @@ Native recursive operations never traverse links/reparse points, keep the identi
 observed entries and refuse to cross a device or volume boundary. Enumeration reports such
 entries to policy callers; recursive removal may unlink the link entry itself without following it.
 
-The copied uninstall scripts have a narrower final-cleanup contract than the
-native C filesystem layer. On POSIX the parent CUP process validates and
-detaches the canonical root while holding the uninstall lease; the copied
-script acknowledges readiness, verifies the detached root and removes it with a
-no-follow, same-filesystem depth-first traversal. On Windows the copied script
-inherits the lease, validates the handoff, detaches the root and deletes the
-detached tree without traversing reparse points. These scripts do not claim the
-per-entry identity pinning provided by the native C filesystem layer.
+Uninstall detach and cleanup use the native C filesystem layer on every supported
+platform. The copied helper receives continuous handoff authority, validates the
+exact root and token-bound journal, performs an identity-bound namespace move,
+and removes the detached tree without following links or reparse points or
+crossing a filesystem/volume boundary.
 
 Atomic publication inside cup uses native no-replace or replace operations. cup
 does not simulate no-replace with a separate existence check followed by a
@@ -225,8 +221,10 @@ clean current generation and restores only data accepted by current parsers.
 `cup repair` does not make the ownership decision and `root.txt` must not be
 manufactured manually.
 
-A detached uninstall directory is recognized only when its name, root marker,
-main executable and transaction journal all agree.
+A detached uninstall directory is recognized only when its reserved sibling name
+and strict token-bound `detaching/detach` transaction journal agree. Managed
+payload may already have been partially removed before a cleanup failure, so
+`root.txt` and the executable are not required to survive together.
 
 These checks reduce the risk of deleting an unrelated directory that happens to
 look similar to cup state.
@@ -258,9 +256,10 @@ not clear transaction data only to make normal commands available again.
 cup downloads the installed release assets from one official release, verifies them
 and stages them before writing the update journal.
 
-The detached helper is regenerated from the current executable before each
-update and its digest is checked. The helper then waits for the parent through an
-inherited pipe/handle, takes the lock and replaces the main executable last.
+The update helper is regenerated from the current executable before each update
+and its digest is checked. The parent establishes continuous handoff authority
+before it can release the canonical lock. After parent exit, the helper returns
+to `cup.lock` under that authority and replaces the main executable last.
 
 Before the commit marker, the old complete generation can be restored. Mixed or
 incomplete rollback data is preserved for manual recovery instead of being
@@ -268,16 +267,27 @@ combined.
 
 ## Uninstall
 
-Uninstall does not delete the running root in place. The canonical `cup.lock` remains the
-pre-detach authority. On POSIX the CUP parent keeps that lease through helper acknowledgement
-and performs the root move itself; on Windows the copied PowerShell helper inherits the lease,
-waits for the parent and performs the move. After detach, the helper removes the unique sibling
-without traversing links or reparse points. POSIX cleanup also stays on the original filesystem.
+Uninstall does not delete the running root in place. The parent creates a temporary
+native helper outside the managed root and starts it while still holding the canonical
+exclusive lock. Handoff authority is established before that lock can disappear. The
+child waits for parent exit, validates the exact root and journal, publishes
+`detaching/detach`, moves the root to its unique sibling and performs native no-follow
+cleanup.
 
-If cleanup fails, the marker, executable and journal remain as ownership evidence for
-diagnosis and deliberate cleanup. A later installer does not automatically adopt or delete the
-detached sibling. The final script phase is deliberately documented separately from the stronger
-identity-pinned native filesystem operations.
+The temporary uninstall child removes its own reserved pathname before it can detach the root.
+If that operation fails, no root mutation occurs and the canonical journal retains ownership of
+the token-bound helper residue. `repair`, while holding canonical exclusive authority and only
+after the active handoff has disappeared, removes that exact regular file by filesystem identity
+before it can clear the stale journal.
+
+On POSIX the handoff authority is the original flock open-file description. On
+Windows it is a named per-user kernel object outside the managed root, allowing
+`cup.lock` to close before the root is moved without admitting a competing process.
+
+Cleanup preserves `transaction.txt` until every other managed entry is gone. If
+cleanup fails while managed payload remains, that strict journal remains as ownership
+evidence; `root.txt` and the executable may already have been removed. A later
+installer does not automatically adopt or delete the detached sibling.
 
 ## CI and release data
 

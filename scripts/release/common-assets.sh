@@ -53,13 +53,11 @@ cup_path_copy_file "$PROJECT_ROOT/config/install.cfg" "$PUBLIC/install.cfg" 0644
 cup_path_copy_file \
     "$PROJECT_ROOT/scripts/dependencies/THIRD_PARTY_NOTICES.txt" \
     "$PUBLIC/THIRD_PARTY_NOTICES.txt" 0644 replace
-cup_path_copy_file "$PROJECT_ROOT/scripts/install/uninstall-cup.sh" "$PUBLIC/uninstall.sh" 0755 replace
-cup_path_copy_file "$PROJECT_ROOT/scripts/install/uninstall-cup-windows.ps1" "$PUBLIC/uninstall.ps1" 0644 replace
-prepare_installer "$PROJECT_ROOT/scripts/install/install-cup.sh" "$PUBLIC/install.sh" 0755
-prepare_installer "$PROJECT_ROOT/scripts/install/install-cup-windows.ps1" "$PUBLIC/install.ps1" 0644
-chmod 0755 "$PUBLIC/install.sh" "$PUBLIC/uninstall.sh"
+prepare_installer "$PROJECT_ROOT/scripts/install/install.sh" "$PUBLIC/install.sh" 0755
+prepare_installer "$PROJECT_ROOT/scripts/install/install.ps1" "$PUBLIC/install.ps1" 0644
+chmod 0755 "$PUBLIC/install.sh"
 chmod 0644 "$PUBLIC/packages.cfg" "$PUBLIC/install.cfg" "$PUBLIC/release.txt" \
-    "$PUBLIC/THIRD_PARTY_NOTICES.txt" "$PUBLIC/install.ps1" "$PUBLIC/uninstall.ps1"
+    "$PUBLIC/THIRD_PARTY_NOTICES.txt" "$PUBLIC/install.ps1"
 
 cat <<PROVENANCE | cup_path_write_file "$PUBLIC/provenance.txt" 0644 replace
 format=3
@@ -94,7 +92,7 @@ grep -F "\$ReleaseCommit = \"$SHA\"" "$PUBLIC/install.ps1" >/dev/null
 ! grep -E '@CUP_RELEASE_(VERSION|TAG|COMMIT)@' "$PUBLIC/install.sh" "$PUBLIC/install.ps1" >/dev/null
 validate_exact_directory_files "$PUBLIC" \
     THIRD_PARTY_NOTICES.txt SHA256SUMS.common install.cfg install.ps1 install.sh \
-    packages.cfg provenance.txt release.txt uninstall.ps1 uninstall.sh
+    packages.cfg provenance.txt release.txt
 
 cup_path_remove_child_tree "$BUILD_ROOT" "$GENERATED" 'release generated directory'
 commit_output_staging "$OUTPUT"

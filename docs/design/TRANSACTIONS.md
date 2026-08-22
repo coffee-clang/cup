@@ -45,18 +45,13 @@ file and parent synchronization
 ```
 
 The package, update and uninstall modules own their fields and recovery rules.
-This avoids three copies of the same in-process file lifecycle without merging
+This avoids three copies of the same physical file lifecycle without merging
 three different transaction meanings.
 
-Uninstall has one unavoidable C/script boundary. The copied helper advances the
-same uninstall schema during handoff and detached cleanup, but detach ownership
-is platform-specific: POSIX keeps `cup.lock` in the parent C process through the
-canonical root move, while Windows transfers the lease to the PowerShell helper.
-Script-side journal updates use a temporary canonical file and publish it at
-`transaction.txt`; the Windows helper also flushes that temporary file before
-replacement. This script-owned continuation does not use the native per-file
-identity API and is therefore kept separate from the `runtime_journal`
-guarantees below.
+Update and uninstall continuation is native on every supported platform. A
+copied cup executable runs the internal helper mode, so journal publication,
+identity checks, long-path handling and no-follow cleanup continue to use the
+same C filesystem contract as the parent process.
 
 The first journal write is create-only. If `transaction.txt` already exists,
 the new operation stops and preserves it.
@@ -242,7 +237,6 @@ The staging generation contains:
 
 ```text
 cup or cup.exe
-uninstall helper
 platform checksum file
 packages.cfg
 install.cfg
@@ -251,40 +245,52 @@ common checksum file
 
 All installed assets come from one verified release before the journal is written.
 
-### Detached helper and parent handshake
+### Native helper and operation handoff
 
-The helper is stored at:
+The persistent update helper is derived from the installed executable and stored at:
 
 ```text
-POSIX   <cup-root>/helpers/cup-update-helper
-Windows <cup-root>\helpers\cup-update-helper.exe
+POSIX   <cup-root>/helpers/update-helper
+Windows <cup-root>\helpers\update-helper.exe
 ```
 
-Before every update, cup rebuilds the helper from the currently installed
-executable, restores executable permissions and checks that the copy has the
+Before every update, cup refreshes that helper from the currently installed
+executable, restores executable permissions and verifies that the copy has the
 same SHA-256 digest.
 
-The parent process creates a pipe and passes only the read side to the helper.
-The helper waits for EOF or a broken pipe, which proves that every process
-holding the parent write side has exited. A PID is not used as the proof of
-termination.
+The parent starts the helper while it still owns the exclusive canonical lock.
+The system backend establishes a parent-lifetime signal and child authority
+before the start call can succeed. A successful start consumes the caller-visible
+`SystemLock`, but the parent keeps a lifetime authority reference until it exits.
+At every point in the handoff, either the canonical lock or the inherited handoff
+authority remains held, so no third process can become the mutation owner.
 
-On Windows the process attribute list allows inheritance of only that handle.
-
-After the parent has exited, the helper:
+The handoff is implemented differently only where the operating system requires it:
 
 ```text
-waits for the exclusive cup lock
-reloads and authenticates the token, scheduled journal and staging directory
-validates every staged asset
-copies every current destination to `.old` or records `.absent` rollback evidence
-publishes phase=committing only after that rollback evidence is complete
-installs the five supporting assets
-writes and synchronizes the committed marker
-replaces cup or cup.exe last             commit point
-validates the installed generation
-removes transaction.txt
-cleans staging when possible
+POSIX    parent and child retain references to the same flock open-file description
+Windows  parent and child retain a named per-user kernel authority outside <cup-root>
+```
+
+The child waits for the inherited parent-lifetime object to close rather than
+polling a PID. After parent exit, the update child returns to the canonical lock:
+on POSIX it converts the inherited flock authority directly into its `SystemLock`;
+on Windows it acquires `cup.lock` while the external authority is still active,
+then releases that temporary authority.
+
+Only after that transition does the helper:
+
+```text
+reload and authenticate the token, scheduled journal and staging directory
+validate every staged asset
+copy every current destination to `.old` or record `.absent` rollback evidence
+publish phase=committing only after that rollback evidence is complete
+install the four supporting assets
+write and synchronize the committed marker
+replace cup or cup.exe last             commit point
+validate the installed generation
+remove transaction.txt
+clean staging when possible
 ```
 
 The main executable is replaced last so that the helper can restore the old
@@ -326,72 +332,83 @@ helper or official installer.
 
 ## Uninstall transaction
 
-`cup uninstall` takes the exclusive lock, validates the root and helper, creates
-a unique sibling destination and writes:
+`cup uninstall` takes the exclusive canonical lock, validates the selected root,
+creates a unique detached sibling name and writes:
 
 ```text
 format=1
 operation=uninstall
 phase=scheduled|detaching|failed
-temporary_name=.cup-uninstall.<token>
+temporary_name=.cup-uninstall-<token>
 token=<token>
-stage=handoff|parent-wait|detach|cleanup
+stage=handoff|detach
 error=<0-or-public-error-code>
 ```
 
 Allowed combinations are:
 
 ```text
-scheduled  stage=handoff|parent-wait  error=0
-detaching  stage=detach               error=0
-failed     error>0
+scheduled  stage=handoff  error=0
+detaching  stage=detach   error=0
+failed     stage=handoff|detach  error>0
 ```
 
-The copied helper validates the root marker, journal identity and its own script. The
-canonical `cup.lock` is also the handoff authority: while an authorized pre-detach uninstall
-can still move the canonical root, another CUP operation cannot acquire that lock.
+The parent then copies its running native executable to a reserved temporary
+sibling outside the managed root and starts it in the internal uninstall-helper
+mode. Starting that child uses the same continuous handoff primitive as
+`cup update cup`: the parent still owns `cup.lock` when child authority is
+established, and successful handoff consumes the caller-visible lock without
+creating an authority gap.
 
-The actual detach is platform-specific:
+The child removes its own temporary pathname after proving by native identity
+that the reserved path names the running helper. It then waits for parent exit,
+accepts the inherited handoff authority, validates the exact root, journal,
+token and detached destination, and publishes `detaching/detach` before the
+namespace move.
+
+If that pre-detach self-unlink fails, the child performs no root mutation. The canonical
+`scheduled/handoff` journal remains the owner of the reserved
+`.cup-uninstall-helper-<token>[.exe]` sibling. Before `repair` clears that stale journal it removes
+only that exact token-bound regular file by retained filesystem identity; failure to prove or
+remove it keeps the journal as blocker.
 
 ```text
-POSIX    parent CUP retains cup.lock through helper acknowledgement, then performs
-         <cup-root> -> <home>/.cup-uninstall.<token> and releases the lease
-Windows  helper inherits the lease handle, waits for the parent, records detaching,
-         performs the same root move, then releases the lease before tree cleanup
+<cup-root> -> <home>/.cup-uninstall-<token>
 ```
 
-The transaction file moves with the root.
+On POSIX the inherited authority is the original flock open-file description.
+On Windows it is a named per-user kernel object outside the root; normal root
+admission checks that authority before inspecting a candidate root and again
+after acquiring `cup.lock`. The Windows move retries only bounded transient
+sharing failures. All detach and cleanup filesystem work is native C on both
+platforms.
 
-If cleanup later fails, the detached directory keeps three ownership proofs:
+The transaction file moves with the root. Once the move is durably proved, the
+helper removes all managed contents except `transaction.txt`, then removes that
+journal by its retained file identity, and finally removes the now-empty detached
+root by its retained directory identity.
 
-```text
-root.txt
-cup or cup.exe
-transaction.txt
-```
+This ordering defines the recovery evidence:
 
-CUP does not automatically adopt or delete a detached residue on a later installation. The
-evidence is retained so the failed cleanup can be identified without guessing at unrelated data.
-There is no `uninstall.pending` or separate result file.
+- while managed payload remains, the strict token-bound `transaction.txt` also remains;
+- once `transaction.txt` is removed, no managed payload remains; at most an empty
+  reserved-name directory shell can survive a final directory-removal failure.
 
-### Identifying uninstall residue
+A cleanup failure therefore does **not** require `root.txt`, the executable and
+the journal to coexist. Earlier cleanup steps may already have removed either of
+the first two. The journal is the last persistent ownership evidence.
 
-A detached directory is recognizable as residue from this uninstall protocol only when:
+A detached residue is recognized conservatively: the sibling must use the
+reserved token-bound name, be a real directory, and contain a coherent
+`detaching/detach` uninstall journal naming that same token and sibling. A
+matching prefix or familiar layout alone is not ownership proof. Installers do
+not adopt or delete detached siblings automatically.
 
-- the sibling name matches `.cup-uninstall.<token>`;
-- it is a real directory rather than a link or reparse point;
-- `root.txt` is valid;
-- the main executable is a real file;
-- the uninstall journal names the same token and directory;
-- the journal is either a valid detaching state or a valid cleanup failure.
-
-A matching prefix or familiar layout is not enough. Installers do not treat these siblings as
-canonical roots and do not delete them automatically.
-
-When `repair` owns the canonical `cup.lock`, no authorized pre-detach helper can still
-move the root. If the journal names a sibling that does not exist, `repair` can therefore
-clear a stale `scheduled`, `detaching` or `failed` pre-detach uninstall journal. If the named
-sibling exists or ownership cannot be proved, the evidence is preserved.
+`repair` only resolves a journal still present in the canonical root. While it
+owns the canonical exclusive lock and no named detached sibling exists, a stale
+`scheduled/handoff` or `failed` pre-detach transaction can be cancelled or
+acknowledged. Any token-bound temporary native helper is removed first. If the detached sibling
+exists, helper ownership cannot be proved, or cleanup fails, evidence is preserved.
 
 ## Repair order
 
@@ -426,13 +443,11 @@ operation and restore the previous process behavior on exit.
 - code inside a commit step finishes or leaves the journal for recovery;
 - a handled cancellation returns exit status `130`.
 
-After an update helper acknowledges handoff, that detached native helper owns
-completion and the parent can no longer cancel it. Uninstall has a different
-pre-detach split: on POSIX the parent retains the canonical lock, moves the root
-after the copied helper acknowledges readiness and only then leaves cleanup to
-that helper; on Windows the copied helper owns both detach and cleanup after the
-handoff. Once the root is detached, cleanup is no longer cancellable by the
-original command.
+After a helper has been started successfully, its handoff authority is continuous
+with the parent authority and the original command can no longer cancel work in
+that child. Both update and uninstall helpers wait for parent exit before their
+first authoritative mutation. Uninstall detach and cleanup are then owned entirely
+by the native child.
 
 ## Commit and durability results
 
@@ -467,12 +482,13 @@ platform can provide rather than treating it as POSIX durability.
 ```text
 runtime_journal.c          shared transaction-file operations
 package_transaction.c      package schema and state-based recovery
-cup_update_journal.c       executable-update schema and recovery
-cup_update_helper.c        detached executable-update commit
+update_journal.c           executable-update schema and recovery
+update_helper.c            detached executable-update commit
 uninstall_journal.c        uninstall schema and recovery
+uninstall_helper.c         native detach and cleanup
 command_doctor.c           read-only diagnosis
 command_repair.c           ordered recovery
-command_uninstall.c        uninstall handoff
+command_uninstall.c        uninstall planning and handoff
 interrupt.c                process interrupt state
 ```
 

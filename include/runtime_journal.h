@@ -16,7 +16,7 @@
 typedef enum {
     RUNTIME_JOURNAL_MISSING,
     RUNTIME_JOURNAL_PACKAGE,
-    RUNTIME_JOURNAL_CUP_UPDATE,
+    RUNTIME_JOURNAL_UPDATE,
     RUNTIME_JOURNAL_UNINSTALL
 } RuntimeJournalKind;
 
@@ -30,6 +30,13 @@ typedef CupError (*RuntimeJournalFieldVisitor)(const char *key,
  * When ordered_keys is non-NULL, the parser also enforces the complete declared field order.
  * Journal values use a closed token grammar and therefore cannot contain spaces.
  */
+CupError runtime_journal_parse_at(const char *root,
+                                  const char *const *ordered_keys,
+                                  size_t ordered_key_count,
+                                  RuntimeJournalFieldVisitor visitor,
+                                  void *userdata,
+                                  SystemPathIdentity *identity,
+                                  int *missing);
 CupError runtime_journal_parse(const char *const *ordered_keys,
                                size_t ordered_key_count,
                                RuntimeJournalFieldVisitor visitor,
@@ -44,6 +51,13 @@ CupError runtime_journal_parse(const char *const *ordered_keys,
  * CUP_ERR_COMMIT means the new file may be visible and published_identity is populated when its
  * identity can still be proven.
  */
+CupError runtime_journal_publish_at(const char *root,
+                                    const char *temporary_directory,
+                                    const char *temporary_prefix,
+                                    const SystemPathIdentity *expected_identity,
+                                    RuntimeJournalWriter writer,
+                                    const void *value,
+                                    SystemPathIdentity *published_identity);
 CupError runtime_journal_publish(const char *temporary_directory,
                                  const char *temporary_prefix,
                                  const SystemPathIdentity *expected_identity,

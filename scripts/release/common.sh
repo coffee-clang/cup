@@ -210,7 +210,7 @@ validate_release_file() {
 
 release_asset_mode() {
     case "$1" in
-        install.sh|uninstall.sh|cup-linux-x64|cup-linux-arm64|cup-macos-x64|cup-macos-arm64)
+        install.sh|cup-linux-x64|cup-linux-arm64|cup-macos-x64|cup-macos-arm64)
             printf '0755\n'
             ;;
         *)

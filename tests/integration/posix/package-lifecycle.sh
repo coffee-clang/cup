@@ -156,7 +156,7 @@ test_target_scopes() {
         'gcc-16.1.0-rev1-windows-x64:gcc'
 }
 
-test_dev_cup_update() {
+test_dev_update() {
     embedded_version=$(run_cup --version)
     case "$embedded_version" in
         *-dev*)
@@ -168,7 +168,7 @@ test_dev_cup_update() {
 }
 
 test_remove_default_without_promotion() {
-    run_cup_expect_failure "$TMP_ROOT/remove-ambiguous.out" remove clang
+    run_cup_expect_status "$TMP_ROOT/remove-ambiguous.out" 2 remove clang
     ambiguous=$(cat "$TMP_ROOT/remove-ambiguous.out")
     assert_contains "$ambiguous" "remove selection 'compiler:clang' is ambiguous"
     assert_contains "$ambiguous" 'clang@21.1.5'
@@ -189,12 +189,13 @@ test_remove_default_without_promotion() {
     assert_missing "$(native_wrapper_path clang++)"
     assert_contains "$(run_cup info compiler --target "$TEST_PLATFORM")" \
         "No default for component 'compiler' on host '$TEST_PLATFORM', target '$TEST_PLATFORM'."
-    assert_contains "$(run_cup list compiler)" 'compiler:clang@21.1.5'
-    assert_not_contains "$(run_cup list compiler)" 'compiler:clang@22.1.5'
+    native_installed=$(run_cup list compiler --target "$TEST_PLATFORM")
+    assert_contains "$native_installed" 'compiler:clang@21.1.5'
+    assert_not_contains "$native_installed" 'compiler:clang@22.1.5'
     assert_cup_healthy
 
     assert_contains "$(run_cup remove clang)" 'Removed compiler clang -> clang@21.1.5'
-    assert_not_contains "$(run_cup list compiler)" 'compiler:clang@'
+    assert_not_contains "$(run_cup list compiler --target "$TEST_PLATFORM")" 'compiler:clang@'
     assert_cup_healthy
 }
 
@@ -204,7 +205,7 @@ test_catalog_views
 test_missing_default
 test_updates
 test_target_scopes
-test_dev_cup_update
+test_dev_update
 test_remove_default_without_promotion
 
 printf 'Package lifecycle tests passed for %s.\n' "$TEST_PLATFORM"

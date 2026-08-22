@@ -64,6 +64,19 @@ typedef enum {
     ROOT_MARKER_INVALID
 } RootMarkerStatus;
 
+/* A detached helper may temporarily carry exclusive authority outside the canonical root. Root
+ * admission checks that handoff before touching managed paths so a new process cannot enter while
+ * authority is moving between processes. */
+static CupError reject_active_handoff(void) {
+    int active = 0;
+    CupError err = system_handoff_active(&active);
+
+    if (err != CUP_OK) {
+        return err;
+    }
+    return active ? CUP_ERR_LOCK : CUP_OK;
+}
+
 static CupError inspect_root_marker(const char *root, RootMarkerStatus *status) {
     PersistentFileSnapshot snapshot;
     SystemPathKind kind;
@@ -236,7 +249,10 @@ static CupError inspect_root_candidates(char *primary,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = system_get_home_dir(home, sizeof(home));
+    err = reject_active_handoff();
+    if (err == CUP_OK) {
+        err = system_get_home_dir(home, sizeof(home));
+    }
     if (err == CUP_OK) {
         err = path_join(primary, primary_size, home, CUP_PRIMARY_ROOT_DIRECTORY);
     }
@@ -493,6 +509,13 @@ CupError layout_root_snapshot_validate(void) {
     if (root_snapshot.depth == 0) {
         return CUP_OK;
     }
+    /* Recheck after the final canonical lock acquisition and before touching the root again. A
+     * process that passed the pre-root barrier before another process published handoff
+     * authority is rejected here before it can become an authoritative mutator. */
+    err = reject_active_handoff();
+    if (err != CUP_OK) {
+        return err;
+    }
     err = system_get_path_identity(root_snapshot.path, &current);
     if (err != CUP_OK) {
         return err;
@@ -624,6 +647,51 @@ CupError layout_get_lock_path(char *buffer, size_t size) {
     return build_root_path(buffer, size, LOCK_FILENAME);
 }
 
+CupError layout_build_lock_path(char *buffer, size_t size, const char *root) {
+    if (buffer == NULL || size == 0 || text_is_empty(root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return path_join(buffer, size, root, LOCK_FILENAME);
+}
+
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *root) {
+    if (buffer == NULL || size == 0 || text_is_empty(root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return path_join(buffer, size, root, TRANSACTION_FILENAME);
+}
+
+CupError layout_validate_root_at(const char *root, SystemPathIdentity *identity) {
+    char home[MAX_PATH_LEN];
+    char primary[MAX_PATH_LEN];
+    char fallback[MAX_PATH_LEN];
+    RootCandidateStatus status;
+    SystemPathIdentity observed;
+    CupError err;
+
+    if (text_is_empty(root) || identity == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(identity, 0, sizeof(*identity));
+    err = system_get_home_dir(home, sizeof(home));
+    if (err == CUP_OK) {
+        err = path_join(primary, sizeof(primary), home, CUP_PRIMARY_ROOT_DIRECTORY);
+    }
+    if (err == CUP_OK) {
+        err = path_join(fallback, sizeof(fallback), home, CUP_FALLBACK_ROOT_DIRECTORY);
+    }
+    if (err != CUP_OK || (strcmp(root, primary) != 0 && strcmp(root, fallback) != 0)) {
+        return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
+    }
+
+    err = classify_root_candidate(root, &status, &observed);
+    if (err != CUP_OK || status != ROOT_CANDIDATE_OWNED) {
+        return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
+    }
+    *identity = observed;
+    return CUP_OK;
+}
+
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
@@ -695,7 +763,7 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return build_root_path(buffer, size, TRANSACTION_FILENAME);
 }
 
-CupError layout_get_cup_update_helper_path(char *buffer, size_t size) {
+CupError layout_get_update_helper_path(char *buffer, size_t size) {
     CupError err;
     char directory[MAX_PATH_LEN];
 
@@ -704,18 +772,6 @@ CupError layout_get_cup_update_helper_path(char *buffer, size_t size) {
         return err;
     }
     return path_join(buffer, size, directory, CUP_UPDATE_HELPER_FILENAME);
-}
-
-CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    CupError err;
-    char directory[MAX_PATH_LEN];
-
-    err = build_root_path(directory, sizeof(directory), HELPERS_DIRECTORY);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return path_join(buffer, size, directory, CUP_UNINSTALL_FILENAME);
 }
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
@@ -1029,6 +1085,14 @@ CupError layout_ensure_root(void) {
         goto done;
     }
 
+    /* A snapshot may predate handoff publication. Recheck immediately before root creation,
+     * permission repair or marker publication instead of treating the old snapshot as mutation
+     * authority. */
+    err = reject_active_handoff();
+    if (err != CUP_OK) {
+        goto done;
+    }
+
     if (!root_snapshot.identity.valid) {
         err = system_create_private_directory(root, &commit_state);
         if (err == CUP_OK && commit_state != SYSTEM_COMMIT_DURABLE) {
@@ -1138,7 +1202,7 @@ CupError layout_ensure_config(void) {
     return ensure_directories(directory, 1);
 }
 
-CupError layout_ensure_cup_assets(void) {
+CupError layout_ensure_assets(void) {
     return ensure_directories(BOOTSTRAP_DIRS, sizeof(BOOTSTRAP_DIRS) / sizeof(BOOTSTRAP_DIRS[0]));
 }
 

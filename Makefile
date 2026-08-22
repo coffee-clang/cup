@@ -360,8 +360,8 @@ COMMON_SRC := \
     src/exit_status.c \
     src/wrappers.c \
     src/command_update.c \
-    src/cup_update.c \
-    src/cup_bootstrap.c \
+    src/self_update.c \
+    src/bootstrap.c \
     src/release_metadata.c \
     src/package_selector.c \
     src/package_request.c \
@@ -387,14 +387,15 @@ COMMON_SRC := \
     src/package_metadata.c \
     src/checksum.c \
     src/third_party/sha256.c \
-    src/cup_assets.c \
+    src/assets.c \
     src/package.c \
     src/installed_package.c \
     src/package_transaction.c \
-    src/cup_update_journal.c \
+    src/update_journal.c \
     src/runtime_journal.c \
     src/uninstall_journal.c \
-    src/cup_update_helper.c \
+    src/uninstall_helper.c \
+    src/update_helper.c \
     src/text.c \
     src/system.c \
     src/registry.c \

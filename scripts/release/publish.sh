@@ -37,8 +37,6 @@ provenance.txt
 THIRD_PARTY_NOTICES.txt
 install.sh
 install.ps1
-uninstall.sh
-uninstall.ps1
 cup-linux-x64
 cup-linux-arm64
 cup-macos-x64
@@ -87,14 +85,14 @@ grep -F "\$ReleaseTag = \"$TAG\"" "$snapshot/install.ps1" >/dev/null
 grep -F "\$ReleaseCommit = \"$SHA\"" "$snapshot/install.ps1" >/dev/null
 ! grep -E '@CUP_RELEASE_(VERSION|TAG|COMMIT)@' "$snapshot/install.sh" "$snapshot/install.ps1" >/dev/null
 verify_checksum_file_exact "$snapshot" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
-verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-x64 cup-linux-x64 uninstall.sh release.txt SHA256SUMS.common
-verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-arm64 cup-linux-arm64 uninstall.sh release.txt SHA256SUMS.common
+verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-x64 cup-linux-x64 release.txt SHA256SUMS.common
+verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-arm64 cup-linux-arm64 release.txt SHA256SUMS.common
 verify_checksum_file_exact "$snapshot" SHA256SUMS.macos-x64 \
-    cup-macos-x64 uninstall.sh release.txt SHA256SUMS.common
+    cup-macos-x64 release.txt SHA256SUMS.common
 verify_checksum_file_exact "$snapshot" SHA256SUMS.macos-arm64 \
-    cup-macos-arm64 uninstall.sh release.txt SHA256SUMS.common
+    cup-macos-arm64 release.txt SHA256SUMS.common
 verify_checksum_file_exact "$snapshot" SHA256SUMS.windows-x64 \
-    cup-windows-x64.exe uninstall.ps1 release.txt SHA256SUMS.common
+    cup-windows-x64.exe release.txt SHA256SUMS.common
 
 if [ "$GH_REPO" = "$SOURCE_REPOSITORY" ]; then
     release_target=$SHA

@@ -187,7 +187,7 @@ already installed.
 
 All persistent mutations share the runtime lock and the single
 `transaction.txt` path. `runtime_journal.c` owns the physical read, publication
-and identity checks for that file. The package, cup-update and uninstall journal
+and identity checks for that file. The package, update and uninstall journal
 modules keep their own schemas and recovery rules.
 
 This is deliberate: the file lifecycle is shared, but the meaning of each
@@ -210,8 +210,9 @@ implementations of the same filesystem rule.
 The C program owns package/state mutations and the authenticated handoff for
 root-level install, update and uninstall work. Public installers only download
 and verify a release generation before calling the hidden C bootstrap entry
-point. Detached uninstall scripts continue the already-authorized handoff after
-the running executable can no longer complete cleanup itself.
+point. Detached update and uninstall continuation is performed by native copies
+of the cup executable, so platform filesystem identity and cleanup rules remain
+inside the C system layer.
 
 Repository scripts own development tasks:
 
@@ -220,7 +221,7 @@ scripts/build/          build metadata, binary inspection and finalization
 scripts/dependencies/   pinned dependency prefixes
 scripts/certs/          embedded CA bundle generation and checks
 scripts/ci/             CI preparation and evidence files
-scripts/install/        public transport installers and detached uninstallers
+scripts/install/        public transport installers
 scripts/release/        candidate assembly and publication
 scripts/lib/            safe repository-path frontend used by scripts
 ```
@@ -263,16 +264,17 @@ The C source files are grouped below by responsibility.
 | `command_doctor.c` | read-only diagnosis |
 | `command_repair.c` | ordered recovery and reconstruction |
 | `command_uninstall.c` | uninstall planning and helper launch |
-| `cup_bootstrap.c` | hidden initial installation entry point |
+| `bootstrap.c` | hidden initial installation entry point |
 
 ### `cup update cup` and installed assets
 
 | Module | Responsibility |
 |---|---|
-| `cup_assets.c` | validate the installed cup generation |
-| `cup_update.c` | discover, download and stage a cup release |
-| `cup_update_helper.c` | detached replacement of cup assets |
-| `cup_update_journal.c` | executable-update schema and recovery |
+| `assets.c` | validate the installed asset generation |
+| `self_update.c` | discover, download and stage a cup release |
+| `update_helper.c` | detached replacement of installed assets |
+| `update_journal.c` | executable-update schema and recovery |
+| `uninstall_helper.c` | native root detach and cleanup |
 | `uninstall_journal.c` | uninstall schema and recovery |
 | `runtime_journal.c` | shared `transaction.txt` file operations |
 | `release_metadata.c` | `release.txt` parsing and version comparison |

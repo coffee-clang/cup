@@ -429,7 +429,7 @@ try {
     $binaryAsset = 'cup-windows-x64.exe'
     $platformSums = 'SHA256SUMS.windows-x64'
     $assets = @(
-        $binaryAsset, 'uninstall.ps1', 'release.txt', $platformSums,
+        $binaryAsset, 'release.txt', $platformSums,
         'SHA256SUMS.common', 'packages.cfg', 'install.cfg', 'install.sh', 'install.ps1')
     foreach ($asset in $assets) {
         Receive-Asset $asset
@@ -437,7 +437,7 @@ try {
     Assert-ChecksumDocument 'SHA256SUMS.common' @(
         'packages.cfg', 'install.cfg', 'install.sh', 'install.ps1')
     Assert-ChecksumDocument $platformSums @(
-        $binaryAsset, 'uninstall.ps1', 'release.txt', 'SHA256SUMS.common')
+        $binaryAsset, 'release.txt', 'SHA256SUMS.common')
     Assert-ReleaseMetadata
 
     $bootstrap = Join-Path $Work $binaryAsset

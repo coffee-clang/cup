@@ -27,7 +27,7 @@ prepare_command_environment() {
     export TEST_HOME DEV_ROOT CUP
 
     assert_file "$CUP"
-    mkdir -p "$TEST_HOME" "$DEV_ROOT/config" "$DEV_ROOT/scripts/install"
+    mkdir -p "$TEST_HOME" "$DEV_ROOT/config"
     cp "$PROJECT_ROOT/config/packages.cfg" "$DEV_ROOT/config/packages.cfg"
     cp "$PROJECT_ROOT/config/install.cfg" "$DEV_ROOT/config/install.cfg"
 
@@ -35,9 +35,6 @@ prepare_command_environment() {
         fail 'POSIX command environment cannot target Windows'
     fi
 
-    cp "$PROJECT_ROOT/scripts/install/uninstall-cup.sh" \
-        "$DEV_ROOT/scripts/install/uninstall-cup.sh"
-    chmod +x "$DEV_ROOT/scripts/install/uninstall-cup.sh"
 }
 
 run_cup() {
@@ -50,6 +47,19 @@ run_cup_expect_failure() (
     if run_cup "$@" >"$output_file" 2>&1; then
         fail "command unexpectedly succeeded: cup $*"
     fi
+)
+
+run_cup_expect_status() (
+    output_file=$1
+    expected_status=$2
+    shift 2
+
+    set +e
+    run_cup "$@" >"$output_file" 2>&1
+    status=$?
+    set -e
+    [ "$status" -eq "$expected_status" ] ||
+        fail "cup $* returned status $status, expected $expected_status"
 )
 
 assert_cup_healthy() (

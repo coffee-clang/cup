@@ -35,7 +35,6 @@ require_real_directory "$COMMON"
 require_real_directory "$FINALIZED"
 validate_release_file "$COMMON/release.txt"
 require_nonempty_file "$COMMON/SHA256SUMS.common"
-for asset in uninstall.sh uninstall.ps1; do require_nonempty_file "$COMMON/$asset"; done
 require_nonempty_file "$FINALIZED/build-config.txt"
 require_nonempty_file "$FINALIZED/release.txt"
 require_nonempty_file "$FINALIZED/binary-inspection.txt"
@@ -46,11 +45,9 @@ cmp -s "$COMMON/release.txt" "$FINALIZED/release.txt" ||
 if [ "$PLATFORM" = windows-x64 ]; then
     source_binary=$FINALIZED/bin/cup.exe
     public_binary=cup-$PLATFORM.exe
-    uninstall_asset=uninstall.ps1
 else
     source_binary=$FINALIZED/bin/cup
     public_binary=cup-$PLATFORM
-    uninstall_asset=uninstall.sh
 fi
 require_nonempty_file "$source_binary"
 require_real_directory "$FINALIZED/symbols"
@@ -81,7 +78,6 @@ cup_path_copy_file "$source_binary" "$PUBLIC/$public_binary" "$public_mode" repl
 
 {
     printf '%s  %s\n' "$(hash_file "$PUBLIC/$public_binary")" "$public_binary"
-    printf '%s  %s\n' "$(hash_file "$COMMON/$uninstall_asset")" "$uninstall_asset"
     printf '%s  release.txt\n' "$(hash_file "$COMMON/release.txt")"
     printf '%s  SHA256SUMS.common\n' "$(hash_file "$COMMON/SHA256SUMS.common")"
 } | cup_path_write_file "$PUBLIC/SHA256SUMS.$PLATFORM" 0644 replace
@@ -99,11 +95,10 @@ VERIFY=$OUTPUT_STAGING/.verify
 cup_path_prepare_child_directory "$BUILD_ROOT" "$VERIFY" "checksum verification directory"
 cup_path_copy_file "$PUBLIC/$public_binary" "$VERIFY/$public_binary" "$public_mode" replace
 cup_path_copy_file "$PUBLIC/SHA256SUMS.$PLATFORM" "$VERIFY/SHA256SUMS.$PLATFORM" 0644 replace
-cup_path_copy_file "$COMMON/$uninstall_asset" "$VERIFY/$uninstall_asset" 0644 replace
 cup_path_copy_file "$COMMON/release.txt" "$VERIFY/release.txt" 0644 replace
 cup_path_copy_file "$COMMON/SHA256SUMS.common" "$VERIFY/SHA256SUMS.common" 0644 replace
 verify_checksum_file_exact "$VERIFY" "SHA256SUMS.$PLATFORM" \
-    "$public_binary" "$uninstall_asset" release.txt SHA256SUMS.common
+    "$public_binary" release.txt SHA256SUMS.common
 cup_path_remove_child_tree "$BUILD_ROOT" "$VERIFY" 'checksum verification directory'
 
 validate_exact_directory_files "$PUBLIC" "$public_binary" "SHA256SUMS.$PLATFORM"

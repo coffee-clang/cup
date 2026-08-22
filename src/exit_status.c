@@ -5,7 +5,7 @@
 #include "exit_status.h"
 
 /* Keep this mapping explicit so internal enum changes cannot alter the public process contract. */
-int cup_error_to_exit_status(CupError error) {
+int exit_status_from_error(CupError error) {
     switch (error) {
         case CUP_OK:
         case CUP_ERR_ALREADY_INSTALLED:

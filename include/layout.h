@@ -11,6 +11,7 @@
 #include "constants.h"
 #include "error.h"
 #include "package.h"
+#include "system.h"
 
 typedef enum {
     LAYOUT_RUNTIME_MISSING,
@@ -40,10 +41,14 @@ CupError layout_get_install_policy_path(char *buffer, size_t size);
 CupError layout_get_preferences_path(char *buffer, size_t size);
 CupError layout_get_common_checksums_path(char *buffer, size_t size);
 CupError layout_get_platform_checksums_path(char *buffer, size_t size);
-CupError layout_get_uninstall_path(char *buffer, size_t size);
 CupError layout_get_lock_path(char *buffer, size_t size);
+CupError layout_build_lock_path(char *buffer, size_t size, const char *root);
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *root);
+/* Validate one explicit current-user managed root without normal handoff admission. Internal
+ * helpers use this only after accepting inherited exclusive authority. */
+CupError layout_validate_root_at(const char *root, SystemPathIdentity *identity);
 CupError layout_get_transaction_path(char *buffer, size_t size);
-CupError layout_get_cup_update_helper_path(char *buffer, size_t size);
+CupError layout_get_update_helper_path(char *buffer, size_t size);
 CupError layout_get_binary_path(char *buffer, size_t size);
 
 /* Canonical paths derived from one already validated package identity. */
@@ -62,7 +67,7 @@ CupError layout_check_runtime(size_t *missing_count);
 CupError layout_ensure_root(void);
 CupError layout_ensure_runtime(void);
 CupError layout_ensure_config(void);
-CupError layout_ensure_cup_assets(void);
+CupError layout_ensure_assets(void);
 CupError layout_ensure_package_parent(const PackageIdentity *identity);
 CupError layout_ensure_cache_parent(const PackageIdentity *identity);
 

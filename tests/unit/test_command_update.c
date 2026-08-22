@@ -5,7 +5,7 @@
 
 #include "command_context.h"
 #include "commands.h"
-#include "cup_update.h"
+#include "self_update.h"
 #include "package_selector.h"
 #include "package_install.h"
 #include "state.h"
@@ -37,8 +37,8 @@ static int scope_default_moved[MAX_SCOPE_CALLS];
 static ScopeCall scope_calls[MAX_SCOPE_CALLS];
 static size_t scope_call_count;
 static int context_end_calls;
-static CupError cup_update_command_result;
-static int cup_update_calls;
+static CupError self_update_result;
+static int self_update_calls;
 
 /* Fixture lifecycle and local construction helpers. */
 
@@ -51,8 +51,8 @@ static void reset_scenario(void) {
     load_result = CUP_OK;
     scope_call_count = 0;
     context_end_calls = 0;
-    cup_update_command_result = CUP_OK;
-    cup_update_calls = 0;
+    self_update_result = CUP_OK;
+    self_update_calls = 0;
     for (i = 0; i < MAX_SCOPE_CALLS; ++i) {
         scope_results[i] = CUP_OK;
         scope_installed[i] = 0;
@@ -261,9 +261,9 @@ CupError package_install_update_scope(const char *component,
     return scope_results[index];
 }
 
-CupError cup_update_start(void) {
-    cup_update_calls++;
-    return cup_update_command_result;
+CupError self_update_start(void) {
+    self_update_calls++;
+    return self_update_result;
 }
 
 static void assert_scope(size_t index,
@@ -285,16 +285,16 @@ static void assert_scope(size_t index,
 
 static void test_global_selector(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(NULL));
-    TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
+    TEST_ASSERT_EQUAL_INT(0, self_update_calls);
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(""));
-    TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
+    TEST_ASSERT_EQUAL_INT(0, self_update_calls);
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("cup"));
-    TEST_ASSERT_EQUAL_INT(1, cup_update_calls);
+    TEST_ASSERT_EQUAL_INT(1, self_update_calls);
     TEST_ASSERT_EQUAL_INT(0, context_end_calls);
 
 }
@@ -356,12 +356,12 @@ static void test_global_excludes_cup(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(NULL));
     TEST_ASSERT_EQUAL_INT(2, (int)scope_call_count);
-    TEST_ASSERT_EQUAL_INT(0, cup_update_calls);
+    TEST_ASSERT_EQUAL_INT(0, self_update_calls);
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("cup"));
     TEST_ASSERT_EQUAL_INT(0, (int)scope_call_count);
-    TEST_ASSERT_EQUAL_INT(1, cup_update_calls);
+    TEST_ASSERT_EQUAL_INT(1, self_update_calls);
 }
 
 static void test_invalid_state(void) {

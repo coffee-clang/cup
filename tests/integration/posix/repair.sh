@@ -163,22 +163,25 @@ cat > "$transaction_file" <<'JOURNAL'
 format=1
 operation=uninstall
 phase=scheduled
-temporary_name=.cup-uninstall.fixture
+temporary_name=.cup-uninstall-fixture
 token=fixture
-stage=parent-wait
+stage=handoff
 error=0
 JOURNAL
+stale_uninstall_helper="$TEST_HOME/.cup-uninstall-helper-fixture"
+printf 'stale helper\n' > "$stale_uninstall_helper"
 output=$(run_cup repair)
 assert_contains "$output" \
-    "Cancelled interrupted cup uninstall in phase 'scheduled' during 'parent-wait'."
+    "Cancelled interrupted cup uninstall in phase 'scheduled' during 'handoff'."
 assert_missing "$transaction_file"
+assert_missing "$stale_uninstall_helper"
 
 # A failed uninstall whose detached sibling is gone can be explicitly acknowledged by repair.
 cat > "$transaction_file" <<'JOURNAL'
 format=1
 operation=uninstall
 phase=failed
-temporary_name=.cup-uninstall.fixture
+temporary_name=.cup-uninstall-fixture
 token=fixture
 stage=handoff
 error=7

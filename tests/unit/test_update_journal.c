@@ -1,7 +1,7 @@
 /* Exercises the strict deferred cup update journal and recovery lifecycle. */
 
-#include "cup_assets.h"
-#include "cup_update_journal.h"
+#include "assets.h"
+#include "update_journal.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
@@ -31,8 +31,8 @@ static CupError permission_result;
 static CupError remove_file_result;
 static CupError sync_parent_result;
 static CupError remove_tree_result;
-static int cup_assets_valid;
-static CupError cup_assets_inspect_result;
+static int assets_valid;
+static CupError assets_inspect_result;
 static int remove_tree_calls;
 static int executable_calls;
 static int read_only_calls;
@@ -44,11 +44,11 @@ static int replaced_path_count;
 /* Fixture lifecycle and local construction helpers. */
 
 static CupError clear_runtime_journal(void) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
+    UpdateJournal journal;
+    UpdateJournalStatus status;
     CupError err;
 
-    err = cup_update_journal_load(&journal, &status);
+    err = update_journal_load(&journal, &status);
     if (err == CUP_OK && status == CUP_UPDATE_JOURNAL_LOADED) {
         err = runtime_journal_clear_if_identity(&journal.file_identity);
     }
@@ -56,12 +56,12 @@ static CupError clear_runtime_journal(void) {
 }
 
 
-static CupError begin_cup_update_journal_for_test(const char *temporary_path,
+static CupError begin_update_journal_for_test(const char *temporary_path,
                                                   const char *token,
                                                   const char *version) {
-    CupUpdateJournal created;
+    UpdateJournal created;
 
-    return cup_update_journal_begin(temporary_path, token, version, &created);
+    return update_journal_begin(temporary_path, token, version, &created);
 }
 
 static CupError buffer_write_result(int written, size_t size) {
@@ -130,8 +130,8 @@ static void reset_scenario(void) {
     remove_file_result = CUP_OK;
     sync_parent_result = CUP_OK;
     remove_tree_result = CUP_OK;
-    cup_assets_valid = 1;
-    cup_assets_inspect_result = CUP_OK;
+    assets_valid = 1;
+    assets_inspect_result = CUP_OK;
     remove_tree_calls = 0;
     executable_calls = 0;
     read_only_calls = 0;
@@ -172,10 +172,6 @@ CupError layout_get_staging_dir(char *buffer, size_t size) {
 
 CupError layout_get_binary_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "bin/" CUP_BINARY_FILENAME);
-}
-
-CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "bin/" CUP_UNINSTALL_FILENAME);
 }
 
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
@@ -393,14 +389,14 @@ CupError filesystem_remove_tree(const char *path) {
     return CUP_OK;
 }
 
-CupError cup_assets_inspect(CupAssetsInspection *inspection) {
+CupError assets_inspect(AssetsInspection *inspection) {
     memset(inspection, 0, sizeof(*inspection));
-    return cup_assets_inspect_result;
+    return assets_inspect_result;
 }
 
-int cup_assets_installed_is_valid(const CupAssetsInspection *inspection) {
+int assets_installed_is_valid(const AssetsInspection *inspection) {
     (void)inspection;
-    return cup_assets_valid;
+    return assets_valid;
 }
 
 static void make_staging(const char *name, char *path, size_t size) {
@@ -431,8 +427,6 @@ static void create_destination_files(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     write_file(path, "new");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(path, sizeof(path)));
-    write_file(path, "new");
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
     write_file(path, "new");
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_package_catalog_path(path, sizeof(path)));
@@ -443,7 +437,7 @@ static void create_destination_files(void) {
     write_file(path, "new");
 }
 
-static void create_committed_generation(CupUpdateJournal *journal,
+static void create_committed_generation(UpdateJournal *journal,
                                         const char *staging) {
     char binary[MAX_PATH_LEN];
 
@@ -451,12 +445,11 @@ static void create_committed_generation(CupUpdateJournal *journal,
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
     strcpy(journal->version, "1.2.3");
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_write_generation_marker(staging, journal->version, binary));
+        CUP_OK, update_write_generation_marker(staging, journal->version, binary));
 }
 
 static void create_backups(const char *staging) {
     const char *names[] = {CUP_UPDATE_BINARY_OLD,
-                           CUP_UPDATE_UNINSTALL_OLD,
                            CUP_UPDATE_PLATFORM_CHECKSUMS_OLD,
                            CUP_UPDATE_PACKAGES_OLD,
                            CUP_UPDATE_INSTALL_POLICY_OLD,
@@ -472,7 +465,6 @@ static void create_backups(const char *staging) {
 
 static void create_absent_markers(const char *staging) {
     const char *names[] = {CUP_UPDATE_BINARY_ABSENT,
-                           CUP_UPDATE_UNINSTALL_ABSENT,
                            CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT,
                            CUP_UPDATE_PACKAGES_ABSENT,
                            CUP_UPDATE_INSTALL_POLICY_ABSENT,
@@ -491,7 +483,7 @@ static void create_absent_markers(const char *staging) {
  * outcomes.
  */
 
-static void set_journal_identity(CupUpdateJournal *journal) {
+static void set_journal_identity(UpdateJournal *journal) {
     TEST_ASSERT_NOT_NULL(journal);
     journal->file_identity.volume = 0;
     journal->file_identity.object = 0;
@@ -499,38 +491,38 @@ static void set_journal_identity(CupUpdateJournal *journal) {
     journal->file_identity.valid = 1;
 }
 
-static void mark_commit_started(CupUpdateJournal *journal) {
+static void mark_commit_started(UpdateJournal *journal) {
     TEST_ASSERT_NOT_NULL(journal);
     journal->phase = CUP_UPDATE_PHASE_COMMITTING;
 }
 
 static void test_model_and_begin(void) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
+    UpdateJournal journal;
+    UpdateJournalStatus status;
     char staging[MAX_PATH_LEN];
     char path[MAX_PATH_LEN];
 
-    cup_update_journal_init(NULL);
-    cup_update_journal_init(&journal);
+    update_journal_init(NULL);
+    update_journal_init(&journal);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_SCHEDULED, journal.phase);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_NONE, journal.recovery);
-    TEST_ASSERT_EQUAL_STRING("scheduled", cup_update_phase_name(CUP_UPDATE_PHASE_SCHEDULED));
-    TEST_ASSERT_EQUAL_STRING("committing", cup_update_phase_name(CUP_UPDATE_PHASE_COMMITTING));
-    TEST_ASSERT_EQUAL_STRING("failed", cup_update_phase_name(CUP_UPDATE_PHASE_FAILED));
-    TEST_ASSERT_EQUAL_STRING("invalid", cup_update_phase_name((CupUpdatePhase)99));
-    TEST_ASSERT_EQUAL_STRING("none", cup_update_failure_recovery_name(CUP_UPDATE_FAILURE_NONE));
+    TEST_ASSERT_EQUAL_STRING("scheduled", update_phase_name(CUP_UPDATE_PHASE_SCHEDULED));
+    TEST_ASSERT_EQUAL_STRING("committing", update_phase_name(CUP_UPDATE_PHASE_COMMITTING));
+    TEST_ASSERT_EQUAL_STRING("failed", update_phase_name(CUP_UPDATE_PHASE_FAILED));
+    TEST_ASSERT_EQUAL_STRING("invalid", update_phase_name((UpdatePhase)99));
+    TEST_ASSERT_EQUAL_STRING("none", update_failure_recovery_name(CUP_UPDATE_FAILURE_NONE));
     TEST_ASSERT_EQUAL_STRING(
-        "pending", cup_update_failure_recovery_name(CUP_UPDATE_FAILURE_PENDING));
+        "pending", update_failure_recovery_name(CUP_UPDATE_FAILURE_PENDING));
     TEST_ASSERT_EQUAL_STRING("rolled-back",
-                             cup_update_failure_recovery_name(CUP_UPDATE_FAILURE_ROLLED_BACK));
+                             update_failure_recovery_name(CUP_UPDATE_FAILURE_ROLLED_BACK));
     TEST_ASSERT_EQUAL_STRING(
-        "invalid", cup_update_failure_recovery_name((CupUpdateFailureRecovery)99));
+        "invalid", update_failure_recovery_name((UpdateFailureRecovery)99));
 
     make_staging("cup-update-begin.tmp", staging, sizeof(staging));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        begin_cup_update_journal_for_test(staging, "u1234-cup-update-begin.tmp", "1.2.3"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+        begin_update_journal_for_test(staging, "u1234-cup-update-begin.tmp", "1.2.3"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_LOADED, status);
     TEST_ASSERT_EQUAL_STRING("cup-update-begin.tmp", journal.temporary_name);
     TEST_ASSERT_EQUAL_STRING("u1234-cup-update-begin.tmp", journal.token);
@@ -539,71 +531,71 @@ static void test_model_and_begin(void) {
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_NONE, journal.recovery);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          cup_update_journal_get_staging_path(&journal, path, sizeof(path)));
+                          update_journal_get_staging_path(&journal, path, sizeof(path)));
     TEST_ASSERT_EQUAL_STRING(staging, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          cup_update_journal_set_phase(&journal, CUP_UPDATE_PHASE_COMMITTING, 0));
+                          update_journal_set_phase(&journal, CUP_UPDATE_PHASE_COMMITTING, 0));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          cup_update_journal_set_phase(&journal, CUP_UPDATE_PHASE_FAILED, 19));
+                          update_journal_set_phase(&journal, CUP_UPDATE_PHASE_FAILED, 19));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_PENDING, journal.recovery);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_FAILED, journal.phase);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_PENDING, journal.recovery);
     TEST_ASSERT_EQUAL_INT(19, journal.error_code);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_set_phase(NULL, CUP_UPDATE_PHASE_FAILED, 1));
+                          update_journal_set_phase(NULL, CUP_UPDATE_PHASE_FAILED, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_set_phase(&journal, (CupUpdatePhase)99, 1));
+                          update_journal_set_phase(&journal, (UpdatePhase)99, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_set_phase(&journal, CUP_UPDATE_PHASE_FAILED, 0));
+                          update_journal_set_phase(&journal, CUP_UPDATE_PHASE_FAILED, 0));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
-        begin_cup_update_journal_for_test(staging, "u1234-cup-update-begin.tmp", "1.2.4"));
+        begin_update_journal_for_test(staging, "u1234-cup-update-begin.tmp", "1.2.4"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, clear_runtime_journal());
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_MISSING, status);
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        begin_cup_update_journal_for_test("/tmp/not-a-cup-update", "token", "1.2.3"));
+        begin_update_journal_for_test("/tmp/not-a-cup-update", "token", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(NULL, "token", "1.2.3"));
+                          begin_update_journal_for_test(NULL, "token", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test("", "token", "1.2.3"));
+                          begin_update_journal_for_test("", "token", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(staging, NULL, "1.2.3"));
+                          begin_update_journal_for_test(staging, NULL, "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(staging, "", "1.2.3"));
+                          begin_update_journal_for_test(staging, "", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(
+                          begin_update_journal_for_test(
                               staging, "u1234-cup-update-other.tmp", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(staging, "bad token", "1.2.3"));
+                          begin_update_journal_for_test(staging, "bad token", "1.2.3"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(
+                          begin_update_journal_for_test(
                               staging, "u1234-cup-update-begin.tmp", NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(
+                          begin_update_journal_for_test(
                               staging, "u1234-cup-update-begin.tmp", ""));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          begin_cup_update_journal_for_test(staging,
+                          begin_update_journal_for_test(staging,
                                                    "u1234-cup-update-begin.tmp",
                                                    "01.2.3"));
 }
 
 
 static void test_token_character_domain(void) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
+    UpdateJournal journal;
+    UpdateJournalStatus status;
     char staging[MAX_PATH_LEN];
 
     make_staging("cup-update-token_chars.tmp", staging, sizeof(staging));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        begin_cup_update_journal_for_test(
+        begin_update_journal_for_test(
             staging, "A_0-cup-update-token_chars.tmp", "0.0.0"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_LOADED, status);
     TEST_ASSERT_EQUAL_STRING("A_0-cup-update-token_chars.tmp", journal.token);
     TEST_ASSERT_EQUAL_STRING("0.0.0", journal.version);
@@ -611,27 +603,27 @@ static void test_token_character_domain(void) {
 }
 
 static void test_public_path_contracts(void) {
-    CupUpdateJournal journal;
+    UpdateJournal journal;
     char buffer[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_get_staging_path(NULL, buffer, sizeof(buffer)));
+                          update_journal_get_staging_path(NULL, buffer, sizeof(buffer)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_get_staging_path(&journal, NULL, sizeof(buffer)));
+                          update_journal_get_staging_path(&journal, NULL, sizeof(buffer)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_get_staging_path(&journal, buffer, 0));
+                          update_journal_get_staging_path(&journal, buffer, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_get_staging_path(
+                          update_journal_get_staging_path(
                               &journal, buffer, sizeof(buffer)));
 }
 
 static void assert_invalid_journal(const char *text) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status = CUP_UPDATE_JOURNAL_MISSING;
+    UpdateJournal journal;
+    UpdateJournalStatus status = CUP_UPDATE_JOURNAL_MISSING;
 
     write_journal(text);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, update_journal_load(&journal, &status));
 }
 
 static void test_strict_load(void) {
@@ -692,12 +684,12 @@ static void test_strict_load(void) {
         "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\n",
         "not-a-key-value\n"
     };
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
+    UpdateJournal journal;
+    UpdateJournalStatus status;
     size_t i;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_update_journal_load(NULL, &status));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, cup_update_journal_load(&journal, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_journal_load(NULL, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_journal_load(&journal, NULL));
 
     for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
         assert_invalid_journal(invalid[i]);
@@ -711,7 +703,7 @@ static void test_strict_load(void) {
             "version=1.2.3\nerror=0\nrecovery=none\0\n";
         write_journal_bytes(hidden_nul, sizeof(hidden_nul) - 1);
         TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_TRANSACTION, cup_update_journal_load(&journal, &status));
+            CUP_ERR_TRANSACTION, update_journal_load(&journal, &status));
     }
 
     assert_invalid_journal("format=1\noperation=cup-update\nphase=scheduled\n"
@@ -724,7 +716,7 @@ static void test_strict_load(void) {
     write_journal("format=1\noperation=cup-update\nphase=failed\n"
                   "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\n"
                   "error=19\nrecovery=pending\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_FAILED, journal.phase);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_PENDING, journal.recovery);
 }
@@ -737,25 +729,25 @@ static void test_persistent_writes_map_replace_state(void) {
     replace_state = SYSTEM_COMMIT_NOT_APPLIED;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
-        begin_cup_update_journal_for_test(staging,
+        begin_update_journal_for_test(staging,
                                  "u-cup-update-replace-state",
                                  "1.0.0"));
 
     replace_state = SYSTEM_COMMIT_APPLIED;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_COMMIT,
-        begin_cup_update_journal_for_test(staging,
+        begin_update_journal_for_test(staging,
                                  "u-cup-update-replace-state",
                                  "1.0.0"));
 }
 
 static void test_generation_marker_preserves_uncertain_commit(void) {
-    CupUpdateJournal journal;
+    UpdateJournal journal;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     strcpy(journal.version, "1.2.3");
     make_staging("cup-update-marker-sync-failure", staging, sizeof(staging));
     create_destination_files();
@@ -765,17 +757,17 @@ static void test_generation_marker_preserves_uncertain_commit(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_COMMIT,
-        cup_update_write_generation_marker(staging, journal.version, binary));
+        update_write_generation_marker(staging, journal.version, binary));
     TEST_ASSERT_TRUE(test_access_exists(marker));
 }
 
 static void test_recover_scheduled_discards_staging_without_restore(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-scheduled");
     make_staging(journal.temporary_name, staging, sizeof(staging));
@@ -786,7 +778,7 @@ static void test_recover_scheduled_discards_staging_without_restore(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(
+        update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     assert_file_text(binary, "unchanged");
@@ -796,13 +788,13 @@ static void test_recover_scheduled_discards_staging_without_restore(void) {
 }
 
 static void test_recover_committed(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-committed");
@@ -812,7 +804,7 @@ static void test_recover_committed(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_FINALIZED, result);
     TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
@@ -822,13 +814,13 @@ static void test_recover_committed(void) {
 }
 
 static void test_recover_committed_ignores_staging_cleanup_failure(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-committed-cleanup-failure");
@@ -839,7 +831,7 @@ static void test_recover_committed_ignores_staging_cleanup_failure(void) {
     remove_tree_result = CUP_ERR_FILESYSTEM;
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_FINALIZED, result);
     TEST_ASSERT_EQUAL_INT(1, remove_tree_calls);
@@ -849,12 +841,12 @@ static void test_recover_committed_ignores_staging_cleanup_failure(void) {
 }
 
 static void test_recover_rollback(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-rollback");
@@ -864,29 +856,29 @@ static void test_recover_rollback(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     assert_file_text(path, "old");
     TEST_ASSERT_TRUE(!test_access_exists(staging));
-    TEST_ASSERT_EQUAL_INT(CUP_UNINSTALL_EXECUTABLE ? 2 : 1, executable_calls);
-    TEST_ASSERT_EQUAL_INT(5, read_only_calls);
-    TEST_ASSERT_EQUAL_INT(6, writable_calls);
+    TEST_ASSERT_EQUAL_INT(1, executable_calls);
+    TEST_ASSERT_EQUAL_INT(4, read_only_calls);
+    TEST_ASSERT_EQUAL_INT(5, writable_calls);
     TEST_ASSERT_EQUAL_INT(0, replaced_path_count);
-    TEST_ASSERT_EQUAL_INT(6, copy_calls);
+    TEST_ASSERT_EQUAL_INT(5, copy_calls);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     TEST_ASSERT_EQUAL_STRING(path, copied_paths[copy_calls - 1]);
 }
 
 static void test_recover_initial_install_rollback(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
-    char paths[6][MAX_PATH_LEN];
+    char paths[5][MAX_PATH_LEN];
     size_t i;
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-initial-rollback");
@@ -894,22 +886,21 @@ static void test_recover_initial_install_rollback(void) {
     create_absent_markers(staging);
     create_destination_files();
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(paths[0], sizeof(paths[0])));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(paths[1], sizeof(paths[1])));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_get_platform_checksums_path(paths[2], sizeof(paths[2])));
+                          layout_get_platform_checksums_path(paths[1], sizeof(paths[1])));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_get_package_catalog_path(paths[3], sizeof(paths[3])));
+                          layout_get_package_catalog_path(paths[2], sizeof(paths[2])));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_get_install_policy_path(paths[4], sizeof(paths[4])));
+                          layout_get_install_policy_path(paths[3], sizeof(paths[3])));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_get_common_checksums_path(paths[5], sizeof(paths[5])));
+                          layout_get_common_checksums_path(paths[4], sizeof(paths[4])));
 
     /* A failed initial install may have created only part of the final asset set. */
-    TEST_ASSERT_EQUAL_INT(0, test_unlink(paths[5]));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(paths[4]));
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     for (i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
@@ -920,13 +911,13 @@ static void test_recover_initial_install_rollback(void) {
 }
 
 static void test_recover_rollback_ignores_staging_cleanup_failure(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-rollback-cleanup-failure");
@@ -937,7 +928,7 @@ static void test_recover_rollback_ignores_staging_cleanup_failure(void) {
     remove_tree_result = CUP_ERR_FILESYSTEM;
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
@@ -948,13 +939,13 @@ static void test_recover_rollback_ignores_staging_cleanup_failure(void) {
 }
 
 static void test_recover_preserves_running_binary(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
-    char uninstall[MAX_PATH_LEN];
+    char platform_checksums[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-preserve");
@@ -967,24 +958,25 @@ static void test_recover_preserves_running_binary(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(
+        update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     assert_file_text(binary, "old");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
-    assert_file_text(uninstall, "old");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, layout_get_platform_checksums_path(platform_checksums, sizeof(platform_checksums)));
+    assert_file_text(platform_checksums, "old");
     TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
 static void test_recover_rejects_running_binary_replacement(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
-    char uninstall[MAX_PATH_LEN];
+    char platform_checksums[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     strcpy(journal.temporary_name, "cup-update-preserve-mismatch");
     make_staging(journal.temporary_name, staging, sizeof(staging));
@@ -994,32 +986,33 @@ static void test_recover_rejects_running_binary_replacement(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
-        cup_update_journal_recover(
+        update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_PRESERVE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
     assert_file_text(binary, "new");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(uninstall, sizeof(uninstall)));
-    assert_file_text(uninstall, "new");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, layout_get_platform_checksums_path(platform_checksums, sizeof(platform_checksums)));
+    assert_file_text(platform_checksums, "new");
     TEST_ASSERT_TRUE(test_access_exists(staging));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal_path, sizeof(journal_path)));
     TEST_ASSERT_TRUE(test_access_exists(journal_path));
 }
 
 static void test_failed_recovery_is_acknowledged_by_repair(void) {
-    CupUpdateJournal journal;
-    CupUpdateJournalStatus status;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateJournalStatus status;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
     make_staging("cup-update-failed", staging, sizeof(staging));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        begin_cup_update_journal_for_test(staging, "u-cup-update-failed", "2.0.0"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+        begin_update_journal_for_test(staging, "u-cup-update-failed", "2.0.0"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          cup_update_journal_set_phase(
+                          update_journal_set_phase(
                               &journal, CUP_UPDATE_PHASE_FAILED, 19));
     create_backups(staging);
     create_destination_files();
@@ -1027,10 +1020,10 @@ static void test_failed_recovery_is_acknowledged_by_repair(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(
+        update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, cup_update_journal_load(&journal, &status));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_JOURNAL_LOADED, status);
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_FAILURE_ROLLED_BACK, journal.recovery);
     TEST_ASSERT_TRUE(test_access_exists(staging));
@@ -1038,7 +1031,7 @@ static void test_failed_recovery_is_acknowledged_by_repair(void) {
     remove_tree_result = CUP_OK;
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(
+        update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ACKNOWLEDGED, result);
     TEST_ASSERT_TRUE(!test_access_exists(staging));
@@ -1048,12 +1041,12 @@ static void test_failed_recovery_is_acknowledged_by_repair(void) {
 
 
 static void test_stale_committed_marker_rolls_back(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char binary[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-stale-marker");
@@ -1065,7 +1058,7 @@ static void test_stale_committed_marker_rolls_back(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK, cup_update_journal_recover(
+        CUP_OK, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     assert_file_text(binary, "old");
@@ -1073,14 +1066,14 @@ static void test_stale_committed_marker_rolls_back(void) {
 }
 
 static void test_unreadable_committed_generation_is_preserved(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
     char catalog[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-unreadable-generation");
@@ -1093,7 +1086,7 @@ static void test_unreadable_committed_generation_is_preserved(void) {
     write_journal("journal");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION, cup_update_journal_recover(
+        CUP_ERR_TRANSACTION, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_TRUE(test_access_exists(marker));
@@ -1104,13 +1097,13 @@ static void test_unreadable_committed_generation_is_preserved(void) {
 }
 
 static void test_uninspectable_committed_generation_is_preserved(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
     char journal_path[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-uninspectable-generation");
@@ -1119,10 +1112,10 @@ static void test_uninspectable_committed_generation_is_preserved(void) {
     create_committed_generation(&journal, staging);
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(marker, sizeof(marker), staging, CUP_UPDATE_COMMITTED));
     write_journal("journal");
-    cup_assets_inspect_result = CUP_ERR_FILESYSTEM;
+    assets_inspect_result = CUP_ERR_FILESYSTEM;
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION, cup_update_journal_recover(
+        CUP_ERR_TRANSACTION, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_TRUE(test_access_exists(marker));
@@ -1133,12 +1126,12 @@ static void test_uninspectable_committed_generation_is_preserved(void) {
 }
 
 static void test_malformed_committed_marker_is_preserved(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     strcpy(journal.version, "1.2.3");
     strcpy(journal.temporary_name, "cup-update-malformed-marker");
@@ -1149,18 +1142,18 @@ static void test_malformed_committed_marker_is_preserved(void) {
     write_file(marker, "not-a-generation-marker\n");
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION, cup_update_journal_recover(
+        CUP_ERR_TRANSACTION, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_TRUE(test_access_exists(marker));
 }
 
 static void test_acknowledgement_preserves_staging_until_generation_is_valid(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     set_journal_identity(&journal);
     strcpy(journal.version, "2.0.0");
     strcpy(journal.temporary_name, "cup-update-invalid-ack");
@@ -1168,10 +1161,10 @@ static void test_acknowledgement_preserves_staging_until_generation_is_valid(voi
     journal.recovery = CUP_UPDATE_FAILURE_ROLLED_BACK;
     journal.error_code = 19;
     make_staging(journal.temporary_name, staging, sizeof(staging));
-    cup_assets_valid = 0;
+    assets_valid = 0;
 
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION, cup_update_journal_recover(
+        CUP_ERR_TRANSACTION, update_journal_recover(
             &journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
     TEST_ASSERT_TRUE(test_access_exists(staging));
@@ -1179,17 +1172,17 @@ static void test_acknowledgement_preserves_staging_until_generation_is_valid(voi
 }
 
 static void test_recovery_rejects_invalid_state(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_FINALIZED;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_FINALIZED;
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        cup_update_journal_recover(NULL, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(NULL, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          cup_update_journal_recover(&journal, (CupUpdateRecoveryMode)99, &result));
+                          update_journal_recover(&journal, (UpdateRecoveryMode)99, &result));
 
     mark_commit_started(&journal);
     strcpy(journal.temporary_name, "cup-update-invalid-marker");
@@ -1198,16 +1191,16 @@ static void test_recovery_rejects_invalid_state(void) {
     make_dir(marker);
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
 }
 
 static void test_recovery_maps_restore_failures(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     strcpy(journal.temporary_name, "cup-update-restore-failure");
     make_staging(journal.temporary_name, staging, sizeof(staging));
@@ -1218,22 +1211,22 @@ static void test_recovery_maps_restore_failures(void) {
     copy_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_ROLLBACK,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
 
     copy_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_COMMIT,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
 }
 
 static void test_interrupted_rollback_can_retry_from_intact_backups(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
     char backup[MAX_PATH_LEN];
     char destination[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     set_journal_identity(&journal);
     strcpy(journal.temporary_name, "cup-update-retry-rollback");
@@ -1245,7 +1238,7 @@ static void test_interrupted_rollback_can_retry_from_intact_backups(void) {
     copy_fail_call = 3;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_ROLLBACK,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
 
     TEST_ASSERT_EQUAL_INT(
@@ -1258,17 +1251,17 @@ static void test_interrupted_rollback_can_retry_from_intact_backups(void) {
     copy_calls = 0;
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_ROLLED_BACK, result);
     TEST_ASSERT_TRUE(!test_access_exists(staging));
 }
 
 static void test_recovery_rejects_permission_failure(void) {
-    CupUpdateJournal journal;
-    CupUpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
+    UpdateJournal journal;
+    UpdateRecoveryResult result = CUP_UPDATE_RECOVERY_NONE;
     char staging[MAX_PATH_LEN];
 
-    cup_update_journal_init(&journal);
+    update_journal_init(&journal);
     mark_commit_started(&journal);
     strcpy(journal.temporary_name, "cup-update-permission-failure");
     make_staging(journal.temporary_name, staging, sizeof(staging));
@@ -1279,7 +1272,7 @@ static void test_recovery_rejects_permission_failure(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_COMMIT,
-        cup_update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
+        update_journal_recover(&journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &result));
     TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVERY_NONE, result);
 }
 

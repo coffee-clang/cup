@@ -5,7 +5,7 @@
 
 #include "command_context.h"
 
-#include "cup_assets.h"
+#include "assets.h"
 #include "package_selector.h"
 #include "layout.h"
 #include "interrupt.h"
@@ -50,15 +50,15 @@ static CupError prepare_context(CommandContext *context, const char *target_over
     return resolve_platforms(context, target_override);
 }
 
-static CupError validate_cup_assets(void) {
-    CupAssetsInspection inspection;
-    CupError err = cup_assets_inspect(&inspection);
+static CupError validate_assets(void) {
+    AssetsInspection inspection;
+    CupError err = assets_inspect(&inspection);
 
     if (err != CUP_OK) {
         return err;
     }
-    if (cup_assets_installed_is_valid(&inspection) ||
-        cup_assets_development_is_valid(&inspection)) {
+    if (assets_installed_is_valid(&inspection) ||
+        assets_development_is_valid(&inspection)) {
         return CUP_OK;
     }
     return CUP_ERR_VALIDATION;
@@ -207,7 +207,7 @@ CupError command_context_begin(CommandContext *context,
      * readiness: a concurrent repair may complete, or the runtime may degrade, before ownership is
      * acquired. inspect_locked_runtime() makes the only usable/incomplete decision. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        err = validate_cup_assets();
+        err = validate_assets();
         if (err != CUP_OK) {
             fprintf(stderr,
                     "Error: cup assets are unavailable. "
@@ -240,7 +240,7 @@ CupError command_context_begin(CommandContext *context,
         if (err != CUP_OK) {
             return err;
         }
-        err = validate_cup_assets();
+        err = validate_assets();
         if (err != CUP_OK) {
             return err;
         }
@@ -264,7 +264,7 @@ CupError command_context_begin(CommandContext *context,
          * development assets are revalidated under the final exclusive snapshot before they can
          * authorize runtime initialization. */
         if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-            err = validate_cup_assets();
+            err = validate_assets();
         }
         if (err == CUP_OK) {
             err = initialize_locked_runtime(runtime_status);

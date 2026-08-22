@@ -60,9 +60,7 @@ root or silently choose another root. Familiar names such as `state.txt` or
     SHA256SUMS.common
     SHA256SUMS.<host>
   helpers/
-    cup-update-helper      .exe on Windows
-    uninstall.sh           POSIX
-    uninstall.ps1          Windows
+    update-helper          .exe on Windows
 ```
 
 The installer downloads files elsewhere first. The hidden C bootstrap creates
@@ -306,23 +304,29 @@ The lock coordinates running processes. It is not a recovery record: the
 operating system releases a lock when a process dies, while partially committed
 files may remain. `transaction.txt` records what needs to happen next.
 
+Detached update/uninstall children use a temporary operation handoff so authority
+remains continuous while ownership moves between processes. On Windows this
+handoff is also checked during root admission because the canonical lock lives
+inside the root that uninstall must eventually detach.
+
 ## cup assets
 
 The release verification set is larger than the generation retained in the cup
 root. `release.txt`, the installer scripts and checksum documents authenticate
 the release during bootstrap/update, but are not all persistent runtime assets.
 
-The retained installed generation consists of the main executable, uninstall
-helper, `packages.cfg`, `install.cfg` and the two checksum documents needed by
-the installed asset contract. `SHA256SUMS.common` authenticates catalog/policy
-and installer bytes in the release set; the platform checksum authenticates the
-platform-specific release set.
+The retained installed generation consists of the main executable,
+`packages.cfg`, `install.cfg` and the two checksum documents needed by the
+installed asset contract. `SHA256SUMS.common` authenticates catalog/policy and
+installer bytes in the release set; the platform checksum authenticates the
+executable, `release.txt` and the exact common checksum document used for that
+release.
 
-The native `cup-update-helper` is different. It is derived by copying the current
-executable and may still contain the previous version after a successful cup
-update. It is refreshed before `cup update cup` and can also be rebuilt by
-`repair`. It does not prove root ownership and is not part of the retained
-generation's checksum set.
+The native `update-helper` is different. It is derived by copying the current
+installed executable and may therefore still contain the previous version after
+a successful self-update. It is refreshed before `cup update cup` and can also
+be rebuilt by `repair`. It does not prove root ownership and is not part of the
+release checksum set.
 
 `preferences.txt` is also outside the official generation because it is user
 state.

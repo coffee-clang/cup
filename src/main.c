@@ -9,8 +9,9 @@
 #include "exit_status.h"
 #include "interrupt.h"
 #include "layout.h"
-#include "cup_update_helper.h"
-#include "cup_bootstrap.h"
+#include "update_helper.h"
+#include "bootstrap.h"
+#include "uninstall_helper.h"
 #include "system.h"
 #include "package_selector.h"
 #include "package_archive.h"
@@ -1182,24 +1183,23 @@ int main(int argc, char *argv[]) {
             result = interrupt_enable();
         }
         if (result == CUP_OK) {
-            result = cup_bootstrap_start(argv[2], argv[0]);
+            result = bootstrap_start(argv[2], argv[0]);
         }
         interrupt_disable();
-        status = cup_error_to_exit_status(result);
+        status = exit_status_from_error(result);
         layout_root_snapshot_end();
         return status;
     }
 
-    /* Internal helper mode bypasses the public CLI and runs only the deferred update protocol. */
-    if (argc == 4 && strcmp(argv[1], "--internal-cup-update-helper") == 0) {
-        int status;
-        result = layout_root_snapshot_begin();
-        if (result == CUP_OK) {
-            result = cup_update_helper_run(argv[2], argv[3]);
-        }
-        status = cup_error_to_exit_status(result);
-        layout_root_snapshot_end();
-        return status;
+    /* Internal helper modes bypass the public CLI. Handoff acceptance waits for parent exit and
+     * carries exclusive authority before either helper mutates managed state. */
+    if (argc == 6 && strcmp(argv[1], "--internal-update-helper") == 0) {
+        result = update_helper_run(argv[2], argv[3], argv[4], argv[5]);
+        return exit_status_from_error(result);
+    }
+    if (argc == 7 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
+        result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6]);
+        return exit_status_from_error(result);
     }
     if (argc < 2) {
         print_usage(stderr);
@@ -1227,19 +1227,19 @@ int main(int argc, char *argv[]) {
         return CUP_STATUS_USAGE;
     }
     if (strcmp(command, "help") == 0) {
-        return cup_error_to_exit_status(parse_help(argc, argv));
+        return exit_status_from_error(parse_help(argc, argv));
     }
 
     result = parse_public_command(command, argc, argv, &parsed);
     if (result != CUP_OK) {
-        return cup_error_to_exit_status(result);
+        return exit_status_from_error(result);
     }
 
     /* Doctor diagnoses root candidates itself; every other command receives one root snapshot. */
     if (parsed.kind != PUBLIC_COMMAND_DOCTOR) {
         result = layout_root_snapshot_begin();
         if (result != CUP_OK) {
-            return cup_error_to_exit_status(result);
+            return exit_status_from_error(result);
         }
     }
 
@@ -1249,7 +1249,7 @@ int main(int argc, char *argv[]) {
         if (result != CUP_OK) {
             fprintf(stderr, "Error: native interrupt handling could not be enabled.\n");
             layout_root_snapshot_end();
-            return cup_error_to_exit_status(result);
+            return exit_status_from_error(result);
         }
         interrupt_active = 1;
     }
@@ -1260,7 +1260,7 @@ int main(int argc, char *argv[]) {
         interrupt_disable();
     }
     layout_root_snapshot_end();
-    return cup_error_to_exit_status(result);
+    return exit_status_from_error(result);
 }
 
 #ifdef CUP_COVERAGE_ENTRY

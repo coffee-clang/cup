@@ -20,27 +20,23 @@ write_common_checksums() {
         printf '%s  packages.cfg\n' "$(hash_file "$package_catalog")"
         printf '%s  install.cfg\n' "$(hash_file "$install_policy")"
         printf '%s  install.sh\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup.sh")"
+            "$(hash_file "$PROJECT_ROOT/scripts/install/install.sh")"
         printf '%s  install.ps1\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install-cup-windows.ps1")"
+            "$(hash_file "$PROJECT_ROOT/scripts/install/install.ps1")"
     } > "$destination"
 }
 
-install_cup_assets_fixture() {
+install_assets_fixture() {
     mkdir -p "$TEST_HOME/.cup/bin" "$TEST_HOME/.cup/config" \
         "$TEST_HOME/.cup/helpers"
     cp "$CUP" "$TEST_HOME/.cup/bin/cup"
-    cp "$CUP" "$TEST_HOME/.cup/helpers/cup-update-helper"
+    cp "$CUP" "$TEST_HOME/.cup/helpers/update-helper"
     cp "$DEV_ROOT/config/packages.cfg" "$TEST_HOME/.cup/config/packages.cfg"
     cp "$DEV_ROOT/config/install.cfg" "$TEST_HOME/.cup/config/install.cfg"
-    cp "$DEV_ROOT/scripts/install/uninstall-cup.sh" \
-        "$TEST_HOME/.cup/helpers/uninstall.sh"
     chmod 0755 "$TEST_HOME/.cup/bin/cup" \
-        "$TEST_HOME/.cup/helpers/cup-update-helper"
-    chmod 0555 "$TEST_HOME/.cup/helpers/uninstall.sh"
+        "$TEST_HOME/.cup/helpers/update-helper"
 
     binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-    uninstall_hash=$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")
     base_version=$(sed -n '1p' "$PROJECT_ROOT/VERSION" | tr -d '\r')
     metadata="format=1
 version=$base_version
@@ -54,7 +50,6 @@ commit=abcdef0123456789abcdef0123456789abcdef01
         "$TEST_HOME/.cup/config/install.cfg"
     {
         printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
-        printf '%s  uninstall.sh\n' "$uninstall_hash"
         printf '%s  release.txt\n' "$metadata_hash"
         printf '%s  SHA256SUMS.common\n' \
             "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.common")"
@@ -65,7 +60,7 @@ commit=abcdef0123456789abcdef0123456789abcdef01
         "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 }
 
-install_cup_assets_fixture
+install_assets_fixture
 
 write_generation_marker() {
     staging_path=$1
@@ -75,8 +70,6 @@ write_generation_marker() {
         printf 'format=1\n'
         printf 'version=%s\n' "$version"
         printf 'binary_sha256=%s\n' "$(hash_file "$TEST_HOME/.cup/bin/cup")"
-        printf 'uninstall_sha256=%s\n' \
-            "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")"
         printf 'platform_checksums_sha256=%s\n' \
             "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")"
         printf 'packages_sha256=%s\n' \
@@ -169,7 +162,6 @@ assert_cup_healthy
 copy_update_backups() {
     destination=$1
     cp "$TEST_HOME/.cup/bin/cup" "$destination/binary.old"
-    cp "$TEST_HOME/.cup/helpers/uninstall.sh" "$destination/uninstall.old"
     cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
         "$destination/platform-checksums.old"
     cp "$TEST_HOME/.cup/config/packages.cfg" "$destination/package-catalog.old"
@@ -185,12 +177,12 @@ mkdir -p "$staging"
 copy_update_backups "$staging"
 write_generation_marker "$staging" 0.0.0
 expected_binary_hash=$(hash_file "$staging/binary.old")
-expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
+expected_catalog_hash=$(hash_file "$staging/package-catalog.old")
 expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
 
 chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
-    "$TEST_HOME/.cup/helpers/uninstall.sh"
-printf 'broken uninstall\n' > "$TEST_HOME/.cup/helpers/uninstall.sh"
+    "$TEST_HOME/.cup/config/packages.cfg"
+printf 'broken catalog\n' > "$TEST_HOME/.cup/config/packages.cfg"
 printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
@@ -206,8 +198,8 @@ JOURNAL
 output=$(run_cup repair)
 assert_contains "$output" 'Rolled back interrupted cup update transaction.'
 assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_binary_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
-    "$expected_uninstall_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")" \
+    "$expected_catalog_hash"
 assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
     "$expected_checksums_hash"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
@@ -220,16 +212,16 @@ staging=$TEST_HOME/.cup/staging/cup-update-unsafe-rollback-test
 mkdir -p "$staging"
 copy_update_backups "$staging"
 expected_binary_hash=$(hash_file "$staging/binary.old")
-expected_uninstall_hash=$(hash_file "$staging/uninstall.old")
+expected_catalog_hash=$(hash_file "$staging/package-catalog.old")
 expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
 
 chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
-    "$TEST_HOME/.cup/helpers/uninstall.sh"
+    "$TEST_HOME/.cup/config/packages.cfg"
 printf 'broken binary\n' > "$TEST_HOME/.cup/bin/cup"
-printf 'broken uninstall\n' > "$TEST_HOME/.cup/helpers/uninstall.sh"
+printf 'broken catalog\n' > "$TEST_HOME/.cup/config/packages.cfg"
 printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 broken_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-broken_uninstall_hash=$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")
+broken_catalog_hash=$(hash_file "$TEST_HOME/.cup/config/packages.cfg")
 broken_checksums_hash=$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=1
@@ -247,22 +239,22 @@ output=$(cat "$TMP_ROOT/unsafe-cup-update-repair.out")
 assert_contains "$output" 'interrupted cup update recovery would replace the running executable'
 assert_contains "$output" 'interrupted operation cannot be repaired safely'
 assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$broken_binary_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/helpers/uninstall.sh")" \
-    "$broken_uninstall_hash"
+assert_equals "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")" \
+    "$broken_catalog_hash"
 assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
     "$broken_checksums_hash"
 assert_file "$TEST_HOME/.cup/transaction.txt"
 assert_file "$staging/binary.old"
-assert_file "$staging/uninstall.old"
+assert_file "$staging/package-catalog.old"
 assert_file "$staging/platform-checksums.old"
 
 # Reset the isolated fixture after verifying that repair preserved every file.
 cp "$staging/binary.old" "$TEST_HOME/.cup/bin/cup"
-cp "$staging/uninstall.old" "$TEST_HOME/.cup/helpers/uninstall.sh"
+cp "$staging/package-catalog.old" "$TEST_HOME/.cup/config/packages.cfg"
 cp "$staging/platform-checksums.old" \
     "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 chmod 0755 "$TEST_HOME/.cup/bin/cup"
-chmod 0555 "$TEST_HOME/.cup/helpers/uninstall.sh"
+chmod 0444 "$TEST_HOME/.cup/config/packages.cfg"
 chmod 0444 "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
 rm -f "$TEST_HOME/.cup/transaction.txt"
 rm -rf "$staging"

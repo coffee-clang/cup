@@ -13,15 +13,17 @@
 #include <stdio.h>
 #include <string.h>
 
-static CupError runtime_journal_read(PersistentFileSnapshot *snapshot, int *missing) {
+static CupError runtime_journal_read_at(const char *root,
+                                        PersistentFileSnapshot *snapshot,
+                                        int *missing) {
     char path[MAX_PATH_LEN];
 
-    if (snapshot == NULL || missing == NULL) {
+    if (text_is_empty(root) || snapshot == NULL || missing == NULL) {
         return CUP_ERR_TRANSACTION;
     }
     filesystem_snapshot_release(snapshot);
     *missing = 0;
-    if (layout_get_transaction_path(path, sizeof(path)) != CUP_OK) {
+    if (layout_build_transaction_path(path, sizeof(path), root) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
     return filesystem_snapshot_read(
@@ -30,12 +32,13 @@ static CupError runtime_journal_read(PersistentFileSnapshot *snapshot, int *miss
                : CUP_ERR_TRANSACTION;
 }
 
-CupError runtime_journal_parse(const char *const *ordered_keys,
-                               size_t ordered_key_count,
-                               RuntimeJournalFieldVisitor visitor,
-                               void *userdata,
-                               SystemPathIdentity *identity,
-                               int *missing) {
+CupError runtime_journal_parse_at(const char *root,
+                                  const char *const *ordered_keys,
+                                  size_t ordered_key_count,
+                                  RuntimeJournalFieldVisitor visitor,
+                                  void *userdata,
+                                  SystemPathIdentity *identity,
+                                  int *missing) {
     PersistentFileSnapshot snapshot;
     TextDocumentReader reader;
     char line[MAX_METADATA_LINE_LEN];
@@ -47,14 +50,14 @@ CupError runtime_journal_parse(const char *const *ordered_keys,
     if (missing != NULL) {
         *missing = 0;
     }
-    if (visitor == NULL || identity == NULL || missing == NULL ||
+    if (text_is_empty(root) || visitor == NULL || identity == NULL || missing == NULL ||
         ((ordered_keys == NULL) != (ordered_key_count == 0))) {
         return CUP_ERR_INVALID_INPUT;
     }
 
     filesystem_snapshot_init(&snapshot);
 
-    err = runtime_journal_read(&snapshot, missing);
+    err = runtime_journal_read_at(root, &snapshot, missing);
     if (err != CUP_OK || *missing) {
         return err;
     }
@@ -103,8 +106,28 @@ CupError runtime_journal_parse(const char *const *ordered_keys,
     return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
 }
 
-CupError runtime_journal_publish(const char *temporary_directory,
-                                 const char *temporary_prefix,
+CupError runtime_journal_parse(const char *const *ordered_keys,
+                               size_t ordered_key_count,
+                               RuntimeJournalFieldVisitor visitor,
+                               void *userdata,
+                               SystemPathIdentity *identity,
+                               int *missing) {
+    char root[MAX_PATH_LEN];
+    CupError err = layout_get_root(root, sizeof(root));
+
+    return err == CUP_OK ? runtime_journal_parse_at(root,
+                                                    ordered_keys,
+                                                    ordered_key_count,
+                                                    visitor,
+                                                    userdata,
+                                                    identity,
+                                                    missing)
+                         : err;
+}
+
+CupError runtime_journal_publish_at(const char *root,
+                                    const char *temporary_directory,
+                                    const char *temporary_prefix,
                                  const SystemPathIdentity *expected_identity,
                                  RuntimeJournalWriter writer,
                                  const void *value,
@@ -121,12 +144,13 @@ CupError runtime_journal_publish(const char *temporary_directory,
     if (published_identity != NULL) {
         memset(published_identity, 0, sizeof(*published_identity));
     }
-    if (text_is_empty(temporary_directory) || text_is_empty(temporary_prefix) ||
+    if (text_is_empty(root) || text_is_empty(temporary_directory) ||
+        text_is_empty(temporary_prefix) ||
         writer == NULL || published_identity == NULL ||
         (expected_identity != NULL &&
          (!expected_identity->valid ||
           expected_identity->kind != SYSTEM_PATH_REGULAR_FILE)) ||
-        layout_get_transaction_path(path, sizeof(path)) != CUP_OK) {
+        layout_build_transaction_path(path, sizeof(path), root) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
     memset(&source_identity, 0, sizeof(source_identity));
@@ -188,7 +212,26 @@ CupError runtime_journal_publish(const char *temporary_directory,
     return CUP_ERR_COMMIT;
 }
 
-/* Central command policy for pending package transactions and cup-update journals. */
+CupError runtime_journal_publish(const char *temporary_directory,
+                                 const char *temporary_prefix,
+                                 const SystemPathIdentity *expected_identity,
+                                 RuntimeJournalWriter writer,
+                                 const void *value,
+                                 SystemPathIdentity *published_identity) {
+    char root[MAX_PATH_LEN];
+    CupError err = layout_get_root(root, sizeof(root));
+
+    return err == CUP_OK ? runtime_journal_publish_at(root,
+                                                      temporary_directory,
+                                                      temporary_prefix,
+                                                      expected_identity,
+                                                      writer,
+                                                      value,
+                                                      published_identity)
+                         : err;
+}
+
+/* Central command policy for pending package transactions and update journals. */
 typedef struct {
     RuntimeJournalKind detected;
     int operation_seen;
@@ -211,7 +254,7 @@ static CupError detect_journal_field(const char *key,
         strcmp(value, "update") == 0) {
         detection->detected = RUNTIME_JOURNAL_PACKAGE;
     } else if (strcmp(value, "cup-update") == 0) {
-        detection->detected = RUNTIME_JOURNAL_CUP_UPDATE;
+        detection->detected = RUNTIME_JOURNAL_UPDATE;
     } else if (strcmp(value, "uninstall") == 0) {
         detection->detected = RUNTIME_JOURNAL_UNINSTALL;
     } else {
@@ -276,7 +319,7 @@ CupError runtime_journal_require_none(void) {
     if (kind == RUNTIME_JOURNAL_MISSING) {
         return CUP_OK;
     }
-    if (kind == RUNTIME_JOURNAL_CUP_UPDATE) {
+    if (kind == RUNTIME_JOURNAL_UPDATE) {
         fprintf(stderr,
                 "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n");
     } else if (kind == RUNTIME_JOURNAL_UNINSTALL) {

@@ -204,15 +204,6 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, relative);
 }
 
-CupError layout_get_uninstall_path(char *buffer, size_t size) {
-    char relative[MAX_PATH_LEN];
-
-    if (text_format(relative, sizeof(relative), "bin/%s", CUP_UNINSTALL_FILENAME) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return path_join(buffer, size, root, relative);
-}
-
 CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "checksums.txt");
 }

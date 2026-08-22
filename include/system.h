@@ -57,31 +57,62 @@ typedef enum {
     SYSTEM_LOCK_EXCLUSIVE
 } SystemLockMode;
 
-/* Lock handle. Initialize storage to zero before first acquisition and never reacquire while
- * active. */
+/* Lock handle. Retaining the acquired mode lets handoff code verify that an active lock really
+ * carries exclusive mutation authority instead of relying on a caller-side assertion. Initialize
+ * storage to zero before first acquisition and never reacquire while active. */
+typedef struct {
+    intptr_t handle;
+    SystemLockMode mode;
+    int active;
+} SystemLock;
+
+/* Temporary exclusive authority used while one process hands an operation to another.
+ * POSIX carries the original lock open-file description across exec. Windows uses a named
+ * per-user kernel object because LockFileEx ownership cannot be transferred between processes. */
 typedef struct {
     intptr_t handle;
     int active;
-} SystemLock;
+} SystemHandoff;
 
 /* Process and user environment. */
 void system_set_restrictive_umask(void);
 CupError system_get_home_dir(char *buffer, size_t size);
 unsigned long system_get_process_id(void);
 
-/*
- * Start detached helpers that must outlive the current cup process. All paths have already been
- * validated by the calling command. Uninstall must own lock_path before acknowledging the handoff
- * and retain that authority until the canonical root is detached, so repair cannot race the
- * pre-detach helper protocol.
- */
-CupError system_start_uninstall(const char *cup_root,
-                                const char *uninstall_script,
-                                const char *detached_root,
-                                const char *lock_path);
-CupError system_start_cup_update_helper(const char *helper, const char *token);
-CupError system_wait_for_parent_exit(const char *wait_value);
-CupError system_sleep_milliseconds(unsigned int milliseconds);
+/* Detached process handoff. The parent must still own the active exclusive canonical lock when
+ * starting a helper. The helper receives a parent-lifetime signal and an inherited authority
+ * handle before this call succeeds. Success consumes the caller-visible SystemLock while the
+ * parent retains a process-lifetime authority reference: POSIX keeps the shared flock description;
+ * Windows releases cup.lock only after parent and child both own the external authority. Root
+ * admission checks system_handoff_active() before inspection and again after locking. */
+CupError system_start_update_helper(const char *helper,
+                                    const char *root,
+                                    const char *token,
+                                    SystemLock *lock);
+CupError system_start_uninstall_helper(const char *helper,
+                                       const char *root,
+                                       const char *detached_root,
+                                       const char *token,
+                                       SystemLock *lock);
+CupError system_handoff_accept(SystemHandoff *handoff,
+                               const char *parent_signal_value,
+                               const char *authority_value);
+/* Update returns from temporary handoff authority to the canonical lock. On POSIX this transfers
+ * the inherited original lock; on Windows it acquires cup.lock before releasing the external
+ * authority. */
+CupError system_handoff_acquire_lock(SystemHandoff *handoff,
+                                     SystemLock *lock,
+                                     const char *lock_path);
+void system_handoff_release(SystemHandoff *handoff);
+/* Report whether the backend needs root admission to stop for an in-flight handoff. POSIX
+ * carries authority in cup.lock itself and reports inactive; Windows reports its external
+ * authority. */
+CupError system_handoff_active(int *active);
+
+/* Resolve and, where supported, unlink the running executable without preventing the current
+ * process from finishing. The latter is used only by temporary native helpers. */
+CupError system_get_executable_path(char *buffer, size_t size);
+CupError system_unlink_running_executable(const char *path);
 
 /* Single-path filesystem operations. */
 CupError system_make_directory(const char *path);
@@ -110,6 +141,12 @@ CupError system_move_path_if_identity(const char *source,
                                       const char *destination,
                                       const SystemPathIdentity *expected_identity,
                                       SystemCommitState *commit_state);
+/* Same identity-bound move with a bounded retry only for platform-defined transient sharing
+ * conflicts. Used when an external process may briefly retain a harmless handle. */
+CupError system_move_path_retry(const char *source,
+                                const char *destination,
+                                const SystemPathIdentity *expected_identity,
+                                SystemCommitState *commit_state);
 CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *commit_state);

@@ -1,6 +1,6 @@
 /*
  * Implements the complete system.h contract with native wide-character Windows APIs, including
- * locking, replacement, attributes, traversal and detached PowerShell helpers.
+ * locking, replacement, attributes, traversal and detached native helpers.
  */
 
 #include "system.h"
@@ -52,6 +52,10 @@ static CupError process_directory_chain(const char *path, int create, int allow_
 static CupError validate_directory_chain(const char *path);
 static CupError validate_temp_directory(const char *path);
 static CupError validate_parent_directory_chain(const char *path);
+static CupError identity_from_handle_information(
+    HANDLE handle,
+    const BY_HANDLE_FILE_INFORMATION *information,
+    SystemPathIdentity *identity);
 
 static void print_windows_error(const char *message, const char *path) {
     DWORD error_code = GetLastError();
@@ -298,6 +302,44 @@ static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descript
     return CUP_OK;
 }
 
+/* Kernel coordination objects do not inherit filesystem ACE flags. Keep the handoff authority
+ * private to the current user plus the normal local administrative principals. */
+static CupError build_private_kernel_security_descriptor(PSECURITY_DESCRIPTOR *descriptor) {
+    TOKEN_USER *user = NULL;
+    LPWSTR sid_text = NULL;
+    wchar_t sddl[2048];
+    CupError err;
+    int written;
+
+    if (descriptor == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *descriptor = NULL;
+    err = load_current_user(&user);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!ConvertSidToStringSidW(user->User.Sid, &sid_text)) {
+        free(user);
+        return CUP_ERR_FILESYSTEM;
+    }
+    written = _snwprintf(sddl,
+                         sizeof(sddl) / sizeof(sddl[0]),
+                         L"O:%lsD:P(A;;GA;;;%ls)(A;;GA;;;SY)(A;;GA;;;BA)",
+                         sid_text,
+                         sid_text);
+    LocalFree(sid_text);
+    free(user);
+    if (written < 0 || (size_t)written >= sizeof(sddl) / sizeof(sddl[0])) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, SDDL_REVISION_1, descriptor, NULL)) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    return CUP_OK;
+}
+
 static int sid_is_private_principal(PSID sid, PSID user_sid) {
     BYTE system_buffer[SECURITY_MAX_SID_SIZE];
     BYTE admin_buffer[SECURITY_MAX_SID_SIZE];
@@ -352,7 +394,7 @@ static int wide_path_is_volume_root(const wchar_t *path) {
     return path_length == volume_length && _wcsnicmp(path, volume, path_length) == 0;
 }
 
-/* Process identity, profile validation and detached PowerShell uninstall execution. */
+/* Process identity, profile validation and detached native helper execution. */
 void system_set_restrictive_umask(void) {
     _umask(0077);
 }
@@ -412,26 +454,106 @@ unsigned long system_get_process_id(void) {
     return (unsigned long)GetCurrentProcessId();
 }
 
-static HANDLE cup_update_parent_signal = NULL;
+static HANDLE handoff_parent_signal = NULL;
+static HANDLE handoff_parent_authority = NULL;
 
-static CupError get_system_powershell_path(wchar_t *path, size_t capacity) {
-    wchar_t system_directory[MAX_PATH_LEN];
-    UINT length;
+/* The authority key is derived from the user-profile directory identity, never from .cup itself. That
+ * lets root admission reject an active detach before opening any object inside the managed tree. */
+static CupError build_handoff_name(wchar_t *name, size_t capacity) {
+    char home[MAX_PATH_LEN];
+    SystemPathIdentity identity;
+    CupError err;
     int written;
 
-    if (path == NULL || capacity == 0 || capacity > INT_MAX) {
+    if (name == NULL || capacity == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    length = GetSystemDirectoryW(system_directory, MAX_PATH_LEN);
-    if (length == 0 || length >= MAX_PATH_LEN) {
+    err = system_get_home_dir(home, sizeof(home));
+    if (err == CUP_OK) {
+        err = system_get_path_identity(home, &identity);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (!identity.valid || identity.kind != SYSTEM_PATH_DIRECTORY) {
         return CUP_ERR_FILESYSTEM;
     }
-    written = _snwprintf(path,
+    written = _snwprintf(name,
                          capacity,
-                         L"%ls\\WindowsPowerShell\\v1.0\\powershell.exe",
-                         system_directory);
-    if (written < 0 || (size_t)written >= capacity) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+                         L"Global\\CoffeeClang.CUP.Handoff.%016llx.%016llx.%016llx",
+                         (unsigned long long)identity.volume,
+                         (unsigned long long)identity.object_high,
+                         (unsigned long long)identity.object);
+    return written < 0 || (size_t)written >= capacity ? CUP_ERR_BUFFER_TOO_SMALL : CUP_OK;
+}
+
+CupError system_handoff_active(int *active) {
+    wchar_t name[256];
+    HANDLE authority;
+    DWORD error;
+    CupError err;
+
+    if (active == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *active = 0;
+    err = build_handoff_name(name, sizeof(name) / sizeof(name[0]));
+    if (err != CUP_OK) {
+        return err;
+    }
+    authority = OpenEventW(SYNCHRONIZE, FALSE, name);
+    if (authority != NULL) {
+        CloseHandle(authority);
+        *active = 1;
+        return CUP_OK;
+    }
+    error = GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND) {
+        return CUP_OK;
+    }
+    /* An inaccessible or wrong-type object with the same authority key must never allow a
+     * competing root mutation. Treat the collision as an active handoff and fail closed. */
+    if (error == ERROR_ACCESS_DENIED || error == ERROR_INVALID_HANDLE) {
+        *active = 1;
+        return CUP_OK;
+    }
+    return CUP_ERR_FILESYSTEM;
+}
+
+static CupError create_handoff_authority(HANDLE *authority) {
+    wchar_t name[256];
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    SECURITY_ATTRIBUTES security;
+    DWORD error;
+    CupError err;
+
+    if (authority == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *authority = NULL;
+    err = build_handoff_name(name, sizeof(name) / sizeof(name[0]));
+    if (err == CUP_OK) {
+        err = build_private_kernel_security_descriptor(&descriptor);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    ZeroMemory(&security, sizeof(security));
+    security.nLength = sizeof(security);
+    security.lpSecurityDescriptor = descriptor;
+    security.bInheritHandle = TRUE;
+    SetLastError(ERROR_SUCCESS);
+    *authority = CreateEventW(&security, TRUE, FALSE, name);
+    error = GetLastError();
+    LocalFree(descriptor);
+    if (*authority == NULL) {
+        return error == ERROR_ACCESS_DENIED || error == ERROR_INVALID_HANDLE ? CUP_ERR_LOCK
+                                                                            : CUP_ERR_FILESYSTEM;
+    }
+    if (error == ERROR_ALREADY_EXISTS) {
+        CloseHandle(*authority);
+        *authority = NULL;
+        return CUP_ERR_LOCK;
     }
     return CUP_OK;
 }
@@ -496,254 +618,23 @@ static void release_inherited_startup(STARTUPINFOEXW *startup,
     }
 }
 
-CupError system_start_uninstall(const char *cup_root,
-                                const char *uninstall_script,
-                                const char *detached_root,
-                                const char *lock_path) {
-    wchar_t temp_directory_wide[MAX_PATH_LEN];
-    wchar_t temp_script_wide[MAX_PATH_LEN];
-    wchar_t wide_root[MAX_PATH_LEN];
-    wchar_t wide_lock[MAX_PATH_LEN];
-    wchar_t powershell_path[MAX_PATH_LEN];
-    wchar_t wide_command[MAX_PATH_LEN * 4];
-    char temp_directory[MAX_PATH_LEN];
-    char temp_script[MAX_PATH_LEN];
-    FILE *file = NULL;
-    STARTUPINFOEXW startup;
-    PROCESS_INFORMATION process;
-    SECURITY_ATTRIBUTES pipe_security;
-    SECURITY_ATTRIBUTES lease_security;
-    HANDLE parent_handle = NULL;
-    HANDLE ready_read = NULL;
-    HANDLE ready_write = NULL;
-    HANDLE lease_handle = NULL;
-    HANDLE inherited_handles[3];
-    DWORD length;
-    DWORD process_error = ERROR_SUCCESS;
-    DWORD acknowledgement_size = 0;
-    char acknowledgement = '\0';
-    int attributes_initialized = 0;
-    int written;
-    CupError err = CUP_ERR_FILESYSTEM;
-
-    ZeroMemory(&startup, sizeof(startup));
-    ZeroMemory(&process, sizeof(process));
-
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
-        text_is_empty(detached_root) || text_is_empty(lock_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    (void)detached_root;
-
-    length = GetTempPathW(MAX_PATH_LEN, temp_directory_wide);
-    if (length == 0 || length >= MAX_PATH_LEN) {
-        print_windows_error("could not read the temporary directory", NULL);
-        return CUP_ERR_FILESYSTEM;
-    }
-    err = wide_to_utf8(temp_directory_wide, temp_directory, sizeof(temp_directory));
-    if (err == CUP_OK) {
-        err = path_normalize(temp_directory);
-    }
-    if (err == CUP_OK) {
-        err = create_temp_file_with_suffix(
-            temp_directory, "cup-uninstall", ".ps1", temp_script, sizeof(temp_script), &file);
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (fclose(file) != 0) {
-        system_remove_file(temp_script);
-        return CUP_ERR_FILESYSTEM;
-    }
-    file = NULL;
-
-    err = validate_parent_directory_chain(lock_path);
-    if (err == CUP_OK) {
-        err = windows_utf8_to_wide_path(lock_path, wide_lock, MAX_PATH_LEN);
-    }
-    if (err != CUP_OK) {
-        (void)system_remove_file(temp_script);
-        return err;
-    }
-
-    ZeroMemory(&lease_security, sizeof(lease_security));
-    lease_security.nLength = sizeof(lease_security);
-    lease_security.bInheritHandle = TRUE;
-    /* Deny normal CUP read/write opens while still allowing delete/rename semantics needed by
-     * the root detach. The lease remains exclusive with lock_acquire_common(), whose opens
-     * require read/write sharing from every existing handle. */
-    lease_handle = CreateFileW(wide_lock,
-                               GENERIC_READ | GENERIC_WRITE,
-                               FILE_SHARE_DELETE,
-                               &lease_security,
-                               OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                               NULL);
-    if (lease_handle == INVALID_HANDLE_VALUE) {
-        DWORD lease_error = GetLastError();
-
-        lease_handle = NULL;
-        if (lease_error == ERROR_SHARING_VIOLATION || lease_error == ERROR_LOCK_VIOLATION) {
-            err = CUP_ERR_LOCK;
-        } else {
-            process_error = lease_error;
-        }
-        goto cleanup;
-    }
-    {
-        BY_HANDLE_FILE_INFORMATION lock_info;
-
-        if (!GetFileInformationByHandle(lease_handle, &lock_info) ||
-            (lock_info.dwFileAttributes &
-             (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-            process_error = GetLastError();
-            if (process_error == ERROR_SUCCESS) {
-                process_error = ERROR_INVALID_DATA;
-            }
-            goto cleanup;
-        }
-    }
-
-    /* Do not read the validated helper until the lifetime lease excludes repair/other mutation. */
-    err = system_copy_file(uninstall_script, temp_script);
-    if (err == CUP_OK) {
-        err = windows_utf8_to_wide_process_path(temp_script, temp_script_wide, MAX_PATH_LEN);
-    }
-    if (err == CUP_OK) {
-        err = windows_utf8_to_wide_process_path(cup_root, wide_root, MAX_PATH_LEN);
-    }
-    if (err == CUP_OK) {
-        err = get_system_powershell_path(powershell_path, MAX_PATH_LEN);
-    }
-    if (err != CUP_OK) {
-        goto cleanup;
-    }
-
-    if (!DuplicateHandle(GetCurrentProcess(),
-                         GetCurrentProcess(),
-                         GetCurrentProcess(),
-                         &parent_handle,
-                         SYNCHRONIZE,
-                         TRUE,
-                         0)) {
-        process_error = GetLastError();
-        goto cleanup;
-    }
-
-    ZeroMemory(&pipe_security, sizeof(pipe_security));
-    pipe_security.nLength = sizeof(pipe_security);
-    pipe_security.bInheritHandle = TRUE;
-    if (!CreatePipe(&ready_read, &ready_write, &pipe_security, 0) ||
-        !SetHandleInformation(ready_read, HANDLE_FLAG_INHERIT, 0)) {
-        process_error = GetLastError();
-        goto cleanup;
-    }
-
-    written = _snwprintf(wide_command,
-                         sizeof(wide_command) / sizeof(wide_command[0]),
-                         L"\"%ls\" -NoProfile -ExecutionPolicy Bypass "
-                         L"-File \"%ls\" -CupRoot \"%ls\" -SelfPath \"%ls\" "
-                         L"-ParentHandle %llu -ReadyHandle %llu -LeaseHandle %llu",
-                         powershell_path,
-                         temp_script_wide,
-                         wide_root,
-                         temp_script_wide,
-                         (unsigned long long)(uintptr_t)parent_handle,
-                         (unsigned long long)(uintptr_t)ready_write,
-                         (unsigned long long)(uintptr_t)lease_handle);
-    if (written < 0 || (size_t)written >= sizeof(wide_command) / sizeof(wide_command[0])) {
-        err = CUP_ERR_BUFFER_TOO_SMALL;
-        goto cleanup;
-    }
-
-    inherited_handles[0] = parent_handle;
-    inherited_handles[1] = ready_write;
-    inherited_handles[2] = lease_handle;
-    err = initialize_inherited_startup(&startup,
-                                       inherited_handles,
-                                       sizeof(inherited_handles) / sizeof(inherited_handles[0]),
-                                       &attributes_initialized,
-                                       &process_error);
-    if (err != CUP_OK) {
-        goto cleanup;
-    }
-
-    if (!CreateProcessW(powershell_path,
-                        wide_command,
-                        NULL,
-                        NULL,
-                        TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT,
-                        NULL,
-                        temp_directory_wide,
-                        &startup.StartupInfo,
-                        &process)) {
-        process_error = GetLastError();
-        goto cleanup;
-    }
-
-    /* After the helper starts, a missing or invalid ready acknowledgement leaves handoff state
-     * uncertain: the child may already have changed journal or filesystem evidence. */
-    err = CUP_ERR_COMMIT;
-
-    CloseHandle(process.hThread);
-    process.hThread = NULL;
-    CloseHandle(lease_handle);
-    lease_handle = NULL;
-    CloseHandle(ready_write);
-    ready_write = NULL;
-    if (!ReadFile(ready_read, &acknowledgement, 1, &acknowledgement_size, NULL)) {
-        process_error = GetLastError();
-        goto cleanup;
-    }
-    if (acknowledgement_size != 1 || acknowledgement != 'R') {
-        process_error = ERROR_INVALID_DATA;
-        goto cleanup;
-    }
-
-    CloseHandle(process.hProcess);
-    process.hProcess = NULL;
-    err = CUP_OK;
-
-cleanup:
-    if (process.hThread != NULL) {
-        CloseHandle(process.hThread);
-    }
-    if (process.hProcess != NULL) {
-        WaitForSingleObject(process.hProcess, 5000);
-        CloseHandle(process.hProcess);
-    }
-    if (ready_read != NULL) {
-        CloseHandle(ready_read);
-    }
-    if (ready_write != NULL) {
-        CloseHandle(ready_write);
-    }
-    if (parent_handle != NULL) {
-        CloseHandle(parent_handle);
-    }
-    if (lease_handle != NULL) {
-        CloseHandle(lease_handle);
-    }
-    release_inherited_startup(&startup, attributes_initialized);
-    if (err != CUP_OK) {
-        if (process_error != ERROR_SUCCESS) {
-            SetLastError(process_error);
-            print_windows_error("could not start uninstall process", temp_script);
-        }
-        system_remove_file(temp_script);
-    }
-    return err;
-}
-
-CupError system_start_cup_update_helper(const char *helper, const char *token) {
+static CupError start_handoff_helper(const char *helper,
+                                     const char *mode,
+                                     const char *root,
+                                     const char *detached_root,
+                                     const char *token,
+                                     SystemLock *lock) {
     SECURITY_ATTRIBUTES security;
     HANDLE read_handle = NULL;
     HANDLE write_handle = NULL;
-    HANDLE inherited_handles[1];
+    HANDLE authority_handle = NULL;
+    HANDLE inherited_handles[2];
     wchar_t wide_helper[MAX_PATH_LEN];
-    wchar_t wide_token[MAX_PATH_LEN];
-    wchar_t command[MAX_PATH_LEN * 3];
+    wchar_t wide_mode[64];
+    wchar_t wide_root[MAX_PATH_LEN];
+    wchar_t wide_detached[MAX_PATH_LEN];
+    wchar_t wide_token[MAX_TRANSACTION_TOKEN_LEN];
+    wchar_t command[MAX_PATH_LEN * 5];
     STARTUPINFOEXW startup;
     PROCESS_INFORMATION process;
     DWORD process_error = ERROR_SUCCESS;
@@ -754,7 +645,10 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
     ZeroMemory(&security, sizeof(security));
     ZeroMemory(&startup, sizeof(startup));
     ZeroMemory(&process, sizeof(process));
-    if (text_is_empty(helper) || text_is_empty(token) || cup_update_parent_signal != NULL) {
+    if (text_is_empty(helper) || text_is_empty(mode) || text_is_empty(root) ||
+        text_is_empty(token) || lock == NULL || !lock->active ||
+        lock->mode != SYSTEM_LOCK_EXCLUSIVE || handoff_parent_signal != NULL ||
+        handoff_parent_authority != NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -765,25 +659,56 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
         process_error = GetLastError();
         goto cleanup;
     }
+    err = create_handoff_authority(&authority_handle);
+    if (err != CUP_OK) {
+        goto cleanup;
+    }
     err = windows_utf8_to_wide_process_path(helper, wide_helper, MAX_PATH_LEN);
     if (err == CUP_OK) {
-        err = windows_utf8_to_wide(token, wide_token, MAX_PATH_LEN);
+        err = windows_utf8_to_wide(mode, wide_mode, sizeof(wide_mode) / sizeof(wide_mode[0]));
+    }
+    if (err == CUP_OK) {
+        err = windows_utf8_to_wide_process_path(root, wide_root, MAX_PATH_LEN);
+    }
+    if (err == CUP_OK) {
+        err = windows_utf8_to_wide(token, wide_token, MAX_TRANSACTION_TOKEN_LEN);
+    }
+    if (err == CUP_OK && detached_root != NULL) {
+        err = windows_utf8_to_wide_process_path(detached_root, wide_detached, MAX_PATH_LEN);
     }
     if (err != CUP_OK) {
         goto cleanup;
     }
-    written = _snwprintf(command,
-                         sizeof(command) / sizeof(command[0]),
-                         L"\"%ls\" --internal-cup-update-helper \"%ls\" %llu",
-                         wide_helper,
-                         wide_token,
-                         (unsigned long long)(uintptr_t)read_handle);
+
+    if (detached_root == NULL) {
+        written = _snwprintf(command,
+                             sizeof(command) / sizeof(command[0]),
+                             L"\"%ls\" %ls \"%ls\" \"%ls\" %llu %llu",
+                             wide_helper,
+                             wide_mode,
+                             wide_root,
+                             wide_token,
+                             (unsigned long long)(uintptr_t)read_handle,
+                             (unsigned long long)(uintptr_t)authority_handle);
+    } else {
+        written = _snwprintf(command,
+                             sizeof(command) / sizeof(command[0]),
+                             L"\"%ls\" %ls \"%ls\" \"%ls\" \"%ls\" %llu %llu",
+                             wide_helper,
+                             wide_mode,
+                             wide_root,
+                             wide_detached,
+                             wide_token,
+                             (unsigned long long)(uintptr_t)read_handle,
+                             (unsigned long long)(uintptr_t)authority_handle);
+    }
     if (written < 0 || (size_t)written >= sizeof(command) / sizeof(command[0])) {
         err = CUP_ERR_BUFFER_TOO_SMALL;
         goto cleanup;
     }
 
     inherited_handles[0] = read_handle;
+    inherited_handles[1] = authority_handle;
     err = initialize_inherited_startup(&startup,
                                        inherited_handles,
                                        sizeof(inherited_handles) / sizeof(inherited_handles[0]),
@@ -814,8 +739,15 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
     process.hProcess = NULL;
     CloseHandle(read_handle);
     read_handle = NULL;
-    cup_update_parent_signal = write_handle;
+
+    /* The child already owns the external authority. Release cup.lock only after that overlap
+     * exists, then keep the parent authority alive until this process exits so an early child failure
+     * cannot open an admission gap. */
+    system_lock_release(lock);
+    handoff_parent_signal = write_handle;
     write_handle = NULL;
+    handoff_parent_authority = authority_handle;
+    authority_handle = NULL;
     err = CUP_OK;
 
 cleanup:
@@ -831,11 +763,34 @@ cleanup:
     if (write_handle != NULL) {
         CloseHandle(write_handle);
     }
+    if (authority_handle != NULL) {
+        CloseHandle(authority_handle);
+    }
     release_inherited_startup(&startup, attributes_initialized);
     if (err != CUP_OK && process_error != ERROR_SUCCESS) {
         SetLastError(process_error);
     }
     return err;
+}
+
+CupError system_start_update_helper(const char *helper,
+                                    const char *root,
+                                    const char *token,
+                                    SystemLock *lock) {
+    return start_handoff_helper(
+        helper, "--internal-update-helper", root, NULL, token, lock);
+}
+
+CupError system_start_uninstall_helper(const char *helper,
+                                       const char *root,
+                                       const char *detached_root,
+                                       const char *token,
+                                       SystemLock *lock) {
+    if (text_is_empty(detached_root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return start_handoff_helper(
+        helper, "--internal-uninstall-helper", root, detached_root, token, lock);
 }
 
 static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
@@ -865,13 +820,13 @@ static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
     return 1;
 }
 
-CupError system_wait_for_parent_exit(const char *wait_value) {
+static CupError wait_for_parent_exit(const char *parent_signal_value) {
     uintptr_t number;
     HANDLE handle;
     char byte;
     DWORD read_count;
 
-    if (!parse_inherited_handle(wait_value, &number)) {
+    if (!parse_inherited_handle(parent_signal_value, &number)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -890,8 +845,155 @@ CupError system_wait_for_parent_exit(const char *wait_value) {
     }
 }
 
-CupError system_sleep_milliseconds(unsigned int milliseconds) {
-    Sleep(milliseconds);
+CupError system_handoff_accept(SystemHandoff *handoff,
+                               const char *parent_signal_value,
+                               const char *authority_value) {
+    uintptr_t number;
+    HANDLE authority;
+    DWORD flags;
+    CupError err;
+
+    if (handoff == NULL || handoff->active ||
+        !parse_inherited_handle(authority_value, &number)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    authority = (HANDLE)number;
+    if (!GetHandleInformation(authority, &flags)) {
+        (void)CloseHandle(authority);
+        return CUP_ERR_FILESYSTEM;
+    }
+    err = wait_for_parent_exit(parent_signal_value);
+    if (err != CUP_OK) {
+        (void)CloseHandle(authority);
+        return err;
+    }
+    handoff->handle = (intptr_t)authority;
+    handoff->active = 1;
+    return CUP_OK;
+}
+
+CupError system_handoff_acquire_lock(SystemHandoff *handoff,
+                                     SystemLock *lock,
+                                     const char *lock_path) {
+    unsigned int attempt;
+    CupError err = CUP_ERR_LOCK;
+
+    if (handoff == NULL || !handoff->active || lock == NULL || lock->active ||
+        text_is_empty(lock_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    /* A process that passed the pre-root handoff check just before handoff may briefly hold cup.lock, but
+     * its mandatory post-lock handoff check must make it retreat. Retry only that synchronization
+     * class and keep the wait finite. */
+    for (attempt = 0; attempt < 500; ++attempt) {
+        err = system_lock_acquire_existing(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+        if (err != CUP_ERR_LOCK) {
+            break;
+        }
+        Sleep(10);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    system_handoff_release(handoff);
+    return CUP_OK;
+}
+
+void system_handoff_release(SystemHandoff *handoff) {
+    if (handoff == NULL || !handoff->active) {
+        return;
+    }
+    (void)CloseHandle((HANDLE)handoff->handle);
+    handoff->handle = 0;
+    handoff->active = 0;
+}
+
+CupError system_get_executable_path(char *buffer, size_t size) {
+    wchar_t wide[MAX_PATH_LEN];
+    DWORD length;
+    CupError err;
+
+    if (buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    SetLastError(ERROR_SUCCESS);
+    length = GetModuleFileNameW(NULL, wide, MAX_PATH_LEN);
+    if (length == 0 || length >= MAX_PATH_LEN) {
+        return GetLastError() == ERROR_INSUFFICIENT_BUFFER ? CUP_ERR_BUFFER_TOO_SMALL
+                                                          : CUP_ERR_FILESYSTEM;
+    }
+    err = wide_to_utf8(wide, buffer, size);
+    return err == CUP_OK ? path_normalize(buffer) : err;
+}
+
+CupError system_unlink_running_executable(const char *path) {
+    /* FileDispositionInfoEx POSIX delete semantics are required here so the image can continue
+     * executing after its visible helper name is removed. Windows 10 version 1709 introduced this
+     * information class; PLATFORMS.md records that runtime floor explicitly. */
+    typedef struct {
+        DWORD flags;
+    } FileDispositionInfoExCompat;
+    enum {
+        FILE_DISPOSITION_DELETE_COMPAT = 0x00000001,
+        FILE_DISPOSITION_POSIX_COMPAT = 0x00000002,
+        FILE_DISPOSITION_IGNORE_READONLY_COMPAT = 0x00000010,
+        FILE_DISPOSITION_INFO_EX_CLASS = 21
+    };
+    char running[MAX_PATH_LEN];
+    SystemPathIdentity expected;
+    SystemPathIdentity current;
+    BY_HANDLE_FILE_INFORMATION info;
+    SystemPathIdentity opened;
+    FileDispositionInfoExCompat disposition;
+    wchar_t wide[MAX_PATH_LEN];
+    HANDLE handle;
+    CupError err;
+
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_get_executable_path(running, sizeof(running));
+    if (err == CUP_OK) {
+        err = system_get_path_identity(running, &expected);
+    }
+    if (err == CUP_OK) {
+        err = system_get_path_identity(path, &current);
+    }
+    if (err != CUP_OK || !expected.valid || expected.kind != SYSTEM_PATH_REGULAR_FILE ||
+        !system_path_identity_equal(&expected, &current)) {
+        return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
+    }
+    err = windows_utf8_to_wide_path(path, wide, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
+    }
+    handle = CreateFileW(wide,
+                         DELETE | FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL,
+                         OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!GetFileInformationByHandle(handle, &info) ||
+        identity_from_handle_information(handle, &info, &opened) != CUP_OK ||
+        !system_path_identity_equal(&expected, &opened)) {
+        (void)CloseHandle(handle);
+        return CUP_ERR_TRANSACTION;
+    }
+    disposition.flags = FILE_DISPOSITION_DELETE_COMPAT | FILE_DISPOSITION_POSIX_COMPAT |
+                        FILE_DISPOSITION_IGNORE_READONLY_COMPAT;
+    if (!SetFileInformationByHandle(handle,
+                                    (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
+                                    &disposition,
+                                    sizeof(disposition))) {
+        (void)CloseHandle(handle);
+        return CUP_ERR_FILESYSTEM;
+    }
+    (void)CloseHandle(handle);
     return CUP_OK;
 }
 
@@ -1571,6 +1673,7 @@ CupError system_remove_directory(const char *path) {
 static CupError move_path_with_flags(const char *source,
                                      const char *destination,
                                      int replace,
+                                     int retry_transient,
                                      const SystemPathIdentity *expected_source,
                                      const SystemPathIdentity *expected_destination,
                                      SystemCommitState *commit_state) {
@@ -1661,11 +1764,22 @@ static CupError move_path_with_flags(const char *source,
     if (replace) {
         move_flags |= MOVEFILE_REPLACE_EXISTING;
     }
-    if (!MoveFileExW(wide_source, wide_destination, move_flags)) {
-        move_error = GetLastError();
-        report_move_error = 1;
-        result = CUP_ERR_FILESYSTEM;
-        goto cleanup;
+    {
+        unsigned int attempt = 0;
+
+        while (!MoveFileExW(wide_source, wide_destination, move_flags)) {
+            move_error = GetLastError();
+            if (!retry_transient ||
+                (move_error != ERROR_ACCESS_DENIED &&
+                 move_error != ERROR_SHARING_VIOLATION &&
+                 move_error != ERROR_LOCK_VIOLATION) ||
+                ++attempt >= 100u) {
+                report_move_error = 1;
+                result = CUP_ERR_FILESYSTEM;
+                goto cleanup;
+            }
+            Sleep(100);
+        }
     }
     *commit_state = SYSTEM_COMMIT_APPLIED;
 
@@ -1705,7 +1819,7 @@ cleanup:
 CupError system_move_path(const char *source,
                           const char *destination,
                           SystemCommitState *commit_state) {
-    return move_path_with_flags(source, destination, 0, NULL, NULL, commit_state);
+    return move_path_with_flags(source, destination, 0, 0, NULL, NULL, commit_state);
 }
 
 CupError system_move_path_if_identity(const char *source,
@@ -1717,13 +1831,25 @@ CupError system_move_path_if_identity(const char *source,
          expected_identity->kind != SYSTEM_PATH_DIRECTORY)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return move_path_with_flags(source, destination, 0, expected_identity, NULL, commit_state);
+    return move_path_with_flags(source, destination, 0, 0, expected_identity, NULL, commit_state);
+}
+
+CupError system_move_path_retry(const char *source,
+                                const char *destination,
+                                const SystemPathIdentity *expected_identity,
+                                SystemCommitState *commit_state) {
+    if (expected_identity == NULL || !expected_identity->valid ||
+        (expected_identity->kind != SYSTEM_PATH_REGULAR_FILE &&
+         expected_identity->kind != SYSTEM_PATH_DIRECTORY)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return move_path_with_flags(source, destination, 0, 1, expected_identity, NULL, commit_state);
 }
 
 CupError system_replace_file(const char *source,
                              const char *destination,
                              SystemCommitState *commit_state) {
-    return move_path_with_flags(source, destination, 1, NULL, NULL, commit_state);
+    return move_path_with_flags(source, destination, 1, 0, NULL, NULL, commit_state);
 }
 
 CupError system_replace_file_if_identity(const char *source,
@@ -1734,7 +1860,7 @@ CupError system_replace_file_if_identity(const char *source,
         expected_identity->kind != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return move_path_with_flags(source, destination, 1, NULL, expected_identity, commit_state);
+    return move_path_with_flags(source, destination, 1, 0, NULL, expected_identity, commit_state);
 }
 
 CupError system_remove_file(const char *path) {
@@ -2678,6 +2804,7 @@ static CupError lock_acquire_common(SystemLock *lock,
     }
 
     lock->handle = (intptr_t)handle;
+    lock->mode = mode;
     lock->active = 1;
     return CUP_OK;
 }
@@ -2759,5 +2886,6 @@ void system_lock_release(SystemLock *lock) {
     UnlockFileEx(handle, 0, 1, 0, &overlapped);
     CloseHandle(handle);
     lock->handle = 0;
+    lock->mode = SYSTEM_LOCK_SHARED;
     lock->active = 0;
 }

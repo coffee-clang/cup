@@ -4,13 +4,13 @@
  * helper.
  */
 
-#include "cup_bootstrap.h"
+#include "bootstrap.h"
 
 #include "checksum.h"
 #include "constants.h"
-#include "cup_assets.h"
-#include "cup_update_helper.h"
-#include "cup_update_journal.h"
+#include "assets.h"
+#include "update_helper.h"
+#include "update_journal.h"
 #include "filesystem.h"
 #include "install_policy.h"
 #include "interrupt.h"
@@ -31,7 +31,6 @@ typedef struct {
     char binary_name[MAX_IDENTIFIER_LEN];
     char platform_checksums_name[MAX_IDENTIFIER_LEN];
     char binary[MAX_PATH_LEN];
-    char uninstall[MAX_PATH_LEN];
     char release[MAX_PATH_LEN];
     char platform_checksums[MAX_PATH_LEN];
     char common_checksums[MAX_PATH_LEN];
@@ -53,28 +52,26 @@ typedef struct {
     size_t seen;
 } BootstrapSourceSet;
 
-static void source_assets(BootstrapSource *source, BootstrapSourceAsset assets[9]) {
+static void source_assets(BootstrapSource *source, BootstrapSourceAsset assets[8]) {
     assets[0] = (BootstrapSourceAsset){
         source->binary_name, source->binary, sizeof(source->binary)};
     assets[1] = (BootstrapSourceAsset){
-        CUP_UNINSTALL_FILENAME, source->uninstall, sizeof(source->uninstall)};
-    assets[2] = (BootstrapSourceAsset){
         CUP_RELEASE_METADATA_FILENAME, source->release, sizeof(source->release)};
-    assets[3] = (BootstrapSourceAsset){source->platform_checksums_name,
+    assets[2] = (BootstrapSourceAsset){source->platform_checksums_name,
                                        source->platform_checksums,
                                        sizeof(source->platform_checksums)};
-    assets[4] = (BootstrapSourceAsset){CUP_COMMON_CHECKSUMS_FILENAME,
+    assets[3] = (BootstrapSourceAsset){CUP_COMMON_CHECKSUMS_FILENAME,
                                        source->common_checksums,
                                        sizeof(source->common_checksums)};
-    assets[5] = (BootstrapSourceAsset){
+    assets[4] = (BootstrapSourceAsset){
         CUP_PACKAGES_FILENAME, source->catalog, sizeof(source->catalog)};
-    assets[6] = (BootstrapSourceAsset){CUP_INSTALL_POLICY_FILENAME,
+    assets[5] = (BootstrapSourceAsset){CUP_INSTALL_POLICY_FILENAME,
                                        source->install_policy,
                                        sizeof(source->install_policy)};
-    assets[7] = (BootstrapSourceAsset){CUP_INSTALL_POSIX_FILENAME,
+    assets[6] = (BootstrapSourceAsset){CUP_INSTALL_POSIX_FILENAME,
                                        source->install_posix,
                                        sizeof(source->install_posix)};
-    assets[8] = (BootstrapSourceAsset){CUP_INSTALL_WINDOWS_FILENAME,
+    assets[7] = (BootstrapSourceAsset){CUP_INSTALL_WINDOWS_FILENAME,
                                        source->install_windows,
                                        sizeof(source->install_windows)};
 }
@@ -131,7 +128,7 @@ static CupError source_set_entry(const char *entry,
 }
 
 static CupError initialize_source(const char *directory, BootstrapSource *source) {
-    BootstrapSourceAsset assets[9];
+    BootstrapSourceAsset assets[8];
     BootstrapSourceSet set;
     CupError err;
     int is_private = 0;
@@ -145,10 +142,10 @@ static CupError initialize_source(const char *directory, BootstrapSource *source
     if (err != CUP_OK || !is_private) {
         return err != CUP_OK ? err : CUP_ERR_VALIDATION;
     }
-    err = cup_assets_binary_asset_name(source->binary_name, sizeof(source->binary_name));
+    err = assets_binary_asset_name(source->binary_name, sizeof(source->binary_name));
     if (err == CUP_OK) {
-        err = cup_assets_platform_checksums_name(source->platform_checksums_name,
-                                                 sizeof(source->platform_checksums_name));
+        err = assets_platform_checksums_name(source->platform_checksums_name,
+                                            sizeof(source->platform_checksums_name));
     }
     if (err != CUP_OK) {
         return err;
@@ -206,9 +203,8 @@ static CupError verify_source(const BootstrapSource *source, const char *running
     install_policy_init(&policy);
 
     platform_assets[0] = source->binary_name;
-    platform_assets[1] = CUP_UNINSTALL_FILENAME;
-    platform_assets[2] = CUP_RELEASE_METADATA_FILENAME;
-    platform_assets[3] = CUP_COMMON_CHECKSUMS_FILENAME;
+    platform_assets[1] = CUP_RELEASE_METADATA_FILENAME;
+    platform_assets[2] = CUP_COMMON_CHECKSUMS_FILENAME;
     err = checksum_document_load(&platform_document, source->platform_checksums);
     if (err == CUP_OK) {
         err = checksum_document_validate_assets(
@@ -225,7 +221,6 @@ static CupError verify_source(const BootstrapSource *source, const char *running
         BootstrapChecksumAsset assets[] = {
             {&platform_document, CUP_COMMON_CHECKSUMS_FILENAME, source->common_checksums},
             {&platform_document, source->binary_name, source->binary},
-            {&platform_document, CUP_UNINSTALL_FILENAME, source->uninstall},
             {&platform_document, CUP_RELEASE_METADATA_FILENAME, source->release},
             {&common_document, CUP_PACKAGES_FILENAME, source->catalog},
             {&common_document, CUP_INSTALL_POLICY_FILENAME, source->install_policy},
@@ -288,7 +283,7 @@ static CupError load_verified_source(const char *directory,
 }
 
 static CupError copy_source_generation(BootstrapSource *source, const char *staging) {
-    BootstrapSourceAsset assets[9];
+    BootstrapSourceAsset assets[8];
     char destination[MAX_PATH_LEN];
     CupError err = CUP_OK;
     size_t i;
@@ -325,21 +320,12 @@ static CupError ensure_bootstrap_state(void) {
 static CupError stage_bootstrap_assets(const BootstrapSource *source,
                                        const char *staging,
                                        char *staged_binary,
-                                       size_t binary_size,
-                                       char *staged_uninstall,
-                                       size_t uninstall_size) {
+                                       size_t binary_size) {
     char ignored[MAX_PATH_LEN];
     CupError err;
 
     err = stage_copy(
         staging, CUP_UPDATE_BINARY_NEW, source->binary, staged_binary, binary_size);
-    if (err == CUP_OK) {
-        err = stage_copy(staging,
-                         CUP_UPDATE_UNINSTALL_NEW,
-                         source->uninstall,
-                         staged_uninstall,
-                         uninstall_size);
-    }
     if (err == CUP_OK) {
         err = stage_copy(staging,
                          CUP_UPDATE_PLATFORM_CHECKSUMS_NEW,
@@ -372,20 +358,16 @@ static CupError stage_bootstrap_assets(const BootstrapSource *source,
     if (err == CUP_OK) {
         err = system_set_executable(staged_binary, 1);
     }
-    if (err == CUP_OK && CUP_UNINSTALL_EXECUTABLE) {
-        err = system_set_executable(staged_uninstall, 1);
-    }
 #endif
     return err;
 }
 
 typedef struct {
     BootstrapSource source;
-    CupUpdateJournal journal;
+    UpdateJournal journal;
     SystemLock lock;
     char staging[MAX_PATH_LEN];
     char staged_binary[MAX_PATH_LEN];
-    char staged_uninstall[MAX_PATH_LEN];
     char token[MAX_TRANSACTION_TOKEN_LEN];
     char root[MAX_PATH_LEN];
     int transaction_started;
@@ -393,7 +375,7 @@ typedef struct {
 
 static CupError cleanup_failed_bootstrap(const char *staging,
                                          int transaction_started,
-                                         const CupUpdateJournal *journal) {
+                                         const UpdateJournal *journal) {
     CupError err = CUP_OK;
 
     if (text_is_empty(staging)) {
@@ -411,10 +393,11 @@ static CupError prepare_bootstrap_operation(BootstrapOperation *operation,
                                             const char *source_directory,
                                             const char *running_binary) {
     char lock_path[MAX_PATH_LEN];
+    SystemPathKind root_kind;
     CupError err;
 
     memset(operation, 0, sizeof(*operation));
-    cup_update_journal_init(&operation->journal);
+    update_journal_init(&operation->journal);
 
     err = load_verified_source(source_directory, running_binary, &operation->source);
     if (err != CUP_OK) {
@@ -422,12 +405,19 @@ static CupError prepare_bootstrap_operation(BootstrapOperation *operation,
         return err;
     }
 
-    err = interrupt_safe_point();
+    err = layout_get_root(operation->root, sizeof(operation->root));
     if (err == CUP_OK) {
-        err = layout_ensure_root();
+        err = system_get_path_kind(operation->root, &root_kind);
     }
-    if (err == CUP_OK) {
-        err = layout_get_root(operation->root, sizeof(operation->root));
+    if (err == CUP_OK && root_kind == SYSTEM_PATH_MISSING) {
+        /* A missing root must be created before cup.lock can exist. Existing roots, however, are
+         * not permission-mutated before the canonical exclusive lock. */
+        err = interrupt_safe_point();
+        if (err == CUP_OK) {
+            err = layout_ensure_root();
+        }
+    } else if (err == CUP_OK && root_kind != SYSTEM_PATH_DIRECTORY) {
+        err = CUP_ERR_FILESYSTEM;
     }
     if (err == CUP_OK) {
         err = layout_get_lock_path(lock_path, sizeof(lock_path));
@@ -437,6 +427,9 @@ static CupError prepare_bootstrap_operation(BootstrapOperation *operation,
     }
     if (err == CUP_OK) {
         err = layout_root_snapshot_validate();
+    }
+    if (err == CUP_OK) {
+        err = layout_ensure_root();
     }
     if (err == CUP_OK) {
         err = runtime_journal_require_none();
@@ -450,7 +443,7 @@ static CupError prepare_bootstrap_operation(BootstrapOperation *operation,
         err = ensure_bootstrap_state();
     }
     if (err == CUP_OK) {
-        err = layout_ensure_cup_assets();
+        err = layout_ensure_assets();
     }
     return err;
 }
@@ -479,9 +472,7 @@ static CupError stage_bootstrap_generation(BootstrapOperation *operation,
         err = stage_bootstrap_assets(&operation->source,
                                      operation->staging,
                                      operation->staged_binary,
-                                     sizeof(operation->staged_binary),
-                                     operation->staged_uninstall,
-                                     sizeof(operation->staged_uninstall));
+                                     sizeof(operation->staged_binary));
     }
     if (err == CUP_OK) {
         err = text_format(operation->token,
@@ -491,10 +482,10 @@ static CupError stage_bootstrap_generation(BootstrapOperation *operation,
                           path_last_segment(operation->staging));
     }
     if (err == CUP_OK) {
-        err = cup_update_helper_prepare_from(operation->source.binary);
+        err = update_helper_prepare_from(operation->source.binary);
     }
     if (err == CUP_OK) {
-        err = cup_update_journal_begin(operation->staging,
+        err = update_journal_begin(operation->staging,
                                        operation->token,
                                        CUP_VERSION_BASE,
                                        &operation->journal);
@@ -507,7 +498,7 @@ static CupError stage_bootstrap_generation(BootstrapOperation *operation,
     return interrupt_safe_point();
 }
 
-CupError cup_bootstrap_start(const char *source_directory, const char *running_binary) {
+CupError bootstrap_start(const char *source_directory, const char *running_binary) {
     BootstrapOperation operation;
     CupError err;
 
@@ -516,7 +507,7 @@ CupError cup_bootstrap_start(const char *source_directory, const char *running_b
         err = stage_bootstrap_generation(&operation, running_binary);
     }
     if (err == CUP_OK) {
-        err = cup_update_helper_start(operation.token);
+        err = update_helper_start(operation.root, operation.token, &operation.lock);
     }
 
     if (err == CUP_OK) {

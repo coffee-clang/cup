@@ -517,14 +517,10 @@ function Initialize-TestEnvironment {
 
     New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "config") | Out-Null
-    $installScripts = Join-Path $Script:CupTestDevRoot "scripts\install"
-    New-Item -ItemType Directory -Force -Path $installScripts | Out-Null
     Copy-Item (Join-Path $Script:CupTestProjectRoot "config\packages.cfg") (
         Join-Path $Script:CupTestDevRoot "config\packages.cfg")
     Copy-Item (Join-Path $Script:CupTestProjectRoot "config\install.cfg") (
         Join-Path $Script:CupTestDevRoot "config\install.cfg")
-    Copy-Item (Join-Path $Script:CupTestProjectRoot "scripts\install\uninstall-cup-windows.ps1") (
-        Join-Path $Script:CupTestDevRoot "scripts\install\uninstall-cup-windows.ps1")
 
     $env:USERPROFILE = $Script:CupTestHome
 }

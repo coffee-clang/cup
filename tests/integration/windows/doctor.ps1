@@ -133,18 +133,18 @@ try {
         "format=1",
         "operation=uninstall",
         "phase=failed",
-        "temporary_name=.cup-uninstall.fixture",
+        "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=cleanup",
+        "stage=detach",
         "error=1"
     )
     $uninstallJournalHash = (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup uninstall failed during 'cleanup' with error 1"
+        "the previous cup uninstall failed during 'detach' with error 1"
     Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
         $uninstallJournalHash
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup uninstall failed during 'cleanup' with error 1"
+        "the previous cup uninstall failed during 'detach' with error 1"
     Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
         $uninstallJournalHash
     Remove-Item -LiteralPath $transactionPath -Force

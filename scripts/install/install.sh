@@ -147,8 +147,7 @@ detect_platform() {
     esac
     BINARY_ASSET=cup-$PLATFORM
     PLATFORM_SUMS=SHA256SUMS.$PLATFORM
-    UNINSTALL_ASSET=uninstall.sh
-    export PLATFORM BINARY_ASSET PLATFORM_SUMS UNINSTALL_ASSET
+    export PLATFORM BINARY_ASSET PLATFORM_SUMS
 }
 
 select_hash_command() {
@@ -286,7 +285,7 @@ verify_checksum_document() {
 verify_windows_handoff_generation() {
     document=$WORK/SHA256SUMS.windows-x64
     exec 3< "$document" || fail 'could not read SHA256SUMS.windows-x64'
-    for expected_name in cup-windows-x64.exe uninstall.ps1 release.txt SHA256SUMS.common; do
+    for expected_name in cup-windows-x64.exe release.txt SHA256SUMS.common; do
         IFS= read -r line <&3 || fail "checksum entry is missing: $expected_name"
         expected_hash=${line%%  *}
         actual_name=${line#*  }
@@ -407,7 +406,7 @@ detect_platform
 require_commands
 create_work_directory
 
-for asset in "$BINARY_ASSET" "$UNINSTALL_ASSET" release.txt "$PLATFORM_SUMS" \
+for asset in "$BINARY_ASSET" release.txt "$PLATFORM_SUMS" \
         SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1; do
     download_asset "$asset"
 done
@@ -415,10 +414,9 @@ done
 verify_checksum_document "$WORK/SHA256SUMS.common" \
     packages.cfg install.cfg install.sh install.ps1
 verify_checksum_document "$WORK/$PLATFORM_SUMS" \
-    "$BINARY_ASSET" "$UNINSTALL_ASSET" release.txt SHA256SUMS.common
+    "$BINARY_ASSET" release.txt SHA256SUMS.common
 validate_release_metadata
 chmod 0700 "$WORK/$BINARY_ASSET" || fail 'could not make the verified bootstrap executable'
-chmod 0700 "$WORK/$UNINSTALL_ASSET" || fail 'could not protect the uninstall asset'
 
 bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK") ||
     fail 'the verified cup bootstrap transaction was rejected'

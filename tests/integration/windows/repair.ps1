@@ -191,25 +191,30 @@ function Test-ForeignHostPreservation {
 }
 
 function Test-UninstallRecovery {
+    $profileRoot = Split-Path -Parent $Script:RepairCupRoot
+    $staleHelper = Join-Path $profileRoot ".cup-uninstall-helper-fixture.exe"
+
     Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
         "format=1",
         "operation=uninstall",
         "phase=scheduled",
-        "temporary_name=.cup-uninstall.fixture",
+        "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=parent-wait",
+        "stage=handoff",
         "error=0"
     )
+    Write-Utf8NoBom -Path $staleHelper -Lines @("stale helper")
     $pending = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $pending `
-        "Cancelled interrupted cup uninstall in phase 'scheduled' during 'parent-wait'."
+        "Cancelled interrupted cup uninstall in phase 'scheduled' during 'handoff'."
     Assert-PathMissing $Script:RepairTransactionPath
+    Assert-PathMissing $staleHelper
 
     Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
         "format=1",
         "operation=uninstall",
         "phase=failed",
-        "temporary_name=.cup-uninstall.fixture",
+        "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
         "stage=handoff",
         "error=7"

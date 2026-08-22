@@ -228,8 +228,6 @@ packages.cfg
 install.cfg
 install.sh
 install.ps1
-uninstall.sh
-uninstall.ps1
 release.txt
 provenance.txt
 THIRD_PARTY_NOTICES.txt
@@ -244,8 +242,7 @@ SHA256SUMS.windows-x64
 The checksum split is intentional:
 
 - `SHA256SUMS.common` covers files shared by all platforms;
-- each platform checksum covers its executable, uninstall helper,
-  `release.txt` and the exact common checksum file.
+- each platform checksum covers its executable, `release.txt` and the exact common checksum file.
 
 This lets installers and `cup update cup` verify both the shared generation and
 the platform-specific files without trusting two unrelated manifests.

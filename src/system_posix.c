@@ -16,12 +16,10 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #if defined(__linux__)
@@ -30,6 +28,10 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 #ifndef O_CLOEXEC
 #error "CUP requires O_CLOEXEC on supported POSIX platforms"
@@ -382,239 +384,30 @@ unsigned long system_get_process_id(void) {
     return (unsigned long)getpid();
 }
 
-/*
- * One socket endpoint remains owned by the current cup process. The helper acknowledges its
- * validated startup through the same connection and then treats EOF as the exact parent lifetime
- * boundary.
- */
-static int uninstall_parent_socket = -1;
-static int cup_update_parent_signal = -1;
+/* A successful handoff consumes the caller-visible lock, but the parent keeps both its lifetime
+ * signal and one reference to the shared flock authority until process exit. The child owns a
+ * second reference, so either process may die without opening an authority gap before the parent
+ * exits. */
+static int handoff_parent_signal = -1;
+static int handoff_parent_authority = -1;
 
-static CupError open_uninstall_lock_lease(const char *path, int *lease_fd) {
-    char entry[MAX_PATH_LEN];
-    struct stat info;
-    int parent_fd = -1;
-    int fd;
-    CupError err;
-
-    if (text_is_empty(path) || lease_fd == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *lease_fd = -1;
-    err = open_parent_no_follow(path, &parent_fd, entry, sizeof(entry));
-    if (err != CUP_OK) {
-        return err;
-    }
-    fd = openat(parent_fd, entry, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
-    (void)close(parent_fd);
-    if (fd < 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
-        close(fd);
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        int lock_errno = errno;
-
-        close(fd);
-        return lock_errno == EWOULDBLOCK || lock_errno == EAGAIN
-                   ? CUP_ERR_LOCK
-                   : CUP_ERR_FILESYSTEM;
-    }
-    if (fd <= 3) {
-        int inherited = fcntl(fd, F_DUPFD, 4);
-
-        if (inherited < 0 || fcntl(inherited, F_SETFD, FD_CLOEXEC) != 0) {
-            if (inherited >= 0) {
-                close(inherited);
-            }
-            close(fd);
-            return CUP_ERR_FILESYSTEM;
-        }
-        close(fd);
-        fd = inherited;
-    }
-    *lease_fd = fd;
-    return CUP_OK;
-}
-
-CupError system_start_uninstall(const char *cup_root,
-                                const char *uninstall_script,
-                                const char *detached_root,
-                                const char *lock_path) {
-    CupError err;
-    char *resolved_temp_directory = NULL;
-    char temporary_directory[MAX_PATH_LEN];
-    char temporary_script[MAX_PATH_LEN];
-    FILE *file = NULL;
-    pid_t pid;
-    int lease_fd = -1;
-    int parent_socket[2] = {-1, -1};
-    char acknowledgement;
-    ssize_t acknowledgement_size;
-
-    if (text_is_empty(cup_root) || text_is_empty(uninstall_script) ||
-        text_is_empty(detached_root) || text_is_empty(lock_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    resolved_temp_directory = realpath("/tmp", NULL);
-    if (resolved_temp_directory == NULL) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    err = text_copy(temporary_directory, sizeof(temporary_directory), resolved_temp_directory);
-    free(resolved_temp_directory);
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = system_create_temp_file(
-        temporary_directory, "cup-uninstall", temporary_script, sizeof(temporary_script), &file);
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: could not create temporary uninstall script.\n");
-        return err;
-    }
-
-    if (fclose(file) != 0) {
-        system_remove_file(temporary_script);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    err = open_uninstall_lock_lease(lock_path, &lease_fd);
-    if (err != CUP_OK) {
-        system_remove_file(temporary_script);
-        return err;
-    }
-
-    err = system_copy_file(uninstall_script, temporary_script);
-    if (err != CUP_OK) {
-        close(lease_fd);
-        system_remove_file(temporary_script);
-        return err;
-    }
-
-    err = system_set_executable(temporary_script, 1);
-    if (err != CUP_OK) {
-        close(lease_fd);
-        system_remove_file(temporary_script);
-        return err;
-    }
-
-    if (uninstall_parent_socket >= 0 ||
-        socketpair(AF_UNIX, SOCK_STREAM, 0, parent_socket) != 0) {
-        close(lease_fd);
-        system_remove_file(temporary_script);
-        return uninstall_parent_socket >= 0 ? CUP_ERR_TRANSACTION : CUP_ERR_FILESYSTEM;
-    }
-    if (parent_socket[0] <= STDERR_FILENO) {
-        int inherited = fcntl(parent_socket[0], F_DUPFD, STDERR_FILENO + 1);
-
-        if (inherited < 0) {
-            close(lease_fd);
-            close(parent_socket[0]);
-            close(parent_socket[1]);
-            system_remove_file(temporary_script);
-            return CUP_ERR_FILESYSTEM;
-        }
-        close(parent_socket[0]);
-        parent_socket[0] = inherited;
-    }
-    if (fcntl(parent_socket[0], F_SETFD, FD_CLOEXEC) != 0) {
-        close(lease_fd);
-        close(parent_socket[0]);
-        close(parent_socket[1]);
-        system_remove_file(temporary_script);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    pid = fork();
-    if (pid < 0) {
-        close(lease_fd);
-        close(parent_socket[0]);
-        close(parent_socket[1]);
-        system_remove_file(temporary_script);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    if (pid == 0) {
-        int null_fd;
-
-        close(parent_socket[0]);
-        close(lease_fd);
-        if ((parent_socket[1] != 3 && dup2(parent_socket[1], 3) < 0) ||
-            (parent_socket[1] != 3 && close(parent_socket[1]) != 0) || setsid() < 0) {
-            _exit(127);
-        }
-
-        null_fd = open("/dev/null", O_RDWR);
-        if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 ||
-            dup2(null_fd, STDOUT_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
-            _exit(127);
-        }
-        if (null_fd > STDERR_FILENO && null_fd != 3) {
-            close(null_fd);
-        }
-
-        execl("/bin/sh",
-              "sh",
-              temporary_script,
-              cup_root,
-              temporary_script,
-              "3",
-              (char *)NULL);
-        _exit(127);
-    }
-
-    /* Keep the lease in this process through the helper acknowledgement and canonical-root move.
-     * The helper does not need to inherit it: on POSIX this process performs the detach itself, so
-     * retaining one owner avoids relying on shell treatment of unrelated inherited descriptors. */
-    close(parent_socket[1]);
-    do {
-        acknowledgement_size = read(parent_socket[0], &acknowledgement, 1);
-    } while (acknowledgement_size < 0 && errno == EINTR);
-
-    if (acknowledgement_size != 1 || acknowledgement != 'R') {
-        int wait_status;
-
-        close(parent_socket[0]);
-        close(lease_fd);
-        do {
-            wait_status = waitpid(pid, NULL, 0);
-        } while (wait_status < 0 && errno == EINTR);
-        system_remove_file(temporary_script);
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    {
-        SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-
-        err = system_move_path(cup_root, detached_root, &commit_state);
-        if (err != CUP_OK && commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
-            /* The helper has acknowledged startup but no root publication occurred. It no longer
-             * needs its copied script: remove that private temporary before releasing the lifetime
-             * socket, so the failed handoff cannot leave a stale /tmp helper behind. */
-            (void)system_remove_file(temporary_script);
-            close(parent_socket[0]);
-            close(lease_fd);
-            return err;
-        }
-
-        /* Keep the parent-lifetime descriptor open even when the move was applied but its
-         * directory durability could not be confirmed. The detached helper now owns cleanup. */
-        close(lease_fd);
-        uninstall_parent_socket = parent_socket[0];
-        return commit_state == SYSTEM_COMMIT_APPLIED ? CUP_ERR_COMMIT : err;
-    }
-}
-
-CupError system_start_cup_update_helper(const char *helper, const char *token) {
+static CupError start_handoff_helper(const char *helper,
+                                     const char *mode,
+                                     const char *root,
+                                     const char *detached_root,
+                                     const char *token,
+                                     SystemLock *lock) {
     int parent_fds[2] = {-1, -1};
     int status_fds[2] = {-1, -1};
+    int authority_fd = -1;
     pid_t pid;
     char status_byte;
     ssize_t status_count;
 
-    if (text_is_empty(helper) || text_is_empty(token) || cup_update_parent_signal >= 0) {
+    if (text_is_empty(helper) || text_is_empty(mode) || text_is_empty(root) ||
+        text_is_empty(token) || lock == NULL || !lock->active ||
+        lock->mode != SYSTEM_LOCK_EXCLUSIVE || handoff_parent_signal >= 0 ||
+        handoff_parent_authority >= 0) {
         return CUP_ERR_INVALID_INPUT;
     }
     if (pipe(parent_fds) != 0) {
@@ -637,23 +430,33 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
             }
         }
     }
+    authority_fd = fcntl((int)lock->handle, F_DUPFD, STDERR_FILENO + 1);
+    if (authority_fd < 0) {
+        close(parent_fds[0]);
+        close(parent_fds[1]);
+        return CUP_ERR_FILESYSTEM;
+    }
     /* Keep both lifetime endpoints outside the standard descriptor range. Only this cup process
      * owns the write end; prevent any later exec from extending the helper's
      * parent-lifetime signal.
-     * The read end stays inherited intentionally and is passed explicitly to the helper. */
+     * The read end and duplicated lock authority stay inherited intentionally and are passed
+     * explicitly to the helper. */
     if (fcntl(parent_fds[1], F_SETFD, FD_CLOEXEC) != 0) {
         close(parent_fds[0]);
         close(parent_fds[1]);
+        close(authority_fd);
         return CUP_ERR_FILESYSTEM;
     }
     if (pipe(status_fds) != 0) {
         close(parent_fds[0]);
         close(parent_fds[1]);
+        close(authority_fd);
         return CUP_ERR_FILESYSTEM;
     }
     if (fcntl(status_fds[1], F_SETFD, FD_CLOEXEC) < 0) {
         close(parent_fds[0]);
         close(parent_fds[1]);
+        close(authority_fd);
         close(status_fds[0]);
         close(status_fds[1]);
         return CUP_ERR_FILESYSTEM;
@@ -663,24 +466,49 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
     if (pid < 0) {
         close(parent_fds[0]);
         close(parent_fds[1]);
+        close(authority_fd);
         close(status_fds[0]);
         close(status_fds[1]);
         return CUP_ERR_FILESYSTEM;
     }
     if (pid == 0) {
-        char descriptor[32];
+        char parent_signal_value[32];
+        char authority_value[32];
 
         close(parent_fds[1]);
         close(status_fds[0]);
+        if ((int)lock->handle != authority_fd) {
+            close((int)lock->handle);
+        }
         if (setsid() < 0 ||
-            text_format(descriptor, sizeof(descriptor), "%d", parent_fds[0]) != CUP_OK) {
+            text_format(parent_signal_value, sizeof(parent_signal_value), "%d", parent_fds[0]) != CUP_OK ||
+            text_format(authority_value, sizeof(authority_value), "%d", authority_fd) != CUP_OK) {
             status_byte = 1;
             do {
                 status_count = write(status_fds[1], &status_byte, 1);
             } while (status_count < 0 && errno == EINTR);
             _exit(127);
         }
-        execl(helper, helper, "--internal-cup-update-helper", token, descriptor, (char *)NULL);
+        if (detached_root == NULL) {
+            execl(helper,
+                  helper,
+                  mode,
+                  root,
+                  token,
+                  parent_signal_value,
+                  authority_value,
+                  (char *)NULL);
+        } else {
+            execl(helper,
+                  helper,
+                  mode,
+                  root,
+                  detached_root,
+                  token,
+                  parent_signal_value,
+                  authority_value,
+                  (char *)NULL);
+        }
         status_byte = 1;
         do {
             status_count = write(status_fds[1], &status_byte, 1);
@@ -689,6 +517,7 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
     }
 
     close(parent_fds[0]);
+    close(authority_fd);
     close(status_fds[1]);
     do {
         status_count = read(status_fds[0], &status_byte, 1);
@@ -704,17 +533,44 @@ CupError system_start_cup_update_helper(const char *helper, const char *token) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    cup_update_parent_signal = parent_fds[1];
+    /* The child owns a duplicate of the same flock open-file description. Consume the public
+     * SystemLock without closing or unlocking its descriptor: the parent retains that reference
+     * until exit, while the child retains the duplicated authority independently. */
+    handoff_parent_authority = (int)lock->handle;
+    lock->handle = -1;
+    lock->mode = SYSTEM_LOCK_SHARED;
+    lock->active = 0;
+    handoff_parent_signal = parent_fds[1];
     return CUP_OK;
 }
 
-CupError system_wait_for_parent_exit(const char *wait_value) {
+CupError system_start_update_helper(const char *helper,
+                                    const char *root,
+                                    const char *token,
+                                    SystemLock *lock) {
+    return start_handoff_helper(
+        helper, "--internal-update-helper", root, NULL, token, lock);
+}
+
+CupError system_start_uninstall_helper(const char *helper,
+                                       const char *root,
+                                       const char *detached_root,
+                                       const char *token,
+                                       SystemLock *lock) {
+    if (text_is_empty(detached_root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return start_handoff_helper(
+        helper, "--internal-uninstall-helper", root, detached_root, token, lock);
+}
+
+static CupError wait_for_parent_exit(const char *parent_signal_value) {
     unsigned parsed;
     int descriptor;
     char byte;
     ssize_t count;
 
-    if (!text_parse_uint(wait_value, 0x7fffffffu, &parsed) || parsed <= STDERR_FILENO) {
+    if (!text_parse_uint(parent_signal_value, 0x7fffffffu, &parsed) || parsed <= STDERR_FILENO) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -726,19 +582,110 @@ CupError system_wait_for_parent_exit(const char *wait_value) {
     return count < 0 ? CUP_ERR_FILESYSTEM : CUP_OK;
 }
 
-CupError system_sleep_milliseconds(unsigned int milliseconds) {
-    struct timespec remaining;
-    struct timespec delay;
+CupError system_handoff_accept(SystemHandoff *handoff,
+                               const char *parent_signal_value,
+                               const char *authority_value) {
+    unsigned parsed;
+    struct stat info;
+    CupError err;
 
-    delay.tv_sec = (time_t)(milliseconds / 1000u);
-    delay.tv_nsec = (long)(milliseconds % 1000u) * 1000000L;
-    while (nanosleep(&delay, &remaining) != 0) {
-        if (errno != EINTR) {
+    if (handoff == NULL || handoff->active ||
+        !text_parse_uint(authority_value, 0x7fffffffu, &parsed) || parsed <= STDERR_FILENO) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = wait_for_parent_exit(parent_signal_value);
+    if (err != CUP_OK) {
+        (void)close((int)parsed);
+        return err;
+    }
+    if (fstat((int)parsed, &info) != 0 || !S_ISREG(info.st_mode)) {
+        (void)close((int)parsed);
+        return CUP_ERR_FILESYSTEM;
+    }
+    handoff->handle = (intptr_t)(int)parsed;
+    handoff->active = 1;
+    return CUP_OK;
+}
+
+CupError system_handoff_acquire_lock(SystemHandoff *handoff,
+                                     SystemLock *lock,
+                                     const char *lock_path) {
+    if (handoff == NULL || !handoff->active || lock == NULL || lock->active ||
+        text_is_empty(lock_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    lock->handle = handoff->handle;
+    lock->mode = SYSTEM_LOCK_EXCLUSIVE;
+    lock->active = 1;
+    handoff->handle = -1;
+    handoff->active = 0;
+    return CUP_OK;
+}
+
+void system_handoff_release(SystemHandoff *handoff) {
+    if (handoff == NULL || !handoff->active) {
+        return;
+    }
+    (void)flock((int)handoff->handle, LOCK_UN);
+    (void)close((int)handoff->handle);
+    handoff->handle = -1;
+    handoff->active = 0;
+}
+
+CupError system_get_executable_path(char *buffer, size_t size) {
+    char resolved[MAX_PATH_LEN];
+
+    if (buffer == NULL || size == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+#if defined(__linux__)
+    {
+        ssize_t length = readlink("/proc/self/exe", resolved, sizeof(resolved) - 1);
+
+        if (length <= 0 || (size_t)length >= sizeof(resolved)) {
             return CUP_ERR_FILESYSTEM;
         }
-        delay = remaining;
+        resolved[length] = '\0';
     }
-    return CUP_OK;
+#elif defined(__APPLE__)
+    {
+        char raw[MAX_PATH_LEN];
+        uint32_t capacity = (uint32_t)sizeof(raw);
+
+        if (_NSGetExecutablePath(raw, &capacity) != 0 || realpath(raw, resolved) == NULL) {
+            return CUP_ERR_FILESYSTEM;
+        }
+    }
+#else
+#error "Unsupported POSIX platform"
+#endif
+    if (path_normalize(resolved) != CUP_OK) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    return text_copy(buffer, size, resolved);
+}
+
+CupError system_unlink_running_executable(const char *path) {
+    char running[MAX_PATH_LEN];
+    SystemPathIdentity expected;
+    SystemPathIdentity current;
+    CupError err;
+
+    if (text_is_empty(path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_get_executable_path(running, sizeof(running));
+    if (err == CUP_OK) {
+        err = system_get_path_identity(running, &expected);
+    }
+    if (err == CUP_OK) {
+        err = system_get_path_identity(path, &current);
+    }
+    if (err != CUP_OK || !expected.valid || expected.kind != SYSTEM_PATH_REGULAR_FILE ||
+        !system_path_identity_equal(&expected, &current)) {
+        return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
+    }
+    return system_remove_file_if_identity(path, &current);
 }
 
 /* No-follow creation, copy, replacement and recursive mutation primitives. */
@@ -1193,6 +1140,13 @@ CupError system_move_path_if_identity(const char *source,
         return CUP_ERR_INVALID_INPUT;
     }
     return move_path_common(source, destination, 0, expected_identity, NULL, commit_state);
+}
+
+CupError system_move_path_retry(const char *source,
+                                const char *destination,
+                                const SystemPathIdentity *expected_identity,
+                                SystemCommitState *commit_state) {
+    return system_move_path_if_identity(source, destination, expected_identity, commit_state);
 }
 
 CupError system_replace_file(const char *source,
@@ -2354,6 +2308,7 @@ static CupError lock_acquire_common(SystemLock *lock,
     }
 
     lock->handle = fd;
+    lock->mode = mode;
     lock->active = 1;
     return CUP_OK;
 }
@@ -2430,5 +2385,14 @@ void system_lock_release(SystemLock *lock) {
     (void)flock((int)lock->handle, LOCK_UN);
     (void)close((int)lock->handle);
     lock->handle = -1;
+    lock->mode = SYSTEM_LOCK_SHARED;
     lock->active = 0;
+}
+
+CupError system_handoff_active(int *active) {
+    if (active == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *active = 0;
+    return CUP_OK;
 }

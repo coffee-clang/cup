@@ -1,18 +1,17 @@
 /*
- * Validates the canonical cup assets, records uninstall in transaction.txt and starts the native
- * handoff. POSIX detaches the root in this process; Windows delegates detach to the helper. Cleanup
- * of the detached tree continues after the current process exits.
+ * Validates the managed root, records uninstall in transaction.txt and hands exclusive authority
+ * to a temporary native copy. The helper detaches and removes the root after this process exits.
  */
 
 #include "commands.h"
 
-#include "cup_assets.h"
 #include "interrupt.h"
 #include "layout.h"
 #include "path.h"
 #include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
+#include "uninstall_helper.h"
 #include "uninstall_journal.h"
 
 #include <errno.h>
@@ -83,59 +82,39 @@ static int uninstall_journal_is_initial(const UninstallJournal *journal,
            strcmp(journal->token, token) == 0;
 }
 
-static CupError clear_unstarted_journal(const char *temporary_path, const char *token) {
+static CupError clear_unstarted_journal(const char *root,
+                                        const char *temporary_path,
+                                        const char *token,
+                                        const SystemLock *lock) {
     UninstallJournal journal;
     UninstallJournalStatus status;
     CupError err;
 
+    if (text_is_empty(root) || lock == NULL || !lock->active ||
+        lock->mode != SYSTEM_LOCK_EXCLUSIVE) {
+        return CUP_ERR_INVALID_INPUT;
+    }
     err = uninstall_journal_load(&journal, &status);
     if (err != CUP_OK || status != UNINSTALL_JOURNAL_LOADED ||
         !uninstall_journal_is_initial(&journal, temporary_path, token)) {
         return CUP_OK;
     }
+    /* The journal owns any pre-detach helper residue. Never erase that ownership evidence until
+     * the exact token-bound helper has either disappeared or been removed under this lock. */
+    err = uninstall_helper_remove_stale(root, token, lock);
+    if (err != CUP_OK) {
+        return err;
+    }
     return runtime_journal_clear_if_identity(&journal.file_identity);
-}
-
-/* Clear only while this process still owns, or has safely reacquired, the canonical lock. */
-static CupError clear_unstarted_journal_with_lock(SystemLock *lock,
-                                                  const char *lock_path,
-                                                  const char *temporary_path,
-                                                  const char *token) {
-    SystemLock cleanup_lock = {0, 0};
-    CupError err;
-    int acquired = 0;
-
-    if (lock == NULL || text_is_empty(lock_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (!lock->active) {
-        err = system_lock_acquire_existing(&cleanup_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
-        if (err != CUP_OK) {
-            return err;
-        }
-        acquired = 1;
-        err = layout_root_snapshot_validate();
-        if (err != CUP_OK) {
-            system_lock_release(&cleanup_lock);
-            return err;
-        }
-    }
-
-    err = clear_unstarted_journal(temporary_path, token);
-    if (acquired) {
-        system_lock_release(&cleanup_lock);
-    }
-    return err;
 }
 
 /* Validate, journal and begin the platform-specific uninstall handoff. */
 CupError command_uninstall(int assume_yes) {
     RuntimeJournalKind journal_kind;
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     CupError err;
     char root_path[MAX_PATH_LEN];
     char lock_path[MAX_PATH_LEN];
-    char script_path[MAX_PATH_LEN];
     char temporary_path[MAX_PATH_LEN];
     char token[MAX_TRANSACTION_TOKEN_LEN];
     int root_is_directory;
@@ -191,12 +170,6 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
 
-    err = cup_assets_find_uninstall(script_path, sizeof(script_path));
-    if (err != CUP_OK) {
-        fprintf(stderr, "Error: no valid installed or development uninstall script was found.\n");
-        goto done;
-    }
-
     if (!assume_yes) {
         err = confirm_uninstall(root_path, &confirmed);
         if (err != CUP_OK) {
@@ -230,12 +203,10 @@ CupError command_uninstall(int assume_yes) {
     if (err != CUP_OK) {
         goto done;
     }
-    /* transaction.txt blocks new operations during handoff. system_start_uninstall() keeps
-     * cup.lock authority through the canonical-root detach, either in this process or in the
-     * Windows helper, so repair can distinguish an active handoff from a stale journal. */
-    system_lock_release(&lock);
-    err = system_start_uninstall(root_path, script_path, temporary_path, lock_path);
-    if (err == CUP_OK || err == CUP_ERR_COMMIT) {
+    /* Success consumes the canonical lock only after the child already owns equivalent handoff
+     * authority. From that point the helper owns both journal recovery and root destruction. */
+    err = uninstall_helper_start(root_path, temporary_path, token, &lock);
+    if (err == CUP_OK) {
         printf("Uninstall started. The PATH entry was not removed.\n");
         journal_created = 0;
     }
@@ -247,8 +218,7 @@ done:
      * evidence for doctor/repair instead of erasing it from the parent.
      */
     if (journal_created) {
-        if (clear_unstarted_journal_with_lock(
-                &lock, lock_path, temporary_path, token) != CUP_OK) {
+        if (clear_unstarted_journal(root_path, temporary_path, token, &lock) != CUP_OK) {
             fprintf(stderr,
                     "Error: uninstall handoff cleanup was incomplete. Run 'cup repair'.\n");
             err = CUP_ERR_TRANSACTION;

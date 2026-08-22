@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -319,7 +320,7 @@ static void test_paths_permissions_and_traversal(void) {
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_DIRECTORY, kind);
 
     TEST_ASSERT_TRUE(snprintf(executable, sizeof(executable), "%s/tool.EXE", directory) > 0);
-    TEST_ASSERT_TRUE(snprintf(script, sizeof(script), "%s/uninstall.ps1", directory) > 0);
+    TEST_ASSERT_TRUE(snprintf(script, sizeof(script), "%s/tool.ps1", directory) > 0);
     TEST_ASSERT_TRUE(snprintf(batch, sizeof(batch), "%s/wrapper.cmd", directory) > 0);
     write_text(executable, "binary");
     write_text(script, "script");
@@ -572,150 +573,139 @@ static void test_identity_bound_path_removal(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(original, NULL));
 }
 
-static void test_detached_uninstall_start(void) {
-    char script[CUP_TEST_TEMP_PATH_SIZE];
+static void test_handoff_primitives(void) {
+    char lock_path[CUP_TEST_TEMP_PATH_SIZE];
+    char ordinary_path[CUP_TEST_TEMP_PATH_SIZE];
+    char parent_signal_value[32];
+    char authority_value[32];
+    SystemHandoff handoff = {0};
+    SystemLock lock = {0};
+    SECURITY_ATTRIBUTES security;
+    HANDLE read_handle = NULL;
+    HANDLE write_handle = NULL;
+    HANDLE authority = NULL;
+    int active = 1;
+    int exists = 0;
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_handoff_active(NULL));
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_FALSE(active);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(NULL, "1", "2"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(&handoff, "invalid", "2"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(&handoff, "1", "invalid"));
+
+    build_path(ordinary_path, sizeof(ordinary_path), "not-running-executable.exe");
+    write_text(ordinary_path, "not the running executable\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          system_unlink_running_executable(ordinary_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(ordinary_path, &exists));
+    TEST_ASSERT_TRUE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(ordinary_path));
+
+    ZeroMemory(&security, sizeof(security));
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    TEST_ASSERT_TRUE(CreatePipe(&read_handle, &write_handle, &security, 0));
+    authority = CreateEventW(NULL, TRUE, FALSE, NULL);
+    TEST_ASSERT_NOT_NULL(authority);
+    TEST_ASSERT_TRUE(snprintf(parent_signal_value,
+                              sizeof(parent_signal_value),
+                              "%llu",
+                              (unsigned long long)(uintptr_t)read_handle) > 0);
+    TEST_ASSERT_TRUE(snprintf(authority_value,
+                              sizeof(authority_value),
+                              "%llu",
+                              (unsigned long long)(uintptr_t)authority) > 0);
+    TEST_ASSERT_TRUE(CloseHandle(write_handle));
+    write_handle = NULL;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_handoff_accept(&handoff, parent_signal_value, authority_value));
+    read_handle = NULL; /* consumed by system_handoff_accept */
+    authority = NULL;   /* now owned by handoff */
+    TEST_ASSERT_TRUE(handoff.active);
+
+    build_path(lock_path, sizeof(lock_path), "handoff.lock");
+    write_text(lock_path, "");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(NULL, &lock, lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(&handoff, NULL, lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(&handoff, &lock, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_handoff_acquire_lock(&handoff, &lock, lock_path));
+    TEST_ASSERT_FALSE(handoff.active);
+    TEST_ASSERT_TRUE(lock.active);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock.mode);
+    system_handoff_release(&handoff);
+    system_lock_release(&lock);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+}
+
+static void test_handoff_helper_start(void) {
+    char executable[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
-    char prefixed_root[CUP_TEST_TEMP_PATH_SIZE + 8];
-    char script_text[CUP_TEST_TEMP_PATH_SIZE * 4];
-    char contents[CUP_TEST_TEMP_PATH_SIZE * 2];
-    char expected_working_directory[CUP_TEST_TEMP_PATH_SIZE];
-    DWORD temp_length;
-    int written;
+    char detached[CUP_TEST_TEMP_PATH_SIZE];
+    char contents[CUP_TEST_TEMP_PATH_SIZE * 3];
+    SystemLock lock = {0};
+    int active = 0;
 
-    build_path(script, sizeof(script), "uninstall-fixture.ps1");
-    build_path(marker, sizeof(marker), "uninstall-started.txt");
-    written = snprintf(
-        script_text,
-        sizeof(script_text),
-        "param([string]$CupRoot,[string]$SelfPath,"
-        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
-        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
-        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
-        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
-        "$leaseSafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
-        "[IntPtr]::new([Int64]$LeaseHandle),$false)\r\n"
-        "if ($leaseSafe.IsInvalid) { exit 3 }\r\n"
-        "[IO.File]::WriteAllText($env:CUP_TEST_UNINSTALL_MARKER, "
-        "$CupRoot + [Environment]::NewLine + $SelfPath + [Environment]::NewLine + "
-        "$ParentHandle + [Environment]::NewLine + $LeaseHandle + [Environment]::NewLine + "
-        "[Environment]::CurrentDirectory)\r\n"
-        "$ready.WriteByte([byte][char]'R'); $ready.Flush(); $ready.Dispose()\r\n"
-        "Remove-Item -LiteralPath $SelfPath -Force\r\n");
-    TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(script_text));
-    temp_length = GetTempPathA((DWORD)sizeof(expected_working_directory),
-                               expected_working_directory);
-    TEST_ASSERT_TRUE(temp_length > 0 && temp_length < sizeof(expected_working_directory));
-    write_text(script, script_text);
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", marker));
-    TEST_ASSERT_TRUE(snprintf(lock_path, sizeof(lock_path), "%s/uninstall.lock", temp_dir) > 0);
-    write_text(lock_path, "");
-    written = snprintf(prefixed_root, sizeof(prefixed_root), "\\\\?\\%s", temp_dir);
-    TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(prefixed_root));
-    {
-        size_t i;
-
-        for (i = 4; prefixed_root[i] != '\0'; ++i) {
-            if (prefixed_root[i] == '/') {
-                prefixed_root[i] = '\\';
-            }
-        }
-    }
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(NULL, script, temp_dir, lock_path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(temp_dir, NULL, temp_dir, lock_path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(temp_dir, script, NULL, lock_path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_uninstall(temp_dir, script, temp_dir, NULL));
-
-    write_text(
-        script,
-        "param([string]$CupRoot,[string]$SelfPath,"
-        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
-        "exit 1\r\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
-
-    write_text(
-        script,
-        "param([string]$CupRoot,[string]$SelfPath,"
-        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
-        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
-        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
-        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
-        "$ready.WriteByte([byte][char]'X'); $ready.Flush(); $ready.Dispose()\r\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
-
-    /* The success fixture intentionally acknowledges before its child process exits, matching
-     * the real handoff. Run it last so a still-owned lease cannot race a synthetic second start. */
-    write_text(script, script_text);
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
+                          system_get_executable_path(executable, sizeof(executable)));
+    build_path(marker, sizeof(marker), "handoff-started.txt");
+    build_path(lock_path, sizeof(lock_path), "handoff-start.lock");
+    build_path(detached, sizeof(detached), "handoff-detached");
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", marker));
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(NULL, temp_dir, "token", &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(executable, NULL, "token", &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(executable, temp_dir, NULL, &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_uninstall_helper(
+                              executable, temp_dir, NULL, "token", &lock));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_start_update_helper(
+                              "C:/cup-missing-handoff-helper.exe", temp_dir, "token", &lock));
+    TEST_ASSERT_TRUE(lock.active);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_FALSE(active);
+    system_lock_release(&lock);
+
+    /* Run the successful start last. The backend intentionally retains its parent-side authority and
+     * lifetime signal until this test process exits. */
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_start_uninstall_helper(
+                              executable, temp_dir, detached, "handoff-token", &lock));
+    TEST_ASSERT_FALSE(lock.active);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_TRUE(active);
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
-    {
-        char *root = contents;
-        char *self_path;
-        char *parent_handle_text;
-        char *lease_handle_text;
-        char *working_directory;
-        char *separator = strstr(root, "\r\n");
-        size_t separator_size = 2;
+    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-uninstall-helper\n"));
+    TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
+    TEST_ASSERT_NOT_NULL(strstr(contents, detached));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "handoff-token\n"));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "handles=valid\n"));
 
-        if (separator == NULL) {
-            separator = strchr(root, '\n');
-            separator_size = 1;
-        }
-        TEST_ASSERT_NOT_NULL(separator);
-        *separator = '\0';
-        self_path = separator + separator_size;
-        separator = strstr(self_path, "\r\n");
-        separator_size = 2;
-        if (separator == NULL) {
-            separator = strchr(self_path, '\n');
-            separator_size = 1;
-        }
-        TEST_ASSERT_NOT_NULL(separator);
-        *separator = '\0';
-        parent_handle_text = separator + separator_size;
-        separator = strstr(parent_handle_text, "\r\n");
-        separator_size = 2;
-        if (separator == NULL) {
-            separator = strchr(parent_handle_text, '\n');
-            separator_size = 1;
-        }
-        TEST_ASSERT_NOT_NULL(separator);
-        *separator = '\0';
-        lease_handle_text = separator + separator_size;
-        separator = strstr(lease_handle_text, "\r\n");
-        separator_size = 2;
-        if (separator == NULL) {
-            separator = strchr(lease_handle_text, '\n');
-            separator_size = 1;
-        }
-        TEST_ASSERT_NOT_NULL(separator);
-        *separator = '\0';
-        working_directory = separator + separator_size;
-
-        TEST_ASSERT_TRUE(path_equal(root, temp_dir));
-        TEST_ASSERT_FALSE(strncmp(root, "\\\\?\\", 4) == 0);
-        TEST_ASSERT_NULL(strchr(root, '/'));
-        TEST_ASSERT_TRUE(self_path[0] != '\0');
-        TEST_ASSERT_FALSE(strncmp(self_path, "\\\\?\\", 4) == 0);
-        TEST_ASSERT_NULL(strchr(self_path, '/'));
-        TEST_ASSERT_TRUE(parent_handle_text[0] != '\0');
-        TEST_ASSERT_TRUE(lease_handle_text[0] != '\0');
-        TEST_ASSERT_TRUE(strtoull(lease_handle_text, NULL, 10) != 0);
-        TEST_ASSERT_TRUE(path_equal(working_directory, expected_working_directory));
-    }
-
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));
+    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(script));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
 
 static void test_copy_replace_and_temporary_objects(void) {
@@ -927,7 +917,7 @@ static void test_shared_script_primitives(void) {
     SystemCommitState state;
     SystemPathIdentity identity;
     SystemPathIdentity reader_identity;
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     SystemPathKind kind;
     uint64_t reader_size = 0;
     int missing = 0;
@@ -1079,8 +1069,49 @@ static void test_private_directory_tree_removal_and_locks(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(private_directory));
 }
 
-int main(void) {
-    DWORD length = GetEnvironmentVariableA(
+static int run_handoff_probe(int argc, char **argv) {
+    const char *marker = getenv("CUP_TEST_HANDOFF_MARKER");
+    FILE *file;
+    HANDLE wait_handle;
+    HANDLE authority_handle;
+    DWORD flags;
+    int i;
+
+    if (marker == NULL || marker[0] == '\0' || argc < 6) {
+        return 2;
+    }
+    wait_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - 2], NULL, 10);
+    authority_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - 1], NULL, 10);
+    if (wait_handle == NULL || authority_handle == NULL ||
+        !GetHandleInformation(wait_handle, &flags) ||
+        !GetHandleInformation(authority_handle, &flags)) {
+        return 3;
+    }
+    file = fopen(marker, "wb");
+    if (file == NULL) {
+        return 4;
+    }
+    for (i = 1; i < argc; ++i) {
+        if (fprintf(file, "%s\n", argv[i]) < 0) {
+            fclose(file);
+            return 5;
+        }
+    }
+    if (fputs("handles=valid\n", file) == EOF || fclose(file) != 0) {
+        return 5;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    DWORD length;
+
+    if (argc > 1 &&
+        (strcmp(argv[1], "--internal-update-helper") == 0 ||
+         strcmp(argv[1], "--internal-uninstall-helper") == 0)) {
+        return run_handoff_probe(argc, argv);
+    }
+    length = GetEnvironmentVariableA(
         "USERPROFILE", original_profile, (DWORD)sizeof(original_profile));
 
     had_profile = length > 0 && length < sizeof(original_profile);
@@ -1097,10 +1128,11 @@ int main(void) {
     RUN_TEST(test_reparse_points_are_not_followed);
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
-    RUN_TEST(test_detached_uninstall_start);
+    RUN_TEST(test_handoff_primitives);
     RUN_TEST(test_copy_replace_and_temporary_objects);
     RUN_TEST(test_shared_script_primitives);
     RUN_TEST(test_private_directory_tree_removal_and_locks);
+    RUN_TEST(test_handoff_helper_start);
     {
         int result = UNITY_END();
 

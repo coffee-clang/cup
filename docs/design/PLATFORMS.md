@@ -64,10 +64,8 @@ not support an environment override.
 ```text
 POSIX main executable       cup
 Windows main executable     cup.exe
-POSIX update helper         cup-update-helper
-Windows update helper       cup-update-helper.exe
-POSIX uninstall helper      uninstall.sh
-Windows uninstall helper    uninstall.ps1
+POSIX update helper         update-helper
+Windows update helper       update-helper.exe
 ```
 
 Public package commands use shell wrappers on POSIX and `.cmd` wrappers on
@@ -118,6 +116,12 @@ and configures inherited handles explicitly for detached helpers. Identity snaps
 filesystem explicitly reports that no 128-bit ID exists. A move refreshes identity through its
 still-open source handle before proving the destination, because some filesystems can change a
 file ID during rename.
+
+The current Windows x64 runtime requires Windows 10 version 1709 or later. Native uninstall
+removes the temporary running helper pathname with `FileDispositionInfoEx` POSIX delete semantics,
+which were introduced in that Windows release. A failure of that operation occurs before root
+detach; the canonical journal remains recovery evidence and `repair` removes only the exact
+token-bound helper before cancelling the stale transaction.
 
 ## Internal path representation
 
@@ -179,9 +183,22 @@ This rule is important for cleanup commands: removing an owned build or staging
 directory must not continue into a separately mounted tree that happens to be
 inside it.
 
-## Locks and atomic replacement
+## Locks, handoff and atomic replacement
 
-cup uses one runtime lock at `<cup-root>/cup.lock`.
+Normal root operations use one runtime lock at `<cup-root>/cup.lock`. A detached
+self-update or uninstall must transfer authority to a child without creating an
+unlocked interval, so the system layer also provides a temporary `SystemHandoff`.
+
+On POSIX, parent and child retain references to the same `flock` open-file
+description across `fork`/`exec`. On Windows, where `LockFileEx` ownership cannot
+be transferred to another process, a named per-user kernel object outside the
+managed root bridges the transition. Root admission checks that Windows handoff
+before inspecting a root and again after acquiring `cup.lock`.
+
+For self-update, the child returns from handoff authority to the canonical lock
+before changing update state. For uninstall, the child keeps handoff authority
+while it detaches and removes the root because `cup.lock` itself lives inside the
+root being removed.
 
 The native backends also provide atomic file and directory publication used by
 state, preferences, wrappers, journals and release/build staging.
@@ -198,27 +215,33 @@ No-replace operations must use a real native primitive. cup does not replace
 that guarantee with “check whether the path exists, then move”, because another
 process could create the destination between those two steps.
 
-## Detached helpers
+## Native detached helpers
+
+Both self-update and uninstall run a copied native cup executable after the
+initiating process exits. The parent-lifetime proof is an inherited operating-
+system object; helpers do not pass or poll a PID.
 
 ### Uninstall
 
-The uninstall helper validates the handoff and waits for the parent through an
-inherited lifetime descriptor or handle. On POSIX, the parent performs the
-no-replace move to the detached sibling after the helper acknowledges startup;
-after EOF the helper verifies that exact detach and removes it. On Windows, the
-helper waits for the parent process handle and then performs the detach itself.
+The parent creates a unique native helper copy outside the managed root, starts
+it while still holding the exclusive canonical lock and establishes handoff
+authority before that lock can be released. The child removes its own temporary
+pathname after native identity verification, waits for parent exit, validates
+the root and uninstall journal, publishes `detaching/detach`, then performs the
+root move and no-follow cleanup itself.
 
-Parent termination is proved only by the inherited operating-system object. The
-helper protocol does not pass or poll a process ID.
+Windows retries only bounded transient sharing failures during the root move.
+All Windows cleanup uses the native long-path filesystem backend; PowerShell is
+not part of the uninstall protocol.
 
 ### `cup update cup`
 
-The update helper follows the same parent-lifetime approach. It waits for the
-main executable to exit, reacquires the cup lock and replaces the installed
-assets with the staged generation.
-
-On POSIX only the pipe read descriptor is inherited. On Windows an explicit
-handle list contains only the required read handle.
+The persistent `helpers/update-helper[.exe]` is refreshed from the current
+installed executable before each update. It receives the same continuous
+handoff. After parent exit, POSIX converts the inherited flock authority directly
+into the helper's `SystemLock`; Windows acquires `cup.lock` while the external
+authority is still active and then releases that temporary authority. The helper
+then validates and commits the staged generation.
 
 ## Linux static runtime
 
@@ -230,9 +253,9 @@ it does not claim a musl-based or libc-independent runtime.
 
 ## Public installer portability
 
-The POSIX installer and uninstaller run on machines that cup does not prepare.
-They use `/bin/sh` and a deliberately small command set. They do not depend on a
-compiler or on repository-only helpers.
+The POSIX installer runs on machines that cup does not prepare. It uses `/bin/sh`
+and a deliberately small command set. It does not depend on a compiler or on
+repository-only helpers.
 
 The PowerShell installer uses Windows PowerShell-compatible syntax and native
 filesystem paths.
@@ -260,9 +283,9 @@ macOS deployment target  13.0
 Windows _WIN32_WINNT      0x0A00
 ```
 
-These values describe the current build configuration. They should not be
-advertised as final minimum supported OS versions until they have been tested on
-those actual operating-system versions.
+These values describe the build configuration rather than deriving runtime support by themselves.
+The Windows 10 version 1709 floor above comes from a required native filesystem primitive; the
+oldest claimed platform version still requires matching native qualification evidence.
 
 ## Linked-binary policy
 

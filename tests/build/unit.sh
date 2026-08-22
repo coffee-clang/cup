@@ -206,9 +206,9 @@ compile_test test_package_transaction \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
 
-compile_test test_cup_update_journal \
-    "$ROOT/tests/unit/test_cup_update_journal.c" \
-    "$ROOT/src/cup_update_journal.c" \
+compile_test test_update_journal \
+    "$ROOT/tests/unit/test_update_journal.c" \
+    "$ROOT/src/update_journal.c" \
     "$ROOT/src/release_metadata.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/checksum.c" \
@@ -217,9 +217,9 @@ compile_test test_cup_update_journal \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
 
-compile_test test_cup_update_helper \
-    "$ROOT/tests/unit/test_cup_update_helper.c" \
-    "$ROOT/src/cup_update_helper.c" \
+compile_test test_update_helper \
+    "$ROOT/tests/unit/test_update_helper.c" \
+    "$ROOT/src/update_helper.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
@@ -313,9 +313,9 @@ compile_test test_install_policy \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
 
-compile_test test_cup_assets \
-    "$ROOT/tests/unit/test_cup_assets.c" \
-    "$ROOT/src/cup_assets.c" \
+compile_test test_assets \
+    "$ROOT/tests/unit/test_assets.c" \
+    "$ROOT/src/assets.c" \
     "$ROOT/src/text.c"
 
 compile_test test_command_update \
@@ -534,13 +534,19 @@ compile_test test_state \
     "$ROOT/src/text.c" \
     $STATE_SYSTEM_LIBS
 
-compile_test test_cup_update \
-    "$ROOT/tests/unit/test_cup_update.c" \
-    "$ROOT/src/cup_update.c" \
+compile_test test_self_update \
+    "$ROOT/tests/unit/test_self_update.c" \
+    "$ROOT/src/self_update.c" \
     "$ROOT/src/release_metadata.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
+
+compile_test test_uninstall_helper \
+    "$ROOT/tests/unit/test_uninstall_helper.c" \
+    "$ROOT/src/uninstall_helper.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 compile_test test_command_uninstall \
     "$ROOT/tests/unit/test_command_uninstall.c" \

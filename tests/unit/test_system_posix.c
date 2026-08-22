@@ -457,7 +457,7 @@ static void test_copy_move_temp(void) {
 
 static void test_lock_contention(void) {
     char lock_path[1024];
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     pid_t child;
     int status;
     int exists;
@@ -472,7 +472,7 @@ static void test_lock_contention(void) {
     child = fork();
     TEST_ASSERT_TRUE(child >= 0);
     if (child == 0) {
-        SystemLock child_lock = {0, 0};
+        SystemLock child_lock = {0};
         CupError err = system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
         if (err == CUP_OK) {
             system_lock_release(&child_lock);
@@ -495,7 +495,7 @@ static void test_lock_contention(void) {
     child = fork();
     TEST_ASSERT_TRUE(child >= 0);
     if (child == 0) {
-        SystemLock child_lock = {0, 0};
+        SystemLock child_lock = {0};
         CupError err = system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
         if (err == CUP_OK) {
             system_lock_release(&child_lock);
@@ -517,8 +517,8 @@ static void test_lock_contention(void) {
                           system_lock_acquire(&lock, lock_path, (SystemLockMode)99));
 
     {
-        SystemLock first_shared = {0, 0};
-        SystemLock second_shared = {0, 0};
+        SystemLock first_shared = {0};
+        SystemLock second_shared = {0};
 
         TEST_ASSERT_EQUAL_INT(CUP_OK,
                               system_lock_acquire(&first_shared, lock_path, SYSTEM_LOCK_SHARED));
@@ -529,7 +529,7 @@ static void test_lock_contention(void) {
         child = fork();
         TEST_ASSERT_TRUE(child >= 0);
         if (child == 0) {
-            SystemLock child_lock = {0, 0};
+            SystemLock child_lock = {0};
             CupError err = system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
             if (err == CUP_OK) {
                 system_lock_release(&child_lock);
@@ -689,7 +689,7 @@ static void assert_path_query_contracts(const char *file_path,
 static void assert_walk_lock_contracts(const char *file_path,
                                        const char *directory,
                                        const char *missing) {
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     size_t count = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_list_directory(missing, count_callback, &count));
@@ -714,7 +714,7 @@ static void test_api_errors(void) {
     char link_path[1024];
     char tiny[2];
     char overlong[MAX_PATH_LEN + 1];
-    SystemLock overlong_lock = {0, 0};
+    SystemLock overlong_lock = {0};
     size_t count = 0;
     SystemPathKind kind;
 
@@ -873,7 +873,7 @@ static void test_trusted_operations_reject_symlinked_parent(void) {
         char safe_copy[1024];
         FILE *exclusive_file = NULL;
         FILE *temporary_file = NULL;
-        SystemLock lock = {0, 0};
+        SystemLock lock = {0};
 
         TEST_ASSERT_TRUE(
             snprintf(linked_directory, sizeof(linked_directory), "%s/new-directory", linked_parent) > 0);
@@ -1160,7 +1160,7 @@ static void test_shared_script_primitives(void) {
     char buffer[32];
     SystemCommitState state;
     SystemPathIdentity identity;
-    SystemLock lock = {0, 0};
+    SystemLock lock = {0};
     SystemPathKind kind;
     size_t size;
 
@@ -1244,287 +1244,207 @@ static void test_shared_script_primitives(void) {
                           system_remove_tree_contents(contents, "../unsafe", NULL));
 }
 
-static void test_update_helper_process_primitives(void) {
-    char script[1024];
-    char marker[1024];
-    char wait_value[32];
-    char contents[4096];
-    char script_text[4096];
+static void test_handoff_primitives(void) {
+    char lock_path[1024];
+    char ordinary_path[1024];
+    char parent_signal_value[32];
+    char authority_value[32];
+    SystemLock lock = {0};
+    SystemLock resumed = {0};
+    SystemLock competing = {0};
+    SystemHandoff handoff = {0};
     int signal_fds[2];
+    int authority_fd;
+    int original_fd;
+    int active = 1;
+    int status = 0;
+    pid_t child;
 
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_handoff_active(NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_FALSE(active);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_cup_update_helper(NULL, "token"));
+                          system_handoff_accept(NULL, "3", "4"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_start_cup_update_helper("/missing-helper", NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("invalid"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("0"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("1"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_wait_for_parent_exit("02"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_sleep_milliseconds(0));
+                          system_handoff_accept(&handoff, "invalid", "4"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(&handoff, "3", "invalid"));
 
+    build_path(ordinary_path, sizeof(ordinary_path), "not-running-executable");
+    write_text(ordinary_path, "not the running executable\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          system_unlink_running_executable(ordinary_path));
+    TEST_ASSERT_EQUAL_INT(0, access(ordinary_path, F_OK));
+    TEST_ASSERT_EQUAL_INT(0, unlink(ordinary_path));
+
+    build_path(lock_path, sizeof(lock_path), "handoff.lock");
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    authority_fd = fcntl((int)lock.handle, F_DUPFD, STDERR_FILENO + 1);
+    TEST_ASSERT_TRUE(authority_fd > STDERR_FILENO);
     TEST_ASSERT_EQUAL_INT(0, pipe(signal_fds));
+    TEST_ASSERT_TRUE(signal_fds[0] > STDERR_FILENO);
+    TEST_ASSERT_TRUE(signal_fds[1] > STDERR_FILENO);
+    TEST_ASSERT_TRUE(snprintf(parent_signal_value, sizeof(parent_signal_value), "%d", signal_fds[0]) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(authority_value, sizeof(authority_value), "%d", authority_fd) > 0);
+
+    /* Simulate parent exit without LOCK_UN. The duplicated descriptor must retain the same flock
+     * authority for the accepting child. */
+    original_fd = (int)lock.handle;
+    TEST_ASSERT_EQUAL_INT(0, close(original_fd));
+    lock.handle = -1;
+    lock.mode = SYSTEM_LOCK_SHARED;
+    lock.active = 0;
     TEST_ASSERT_EQUAL_INT(0, close(signal_fds[1]));
-    TEST_ASSERT_TRUE(snprintf(wait_value, sizeof(wait_value), "%d", signal_fds[0]) > 0);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_wait_for_parent_exit(wait_value));
 
-    build_path(script, sizeof(script), "cup-update-helper.sh");
-    build_path(marker, sizeof(marker), "cup-update-helper.out");
-    TEST_ASSERT_TRUE(snprintf(script_text,
-                              sizeof(script_text),
-                              "#!/bin/sh\n"
-                              "printf '%%s\\n%%s\\n%%s\\n' \"$1\" \"$2\" \"$3\" > '%s'\n",
-                              marker) > 0);
-    write_text(script, script_text);
-    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0644));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          system_start_cup_update_helper(script, "token"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_handoff_accept(&handoff, parent_signal_value, authority_value));
+    TEST_ASSERT_TRUE(handoff.active);
 
-    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0755));
+    child = fork();
+    TEST_ASSERT_TRUE(child >= 0);
+    if (child == 0) {
+        SystemLock child_lock = {0};
+        CupError err =
+            system_lock_acquire(&child_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
 
-    /* The helper protocol reserves descriptors 0-2. Even when stdin is closed before startup,
-     * the inherited lifetime descriptor must therefore be moved above STDERR_FILENO. */
-    {
-        pid_t child = fork();
-        int status = 0;
-
-        TEST_ASSERT_TRUE(child >= 0);
-        if (child == 0) {
-            CupError err;
-
-            int stdin_closed;
-            int stdout_closed;
-
-            (void)close(STDIN_FILENO);
-            (void)close(STDOUT_FILENO);
-            err = system_start_cup_update_helper(script, "closed-stdin-token");
-            errno = 0;
-            stdin_closed = fcntl(STDIN_FILENO, F_GETFD) < 0 && errno == EBADF;
-            errno = 0;
-            stdout_closed = fcntl(STDOUT_FILENO, F_GETFD) < 0 && errno == EBADF;
-            _exit(err == CUP_OK && stdin_closed && stdout_closed ? 0 : 1);
+        if (err == CUP_OK) {
+            system_lock_release(&child_lock);
         }
-        TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
-        TEST_ASSERT_TRUE(WIFEXITED(status));
-        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
-        TEST_ASSERT_TRUE(wait_for_path(marker, 1));
-        read_text(marker, contents, sizeof(contents));
-        TEST_ASSERT_NOT_NULL(strstr(contents, "closed-stdin-token\n"));
-        {
-            char *last_argument = strrchr(contents, '\n');
-            char *previous_newline;
-            unsigned descriptor;
-
-            TEST_ASSERT_NOT_NULL(last_argument);
-            *last_argument = '\0';
-            previous_newline = strrchr(contents, '\n');
-            TEST_ASSERT_NOT_NULL(previous_newline);
-            TEST_ASSERT_TRUE(sscanf(previous_newline + 1, "%u", &descriptor) == 1);
-            TEST_ASSERT_TRUE(descriptor > STDERR_FILENO);
-        }
-        TEST_ASSERT_EQUAL_INT(0, unlink(marker));
+        _exit(err == CUP_ERR_LOCK ? 0 : 1);
     }
+    TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
+    TEST_ASSERT_TRUE(WIFEXITED(status));
+    TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_start_cup_update_helper(script, "token"));
-    TEST_ASSERT_TRUE(wait_for_path(marker, 1));
-    read_text(marker, contents, sizeof(contents));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-cup-update-helper\n"));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "token\n"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(NULL, &resumed, lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(&handoff, NULL, lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_acquire_lock(&handoff, &resumed, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_handoff_acquire_lock(&handoff, &resumed, lock_path));
+    TEST_ASSERT_FALSE(handoff.active);
+    TEST_ASSERT_TRUE(resumed.active);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, resumed.mode);
+    system_handoff_release(&handoff);
+    system_lock_release(&resumed);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&competing, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    system_lock_release(&competing);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
 
-static void test_uninstall_helper(void) {
-    char script[1024];
-    char failure_script[1024];
-    char marker[1024];
-    char failure_marker[1024];
+static void test_handoff_helper_start(void) {
+    char helper[1024];
+    char update_marker[1024];
+    char uninstall_marker[1024];
+    char root[1024];
+    char detached[1024];
+    char lock_path[1024];
     char contents[4096];
     char script_text[4096];
+    SystemLock lock = {0};
+    pid_t worker;
+    int status = 0;
 
-    build_path(script, sizeof(script), "uninstall-helper.sh");
-    build_path(failure_script, sizeof(failure_script), "uninstall-helper-failure.sh");
-    build_path(marker, sizeof(marker), "uninstall-helper.out");
-    build_path(failure_marker, sizeof(failure_marker), "uninstall-helper-failure.out");
+    build_path(helper, sizeof(helper), "handoff-helper.sh");
+    build_path(update_marker, sizeof(update_marker), "update-handoff.out");
+    build_path(uninstall_marker, sizeof(uninstall_marker), "uninstall-handoff.out");
+    build_path(root, sizeof(root), "handoff-root");
+    build_path(detached, sizeof(detached), "handoff-detached");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+    TEST_ASSERT_TRUE(snprintf(lock_path, sizeof(lock_path), "%s/cup.lock", root) > 0);
 
-    /* A helper that has acknowledged startup must not leave its copied /tmp script behind when
-     * the parent-side no-replace move is not applied. It waits for EOF so the check occurs only
-     * after system_start_uninstall() has completed its failed handoff cleanup. */
-    TEST_ASSERT_TRUE(snprintf(script_text,
-                              sizeof(script_text),
-                              "#!/bin/sh\n"
-                              "printf 'R' >&3\n"
-                              "while IFS= read -r line <&3; do :; done\n"
-                              "if [ -e \"$2\" ]; then state=present; else state=removed; fi\n"
-                              "printf '%%s\\n%%s\\n' \"$2\" \"$state\" > '%s'\n",
-                              failure_marker) > 0);
-    write_text(failure_script, script_text);
-    TEST_ASSERT_EQUAL_INT(0, chmod(failure_script, 0755));
-    {
-        char root[1024];
-        char detached[1024];
-        char lock[1024];
-        CupError err;
-
-        build_path(root, sizeof(root), "uninstall-failed-root");
-        build_path(detached, sizeof(detached), "uninstall-failed-detached");
-        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
-        TEST_ASSERT_EQUAL_INT(0, mkdir(detached, 0700));
-        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
-        write_text(lock, "");
-        err = system_start_uninstall(root, failure_script, detached, lock);
-        TEST_ASSERT_TRUE(err != CUP_OK);
-        TEST_ASSERT_TRUE(access(root, F_OK) == 0);
-        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
-        TEST_ASSERT_TRUE(wait_for_path(failure_marker, 1));
-        read_text(failure_marker, contents, sizeof(contents));
-        TEST_ASSERT_NOT_NULL(strstr(contents, "\nremoved\n"));
-    }
-
-    {
-        char lease_script[1024];
-        char lease_ready[1024];
-        char lease_continue[1024];
-        char root[1024];
-        char detached[1024];
-        char lock[1024];
-        char detached_lock[1024];
-        SystemLock competing_lock = {0, 0};
-        pid_t worker;
-        int status = 0;
-
-        build_path(lease_script, sizeof(lease_script), "uninstall-helper-lease.sh");
-        build_path(lease_ready, sizeof(lease_ready), "uninstall-helper-lease.ready");
-        build_path(lease_continue, sizeof(lease_continue), "uninstall-helper-lease.continue");
-        build_path(root, sizeof(root), "uninstall-lease-root");
-        build_path(detached, sizeof(detached), "uninstall-lease-detached");
-        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
-        TEST_ASSERT_TRUE(snprintf(script_text,
-                                  sizeof(script_text),
-                                  "#!/bin/sh\n"
-                                  "printf ready > '%s'\n"
-                                  "while [ ! -e '%s' ]; do :; done\n"
-                                  "printf 'R' >&3\n"
-                                  "while IFS= read -r line <&3; do :; done\n"
-                                  "rm -f \"$2\"\n",
-                                  lease_ready,
-                                  lease_continue) > 0);
-        write_text(lease_script, script_text);
-        TEST_ASSERT_EQUAL_INT(0, chmod(lease_script, 0755));
-        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
-        write_text(lock, "");
-
-        worker = fork();
-        TEST_ASSERT_TRUE(worker >= 0);
-        if (worker == 0) {
-            CupError err = system_start_uninstall(root, lease_script, detached, lock);
-
-            _exit(err == CUP_OK ? 0 : 1);
-        }
-
-        TEST_ASSERT_TRUE(wait_for_path(lease_ready, 1));
-        TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_LOCK,
-            system_lock_acquire_existing(&competing_lock, lock, SYSTEM_LOCK_EXCLUSIVE));
-        write_text(lease_continue, "continue");
-        TEST_ASSERT_EQUAL_INT(worker, waitpid(worker, &status, 0));
-        TEST_ASSERT_TRUE(WIFEXITED(status));
-        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
-        TEST_ASSERT_TRUE(wait_for_path(root, 0));
-        TEST_ASSERT_TRUE(wait_for_path(detached, 1));
-        TEST_ASSERT_TRUE(
-            snprintf(detached_lock, sizeof(detached_lock), "%s/cup.lock", detached) > 0);
-        TEST_ASSERT_EQUAL_INT(
-            CUP_OK,
-            system_lock_acquire_existing(
-                &competing_lock, detached_lock, SYSTEM_LOCK_EXCLUSIVE));
-        system_lock_release(&competing_lock);
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(detached, NULL));
-        TEST_ASSERT_EQUAL_INT(0, unlink(lease_ready));
-        TEST_ASSERT_EQUAL_INT(0, unlink(lease_continue));
-    }
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(NULL, root, "token", &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(helper, NULL, "token", &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(helper, root, NULL, &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_update_helper(helper, root, "token", &lock));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_start_uninstall_helper(
+                              helper, root, NULL, "token", &lock));
 
     TEST_ASSERT_TRUE(snprintf(script_text,
                               sizeof(script_text),
                               "#!/bin/sh\n"
-                              "printf '%%s\\n%%s\\n%%s\\n' "
-                              "\"$1\" \"$2\" \"$3\" > '%s'\n"
-                              "printf 'R' >&3\n"
-                              "rm -f \"$2\"\n",
-                              marker) > 0);
-    write_text(script, script_text);
-    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0755));
+                              "printf '%%s\\n' \"$@\" > '%s'\n",
+                              update_marker) > 0);
+    write_text(helper, script_text);
+    TEST_ASSERT_EQUAL_INT(0, chmod(helper, 0644));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_start_update_helper(helper, root, "token", &lock));
+    TEST_ASSERT_TRUE(lock.active);
+    system_lock_release(&lock);
+    TEST_ASSERT_EQUAL_INT(0, chmod(helper, 0755));
 
-    /* A retained parent-lifetime socket must not occupy a standard descriptor that was closed
-     * before CUP started the handoff. Exercise this in a child so the suite's own stdin and the
-     * process-global uninstall lifetime state remain untouched. */
-    {
-        char root[1024];
-        char detached[1024];
-        char lock[1024];
-        pid_t child;
-        int status = 0;
+    worker = fork();
+    TEST_ASSERT_TRUE(worker >= 0);
+    if (worker == 0) {
+        SystemLock worker_lock = {0};
+        CupError err =
+            system_lock_acquire(&worker_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
 
-        build_path(root, sizeof(root), "uninstall-closed-stdin-root");
-        build_path(detached, sizeof(detached), "uninstall-closed-stdin-detached");
-        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
-        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
-        write_text(lock, "");
-        child = fork();
-        TEST_ASSERT_TRUE(child >= 0);
-        if (child == 0) {
-            CupError err;
-            int stdin_closed;
-
-            (void)close(STDIN_FILENO);
-            err = system_start_uninstall(root, script, detached, lock);
-            errno = 0;
-            stdin_closed = fcntl(STDIN_FILENO, F_GETFD) < 0 && errno == EBADF;
-            _exit(err == CUP_OK && stdin_closed ? 0 : 1);
+        if (err == CUP_OK) {
+            err = system_start_update_helper(helper, root, "update-token", &worker_lock);
         }
-        TEST_ASSERT_EQUAL_INT(child, waitpid(child, &status, 0));
-        TEST_ASSERT_TRUE(WIFEXITED(status));
-        TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
-        TEST_ASSERT_TRUE(wait_for_path(marker, 1));
-        TEST_ASSERT_TRUE(access(root, F_OK) != 0);
-        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(detached, NULL));
-        TEST_ASSERT_EQUAL_INT(0, unlink(marker));
+        _exit(err == CUP_OK && !worker_lock.active ? 0 : 1);
     }
+    TEST_ASSERT_EQUAL_INT(worker, waitpid(worker, &status, 0));
+    TEST_ASSERT_TRUE(WIFEXITED(status));
+    TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+    TEST_ASSERT_TRUE(wait_for_path(update_marker, 1));
+    read_text(update_marker, contents, sizeof(contents));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-update-helper\n"));
+    TEST_ASSERT_NOT_NULL(strstr(contents, root));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "update-token\n"));
 
-    {
-        char root[1024];
-        char detached[1024];
-        char lock[1024];
-        char detached_lock[1024];
-        SystemLock competing_lock = {0, 0};
+    TEST_ASSERT_TRUE(snprintf(script_text,
+                              sizeof(script_text),
+                              "#!/bin/sh\n"
+                              "printf '%%s\\n' \"$@\" > '%s'\n",
+                              uninstall_marker) > 0);
+    write_text(helper, script_text);
+    TEST_ASSERT_EQUAL_INT(0, chmod(helper, 0755));
 
-        build_path(root, sizeof(root), "uninstall-root");
-        build_path(detached, sizeof(detached), "uninstall-detached");
-        TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
-        TEST_ASSERT_TRUE(snprintf(lock, sizeof(lock), "%s/cup.lock", root) > 0);
-        write_text(lock, "");
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                              system_start_uninstall(NULL, script, detached, lock));
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                              system_start_uninstall(root, NULL, detached, lock));
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                              system_start_uninstall(root, script, NULL, lock));
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                              system_start_uninstall(root, script, detached, NULL));
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_start_uninstall(root, script, detached, lock));
-        TEST_ASSERT_FALSE(access(root, F_OK) == 0);
-        TEST_ASSERT_TRUE(access(detached, F_OK) == 0);
-        TEST_ASSERT_TRUE(
-            snprintf(detached_lock, sizeof(detached_lock), "%s/cup.lock", detached) > 0);
-        TEST_ASSERT_EQUAL_INT(
-            CUP_OK,
-            system_lock_acquire_existing(
-                &competing_lock, detached_lock, SYSTEM_LOCK_EXCLUSIVE));
-        system_lock_release(&competing_lock);
+    worker = fork();
+    TEST_ASSERT_TRUE(worker >= 0);
+    if (worker == 0) {
+        SystemLock worker_lock = {0};
+        CupError err =
+            system_lock_acquire(&worker_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+
+        if (err == CUP_OK) {
+            err = system_start_uninstall_helper(
+                helper, root, detached, "uninstall-token", &worker_lock);
+        }
+        _exit(err == CUP_OK && !worker_lock.active ? 0 : 1);
     }
-    TEST_ASSERT_TRUE(wait_for_path(marker, 1));
-    read_text(marker, contents, sizeof(contents));
-    TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "\n3\n"));
+    TEST_ASSERT_EQUAL_INT(worker, waitpid(worker, &status, 0));
+    TEST_ASSERT_TRUE(WIFEXITED(status));
+    TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+    TEST_ASSERT_TRUE(wait_for_path(uninstall_marker, 1));
+    read_text(uninstall_marker, contents, sizeof(contents));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-uninstall-helper\n"));
+    TEST_ASSERT_NOT_NULL(strstr(contents, root));
+    TEST_ASSERT_NOT_NULL(strstr(contents, detached));
+    TEST_ASSERT_NOT_NULL(strstr(contents, "uninstall-token\n"));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+    system_lock_release(&lock);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(root, NULL));
+    TEST_ASSERT_EQUAL_INT(0, unlink(helper));
+    TEST_ASSERT_EQUAL_INT(0, unlink(update_marker));
+    TEST_ASSERT_EQUAL_INT(0, unlink(uninstall_marker));
 }
 
 static void test_suite_cleanup(void) {
@@ -1556,7 +1476,7 @@ void register_system_posix_tests(void) {
     RUN_TEST(test_tree_depth_limit);
     RUN_TEST(test_identity_bound_path_removal);
     RUN_TEST(test_shared_script_primitives);
-    RUN_TEST(test_uninstall_helper);
-    RUN_TEST(test_update_helper_process_primitives);
+    RUN_TEST(test_handoff_primitives);
+    RUN_TEST(test_handoff_helper_start);
     RUN_TEST(test_suite_cleanup);
 }

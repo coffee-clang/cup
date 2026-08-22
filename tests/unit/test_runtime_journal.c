@@ -213,7 +213,7 @@ static void test_detects_owners(void) {
 
     write_journal("format=1\noperation=cup-update\ntemporary_name=x\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_CUP_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_require_none());
 
     write_journal("format=1\noperation=uninstall\ntemporary_name=x\n");
@@ -377,7 +377,7 @@ static void test_publishes_and_replaces_by_identity(void) {
                                 &replacement));
     TEST_ASSERT_TRUE(replacement.valid);
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_CUP_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
@@ -457,7 +457,7 @@ static void test_first_publish_preserves_existing_journal(void) {
                                 &identity));
     TEST_ASSERT_FALSE(identity.valid);
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_CUP_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
 }
 
 

@@ -109,9 +109,6 @@ static void test_package_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.%s", home, host) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_uninstall_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/helpers/%s", home, CUP_UNINSTALL_FILENAME) > 0);
-    TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/bin/%s", home, CUP_BINARY_FILENAME) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
@@ -155,8 +152,7 @@ static void test_path_argument_contracts(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           layout_get_platform_checksums_path(NULL, sizeof(path)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_cup_update_helper_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_uninstall_path(NULL, sizeof(path)));
+                          layout_get_update_helper_path(NULL, sizeof(path)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_binary_path(NULL, sizeof(path)));
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -625,7 +621,7 @@ static void test_runtime_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_directory(path, &exists));
     TEST_ASSERT_TRUE(exists);
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cup_assets());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_assets());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_package_parent(&identity));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(&identity));
 

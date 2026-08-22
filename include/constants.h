@@ -79,7 +79,7 @@
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
 #define CUP_COMMON_CHECKSUM_ASSET_COUNT 4u
-#define CUP_PLATFORM_CHECKSUM_ASSET_COUNT 4u
+#define CUP_PLATFORM_CHECKSUM_ASSET_COUNT 3u
 #define CUP_COMMON_CHECKSUM_ASSETS \
     ((const char *const[]){CUP_PACKAGES_FILENAME, \
                            CUP_INSTALL_POLICY_FILENAME, \
@@ -94,38 +94,29 @@
 
 /* cup update staging, backup, absence, and commit names. */
 #define CUP_UPDATE_BINARY_NEW "binary.new"
-#define CUP_UPDATE_UNINSTALL_NEW "uninstall.new"
 #define CUP_UPDATE_PLATFORM_CHECKSUMS_NEW "platform-checksums.new"
 #define CUP_UPDATE_PACKAGES_NEW "package-catalog.new"
 #define CUP_UPDATE_INSTALL_POLICY_NEW "install-config.new"
 #define CUP_UPDATE_COMMON_CHECKSUMS_NEW "common-checksums.new"
 #define CUP_UPDATE_BINARY_OLD "binary.old"
-#define CUP_UPDATE_UNINSTALL_OLD "uninstall.old"
 #define CUP_UPDATE_PLATFORM_CHECKSUMS_OLD "platform-checksums.old"
 #define CUP_UPDATE_PACKAGES_OLD "package-catalog.old"
 #define CUP_UPDATE_INSTALL_POLICY_OLD "install-config.old"
 #define CUP_UPDATE_COMMON_CHECKSUMS_OLD "common-checksums.old"
 #define CUP_UPDATE_BINARY_ABSENT "binary.absent"
-#define CUP_UPDATE_UNINSTALL_ABSENT "uninstall.absent"
 #define CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT "platform-checksums.absent"
 #define CUP_UPDATE_PACKAGES_ABSENT "package-catalog.absent"
 #define CUP_UPDATE_INSTALL_POLICY_ABSENT "install-config.absent"
 #define CUP_UPDATE_COMMON_CHECKSUMS_ABSENT "common-checksums.absent"
 #define CUP_UPDATE_COMMITTED "committed"
 
-/* Platform-specific executable, uninstall asset, and development script path. */
+/* Platform-specific executable and persistent update-helper name. */
 #if defined(_WIN32)
 #define CUP_BINARY_FILENAME "cup.exe"
-#define CUP_UPDATE_HELPER_FILENAME "cup-update-helper.exe"
-#define CUP_UNINSTALL_FILENAME "uninstall.ps1"
-#define CUP_DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup-windows.ps1"
-#define CUP_UNINSTALL_EXECUTABLE 0
+#define CUP_UPDATE_HELPER_FILENAME "update-helper.exe"
 #else
 #define CUP_BINARY_FILENAME "cup"
-#define CUP_UPDATE_HELPER_FILENAME "cup-update-helper"
-#define CUP_UNINSTALL_FILENAME "uninstall.sh"
-#define CUP_DEVELOPMENT_UNINSTALL_PATH "scripts/install/uninstall-cup.sh"
-#define CUP_UNINSTALL_EXECUTABLE 1
+#define CUP_UPDATE_HELPER_FILENAME "update-helper"
 #endif
 
 /* Development-only repository path. */

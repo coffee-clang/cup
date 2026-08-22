@@ -25,7 +25,7 @@ mkdir -p "$DIST" "$MOCK_BIN" "$MOCK_STATE" "$REMOTE_ASSETS"
 
 public_assets=(
     packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_NOTICES.txt
-    install.sh install.ps1 uninstall.sh uninstall.ps1
+    install.sh install.ps1
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64
     cup-windows-x64.exe SHA256SUMS.common SHA256SUMS.linux-x64
     SHA256SUMS.linux-arm64 SHA256SUMS.macos-x64
@@ -55,19 +55,17 @@ EOF_PROVENANCE
         "$VERSION" "$TAG" "$SHA" > "$DIST/install.sh"
     printf '\$ReleaseVersion = "%s"\n\$ReleaseTag = "%s"\n\$ReleaseCommit = "%s"\n' \
         "$VERSION" "$TAG" "$SHA" > "$DIST/install.ps1"
-    printf 'uninstall\n' > "$DIST/uninstall.sh"
-    printf 'uninstall\n' > "$DIST/uninstall.ps1"
     for platform in linux-x64 linux-arm64 macos-x64 macos-arm64; do
         printf '%s\n' "$platform" > "$DIST/cup-$platform"
     done
     printf 'windows\n' > "$DIST/cup-windows-x64.exe"
     write_checksums SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
-    write_checksums SHA256SUMS.linux-x64 cup-linux-x64 uninstall.sh release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.linux-arm64 cup-linux-arm64 uninstall.sh release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.macos-x64 cup-macos-x64 uninstall.sh release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.macos-arm64 cup-macos-arm64 uninstall.sh release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.windows-x64 cup-windows-x64.exe uninstall.ps1 release.txt SHA256SUMS.common
-    chmod 0755 "$DIST" "$DIST/install.sh" "$DIST/uninstall.sh" \
+    write_checksums SHA256SUMS.linux-x64 cup-linux-x64 release.txt SHA256SUMS.common
+    write_checksums SHA256SUMS.linux-arm64 cup-linux-arm64 release.txt SHA256SUMS.common
+    write_checksums SHA256SUMS.macos-x64 cup-macos-x64 release.txt SHA256SUMS.common
+    write_checksums SHA256SUMS.macos-arm64 cup-macos-arm64 release.txt SHA256SUMS.common
+    write_checksums SHA256SUMS.windows-x64 cup-windows-x64.exe release.txt SHA256SUMS.common
+    chmod 0755 "$DIST" "$DIST/install.sh" \
         "$DIST/cup-linux-x64" "$DIST/cup-linux-arm64" \
         "$DIST/cup-macos-x64" "$DIST/cup-macos-arm64"
     find "$DIST" -type f ! -perm -0100 -exec chmod 0644 {} +
@@ -256,7 +254,7 @@ for asset in "${public_assets[@]}"; do
     chmod 0644 "$part_platform/$asset" 2>/dev/null || true
 done
 "$ROOT/scripts/release/assemble-candidate.sh" "$assembled"     "$part_common" "$part_platform" >/dev/null
-for executable in install.sh uninstall.sh cup-linux-x64 cup-linux-arm64         cup-macos-x64 cup-macos-arm64; do
+for executable in install.sh cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64; do
     [ "$(stat -c '%a' "$assembled/$executable")" = 755 ] ||
         fail "assembled executable mode is not 0755: $executable"
 done
