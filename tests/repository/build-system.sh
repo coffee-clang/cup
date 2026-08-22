@@ -1567,5 +1567,7 @@ for final_file in bin/cup symbols/cup.debug build-config.txt release.txt \
 done
 assert_missing "$finalizer_build/.final.staging"
 assert_missing "$finalizer_build/.final.previous"
+assert_not_contains "$(cat "$TMP_ROOT/finalizer-success.out")" \
+    'Unable to find program interpreter name'
 
 printf '%s\n' 'Build-system contract tests passed.'

@@ -136,6 +136,10 @@ static int token_matches_temporary_name(const char *token, const char *temporary
            strcmp(token + token_length - name_length, temporary_name) == 0;
 }
 
+static int error_code_is_valid(int error_code) {
+    return error_code >= (int)CUP_ERR_INVALID_INPUT && error_code <= (int)CUP_ERR_INTERRUPT;
+}
+
 static int journal_fields_are_coherent(const UpdateJournal *journal) {
     if (journal == NULL || !temporary_name_is_valid(journal->temporary_name) ||
         !token_matches_temporary_name(journal->token, journal->temporary_name) ||
@@ -145,7 +149,7 @@ static int journal_fields_are_coherent(const UpdateJournal *journal) {
         return 0;
     }
     if (journal->phase == CUP_UPDATE_PHASE_FAILED) {
-        return journal->error_code > 0 &&
+        return error_code_is_valid(journal->error_code) &&
                (journal->recovery == CUP_UPDATE_FAILURE_PENDING ||
                 journal->recovery == CUP_UPDATE_FAILURE_ROLLED_BACK);
     }
@@ -234,7 +238,8 @@ CupError update_journal_set_phase(UpdateJournal *journal,
     CupError err;
 
     if (journal == NULL || strcmp(update_phase_name(phase), "invalid") == 0 ||
-        (phase == CUP_UPDATE_PHASE_FAILED ? error_code <= 0 : error_code != 0)) {
+        (phase == CUP_UPDATE_PHASE_FAILED ? !error_code_is_valid(error_code)
+                                          : error_code != 0)) {
         return CUP_ERR_INVALID_INPUT;
     }
 

@@ -219,7 +219,9 @@ process could create the destination between those two steps.
 
 Both self-update and uninstall run a copied native cup executable after the
 initiating process exits. The parent-lifetime proof is an inherited operating-
-system object; helpers do not pass or poll a PID.
+system object; helpers do not pass or poll a PID. Detached helpers do not retain
+the caller's standard streams: POSIX reconnects stdin/stdout/stderr to `/dev/null`,
+while Windows inherits only the explicitly allowlisted handoff handles.
 
 ### Uninstall
 

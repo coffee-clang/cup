@@ -173,6 +173,14 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
 }
 
+CupError layout_get_root(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "%s", root), size);
+}
+
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *selected_root) {
+    return path_join(buffer, size, selected_root, "transaction.txt");
+}
+
 CupError layout_get_staging_dir(char *buffer, size_t size) {
     return path_join(buffer, size, root, "staging");
 }

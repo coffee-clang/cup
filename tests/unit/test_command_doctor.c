@@ -339,8 +339,9 @@ CupError system_is_regular_file(const char *path, int *is_regular) {
 
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode) {
     (void)path;
-    (void)mode;
     if (scenario.lock_result == CUP_OK && lock != NULL) {
+        lock->handle = 7;
+        lock->mode = mode;
         lock->active = 1;
     }
     return scenario.lock_result;
@@ -349,6 +350,7 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
 void system_lock_release(SystemLock *lock) {
     if (lock != NULL && lock->active) {
         lock->active = 0;
+        lock->mode = SYSTEM_LOCK_SHARED;
     }
     lock_release_calls++;
 }

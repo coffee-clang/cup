@@ -2,6 +2,7 @@
 
 #include "uninstall_journal.h"
 
+#include "exit_status.h"
 #include "layout.h"
 #include "path.h"
 #include "runtime_journal.h"
@@ -121,7 +122,8 @@ static int journal_is_coherent(const UninstallJournal *journal) {
         case UNINSTALL_PHASE_DETACHING:
             return journal->error_code == 0 && journal->stage == UNINSTALL_STAGE_DETACH;
         case UNINSTALL_PHASE_FAILED:
-            return journal->error_code > 0;
+            return journal->stage == UNINSTALL_STAGE_DETACH &&
+                   journal->error_code == CUP_STATUS_OPERATION;
         default:
             return 0;
     }

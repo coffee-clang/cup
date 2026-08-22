@@ -109,12 +109,14 @@ trap 'exit 143' TERM
 case "$platform" in
     linux-*)
         require_tool objcopy
+        require_tool objdump
         require_tool strip
         require_tool readelf
         symbols=$staging/symbols/cup.debug
         objcopy --only-keep-debug "$input" "$symbols"
         chmod 0644 "$symbols"
-        readelf -S "$symbols" | grep -Eq '\.(debug_info|zdebug_info)|\.symtab' ||
+        # Debug-only ELF files can retain unusable PT_INTERP metadata; inspect only sections here.
+        objdump -h "$symbols" | grep -Eq '\.(debug_info|zdebug_info)|\.symtab' ||
             fail 'Linux symbol sidecar contains no usable debug information'
         if [ "$mode" = release ]; then
             strip --strip-unneeded "$executable"

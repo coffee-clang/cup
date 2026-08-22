@@ -166,6 +166,10 @@ CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
 }
 
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *selected_root) {
+    return path_join(buffer, size, selected_root, "transaction.txt");
+}
+
 CupError layout_get_staging_dir(char *buffer, size_t size) {
     return path_join(buffer, size, root, "staging");
 }
@@ -550,6 +554,10 @@ static void test_model_and_begin(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           update_journal_set_phase(&journal, CUP_UPDATE_PHASE_FAILED, 0));
     TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        update_journal_set_phase(
+            &journal, CUP_UPDATE_PHASE_FAILED, (int)CUP_ERR_INTERRUPT + 1));
+    TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
         begin_update_journal_for_test(staging, "u1234-cup-update-begin.tmp", "1.2.4"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, clear_runtime_journal());
@@ -712,6 +720,18 @@ static void test_strict_load(void) {
     assert_invalid_journal("format=1\r\noperation=cup-update\nphase=scheduled\n"
                            "temporary_name=cup-update-x\ntoken=u-cup-update-x\n"
                            "version=1.2.3\nerror=0\nrecovery=none\n");
+
+    {
+        char invalid_error[256];
+
+        snprintf(invalid_error,
+                 sizeof(invalid_error),
+                 "format=1\noperation=cup-update\nphase=failed\n"
+                 "temporary_name=cup-update-x\ntoken=u-cup-update-x\n"
+                 "version=1.2.3\nerror=%d\nrecovery=pending\n",
+                 (int)CUP_ERR_INTERRUPT + 1);
+        assert_invalid_journal(invalid_error);
+    }
 
     write_journal("format=1\noperation=cup-update\nphase=failed\n"
                   "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\n"
@@ -907,7 +927,7 @@ static void test_recover_initial_install_rollback(void) {
         TEST_ASSERT_FALSE(test_access_exists(paths[i]));
     }
     TEST_ASSERT_FALSE(test_access_exists(staging));
-    TEST_ASSERT_EQUAL_INT(4, writable_calls);
+    TEST_ASSERT_EQUAL_INT(3, writable_calls);
 }
 
 static void test_recover_rollback_ignores_staging_cleanup_failure(void) {
@@ -1245,6 +1265,8 @@ static void test_interrupted_rollback_can_retry_from_intact_backups(void) {
         CUP_OK, path_join(backup, sizeof(backup), staging, CUP_UPDATE_PACKAGES_OLD));
     TEST_ASSERT_TRUE(test_access_exists(backup));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_package_catalog_path(destination, sizeof(destination)));
+    assert_file_text(destination, "old");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_install_policy_path(destination, sizeof(destination)));
     assert_file_text(destination, "new");
 
     copy_fail_call = 0;

@@ -24,7 +24,7 @@ fi
 
 
 # A failed cleanup must keep enough ownership evidence to identify the detached residue without
-# guessing at unrelated data. The mock fails only when the helper reaches the components directory.
+# guessing at unrelated data.
 prepare_command_environment
 run_cup repair >/dev/null
 cup_root=$TEST_HOME/.cup
@@ -33,11 +33,17 @@ printf 'fixture\n' > "$cup_root/components/fixture.txt"
 cp "$CUP" "$cup_root/bin/cup"
 chmod +x "$cup_root/bin/cup"
 
-# A native cleanup failure must preserve transaction.txt while managed residue remains. Make a
-# managed directory unreadable so the detached helper cannot traverse it; no shell-command mock is
-# involved in the native cleanup path.
+# A native cleanup failure must preserve transaction.txt while managed residue remains. Exceed the
+# bounded native tree depth so the failure is deterministic even for privileged test users; no
+# shell-command mock is involved in the native cleanup path.
 blocked_components="$cup_root/components"
-chmod 000 "$blocked_components"
+deep="$blocked_components"
+depth=0
+while [ "$depth" -le 130 ]; do
+    deep="$deep/d"
+    mkdir "$deep"
+    depth=$((depth + 1))
+done
 
 output=$(run_cup uninstall --yes)
 assert_contains "$output" 'Uninstall started. The PATH entry was not removed.'
@@ -57,7 +63,6 @@ done
 [ -n "$residue" ] || fail 'failed uninstall did not leave a detached residue'
 assert_missing "$cup_root"
 assert_file "$residue/transaction.txt"
-[ -d "$residue/components" ] || fail 'failed uninstall removed the blocked managed residue'
-chmod 700 "$residue/components"
+[ -d "$residue/components" ] || fail 'failed uninstall removed the bounded-depth residue'
 
 printf 'Uninstall integration tests passed for %s.\n' "$TEST_PLATFORM"

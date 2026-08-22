@@ -229,6 +229,8 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
         lock_acquire_calls++;
         acquired_mode = mode;
         if (result == CUP_OK) {
+            lock->handle = 7;
+            lock->mode = mode;
             lock->active = 1;
         }
         return result;
@@ -238,6 +240,7 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
 void system_lock_release(SystemLock *lock) {
     if (lock != NULL && lock->active) {
         lock->active = 0;
+        lock->mode = SYSTEM_LOCK_SHARED;
         lock_release_calls++;
     }
 }

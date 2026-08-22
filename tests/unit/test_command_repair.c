@@ -6,6 +6,7 @@
 #include "assets.h"
 #include "constants.h"
 #include "download.h"
+#include "exit_status.h"
 #include "checksum.h"
 #include "commands.h"
 #include "package_selector.h"
@@ -358,7 +359,11 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     TEST_ASSERT_EQUAL_STRING("/tmp/cup.lock", path);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, mode);
     lock_acquire_calls++;
-    lock->active = lock_result == CUP_OK;
+    if (lock_result == CUP_OK) {
+        lock->handle = 7;
+        lock->mode = mode;
+        lock->active = 1;
+    }
     return lock_result;
 }
 
@@ -366,6 +371,7 @@ void system_lock_release(SystemLock *lock) {
     TEST_ASSERT_NOT_NULL(lock);
     lock_release_calls++;
     lock->active = 0;
+    lock->mode = SYSTEM_LOCK_SHARED;
 }
 
 CupError layout_ensure_runtime(void) {
@@ -1195,8 +1201,8 @@ static void test_recover_transaction(void) {
     runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
     uninstall_statuses[0] = UNINSTALL_JOURNAL_LOADED;
     uninstall_journals[0].phase = UNINSTALL_PHASE_FAILED;
-    uninstall_journals[0].stage = UNINSTALL_STAGE_HANDOFF;
-    uninstall_journals[0].error_code = 7;
+    uninstall_journals[0].stage = UNINSTALL_STAGE_DETACH;
+    uninstall_journals[0].error_code = CUP_STATUS_OPERATION;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_EQUAL_INT(1, uninstall_helper_cleanup_calls);
     TEST_ASSERT_EQUAL_INT(1, uninstall_recover_calls);
@@ -1237,8 +1243,8 @@ static void test_recovery_rejects_ambiguous_journals(void) {
     runtime_kinds[0] = RUNTIME_JOURNAL_UNINSTALL;
     uninstall_statuses[0] = UNINSTALL_JOURNAL_LOADED;
     uninstall_journals[0].phase = UNINSTALL_PHASE_FAILED;
-    uninstall_journals[0].stage = UNINSTALL_STAGE_HANDOFF;
-    uninstall_journals[0].error_code = 7;
+    uninstall_journals[0].stage = UNINSTALL_STAGE_DETACH;
+    uninstall_journals[0].error_code = CUP_STATUS_OPERATION;
     uninstall_recover_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
 

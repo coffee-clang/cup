@@ -176,18 +176,18 @@ assert_contains "$output" \
 assert_missing "$transaction_file"
 assert_missing "$stale_uninstall_helper"
 
-# A failed uninstall whose detached sibling is gone can be explicitly acknowledged by repair.
+# A failed detach whose detached sibling is absent can be explicitly acknowledged by repair.
 cat > "$transaction_file" <<'JOURNAL'
 format=1
 operation=uninstall
 phase=failed
 temporary_name=.cup-uninstall-fixture
 token=fixture
-stage=handoff
-error=7
+stage=detach
+error=6
 JOURNAL
 output=$(run_cup repair)
-assert_contains "$output" "Acknowledged failed cup uninstall during 'handoff' (error 7)."
+assert_contains "$output" "Acknowledged failed cup uninstall during 'detach' (error 6)."
 assert_missing "$transaction_file"
 assert_cup_healthy
 

@@ -14,6 +14,7 @@ void tearDown(void);
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1338,6 +1339,114 @@ static void test_handoff_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
 
+static void test_handoff_helper_detaches_standard_streams(void) {
+    char helper[1024];
+    char root[1024];
+    char lock_path[1024];
+    char ready_fifo[1024];
+    char control_fifo[1024];
+    char done_fifo[1024];
+    char script_text[4096];
+    int capture_fds[2] = {-1, -1};
+    int ready_fd = -1;
+    int control_fd = -1;
+    int done_fd = -1;
+    pid_t worker;
+    int status = 0;
+    struct pollfd wait_fd;
+    char buffer[64];
+    ssize_t count;
+
+    build_path(helper, sizeof(helper), "handoff-detach-helper.sh");
+    build_path(root, sizeof(root), "handoff-detach-root");
+    build_path(ready_fifo, sizeof(ready_fifo), "handoff-ready.fifo");
+    build_path(control_fifo, sizeof(control_fifo), "handoff-control.fifo");
+    build_path(done_fifo, sizeof(done_fifo), "handoff-done.fifo");
+    TEST_ASSERT_EQUAL_INT(0, mkdir(root, 0700));
+    TEST_ASSERT_TRUE(snprintf(lock_path, sizeof(lock_path), "%s/cup.lock", root) > 0);
+    TEST_ASSERT_EQUAL_INT(0, mkfifo(ready_fifo, 0600));
+    TEST_ASSERT_EQUAL_INT(0, mkfifo(control_fifo, 0600));
+    TEST_ASSERT_EQUAL_INT(0, mkfifo(done_fifo, 0600));
+
+    ready_fd = open(ready_fifo, O_RDWR | O_NONBLOCK);
+    control_fd = open(control_fifo, O_RDWR | O_NONBLOCK);
+    done_fd = open(done_fifo, O_RDWR | O_NONBLOCK);
+    TEST_ASSERT_TRUE(ready_fd >= 0);
+    TEST_ASSERT_TRUE(control_fd >= 0);
+    TEST_ASSERT_TRUE(done_fd >= 0);
+    TEST_ASSERT_EQUAL_INT(0, pipe(capture_fds));
+
+    TEST_ASSERT_TRUE(snprintf(script_text,
+                              sizeof(script_text),
+                              "#!/bin/sh\n"
+                              "printf 'inherited-output\\n'\n"
+                              "printf 'ready\\n' > '%s'\n"
+                              "IFS= read -r value < '%s'\n"
+                              "printf 'done\\n' > '%s'\n",
+                              ready_fifo,
+                              control_fifo,
+                              done_fifo) > 0);
+    write_text(helper, script_text);
+    TEST_ASSERT_EQUAL_INT(0, chmod(helper, 0755));
+
+    worker = fork();
+    TEST_ASSERT_TRUE(worker >= 0);
+    if (worker == 0) {
+        SystemLock worker_lock = {0};
+        CupError err;
+
+        (void)close(capture_fds[0]);
+        if (dup2(capture_fds[1], STDOUT_FILENO) < 0 ||
+            dup2(capture_fds[1], STDERR_FILENO) < 0) {
+            _exit(2);
+        }
+        (void)close(capture_fds[1]);
+        (void)close(ready_fd);
+        (void)close(control_fd);
+        (void)close(done_fd);
+        err = system_lock_acquire(&worker_lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+        if (err == CUP_OK) {
+            err = system_start_update_helper(helper, root, "detach-token", &worker_lock);
+        }
+        _exit(err == CUP_OK && !worker_lock.active ? 0 : 1);
+    }
+
+    (void)close(capture_fds[1]);
+    capture_fds[1] = -1;
+    TEST_ASSERT_EQUAL_INT(worker, waitpid(worker, &status, 0));
+    TEST_ASSERT_TRUE(WIFEXITED(status));
+    TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
+
+    wait_fd.fd = ready_fd;
+    wait_fd.events = POLLIN;
+    wait_fd.revents = 0;
+    TEST_ASSERT_EQUAL_INT(1, poll(&wait_fd, 1, 5000));
+    TEST_ASSERT_TRUE((wait_fd.revents & POLLIN) != 0);
+    TEST_ASSERT_TRUE(read(ready_fd, buffer, sizeof(buffer)) > 0);
+
+    TEST_ASSERT_EQUAL_INT(0, fcntl(capture_fds[0], F_SETFL, O_NONBLOCK));
+    count = read(capture_fds[0], buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_INT64(0, count);
+
+    TEST_ASSERT_TRUE(write(control_fd, "continue\n", 9) > 0);
+    wait_fd.fd = done_fd;
+    wait_fd.events = POLLIN;
+    wait_fd.revents = 0;
+    TEST_ASSERT_EQUAL_INT(1, poll(&wait_fd, 1, 5000));
+    TEST_ASSERT_TRUE((wait_fd.revents & POLLIN) != 0);
+    TEST_ASSERT_TRUE(read(done_fd, buffer, sizeof(buffer)) > 0);
+
+    (void)close(capture_fds[0]);
+    (void)close(ready_fd);
+    (void)close(control_fd);
+    (void)close(done_fd);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(root, NULL));
+    TEST_ASSERT_EQUAL_INT(0, unlink(helper));
+    TEST_ASSERT_EQUAL_INT(0, unlink(ready_fifo));
+    TEST_ASSERT_EQUAL_INT(0, unlink(control_fifo));
+    TEST_ASSERT_EQUAL_INT(0, unlink(done_fifo));
+}
+
 static void test_handoff_helper_start(void) {
     char helper[1024];
     char update_marker[1024];
@@ -1477,6 +1586,7 @@ void register_system_posix_tests(void) {
     RUN_TEST(test_identity_bound_path_removal);
     RUN_TEST(test_shared_script_primitives);
     RUN_TEST(test_handoff_primitives);
+    RUN_TEST(test_handoff_helper_detaches_standard_streams);
     RUN_TEST(test_handoff_helper_start);
     RUN_TEST(test_suite_cleanup);
 }

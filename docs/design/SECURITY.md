@@ -258,8 +258,9 @@ and stages them before writing the update journal.
 
 The update helper is regenerated from the current executable before each update
 and its digest is checked. The parent establishes continuous handoff authority
-before it can release the canonical lock. After parent exit, the helper returns
-to `cup.lock` under that authority and replaces the main executable last.
+before it can release the canonical lock. The detached child does not retain the
+caller's standard streams. After parent exit, the helper returns to `cup.lock`
+under that authority and replaces the main executable last.
 
 Before the commit marker, the old complete generation can be restored. Mixed or
 incomplete rollback data is preserved for manual recovery instead of being

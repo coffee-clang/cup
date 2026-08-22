@@ -54,6 +54,17 @@ void tearDown(void) {
  * state above.
  */
 
+CupError layout_get_root(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "%s", journal_root), size);
+}
+
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *root) {
+    if (path_result != CUP_OK) {
+        return path_result;
+    }
+    return buffer_write_result(snprintf(buffer, size, "%s/transaction.txt", root), size);
+}
+
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     if (path_result != CUP_OK) {
         return path_result;

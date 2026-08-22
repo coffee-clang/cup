@@ -222,15 +222,18 @@ phase=scheduled|committing|failed
 temporary_name=cup-update-<unique-id>
 token=<handoff-token>
 version=<MAJOR.MINOR.PATCH>
-error=<0-or-public-error-code>
+error=0|<CupError>
 recovery=none|pending|rolled-back
 ```
+
+`<CupError>` is a nonzero value from the current internal `CupError` domain
+(`CUP_ERR_INVALID_INPUT` through `CUP_ERR_INTERRUPT`); arbitrary positive integers are invalid.
 
 Field combinations must match:
 
 ```text
-scheduled or committing  error=0  recovery=none
-failed                   error>0  recovery=pending|rolled-back
+scheduled or committing  error=0           recovery=none
+failed                   error=<CupError>  recovery=pending|rolled-back
 ```
 
 The staging generation contains:
@@ -273,7 +276,9 @@ Windows  parent and child retain a named per-user kernel authority outside <cup-
 ```
 
 The child waits for the inherited parent-lifetime object to close rather than
-polling a PID. After parent exit, the update child returns to the canonical lock:
+polling a PID. It is detached from the initiating command's standard streams, so
+command capture receives EOF when the parent exits rather than when the helper
+finishes. After parent exit, the update child returns to the canonical lock:
 on POSIX it converts the inherited flock authority directly into its `SystemLock`;
 on Windows it acquires `cup.lock` while the external authority is still active,
 then releases that temporary authority.
@@ -342,7 +347,7 @@ phase=scheduled|detaching|failed
 temporary_name=.cup-uninstall-<token>
 token=<token>
 stage=handoff|detach
-error=<0-or-public-error-code>
+error=0|6
 ```
 
 Allowed combinations are:
@@ -350,7 +355,7 @@ Allowed combinations are:
 ```text
 scheduled  stage=handoff  error=0
 detaching  stage=detach   error=0
-failed     stage=handoff|detach  error>0
+failed     stage=detach   error=6
 ```
 
 The parent then copies its running native executable to a reserved temporary

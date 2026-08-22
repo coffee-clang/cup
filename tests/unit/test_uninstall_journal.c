@@ -1,6 +1,7 @@
 /* Exercises the strict uninstall journal stored in the shared transaction.txt file. */
 
 #include "layout.h"
+#include "exit_status.h"
 #include "path.h"
 #include "runtime_journal.h"
 #include "system.h"
@@ -72,6 +73,10 @@ CupError layout_get_root(char *buffer, size_t size) {
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
+}
+
+CupError layout_build_transaction_path(char *buffer, size_t size, const char *selected_root) {
+    return path_join(buffer, size, selected_root, "transaction.txt");
 }
 
 CupError system_create_temp_file(
@@ -348,11 +353,18 @@ static void test_strict_load(void) {
 
     write_journal("format=1\noperation=uninstall\nphase=failed\n"
                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=19\n");
+                  "stage=detach\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_FAILED, journal.phase);
     TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_DETACH, journal.stage);
-    TEST_ASSERT_EQUAL_INT(19, journal.error_code);
+    TEST_ASSERT_EQUAL_INT(CUP_STATUS_OPERATION, journal.error_code);
+
+    assert_invalid("format=1\noperation=uninstall\nphase=failed\n"
+                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
+                   "stage=handoff\nerror=6\n");
+    assert_invalid("format=1\noperation=uninstall\nphase=failed\n"
+                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
+                   "stage=detach\nerror=19\n");
 }
 
 static void test_persistent_write_failures(void) {
@@ -385,7 +397,7 @@ static void test_recover_failed_uninstall(void) {
 
     write_journal("format=1\noperation=uninstall\nphase=failed\n"
                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=handoff\nerror=7\n");
+                  "stage=detach\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_recover(&journal));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(path, sizeof(path)));
@@ -393,7 +405,7 @@ static void test_recover_failed_uninstall(void) {
 
     write_journal("format=1\noperation=uninstall\nphase=failed\n"
                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=handoff\nerror=7\n");
+                  "stage=detach\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     remove_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, uninstall_journal_recover(&journal));
@@ -408,7 +420,7 @@ static void test_recovery_preserves_existing_detached_root(void) {
 
     write_journal("format=1\noperation=uninstall\nphase=failed\n"
                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=1\n");
+                  "stage=detach\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_parent(parent, sizeof(parent), root));
     TEST_ASSERT_EQUAL_INT(

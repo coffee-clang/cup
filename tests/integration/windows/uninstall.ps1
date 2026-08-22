@@ -56,7 +56,9 @@ try {
         Fail-Test "uninstall helper left staging behind: $($leftovers[0].FullName)"
     }
 
-    # A native cleanup failure must preserve transaction.txt while managed residue remains.
+    # A native cleanup failure must preserve transaction.txt while managed residue remains. Use a
+    # Windows ACL denial here rather than a deep PowerShell-created path: the test must exercise CUP's
+    # native cleanup failure, not PowerShell 5.1 long-path behavior.
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $blockedComponents = Join-Path $cupRoot "components"

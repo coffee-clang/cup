@@ -391,6 +391,44 @@ unsigned long system_get_process_id(void) {
 static int handoff_parent_signal = -1;
 static int handoff_parent_authority = -1;
 
+static int move_fd_above_standard(int *descriptor) {
+    int moved;
+
+    if (descriptor == NULL || *descriptor < 0) {
+        return 0;
+    }
+    if (*descriptor > STDERR_FILENO) {
+        return 1;
+    }
+    moved = fcntl(*descriptor, F_DUPFD, STDERR_FILENO + 1);
+    if (moved < 0) {
+        return 0;
+    }
+    (void)close(*descriptor);
+    *descriptor = moved;
+    return 1;
+}
+
+static int detach_standard_streams(void) {
+    int null_fd = open("/dev/null", O_RDWR);
+
+    if (null_fd < 0) {
+        return 0;
+    }
+    if (dup2(null_fd, STDIN_FILENO) < 0 ||
+        dup2(null_fd, STDOUT_FILENO) < 0 ||
+        dup2(null_fd, STDERR_FILENO) < 0) {
+        if (null_fd > STDERR_FILENO) {
+            (void)close(null_fd);
+        }
+        return 0;
+    }
+    if (null_fd > STDERR_FILENO) {
+        (void)close(null_fd);
+    }
+    return 1;
+}
+
 static CupError start_handoff_helper(const char *helper,
                                      const char *mode,
                                      const char *root,
@@ -413,22 +451,11 @@ static CupError start_handoff_helper(const char *helper,
     if (pipe(parent_fds) != 0) {
         return CUP_ERR_FILESYSTEM;
     }
-    {
-        size_t index;
-
-        for (index = 0; index < 2; ++index) {
-            if (parent_fds[index] <= STDERR_FILENO) {
-                int inherited = fcntl(parent_fds[index], F_DUPFD, STDERR_FILENO + 1);
-
-                if (inherited < 0) {
-                    close(parent_fds[0]);
-                    close(parent_fds[1]);
-                    return CUP_ERR_FILESYSTEM;
-                }
-                close(parent_fds[index]);
-                parent_fds[index] = inherited;
-            }
-        }
+    if (!move_fd_above_standard(&parent_fds[0]) ||
+        !move_fd_above_standard(&parent_fds[1])) {
+        close(parent_fds[0]);
+        close(parent_fds[1]);
+        return CUP_ERR_FILESYSTEM;
     }
     authority_fd = fcntl((int)lock->handle, F_DUPFD, STDERR_FILENO + 1);
     if (authority_fd < 0) {
@@ -451,6 +478,15 @@ static CupError start_handoff_helper(const char *helper,
         close(parent_fds[0]);
         close(parent_fds[1]);
         close(authority_fd);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!move_fd_above_standard(&status_fds[0]) ||
+        !move_fd_above_standard(&status_fds[1])) {
+        close(parent_fds[0]);
+        close(parent_fds[1]);
+        close(authority_fd);
+        close(status_fds[0]);
+        close(status_fds[1]);
         return CUP_ERR_FILESYSTEM;
     }
     if (fcntl(status_fds[1], F_SETFD, FD_CLOEXEC) < 0) {
@@ -480,7 +516,7 @@ static CupError start_handoff_helper(const char *helper,
         if ((int)lock->handle != authority_fd) {
             close((int)lock->handle);
         }
-        if (setsid() < 0 ||
+        if (!detach_standard_streams() || setsid() < 0 ||
             text_format(parent_signal_value, sizeof(parent_signal_value), "%d", parent_fds[0]) != CUP_OK ||
             text_format(authority_value, sizeof(authority_value), "%d", authority_fd) != CUP_OK) {
             status_byte = 1;

@@ -1,6 +1,6 @@
 /*
  * Runs the managed native helper copy used to complete a cup update after the parent process
- * releases the executable and lock.
+ * exits while exclusive authority remains continuous through the operation handoff.
  */
 
 #include "update_helper.h"

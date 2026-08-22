@@ -83,8 +83,9 @@ unsigned long system_get_process_id(void);
  * starting a helper. The helper receives a parent-lifetime signal and an inherited authority
  * handle before this call succeeds. Success consumes the caller-visible SystemLock while the
  * parent retains a process-lifetime authority reference: POSIX keeps the shared flock description;
- * Windows releases cup.lock only after parent and child both own the external authority. Root
- * admission checks system_handoff_active() before inspection and again after locking. */
+ * Windows releases cup.lock only after parent and child both own the external authority. Detached
+ * helpers do not inherit the caller's standard streams. Root admission checks
+ * system_handoff_active() before inspection and again after locking. */
 CupError system_start_update_helper(const char *helper,
                                     const char *root,
                                     const char *token,

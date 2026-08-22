@@ -216,11 +216,11 @@ function Test-UninstallRecovery {
         "phase=failed",
         "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=handoff",
-        "error=7"
+        "stage=detach",
+        "error=6"
     )
     Assert-Contains (Invoke-Cup -CommandArgs @("repair")) `
-        "Acknowledged failed cup uninstall during 'handoff' (error 7)."
+        "Acknowledged failed cup uninstall during 'detach' (error 6)."
     Assert-PathMissing $Script:RepairTransactionPath
     Assert-CupHealthy
 }
