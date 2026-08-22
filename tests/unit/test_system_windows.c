@@ -630,6 +630,29 @@ static void test_detached_uninstall_start(void) {
                           system_start_uninstall(temp_dir, script, NULL, lock_path));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_start_uninstall(temp_dir, script, temp_dir, NULL));
+
+    write_text(
+        script,
+        "param([string]$CupRoot,[string]$SelfPath,"
+        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
+        "exit 1\r\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
+
+    write_text(
+        script,
+        "param([string]$CupRoot,[string]$SelfPath,"
+        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
+        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
+        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
+        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
+        "$ready.WriteByte([byte][char]'X'); $ready.Flush(); $ready.Dispose()\r\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
+
+    /* The success fixture intentionally acknowledges before its child process exits, matching
+     * the real handoff. Run it last so a still-owned lease cannot race a synthetic second start. */
+    write_text(script, script_text);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
     TEST_ASSERT_TRUE(wait_for_path(marker));
@@ -689,25 +712,6 @@ static void test_detached_uninstall_start(void) {
         TEST_ASSERT_TRUE(strtoull(lease_handle_text, NULL, 10) != 0);
         TEST_ASSERT_TRUE(path_equal(working_directory, expected_working_directory));
     }
-
-    write_text(
-        script,
-        "param([string]$CupRoot,[string]$SelfPath,"
-        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
-        "exit 1\r\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
-
-    write_text(
-        script,
-        "param([string]$CupRoot,[string]$SelfPath,"
-        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
-        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
-        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
-        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
-        "$ready.WriteByte([byte][char]'X'); $ready.Flush(); $ready.Dispose()\r\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
 
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
