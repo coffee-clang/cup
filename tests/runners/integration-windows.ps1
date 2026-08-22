@@ -36,7 +36,7 @@ foreach ($tree in @("scripts", "tests")) {
 }
 if ($syntaxErrors.Count -ne 0) {
     foreach ($syntaxError in $syntaxErrors) {
-        Write-Error $syntaxError
+        Write-Error $syntaxError -ErrorAction Continue
     }
     throw "$($syntaxErrors.Count) PowerShell syntax error(s) found"
 }
@@ -59,6 +59,7 @@ $suites = @(Get-ChildItem -LiteralPath $suiteRoot -Filter '*.ps1' -File |
 if ($suites.Count -eq 0) {
     throw "no Windows integration suites were found"
 }
+$failedSuites = [System.Collections.Generic.List[string]]::new()
 foreach ($suite in $suites) {
     $label = $suite.BaseName.Replace('-', ' ')
     Write-Host "==> Testing $label..."
@@ -75,8 +76,13 @@ foreach ($suite in $suites) {
         Write-Host $result.Output
     }
     if ($result.ExitCode -ne 0) {
-        throw "Windows integration suite failed: $($suite.Name) [$($result.ExitCode)]"
+        $failedSuites.Add("$($suite.Name) [$($result.ExitCode)]")
     }
+}
+
+if ($failedSuites.Count -ne 0) {
+    $failureText = $failedSuites -join "`n"
+    throw "Windows integration suite failures:`n$failureText"
 }
 
 Write-Host "All native Windows cup tests passed."

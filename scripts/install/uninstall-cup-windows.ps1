@@ -137,7 +137,12 @@ function Write-UninstallJournal(
         }
 
         if (Test-Path -LiteralPath $journal -PathType Leaf) {
-            [IO.File]::Replace($temporary, $journal, $null, $true)
+            [IO.File]::Replace(
+                $temporary,
+                $journal,
+                [System.Management.Automation.Language.NullString]::Value,
+                $true
+            )
         } else {
             [IO.File]::Move($temporary, $journal)
         }

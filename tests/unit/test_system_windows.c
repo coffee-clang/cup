@@ -174,7 +174,9 @@ static int add_everyone_deny_ace(const char *path) {
     }
 
     memset(&access, 0, sizeof(access));
-    access.grfAccessPermissions = FILE_GENERIC_READ;
+    /* Preserve the read rights used by the privacy probe while adding a
+     * deliberately non-canonical deny ACE for the repair test. */
+    access.grfAccessPermissions = FILE_WRITE_DATA;
     access.grfAccessMode = DENY_ACCESS;
     access.grfInheritance = NO_INHERITANCE;
     access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -687,6 +689,26 @@ static void test_detached_uninstall_start(void) {
         TEST_ASSERT_TRUE(strtoull(lease_handle_text, NULL, 10) != 0);
         TEST_ASSERT_TRUE(path_equal(working_directory, expected_working_directory));
     }
+
+    write_text(
+        script,
+        "param([string]$CupRoot,[string]$SelfPath,"
+        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
+        "exit 1\r\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
+
+    write_text(
+        script,
+        "param([string]$CupRoot,[string]$SelfPath,"
+        "[UInt64]$ParentHandle,[UInt64]$ReadyHandle,[UInt64]$LeaseHandle)\r\n"
+        "$readySafe=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new("
+        "[IntPtr]::new([Int64]$ReadyHandle),$true)\r\n"
+        "$ready=[IO.FileStream]::new($readySafe,[IO.FileAccess]::Write)\r\n"
+        "$ready.WriteByte([byte][char]'X'); $ready.Flush(); $ready.Dispose()\r\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          system_start_uninstall(prefixed_root, script, temp_dir, lock_path));
+
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_UNINSTALL_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(script));

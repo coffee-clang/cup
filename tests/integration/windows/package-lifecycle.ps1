@@ -38,7 +38,8 @@ function Initialize-LifecycleFixture {
         "https://example.invalid/clang-{version}-{host_platform}-{target_platform}.{format}")
     $catalogLines.Add(
         "compiler.clang.windows-x64.linux-x64.checksum_url_template=" +
-        "https://example.invalid/SHA256SUMS")
+        "https://example.invalid/clang-{version}-{host_platform}-" +
+        "{target_platform}/SHA256SUMS")
     Write-Utf8NoBom -Path $catalogPath -Lines $catalogLines
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 

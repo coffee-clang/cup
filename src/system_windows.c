@@ -682,6 +682,10 @@ CupError system_start_uninstall(const char *cup_root,
         goto cleanup;
     }
 
+    /* After the helper starts, a missing or invalid ready acknowledgement leaves handoff state
+     * uncertain: the child may already have changed journal or filesystem evidence. */
+    err = CUP_ERR_COMMIT;
+
     CloseHandle(process.hThread);
     process.hThread = NULL;
     CloseHandle(lease_handle);

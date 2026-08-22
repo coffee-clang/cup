@@ -167,7 +167,7 @@ try {
     Write-Utf8NoBom -Path $statePath -Lines @("unexpected.key=value")
     $ambiguous = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
     Assert-Contains $ambiguous (
-        "state.txt is missing or invalid while a package transaction is " +
+        "state.txt is missing or invalid while a state-owning transaction is " +
         "pending")
     Assert-PathExists $transactionPath
     Assert-PathExists $stagingPath

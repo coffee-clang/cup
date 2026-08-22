@@ -208,7 +208,8 @@ function Test-LookalikeRootSelection {
 }
 
 function Test-CorruptRecognizedRootPreservation {
-    $corruptHome = Join-Path $Script:CupTestRoot "corrupt-root-home"
+    $corruptHome = New-RealTestDirectory `
+        -Parent $Script:CupTestRoot -Name "corrupt-root-home"
     $env:USERPROFILE = $corruptHome
     Write-Host "==> Checking recognized-root setup repair."
     Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null

@@ -74,6 +74,35 @@ function Write-CanonicalAsciiLines {
     [IO.File]::WriteAllText($Path, $text, [Text.Encoding]::ASCII)
 }
 
+function Get-CanonicalAsciiLines {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Release text asset is not a regular file: $($item.Name)"
+    }
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0 -or $bytes[$bytes.Length - 1] -ne 10) {
+        throw "Release text asset is not canonical: $($item.Name)"
+    }
+    foreach ($byte in $bytes) {
+        if ($byte -ne 10 -and ($byte -lt 32 -or $byte -gt 126)) {
+            throw "Release text asset contains non-canonical bytes: $($item.Name)"
+        }
+    }
+
+    $parts = [Text.Encoding]::ASCII.GetString($bytes).Split([char]10)
+    if ($parts[$parts.Length - 1].Length -ne 0) {
+        throw "Release text asset is not canonical: $($item.Name)"
+    }
+    return @($parts[0..($parts.Length - 2)])
+}
+
 # Run child PowerShell scripts while preserving expected stderr and exit status.
 function Invoke-PowerShellScript {
     param(
@@ -164,40 +193,130 @@ function Assert-ChecksumFile {
         throw "Missing checksum file: $ChecksumFile"
     }
 
-    $seen = @{}
-    foreach ($line in Get-Content -LiteralPath $checksumPath) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
-        }
-        if ($line -notmatch '^([0-9A-Fa-f]{64})\s+\*?(.+)$') {
-            throw "Invalid checksum line in ${ChecksumFile}: $line"
+    $lines = @(Get-CanonicalAsciiLines -Path $checksumPath)
+    if ($lines.Count -ne $ExpectedNames.Count) {
+        throw "Unexpected checksum entry count in ${ChecksumFile}"
+    }
+
+    for ($index = 0; $index -lt $ExpectedNames.Count; $index++) {
+        $expectedName = $ExpectedNames[$index]
+        $match = [regex]::Match($lines[$index], '^([0-9a-f]{64})  ([^\s]+)$')
+        if (-not $match.Success -or $match.Groups[2].Value -cne $expectedName) {
+            throw "Non-canonical checksum entry in ${ChecksumFile}: $expectedName"
         }
 
-        $expectedHash = $Matches[1].ToLowerInvariant()
-        $name = $Matches[2]
-        if ($name.Contains('/') -or $name.Contains('\\') -or $name.Contains('..')) {
-            throw "Unsafe checksum entry in ${ChecksumFile}: $name"
-        }
-        if ($ExpectedNames -cnotcontains $name) {
-            throw "Unexpected checksum entry in ${ChecksumFile}: $name"
-        }
-
-        $path = Join-Path $Directory $name
+        $expectedHash = $match.Groups[1].Value
+        $path = Join-Path $Directory $expectedName
         if (-not (Test-Path -LiteralPath $path)) {
-            throw "Checksum entry references missing file: $name"
+            throw "Checksum entry references missing file: $expectedName"
         }
 
         $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $expectedHash) {
-            throw "Checksum mismatch for ${name}: expected $expectedHash, got $actualHash"
+        if ($actualHash -cne $expectedHash) {
+            throw "Checksum mismatch for ${expectedName}: expected $expectedHash, got $actualHash"
         }
-        $seen[$name] = $true
     }
+}
 
-    foreach ($name in $ExpectedNames) {
-        if (-not $seen.ContainsKey($name)) {
-            throw "Missing checksum entry in ${ChecksumFile}: $name"
+function Assert-ChecksumFixtureRejected {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Directory,
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumFile,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedNames,
+        [Parameter(Mandatory = $true)]
+        [string]$CaseName,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedMessage
+    )
+
+    $accepted = $false
+    try {
+        Assert-ChecksumFile -Directory $Directory -ChecksumFile $ChecksumFile `
+            -ExpectedNames $ExpectedNames
+        $accepted = $true
+    } catch {
+        if (-not $_.Exception.Message.Contains($ExpectedMessage)) {
+            throw "Checksum fixture '$CaseName' failed for the wrong reason: $($_.Exception.Message)"
         }
+    }
+    if ($accepted) {
+        throw "Checksum validator accepted non-canonical fixture: $CaseName"
+    }
+}
+
+function Test-ChecksumFileAssertions {
+    $fixture = Join-Path $temporaryParent `
+        ("cup-release-checksum-test-" + [Guid]::NewGuid().ToString('N'))
+    $checksumFile = 'SHA256SUMS.fixture'
+    $checksumPath = Join-Path $fixture $checksumFile
+    $expectedNames = @('asset-a.txt', 'asset-b.txt')
+
+    try {
+        New-Item -ItemType Directory -Path $fixture | Out-Null
+        Write-CanonicalAsciiLines -Path (Join-Path $fixture $expectedNames[0]) `
+            -Lines @('asset-a')
+        Write-CanonicalAsciiLines -Path (Join-Path $fixture $expectedNames[1]) `
+            -Lines @('asset-b')
+
+        $hashA = (Get-FileHash -LiteralPath (Join-Path $fixture $expectedNames[0]) `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hashB = (Get-FileHash -LiteralPath (Join-Path $fixture $expectedNames[1]) `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        $validLines = @(
+            "$hashA  $($expectedNames[0])",
+            "$hashB  $($expectedNames[1])"
+        )
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines $validLines
+        Assert-ChecksumFile -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
+            $validLines[0], $validLines[0])
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'duplicate entry' `
+            -ExpectedMessage 'Non-canonical checksum entry'
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
+            "$hashA  ASSET-A.TXT", $validLines[1])
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'wrong-case filename' `
+            -ExpectedMessage 'Non-canonical checksum entry'
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
+            "$($hashA.ToUpperInvariant())  $($expectedNames[0])", $validLines[1])
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'uppercase hash' `
+            -ExpectedMessage 'Non-canonical checksum entry'
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
+            "$hashA $($expectedNames[0])", $validLines[1])
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'non-canonical spacing' `
+            -ExpectedMessage 'Non-canonical checksum entry'
+
+        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
+            $validLines[1], $validLines[0])
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'wrong ordering' `
+            -ExpectedMessage 'Non-canonical checksum entry'
+
+        [IO.File]::WriteAllText(
+            $checksumPath, ($validLines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'CRLF bytes' `
+            -ExpectedMessage 'contains non-canonical bytes'
+
+        [IO.File]::WriteAllText(
+            $checksumPath, ($validLines -join "`n"), [Text.Encoding]::ASCII)
+        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
+            -ExpectedNames $expectedNames -CaseName 'missing final LF' `
+            -ExpectedMessage 'is not canonical'
+    } finally {
+        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -366,13 +485,14 @@ function Test-InstallerFinalLowSpeedWindow {
 }
 
 # Validate the candidate checksums, metadata and native executable.
+Test-ChecksumFileAssertions
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
     -ExpectedNames @("cup-windows-x64.exe", "uninstall.ps1", "release.txt", "SHA256SUMS.common")
 
 $releaseMetadataPath = Join-Path $ReleaseDir "release.txt"
-$releaseMetadata = @(Get-Content -LiteralPath $releaseMetadataPath)
+$releaseMetadata = @(Get-CanonicalAsciiLines -Path $releaseMetadataPath)
 $expectedMetadata = @(
     "format=1",
     "version=$Version",
@@ -382,7 +502,7 @@ if ($releaseMetadata.Count -ne $expectedMetadata.Count) {
     throw "release.txt must contain exactly three lines"
 }
 for ($i = 0; $i -lt $expectedMetadata.Count; $i++) {
-    if ($releaseMetadata[$i] -ne $expectedMetadata[$i]) {
+    if ($releaseMetadata[$i] -cne $expectedMetadata[$i]) {
         throw "Unexpected release.txt line $($i + 1): $($releaseMetadata[$i])"
     }
 }
@@ -392,7 +512,7 @@ $actual = & $binary --version
 if ($LASTEXITCODE -ne 0) {
     throw "Release candidate --version failed with exit code $LASTEXITCODE"
 }
-if ($actual -ne "cup $Version") {
+if ($actual -cne "cup $Version") {
     throw "Unexpected version: $actual"
 }
 
@@ -465,6 +585,21 @@ try {
         'version=0.2',
         "commit=$SourceSha"
     ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
+    Test-InstallerMetadataFailure -Name 'format-key-case' -Lines @(
+        'Format=1',
+        "version=$Version",
+        "commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata has an unsupported format'
+    Test-InstallerMetadataFailure -Name 'version-key-case' -Lines @(
+        'format=1',
+        "Version=$Version",
+        "commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata version does not match the installer'
+    Test-InstallerMetadataFailure -Name 'commit-key-case' -Lines @(
+        'format=1',
+        "version=$Version",
+        "Commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata commit does not match the installer'
     $mismatchedVersion = if ($Version -eq '0.0.0') { '0.0.1' } else { '0.0.0' }
     Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
         'format=1',
@@ -513,7 +648,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup --version failed with exit code $LASTEXITCODE"
     }
-    if ($installedVersion -ne "cup $Version") {
+    if ($installedVersion -cne "cup $Version") {
         throw "Unexpected installed version: $installedVersion"
     }
     $candidateHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
@@ -567,7 +702,7 @@ try {
         throw "Installer modified the unrelated .cup directory"
     }
     $foreignVersion = & $foreignInstalled --version
-    if ($LASTEXITCODE -ne 0 -or $foreignVersion -ne "cup $Version") {
+    if ($LASTEXITCODE -ne 0 -or $foreignVersion -cne "cup $Version") {
         throw "Fallback-root cup was not usable"
     }
     $foreignDoctor = @(& $foreignInstalled doctor 2>&1)
@@ -666,7 +801,7 @@ try {
     }
     $residueCup = Join-Path $residueProfile ".cup\bin\cup.exe"
     $residueVersion = & $residueCup --version
-    if ($LASTEXITCODE -ne 0 -or $residueVersion -ne "cup $Version") {
+    if ($LASTEXITCODE -ne 0 -or $residueVersion -cne "cup $Version") {
         throw "Windows installer did not create a usable canonical root beside the unrelated sibling"
     }
 
@@ -694,7 +829,7 @@ try {
         throw "cup repair replaced the running executable"
     }
     $versionAfterRepair = & $installed --version
-    if ($LASTEXITCODE -ne 0 -or $versionAfterRepair -ne "cup $Version") {
+    if ($LASTEXITCODE -ne 0 -or $versionAfterRepair -cne "cup $Version") {
         throw "Installed cup was not usable after repair"
     }
 
@@ -774,7 +909,7 @@ try {
         throw "Windows reinstall changed the tested release executable"
     }
     $versionAfterReinstall = & $installed --version
-    if ($LASTEXITCODE -ne 0 -or $versionAfterReinstall -ne "cup $Version") {
+    if ($LASTEXITCODE -ne 0 -or $versionAfterReinstall -cne "cup $Version") {
         throw "Installed cup was not usable after reinstall"
     }
     $helperHashBeforeUpdate = (Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash
@@ -836,7 +971,7 @@ try {
         -Lines $platformLines
 
     $updatedVersionOutput = & $updatedBinary --version
-    if ($LASTEXITCODE -ne 0 -or $updatedVersionOutput -ne "cup $nextVersion") {
+    if ($LASTEXITCODE -ne 0 -or $updatedVersionOutput -cne "cup $nextVersion") {
         throw "Patched update executable did not expose version $nextVersion"
     }
 
@@ -857,7 +992,7 @@ try {
         if (-not (Test-Path -LiteralPath $transactionPath -PathType Leaf)) {
             try {
                 $candidateVersion = @(& $installed --version 2>$null)
-                if ($LASTEXITCODE -eq 0 -and $candidateVersion -eq "cup $nextVersion") {
+                if ($LASTEXITCODE -eq 0 -and $candidateVersion -ceq "cup $nextVersion") {
                     $updatedInstalledVersion = $candidateVersion
                     break
                 }
@@ -883,7 +1018,7 @@ try {
         $helperHashAfterUpdate -eq $installedUpdatedHash) {
         throw "derived update helper did not remain the previous runner after update"
     }
-    if ($updatedInstalledVersion -ne "cup $nextVersion") {
+    if ($updatedInstalledVersion -cne "cup $nextVersion") {
         throw "installed cup was not usable after update"
     }
     $updatedDoctorOutput = @(& $installed doctor 2>&1)
