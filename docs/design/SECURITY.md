@@ -135,27 +135,20 @@ interrupt checks
 A cached archive is accepted only after its digest matches the release checksum
 file.
 
-The cache returns `VerifiedArtifact`, which owns the open archive stream. Archive
-preflight and extraction use that same stream. This removes the gap where a
-program verifies a pathname and later opens whatever file happens to be there.
+The cache returns `VerifiedArtifact`, which owns the open archive stream. Extraction
+uses that same stream. This removes the gap where a program verifies a pathname
+and later opens whatever file happens to be there.
 
 A bad cached archive is removed only when the pathname still identifies the
 same file object that was opened. cup then performs one fresh download. A second
 failure is returned to the user.
 
-## Archive preflight
+## Archive admission
 
-Before extraction `package_archive` performs one complete bounded decoder pass
-over the already-open verified stream. It checks:
-
-- the detected compression/archive format matches the selected format;
-- the entry-count limit is not exceeded;
-- at least one non-directory payload entry exists;
-- declared regular-file sizes stay within per-entry and total limits;
-- decoded data blocks stay within their declared sizes and the total read limit;
-- the complete archive stream can be decoded successfully.
-
-Preflight does not extract files.
+`package_archive` configures libarchive to accept only cup-supported formats and
+filters. The extraction pass then performs format, structure and bounded-resource
+admission while consuming the already-open verified stream. There is no separate
+complete decoder preflight pass.
 
 ## Archive extraction
 
@@ -276,6 +269,10 @@ child waits for parent exit, validates the exact root and journal, publishes
 cleanup.
 
 The temporary uninstall child removes its own reserved pathname before it can detach the root.
+The Windows backend keeps that operation native: it verifies file identity, attempts POSIX link
+removal and uses an NTFS default-stream rename when the running image is the last link. The stream
+rename does not authorize any broader path mutation and is followed by another handle-identity
+check before the visible file name is deleted.
 If that operation fails, no root mutation occurs and the canonical journal retains ownership of
 the token-bound helper residue. `repair`, while holding canonical exclusive authority and only
 after the active handoff has disappeared, removes that exact regular file by filesystem identity

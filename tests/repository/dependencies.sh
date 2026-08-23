@@ -574,6 +574,22 @@ EOF_FOREIGN_PREFIX
     [ ! -e "$foreign_root/.cup-dependencies-root" ] ||
         fail "foreign dependency root received a cup ownership marker"
 
+    dependency_home_root="${final%/install}.home"
+    mkdir -p "$dependency_home_root"
+    dependency_root_metadata > "$dependency_home_root/$CUP_DEPENDENCY_ROOT_MARKER"
+    printf '%s\n' personal > "$dependency_home_root/personal.txt"
+    saved_home=$HOME
+    HOME=$dependency_home_root
+    if dependency_clean_root "$dependency_home_root"; then
+        HOME=$saved_home
+        fail "dependency cleanup accepted HOME"
+    fi
+    HOME=$saved_home
+    [ -f "$dependency_home_root/personal.txt" ] ||
+        fail "dependency HOME cleanup removed unrelated content"
+    [ -f "$dependency_home_root/$CUP_DEPENDENCY_ROOT_MARKER" ] ||
+        fail "dependency HOME cleanup removed its ownership marker"
+
     if dependency_metadata_valid "prefix_format=4
 product=coffee-clang/cup
 kind=dependency-prefix
@@ -1145,6 +1161,46 @@ bash -eu -o pipefail -c '
     fi
 ' sh "$DEPENDENCY_COMMON"
 printf 'Normalized dependency build environment tests passed.\n'
+
+printf '==> Testing dependency SHA-256 tool fallback...\n'
+hash_bin="$TMP_ROOT/dependency-hash-tools"
+mkdir "$hash_bin"
+real_sha256sum=$(command -v sha256sum)
+cat > "$hash_bin/sha256sum" <<'EOF_BROKEN_DEP_SHA256SUM'
+#!/bin/sh
+exit 127
+EOF_BROKEN_DEP_SHA256SUM
+cat > "$hash_bin/shasum" <<EOF_DEP_SHASUM
+#!/bin/sh
+[ "\${1:-}" = -a ] && [ "\${2:-}" = 256 ] || exit 2
+shift 2
+exec '$real_sha256sum' "\$@"
+EOF_DEP_SHASUM
+chmod 0700 "$hash_bin/sha256sum" "$hash_bin/shasum"
+printf '%s\n' dependency-hash-fixture > "$TMP_ROOT/dependency-hash-input"
+expected_hash=$($real_sha256sum "$TMP_ROOT/dependency-hash-input" | awk '{print $1}')
+actual_hash=$(PATH="$hash_bin:/usr/bin:/bin" bash -eu -o pipefail -c '
+    . "$1"
+    unset DEPENDENCY_SHA256_TOOL
+    require_sha256_tool
+    [ "$DEPENDENCY_SHA256_TOOL" = shasum ]
+    file_sha256 "$2"
+' sh "$DEPENDENCY_COMMON" "$TMP_ROOT/dependency-hash-input")
+[ "$actual_hash" = "$expected_hash" ] ||
+    fail 'dependency hashing did not fall back from broken sha256sum to shasum'
+
+cat > "$hash_bin/shasum" <<'EOF_BROKEN_DEP_SHASUM'
+#!/bin/sh
+exit 127
+EOF_BROKEN_DEP_SHASUM
+chmod 0700 "$hash_bin/shasum"
+if PATH="$hash_bin:/usr/bin:/bin" bash -eu -o pipefail -c '
+        . "$1"
+        dependency_select_sha256_tool
+    ' sh "$DEPENDENCY_COMMON" >"$TMP_ROOT/dependency-hash-broken.out" 2>&1; then
+    fail 'dependency hashing accepted only broken SHA-256 tools'
+fi
+printf 'Dependency SHA-256 tool fallback tests passed.\n'
 
 for dependency_script in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
     grep -F 'require_tool cmp' "$dependency_script" >/dev/null || {

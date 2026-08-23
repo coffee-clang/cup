@@ -320,6 +320,33 @@ static CupError require_metadata_value(const PackageMetadata *metadata,
     return CUP_OK;
 }
 
+static CupError validate_package_command_file(const char *path) {
+    SystemPathIdentity identity;
+    FILE *file = NULL;
+    uint64_t size = 0;
+    int is_executable = 0;
+    int missing = 0;
+    CupError err;
+
+    memset(&identity, 0, sizeof(identity));
+    err = system_open_regular_file(path, &file, &identity, &size, &missing);
+    if (err != CUP_OK || missing || file == NULL || size == 0) {
+        if (file != NULL) {
+            (void)fclose(file);
+        }
+        return err == CUP_ERR_INVALID_INPUT ? err : CUP_ERR_VALIDATION;
+    }
+
+    err = system_file_is_executable(file, path, &is_executable);
+    if (fclose(file) != 0 && err == CUP_OK) {
+        err = CUP_ERR_FILESYSTEM;
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    return is_executable ? CUP_OK : CUP_ERR_VALIDATION;
+}
+
 static CupError validate_package_commands(const PackageMetadata *metadata,
                                           const char *base_path,
                                           FILE *diagnostics) {
@@ -330,7 +357,6 @@ static CupError validate_package_commands(const PackageMetadata *metadata,
     while (package_metadata_next_command(metadata, &command, &cursor)) {
         char path[MAX_PATH_LEN];
         CupError err;
-        int is_executable = 0;
 
         if (!path_is_safe_relative(command.path)) {
             err = CUP_ERR_VALIDATION;
@@ -338,13 +364,7 @@ static CupError validate_package_commands(const PackageMetadata *metadata,
             err = path_join_safe_relative(path, sizeof(path), base_path, command.path);
         }
         if (err == CUP_OK) {
-            err = validate_nonempty_file(path);
-        }
-        if (err == CUP_OK) {
-            err = system_is_executable(path, &is_executable);
-        }
-        if (err == CUP_OK && !is_executable) {
-            err = CUP_ERR_VALIDATION;
+            err = validate_package_command_file(path);
         }
 
         if (err != CUP_OK) {

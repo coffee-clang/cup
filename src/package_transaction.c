@@ -1,6 +1,6 @@
 /*
- * Persists and validates package-operation journals and recovers interrupted install and remove
- * operations from their commit points.
+ * Persists and validates package-operation journals and recovers interrupted install, update and
+ * remove operations from their commit points.
  */
 
 #include "package_transaction.h"

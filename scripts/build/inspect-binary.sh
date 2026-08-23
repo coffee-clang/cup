@@ -63,7 +63,7 @@ sha256=$(hash_binary)
 file_description=$(file -b "$binary") || fail "file could not inspect $binary"
 
 has_debug_sections_elf() {
-    printf '%s\n' "$1" | grep -Eq '\.(debug_info|zdebug_info)'
+    printf '%s\n' "$1" | grep -E '\.(debug_info|zdebug_info)' >/dev/null
 }
 
 write_needed_entries() {
@@ -134,7 +134,7 @@ inspect_elf() {
     esac
 
     program_headers=$(readelf -l "$binary") || fail 'readelf could not read program headers'
-    printf '%s\n' "$program_headers" | grep -Eq '^[[:space:]]*LOAD[[:space:]]' ||
+    printf '%s\n' "$program_headers" | grep -E '^[[:space:]]*LOAD[[:space:]]' >/dev/null ||
         fail 'ELF executable has no LOAD segment'
     interpreter=$(printf '%s\n' "$program_headers" | awk '
         /Requesting program interpreter:/ {
@@ -173,15 +173,15 @@ inspect_elf() {
                 fail 'debug executable contains no DWARF information'
             ;;
         coverage)
-            printf '%s\n' "$symbols" | grep -Eq '__gcov_(init|exit|merge)' ||
+            printf '%s\n' "$symbols" | grep -E '__gcov_(init|exit|merge)' >/dev/null ||
                 fail 'coverage executable contains no gcov instrumentation'
             ;;
         sanitizers)
             printf '%s\n%s\n' "$symbols" "$needed" |
-                grep -Eq '__asan_init|libasan|libclang_rt.*asan' ||
+                grep -E '__asan_init|libasan|libclang_rt.*asan' >/dev/null ||
                 fail 'sanitizer executable contains no ASan runtime'
             printf '%s\n%s\n' "$symbols" "$needed" |
-                grep -Eq '__ubsan_handle_|libubsan|libclang_rt.*ubsan' ||
+                grep -E '__ubsan_handle_|libubsan|libclang_rt.*ubsan' >/dev/null ||
                 fail 'sanitizer executable contains no UBSan runtime'
             ;;
     esac
@@ -240,7 +240,7 @@ inspect_macho() {
     archs=$(lipo -archs "$binary") || fail "lipo could not inspect $binary"
     [ "$archs" = "$expected_arch" ] || fail "architectures '$archs' do not match $platform"
     header=$(otool -hv "$binary") || fail 'otool could not read Mach-O header'
-    printf '%s\n' "$header" | grep -Eq 'EXECUTE|MH_EXECUTE' || fail 'Mach-O object is not an executable'
+    printf '%s\n' "$header" | grep -E 'EXECUTE|MH_EXECUTE' >/dev/null || fail 'Mach-O object is not an executable'
 
     libraries=$(otool -L "$binary" | awk 'NR > 1 { print $1 }' | sort -u)
     [ -n "$libraries" ] || fail 'Mach-O executable has no dynamic system dependencies'
@@ -307,20 +307,20 @@ inspect_macho() {
             # macOS debug symbols are validated in the finalized dSYM.
             ;;
         coverage)
-            printf '%s\n' "$symbols" | grep -Eq '___llvm_profile|__llvm_profile' ||
+            printf '%s\n' "$symbols" | grep -E '___llvm_profile|__llvm_profile' >/dev/null ||
                 fail 'coverage executable contains no LLVM coverage instrumentation'
             ;;
         sanitizers)
             printf '%s\n%s\n' "$symbols" "$libraries" |
-                grep -Eq '__asan_init|libclang_rt.*asan' ||
+                grep -E '__asan_init|libclang_rt.*asan' >/dev/null ||
                 fail 'sanitizer executable contains no ASan runtime'
             printf '%s\n%s\n' "$symbols" "$libraries" |
-                grep -Eq '__ubsan_handle_|libclang_rt.*ubsan' ||
+                grep -E '__ubsan_handle_|libclang_rt.*ubsan' >/dev/null ||
                 fail 'sanitizer executable contains no UBSan runtime'
             ;;
     esac
     if [ "$configuration" = release ] && [ "$inspection_policy" = public ]; then
-        ! printf '%s\n' "$load_commands" | grep -Eq '__debug_info|__DWARF' ||
+        ! printf '%s\n' "$load_commands" | grep -E '__debug_info|__DWARF' >/dev/null ||
             fail 'public release executable still contains DWARF information'
     fi
 
@@ -371,9 +371,9 @@ inspect_pe() {
     objdump=$(find_pe_objdump)
     coff_header=$($objdump -f "$binary") || fail "$objdump could not read the COFF header"
     printf '%s\n' "$coff_header" |
-        grep -Eiq 'architecture:[[:space:]]*(i386:x86-64|x86-64|amd64)' ||
+        grep -Ei 'architecture:[[:space:]]*(i386:x86-64|x86-64|amd64)' >/dev/null ||
         fail 'PE/COFF architecture does not match windows-x64'
-    printf '%s\n' "$coff_header" | grep -Eq 'EXEC_P' || fail 'PE/COFF object is not executable'
+    printf '%s\n' "$coff_header" | grep -E 'EXEC_P' >/dev/null || fail 'PE/COFF object is not executable'
     pe_headers=$($objdump -p "$binary") || fail "$objdump could not read PE headers"
     subsystem=$(printf '%s\n' "$pe_headers" | awk '
         $1 == "Subsystem" {
@@ -411,7 +411,7 @@ inspect_pe() {
     esac
     for hardening in DYNAMIC_BASE NX_COMPAT; do
         printf '%s\n' "$pe_headers" |
-            grep -Eq "^[[:space:]]*$hardening([[:space:]]|$)" ||
+            grep -E "^[[:space:]]*$hardening([[:space:]]|$)" >/dev/null ||
             fail "PE executable is missing $hardening"
     done
 
@@ -419,24 +419,24 @@ inspect_pe() {
     symbols=$($objdump -t "$binary" 2>/dev/null || true)
     case "$configuration" in
         debug)
-            printf '%s\n' "$sections" | grep -Eq '\.debug_info' ||
+            printf '%s\n' "$sections" | grep -E '\.debug_info' >/dev/null ||
                 fail 'debug executable contains no DWARF information'
             ;;
         coverage)
-            printf '%s\n' "$symbols" | grep -Eq '__gcov_(init|exit|merge)' ||
+            printf '%s\n' "$symbols" | grep -E '__gcov_(init|exit|merge)' >/dev/null ||
                 fail 'coverage executable contains no gcov instrumentation'
             ;;
         sanitizers)
             printf '%s\n%s\n' "$symbols" "$imports" |
-                grep -Eq '__asan_init|clang_rt.*asan' ||
+                grep -E '__asan_init|clang_rt.*asan' >/dev/null ||
                 fail 'sanitizer executable contains no ASan runtime'
             printf '%s\n%s\n' "$symbols" "$imports" |
-                grep -Eq '__ubsan_handle_|clang_rt.*ubsan' ||
+                grep -E '__ubsan_handle_|clang_rt.*ubsan' >/dev/null ||
                 fail 'sanitizer executable contains no UBSan runtime'
             ;;
     esac
     if [ "$configuration" = release ] && [ "$inspection_policy" = public ]; then
-        ! printf '%s\n' "$sections" | grep -Eq '\.debug_info' ||
+        ! printf '%s\n' "$sections" | grep -E '\.debug_info' >/dev/null ||
             fail 'public release executable still contains DWARF information'
     fi
 

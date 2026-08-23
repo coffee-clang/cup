@@ -37,24 +37,65 @@ fail() {
     exit 1
 }
 
-file_sha256() {
+valid_sha256() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9A-Fa-f]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+select_sha256_tool() {
+    _cup_hash_output=
+    _cup_hash_value=
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    else
-        fail 'sha256sum or shasum is required for the filesystem-helper cache'
+        _cup_hash_output=$(printf '' | sha256sum 2>/dev/null) || _cup_hash_output=
+        set -- $_cup_hash_output
+        _cup_hash_value=${1:-}
+        if valid_sha256 "$_cup_hash_value"; then
+            printf '%s\n' sha256sum
+            return 0
+        fi
     fi
+    if command -v shasum >/dev/null 2>&1; then
+        _cup_hash_output=$(printf '' | shasum -a 256 2>/dev/null) || _cup_hash_output=
+        set -- $_cup_hash_output
+        _cup_hash_value=${1:-}
+        if valid_sha256 "$_cup_hash_value"; then
+            printf '%s\n' shasum
+            return 0
+        fi
+    fi
+    fail 'a working sha256sum or shasum is required for the filesystem-helper cache'
+}
+
+SHA256_TOOL=$(select_sha256_tool)
+
+file_sha256() {
+    _cup_hash_path=$1
+    _cup_hash_output=
+    case "$SHA256_TOOL" in
+        sha256sum) _cup_hash_output=$(sha256sum "$_cup_hash_path" 2>/dev/null) || _cup_hash_output= ;;
+        shasum) _cup_hash_output=$(shasum -a 256 "$_cup_hash_path" 2>/dev/null) || _cup_hash_output= ;;
+        *) fail 'invalid SHA-256 tool selection' ;;
+    esac
+    set -- $_cup_hash_output
+    _cup_hash_value=${1:-}
+    valid_sha256 "$_cup_hash_value" || fail "could not hash helper source: $_cup_hash_path"
+    printf '%s\n' "$_cup_hash_value"
 }
 
 stream_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | awk '{print $1}'
-    else
-        fail 'sha256sum or shasum is required for the filesystem-helper cache'
-    fi
+    _cup_hash_output=
+    case "$SHA256_TOOL" in
+        sha256sum) _cup_hash_output=$(sha256sum 2>/dev/null) || _cup_hash_output= ;;
+        shasum) _cup_hash_output=$(shasum -a 256 2>/dev/null) || _cup_hash_output= ;;
+        *) fail 'invalid SHA-256 tool selection' ;;
+    esac
+    set -- $_cup_hash_output
+    _cup_hash_value=${1:-}
+    valid_sha256 "$_cup_hash_value" || fail 'could not hash filesystem-helper cache input'
+    printf '%s\n' "$_cup_hash_value"
 }
 
 file_owner_and_mode() {

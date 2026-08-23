@@ -45,6 +45,10 @@ dependency_validate_root_path() {
 
     dependency_require_whitespace_free_path "dependency root" "$root" || return 1
     cup_path_validate_absolute_clean "$root" "dependency root" || return 1
+    if [ -n "${HOME:-}" ] && [ "$root" = "${HOME%/}" ]; then
+        echo "Error: dependency root must not be the user home directory: $root" >&2
+        return 1
+    fi
     case "$CUP_PROJECT_ROOT/" in
         "$root/"*)
             echo "Error: dependency root must not contain the cup checkout: $root" >&2

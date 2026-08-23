@@ -245,7 +245,8 @@ Windows sanitizers use a separate CLANG64 prefix:
 ```
 
 `DEPS_ROOT` and `DEPS_PREFIX` may select another absolute, whitespace-free
-location. Dependency roots have their own ownership marker and no-follow path
+location. `DEPS_ROOT` must not be the user home directory or contain the cup
+checkout. Dependency roots have their own ownership marker and no-follow path
 checks. A prefix is reusable only when its recorded data matches:
 
 - prefix format;
@@ -443,6 +444,9 @@ make update-ca-bundle
 template. `docs` and `serve` depend on that target and then invoke mdBook. The
 website files and protected Pages workflow remain separate from cup's build,
 test and release mechanisms.
+
+Build roots are managed destructive workspaces. `BUILD_DIR` must not resolve to
+the user home directory; an ownership marker never authorizes cleaning HOME.
 
 ### Guarded local cleanup
 

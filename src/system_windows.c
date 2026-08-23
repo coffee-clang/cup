@@ -924,9 +924,10 @@ CupError system_get_executable_path(char *buffer, size_t size) {
 }
 
 CupError system_unlink_running_executable(const char *path) {
-    /* FileDispositionInfoEx POSIX delete semantics are required here so the image can continue
-     * executing after its visible helper name is removed. Windows 10 version 1709 introduced this
-     * information class; PLATFORMS.md records that runtime floor explicitly. */
+    /* POSIX disposition can remove ordinary links to an open file, but Windows can reject deleting
+     * the visible link while the file still owns the process image section. The uninstall helper
+     * is a single-link copy, so NTFS has a fallback: rename the mapped default data stream away
+     * from the unnamed stream, then delete the now-unbound visible file name. */
     typedef struct {
         DWORD flags;
     } FileDispositionInfoExCompat;
@@ -942,7 +943,12 @@ CupError system_unlink_running_executable(const char *path) {
     BY_HANDLE_FILE_INFORMATION info;
     SystemPathIdentity opened;
     FileDispositionInfoExCompat disposition;
+    FILE_DISPOSITION_INFO fallback_disposition;
+    FILE_RENAME_INFO *rename_info = NULL;
+    wchar_t stream_name[64];
     wchar_t wide[MAX_PATH_LEN];
+    size_t stream_length;
+    size_t rename_size;
     HANDLE handle;
     CupError err;
 
@@ -982,10 +988,84 @@ CupError system_unlink_running_executable(const char *path) {
     }
     disposition.flags = FILE_DISPOSITION_DELETE_COMPAT | FILE_DISPOSITION_POSIX_COMPAT |
                         FILE_DISPOSITION_IGNORE_READONLY_COMPAT;
-    if (!SetFileInformationByHandle(handle,
-                                    (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
-                                    &disposition,
-                                    sizeof(disposition))) {
+    if (SetFileInformationByHandle(handle,
+                                   (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
+                                   &disposition,
+                                   sizeof(disposition))) {
+        (void)CloseHandle(handle);
+        return CUP_OK;
+    }
+    (void)CloseHandle(handle);
+
+    /* A mapped executable can still be removed without a third cleanup process on NTFS by
+     * renaming its default data stream first. Use a process-specific stream name so an unexpected
+     * pre-existing stream fails closed instead of replacing data. If the filesystem does not
+     * support stream rename, the caller keeps the pre-detach journal and exact helper residue. */
+    if (_snwprintf(stream_name,
+                   sizeof(stream_name) / sizeof(stream_name[0]),
+                   L":cup-uninstall-%lu",
+                   system_get_process_id()) < 0) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    stream_name[(sizeof(stream_name) / sizeof(stream_name[0])) - 1] = L'\0';
+    stream_length = wcslen(stream_name);
+    rename_size = sizeof(FILE_RENAME_INFO) + stream_length * sizeof(wchar_t);
+    rename_info = calloc(1, rename_size);
+    if (rename_info == NULL) {
+        return CUP_ERR_TEMPORARY;
+    }
+    rename_info->RootDirectory = NULL;
+    rename_info->FileNameLength = (DWORD)(stream_length * sizeof(wchar_t));
+    memcpy(rename_info->FileName,
+           stream_name,
+           stream_length * sizeof(wchar_t));
+
+    handle = CreateFileW(wide,
+                         DELETE | FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL,
+                         OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        free(rename_info);
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!GetFileInformationByHandle(handle, &info) ||
+        identity_from_handle_information(handle, &info, &opened) != CUP_OK ||
+        !system_path_identity_equal(&expected, &opened)) {
+        free(rename_info);
+        (void)CloseHandle(handle);
+        return CUP_ERR_TRANSACTION;
+    }
+    if (!SetFileInformationByHandle(
+            handle, FileRenameInfo, rename_info, (DWORD)rename_size)) {
+        free(rename_info);
+        (void)CloseHandle(handle);
+        return CUP_ERR_FILESYSTEM;
+    }
+    free(rename_info);
+    (void)CloseHandle(handle);
+
+    handle = CreateFileW(wide,
+                         DELETE | FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL,
+                         OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!GetFileInformationByHandle(handle, &info) ||
+        identity_from_handle_information(handle, &info, &opened) != CUP_OK ||
+        !system_path_identity_equal(&expected, &opened)) {
+        (void)CloseHandle(handle);
+        return CUP_ERR_TRANSACTION;
+    }
+    fallback_disposition.DeleteFile = TRUE;
+    if (!SetFileInformationByHandle(
+            handle, FileDispositionInfo, &fallback_disposition, sizeof(fallback_disposition))) {
         (void)CloseHandle(handle);
         return CUP_ERR_FILESYSTEM;
     }

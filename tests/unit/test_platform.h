@@ -37,6 +37,42 @@ static inline int test_unlink(const char *path) {
     return _unlink(path);
 }
 
+static inline int test_create_directory_junction(const char *link_path,
+                                                 const char *target_path) {
+    char absolute_link[CUP_TEST_TEMP_PATH_SIZE];
+    char absolute_target[CUP_TEST_TEMP_PATH_SIZE];
+    char command[CUP_TEST_TEMP_PATH_SIZE * 3];
+    DWORD link_length;
+    DWORD target_length;
+    size_t i;
+    int written;
+
+    link_length = GetFullPathNameA(
+        link_path, (DWORD)sizeof(absolute_link), absolute_link, NULL);
+    target_length = GetFullPathNameA(
+        target_path, (DWORD)sizeof(absolute_target), absolute_target, NULL);
+    if (link_length == 0 || link_length >= sizeof(absolute_link) ||
+        target_length == 0 || target_length >= sizeof(absolute_target)) {
+        return 0;
+    }
+    for (i = 0; absolute_link[i] != '\0'; ++i) {
+        if (absolute_link[i] == '/') {
+            absolute_link[i] = '\\';
+        }
+    }
+    for (i = 0; absolute_target[i] != '\0'; ++i) {
+        if (absolute_target[i] == '/') {
+            absolute_target[i] = '\\';
+        }
+    }
+    written = snprintf(command,
+                       sizeof(command),
+                       "cmd.exe /d /c mklink /J \"%s\" \"%s\" >NUL",
+                       absolute_link,
+                       absolute_target);
+    return written > 0 && (size_t)written < sizeof(command) && system(command) == 0;
+}
+
 /* Match system_replace_file semantics rather than the narrower Windows CRT rename(). */
 static inline int test_replace_file(const char *source, const char *destination) {
     if (source == NULL || destination == NULL) {

@@ -1,5 +1,5 @@
 /*
- * Platform-neutral filesystem queries and recursive traversal built on the native system backend.
+ * Platform-neutral filesystem query wrappers built on the native system backend.
  */
 
 #include "system.h"

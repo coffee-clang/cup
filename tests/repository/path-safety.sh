@@ -213,6 +213,41 @@ assert_contains "$path_ops_source" '_putenv_s("MSYS2_ARG_CONV_EXCL", "")'
 assert_contains "$path_ops_source" 'return path_equal(parent, child_prefix) != 0;'
 assert_contains "$path_ops_source" 'if (path_equal(source, destination)'
 
+# A command name in PATH is not sufficient hash authority. A broken sha256sum
+# must fall back to a working shasum, and an all-broken hash toolset must fail
+# before an unkeyed filesystem-helper cache path can be selected.
+hash_bin=$TMP_ROOT/hash-tools
+mkdir "$hash_bin"
+real_sha256sum=$(command -v sha256sum)
+cat > "$hash_bin/sha256sum" <<'EOF_BROKEN_SHA256SUM'
+#!/bin/sh
+exit 127
+EOF_BROKEN_SHA256SUM
+cat > "$hash_bin/shasum" <<EOF_SHASUM_FALLBACK
+#!/bin/sh
+[ "\${1:-}" = -a ] && [ "\${2:-}" = 256 ] || exit 2
+shift 2
+exec '$real_sha256sum' "\$@"
+EOF_SHASUM_FALLBACK
+chmod 0700 "$hash_bin/sha256sum" "$hash_bin/shasum"
+fallback_helper=$(PATH="$hash_bin:/usr/bin:/bin" \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper)
+case "$(basename "$fallback_helper")" in
+    *-) fail 'filesystem-helper cache accepted an empty SHA-256 build id' ;;
+esac
+
+cat > "$hash_bin/shasum" <<'EOF_BROKEN_SHASUM'
+#!/bin/sh
+exit 127
+EOF_BROKEN_SHASUM
+chmod 0700 "$hash_bin/shasum"
+if PATH="$hash_bin:/usr/bin:/bin" \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper \
+        >"$TMP_ROOT/broken-hash.out" 2>&1; then
+    fail 'filesystem-helper cache accepted only broken SHA-256 tools'
+fi
+assert_contains "$(cat "$TMP_ROOT/broken-hash.out")" 'working sha256sum or shasum'
+
 # A regular-file check must reject a symlink in any parent component, not only
 # a symlink in the final component.
 regular_external=$TMP_ROOT/regular-external
@@ -579,6 +614,26 @@ wait "$build_lock_pid" || fail 'locked build command failed'
 CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" clean-build-root "$build_lock_root"
 assert_missing "$build_lock_root"
+
+# HOME is intrinsically outside the managed build-root namespace. A valid marker
+# must never authorize destructive cleanup of the user home directory.
+build_home_root=$TMP_ROOT/build-home-root
+mkdir "$build_home_root"
+printf '%s\n' \
+    'format=1' \
+    'product=coffee-clang/cup' \
+    'kind=build-root' \
+    'layout=1' > "$build_home_root/.cup-build-root"
+printf '%s\n' personal > "$build_home_root/personal.txt"
+if HOME="$build_home_root" CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_HELPER=$helper \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" clean-build-root \
+        "$build_home_root" >"$TMP_ROOT/build-clean-home.out" 2>&1; then
+    fail 'build root cleanup accepted HOME'
+fi
+assert_contains "$(cat "$TMP_ROOT/build-clean-home.out")" \
+    'build root must not be the user home directory'
+assert_file "$build_home_root/personal.txt"
+assert_file "$build_home_root/.cup-build-root"
 
 # run-build must preserve each argv element across the MSYS/native boundary,
 # including one environment assignment whose value contains spaces.

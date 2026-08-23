@@ -202,41 +202,6 @@ static int add_everyone_deny_ace(const char *path) {
     return status == ERROR_SUCCESS;
 }
 
-static int create_directory_junction(const char *link_path, const char *target_path) {
-    char absolute_link[CUP_TEST_TEMP_PATH_SIZE];
-    char absolute_target[CUP_TEST_TEMP_PATH_SIZE];
-    char command[CUP_TEST_TEMP_PATH_SIZE * 3];
-    DWORD link_length;
-    DWORD target_length;
-    size_t i;
-    int written;
-
-    link_length = GetFullPathNameA(
-        link_path, (DWORD)sizeof(absolute_link), absolute_link, NULL);
-    target_length = GetFullPathNameA(
-        target_path, (DWORD)sizeof(absolute_target), absolute_target, NULL);
-    if (link_length == 0 || link_length >= sizeof(absolute_link) ||
-        target_length == 0 || target_length >= sizeof(absolute_target)) {
-        return 0;
-    }
-    for (i = 0; absolute_link[i] != '\0'; ++i) {
-        if (absolute_link[i] == '/') {
-            absolute_link[i] = '\\';
-        }
-    }
-    for (i = 0; absolute_target[i] != '\0'; ++i) {
-        if (absolute_target[i] == '/') {
-            absolute_target[i] = '\\';
-        }
-    }
-    written = snprintf(command,
-                       sizeof(command),
-                       "cmd.exe /d /c mklink /J \"%s\" \"%s\" >NUL",
-                       absolute_link,
-                       absolute_target);
-    return written > 0 && (size_t)written < sizeof(command) && system(command) == 0;
-}
-
 static void test_home_and_process_identity(void) {
     char buffer[CUP_TEST_TEMP_PATH_SIZE];
     char expected[CUP_TEST_TEMP_PATH_SIZE];
@@ -427,7 +392,7 @@ static void test_reparse_points_are_not_followed(void) {
     TEST_ASSERT_TRUE(snprintf(sentinel, sizeof(sentinel), "%s/sentinel.txt", external) > 0);
     write_text(sentinel, "preserve");
     TEST_ASSERT_TRUE(snprintf(junction, sizeof(junction), "%s/external", root) > 0);
-    TEST_ASSERT_TRUE(create_directory_junction(junction, external));
+    TEST_ASSERT_TRUE(test_create_directory_junction(junction, external));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(junction, &kind));
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_LINK, kind);
@@ -466,7 +431,7 @@ static void test_parent_reparse_components_are_rejected(void) {
                               external) > 0);
     write_text(external_child, "preserve");
     TEST_ASSERT_TRUE(snprintf(linked_parent, sizeof(linked_parent), "%s/link", root) > 0);
-    TEST_ASSERT_TRUE(create_directory_junction(linked_parent, external));
+    TEST_ASSERT_TRUE(test_create_directory_junction(linked_parent, external));
     TEST_ASSERT_TRUE(snprintf(linked_child,
                               sizeof(linked_child),
                               "%s/sentinel.txt",
@@ -648,6 +613,63 @@ static void test_handoff_primitives(void) {
     system_handoff_release(&handoff);
     system_lock_release(&lock);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+}
+
+static void test_running_executable_self_unlink(void) {
+    char executable[CUP_TEST_TEMP_PATH_SIZE];
+    char copy[CUP_TEST_TEMP_PATH_SIZE];
+    char marker[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_copy[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_marker[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 3];
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    DWORD exit_code = 1;
+    int exists = 1;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_executable_path(executable, sizeof(executable)));
+    build_path(copy, sizeof(copy), "self-unlink-probe.exe");
+    build_path(marker, sizeof(marker), "self-unlink-probe.done");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, copy));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(copy,
+                                               wide_copy,
+                                               sizeof(wide_copy) / sizeof(wide_copy[0])));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(marker,
+                                               wide_marker,
+                                               sizeof(wide_marker) / sizeof(wide_marker[0])));
+    TEST_ASSERT_TRUE(_snwprintf(command,
+                                sizeof(command) / sizeof(command[0]),
+                                L"\"%ls\" --internal-self-unlink-probe \"%ls\"",
+                                wide_copy,
+                                wide_marker) > 0);
+    command[(sizeof(command) / sizeof(command[0])) - 1] = L'\0';
+
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    TEST_ASSERT_TRUE(CreateProcessW(wide_copy,
+                                    command,
+                                    NULL,
+                                    NULL,
+                                    FALSE,
+                                    CREATE_NO_WINDOW,
+                                    NULL,
+                                    NULL,
+                                    &startup,
+                                    &process));
+    TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(process.hProcess, 10000));
+    TEST_ASSERT_TRUE(GetExitCodeProcess(process.hProcess, &exit_code));
+    TEST_ASSERT_TRUE(CloseHandle(process.hThread));
+    TEST_ASSERT_TRUE(CloseHandle(process.hProcess));
+    TEST_ASSERT_EQUAL_UINT32(0, exit_code);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(marker, &exists));
+    TEST_ASSERT_TRUE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(copy, &exists));
+    TEST_ASSERT_FALSE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
 }
 
 static void test_handoff_helper_start(void) {
@@ -1114,9 +1136,28 @@ static int run_handoff_probe(int argc, char **argv) {
     return 0;
 }
 
+static int run_self_unlink_probe(int argc, char **argv) {
+    FILE *file;
+
+    if (argc != 3 || system_unlink_running_executable(argv[0]) != CUP_OK) {
+        return 2;
+    }
+    file = fopen(argv[2], "wb");
+    if (file == NULL) {
+        return 3;
+    }
+    if (fputs("self-unlink=continued\n", file) == EOF || fclose(file) != 0) {
+        return 4;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     DWORD length;
 
+    if (argc > 1 && strcmp(argv[1], "--internal-self-unlink-probe") == 0) {
+        return run_self_unlink_probe(argc, argv);
+    }
     if (argc > 1 &&
         (strcmp(argv[1], "--internal-update-helper") == 0 ||
          strcmp(argv[1], "--internal-uninstall-helper") == 0)) {
@@ -1140,6 +1181,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
     RUN_TEST(test_handoff_primitives);
+    RUN_TEST(test_running_executable_self_unlink);
     RUN_TEST(test_copy_replace_and_temporary_objects);
     RUN_TEST(test_shared_script_primitives);
     RUN_TEST(test_private_directory_tree_removal_and_locks);

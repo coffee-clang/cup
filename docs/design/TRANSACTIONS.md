@@ -135,9 +135,9 @@ prepare/validate staging
 write journal
 change canonical package filesystem
 replace state.txt              commit point
-remove journal
-clean staging
-rebuild or clean wrappers
+perform operation-specific post-commit cleanup
+clear the journal when its owned recovery data is no longer needed
+rebuild or clean wrappers as required by the command
 ```
 
 A valid `state.txt` therefore tells recovery whether the package change became
@@ -196,8 +196,11 @@ The hidden command:
 6. prepares the runtime directories;
 7. stages the same installed cup assets used by `cup update cup`;
 8. writes the update-style journal;
-9. starts the native update helper;
-10. waits for the journal and staging entry to disappear.
+9. starts the native update helper and returns once the asynchronous handoff is scheduled.
+
+The public POSIX and PowerShell installers own completion waiting: they wait for
+the journal/staging transition to finish and verify the exact installed version
+before reporting installation success.
 
 For rollback, each destination receives either an `.old` copy or an `.absent`
 marker. Fresh installation and `cup update cup` therefore use the same commit and
@@ -287,7 +290,7 @@ Only after that transition does the helper:
 
 ```text
 reload and authenticate the token, scheduled journal and staging directory
-validate every staged asset
+require each referenced staged asset to still be a regular file
 copy every current destination to `.old` or record `.absent` rollback evidence
 publish phase=committing only after that rollback evidence is complete
 install the four supporting assets
@@ -366,10 +369,12 @@ established, and successful handoff consumes the caller-visible lock without
 creating an authority gap.
 
 The child removes its own temporary pathname after proving by native identity
-that the reserved path names the running helper. It then waits for parent exit,
-accepts the inherited handoff authority, validates the exact root, journal,
-token and detached destination, and publishes `detaching/detach` before the
-namespace move.
+that the reserved path names the running helper. On Windows the backend first
+uses POSIX disposition and, when the mapped image is the last link on NTFS,
+renames the default data stream before deleting the visible file name. It then
+waits for parent exit, accepts the inherited handoff authority, validates the
+exact root, journal, token and detached destination, and publishes
+`detaching/detach` before the namespace move.
 
 If that pre-detach self-unlink fails, the child performs no root mutation. The canonical
 `scheduled/handoff` journal remains the owner of the reserved

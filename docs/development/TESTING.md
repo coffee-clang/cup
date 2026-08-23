@@ -201,10 +201,10 @@ Where available, the repository suite checks syntax with:
 
 It also runs the generated installer while optional text-processing utilities
 are blocked. The scenarios check canonical release versions and checksum text,
-bounded curl transport, the explicit curl prerequisite, signal exit status, the
-exact root reported by the bootstrap, the exact installed version, permissions,
-marker and cleanup results. Commands that the installer requires are
-declared and checked before the installation starts.
+curl transport options, the explicit curl prerequisite and post-download size
+rejection, signal exit status, the exact root reported by the bootstrap, the
+exact installed version, permissions, marker and cleanup results. Commands that the
+installer requires are declared and checked before the installation starts.
 
 The Windows installer is exercised by PowerShell release and integration tests.
 Windows uninstall is native and is exercised through the executable, including its

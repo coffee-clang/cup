@@ -204,8 +204,10 @@ previous finalized directory. A failed inspection or metadata step removes the
 staging directory and leaves the previous complete bundle unchanged.
 
 `scripts/release/build-platform.sh` combines the finalized platform output with
-the verified common assets. `scripts/release/assemble-candidate.sh` accepts only
-the full expected input set and creates the flat release candidate.
+the verified common assets. `scripts/release/assemble-candidate.sh` is the generic
+collision-safe flat merger used for common/platform parts; candidate-specific
+consumers such as native release tests and `publish.sh` enforce the exact public
+asset set.
 
 GitHub artifact transport does not preserve POSIX modes, so assembly restores
 them before testing and publication:
@@ -407,7 +409,7 @@ instead of pretending the update was completed.
 | `scripts/build/finalize-release.sh` | Finalize one inspected platform bundle |
 | `scripts/release/common-assets.sh` | Build files shared by every platform |
 | `scripts/release/build-platform.sh` | Combine one native bundle with common assets |
-| `scripts/release/assemble-candidate.sh` | Create the exact flat public candidate |
+| `scripts/release/assemble-candidate.sh` | Merge validated release parts into one flat candidate directory |
 | `scripts/release/publish.sh` | Compare and publish the candidate on GitHub |
 
 None of these scripts rebuilds or rewrites a candidate after assembly.

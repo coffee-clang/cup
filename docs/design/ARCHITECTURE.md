@@ -155,13 +155,10 @@ single-package, profile, toolchain and update commands.
 `command_context.c` owns the common lifetime of:
 
 ```text
-host platform
-selected root snapshot
+host and target platform
 runtime lock
-state
+state and state-file identity
 package catalog
-installation policy
-user preferences
 ```
 
 Read-only commands request only the parts they need. Mutating commands acquire
@@ -174,10 +171,10 @@ package identity, selected archive format, package URL and checksum URL. Cache n
 download limits and catalog snapshot metadata remain owned by their source modules rather
 than being copied into the artifact specification.
 
-The cache returns a `VerifiedArtifact`. This object owns the open file that was
-size-checked, hashed and preflighted. Extraction consumes the same open stream,
-so the code does not verify one pathname and later open a different file with
-the same name.
+The cache returns a `VerifiedArtifact`. This object owns the regular file that was
+size-checked and hashed. Extraction consumes that same open stream, so the code
+does not verify one pathname and later open a different file with the same name.
+Archive format, structural and resource admission are performed during extraction.
 
 ### State and transactions
 
@@ -271,13 +268,13 @@ The C source files are grouped below by responsibility.
 | Module | Responsibility |
 |---|---|
 | `assets.c` | validate the installed asset generation |
-| `self_update.c` | discover, download and stage a cup release |
+| `self_update.c` | discover, compare, download and stage a cup release |
 | `update_helper.c` | detached replacement of installed assets |
 | `update_journal.c` | executable-update schema and recovery |
 | `uninstall_helper.c` | native root detach and cleanup |
 | `uninstall_journal.c` | uninstall schema and recovery |
 | `runtime_journal.c` | shared `transaction.txt` file operations |
-| `release_metadata.c` | `release.txt` parsing and version comparison |
+| `release_metadata.c` | `release.txt` parsing and validation |
 
 ### Package selection and installation
 
@@ -306,7 +303,7 @@ The C source files are grouped below by responsibility.
 | `download.c` | HTTPS transfer and size/time limits |
 | `download_url.c` | CURLU parsing and loopback-only insecure test URL policy |
 | `package_archive_format.c` | archive format names and extensions |
-| `package_archive.c` | archive reader setup and structural preflight |
+| `package_archive.c` | supported archive reader setup and detected-format checks |
 | `package_extract.c` | safe extraction of a verified stream |
 
 ### State, paths and wrappers

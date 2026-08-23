@@ -194,34 +194,81 @@ require_tool() {
     fi
 }
 
+dependency_sha256_valid() {
+    local value="$1"
+
+    [ "${#value}" -eq 64 ] || return 1
+    case "$value" in
+        *[!0-9A-Fa-f]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+dependency_select_sha256_tool() {
+    local output=
+    local value=
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        output=$(printf '' | sha256sum 2>/dev/null) || output=
+        read -r value _ <<<"$output"
+        if dependency_sha256_valid "$value"; then
+            printf '%s\n' sha256sum
+            return 0
+        fi
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        output=$(printf '' | shasum -a 256 2>/dev/null) || output=
+        read -r value _ <<<"$output"
+        if dependency_sha256_valid "$value"; then
+            printf '%s\n' shasum
+            return 0
+        fi
+    fi
+    return 1
+}
+
 require_sha256_tool() {
-    if ! command -v sha256sum >/dev/null 2>&1 &&
-        ! command -v shasum >/dev/null 2>&1; then
-        echo "Error: neither sha256sum nor shasum is available." >&2
+    if ! DEPENDENCY_SHA256_TOOL=$(dependency_select_sha256_tool); then
+        echo "Error: neither sha256sum nor shasum is available and working." >&2
         exit 1
     fi
 }
 
 file_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    else
-        echo "Error: neither sha256sum nor shasum is available." >&2
+    local file="$1"
+    local output=
+    local value=
+
+    [ -n "${DEPENDENCY_SHA256_TOOL:-}" ] || require_sha256_tool
+    case "$DEPENDENCY_SHA256_TOOL" in
+        sha256sum) output=$(sha256sum "$file" 2>/dev/null) || output= ;;
+        shasum) output=$(shasum -a 256 "$file" 2>/dev/null) || output= ;;
+        *) return 1 ;;
+    esac
+    read -r value _ <<<"$output"
+    if ! dependency_sha256_valid "$value"; then
+        echo "Error: could not hash '$file'." >&2
         return 1
     fi
+    printf '%s\n' "$value"
 }
 
 stream_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | awk '{print $1}'
-    else
-        echo "Error: neither sha256sum nor shasum is available." >&2
+    local output=
+    local value=
+
+    [ -n "${DEPENDENCY_SHA256_TOOL:-}" ] || require_sha256_tool
+    case "$DEPENDENCY_SHA256_TOOL" in
+        sha256sum) output=$(sha256sum 2>/dev/null) || output= ;;
+        shasum) output=$(shasum -a 256 2>/dev/null) || output= ;;
+        *) return 1 ;;
+    esac
+    read -r value _ <<<"$output"
+    if ! dependency_sha256_valid "$value"; then
+        echo "Error: could not hash dependency stream." >&2
         return 1
     fi
+    printf '%s\n' "$value"
 }
 
 verify_source_checksum() {

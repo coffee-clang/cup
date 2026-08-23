@@ -187,6 +187,24 @@ static void require_clean_path(const char *path) {
     }
 }
 
+static void require_safe_build_root_path(const char *root) {
+    char home[MAX_PATH_LEN];
+    CupError err;
+
+    require_clean_path(root);
+    err = system_get_home_dir(home, sizeof(home));
+    if (err != CUP_OK) {
+        fail_system("resolve user home", root, err);
+    }
+#if defined(_WIN32)
+    if (_stricmp(root, home) == 0) {
+#else
+    if (strcmp(root, home) == 0) {
+#endif
+        fail_message("build root must not be the user home directory: %s", root);
+    }
+}
+
 static unsigned int parse_mode(const char *value) {
     unsigned int mode = 0;
     size_t index;
@@ -909,7 +927,7 @@ static void lock_build_root(const char *root, BuildRootLock *locked) {
     size_t marker_size = 0;
     CupError err;
 
-    require_clean_path(root);
+    require_safe_build_root_path(root);
     memset(locked, 0, sizeof(*locked));
     if (path_join(locked->marker,
                   sizeof(locked->marker),
@@ -966,7 +984,7 @@ static void check_build_root(const char *root) {
     CupError err;
     size_t count;
 
-    require_clean_path(root);
+    require_safe_build_root_path(root);
     memset(&root_before, 0, sizeof(root_before));
     memset(&root_after, 0, sizeof(root_after));
     memset(&marker_identity, 0, sizeof(marker_identity));
@@ -1035,7 +1053,7 @@ static void prepare_build_root(const char *root) {
     CupError err;
     int staging_exists = 0;
 
-    require_clean_path(root);
+    require_safe_build_root_path(root);
     err = system_get_path_kind(root, &kind);
     if (err != CUP_OK) {
         fail_system("inspect build root", root, err);

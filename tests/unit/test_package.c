@@ -15,6 +15,7 @@
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <stdio.h>
@@ -579,6 +580,36 @@ static void test_invalid_package(void) {
                "platform.target=" TEST_PACKAGE_HOST "\n"
                "entry.clang=../clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    {
+        char external[512];
+        char external_tool[512];
+        char linked_bin[512];
+        char metadata_path[512];
+
+        build_path(root, sizeof(root), "linked-entry-parent");
+        build_path(external, sizeof(external), "linked-entry-external");
+        make_dir(root);
+        make_dir(external);
+        join_path(external_tool, sizeof(external_tool), external, TEST_PACKAGE_COMMAND);
+        write_text(external_tool, TEST_PACKAGE_BODY);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_executable(external_tool, 1));
+        join_path(linked_bin, sizeof(linked_bin), root, "bin");
+#if defined(_WIN32)
+        TEST_ASSERT_TRUE(test_create_directory_junction(linked_bin, external));
+#else
+        TEST_ASSERT_EQUAL_INT(0, symlink(external, linked_bin));
+#endif
+        join_path(metadata_path, sizeof(metadata_path), root, "info.txt");
+        write_text(metadata_path,
+                   "package.component=compiler\n"
+                   "package.tool=clang\n"
+                   "package.version=22.1.5\n"
+                   "platform.host=" TEST_PACKAGE_HOST "\n"
+                   "platform.target=" TEST_PACKAGE_HOST "\n"
+                   "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+    }
 
     build_path(root, sizeof(root), "non-exec");
     make_valid_package(root);
