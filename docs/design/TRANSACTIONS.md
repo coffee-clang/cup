@@ -369,10 +369,10 @@ established, and successful handoff consumes the caller-visible lock without
 creating an authority gap.
 
 The child removes its own temporary pathname after proving by native identity
-that the reserved path names the running helper. On Windows the backend first
-uses POSIX disposition and, when the mapped image is the last link on NTFS,
-renames the default data stream before deleting the visible file name. It then
-waits for parent exit, accepts the inherited handoff authority, validates the
+that the reserved path names the running helper. On Windows the backend uses the
+Windows 10 version 1709 `FileDispositionInfoEx` `DELETE | POSIX_SEMANTICS` operation; it does not
+mutate NTFS alternate streams or switch to a second deletion algorithm. It then waits for parent
+exit, accepts the inherited handoff authority, validates the
 exact root, journal, token and detached destination, and publishes
 `detaching/detach` before the namespace move.
 

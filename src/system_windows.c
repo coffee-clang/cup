@@ -926,17 +926,15 @@ CupError system_get_executable_path(char *buffer, size_t size) {
 static CupError running_executable_unlink_failure(const char *stage,
                                                    const char *path,
                                                    CupError err,
-                                                   DWORD direct_error,
                                                    DWORD error_code) {
     if (error_code == ERROR_SUCCESS) {
         error_code = ERROR_INVALID_DATA;
     }
     fprintf(stderr,
             "Windows running-executable unlink failed: stage=%s cup_error=%d "
-            "direct_win32=%lu win32=%lu path=%s\n",
+            "win32=%lu path=%s\n",
             text_is_empty(stage) ? "unknown" : stage,
             (int)err,
-            (unsigned long)direct_error,
             (unsigned long)error_code,
             text_is_empty(path) ? "<none>" : path);
     SetLastError(error_code);
@@ -944,17 +942,17 @@ static CupError running_executable_unlink_failure(const char *stage,
 }
 
 CupError system_unlink_running_executable(const char *path) {
-    /* POSIX disposition can remove ordinary links to an open file, but Windows can reject deleting
-     * the visible link while the file still owns the process image section. The uninstall helper
-     * is a single-link copy, so NTFS has a fallback: rename the mapped default data stream away
-     * from the unnamed stream, then delete the now-unbound visible file name. */
+    /* Windows 10 version 1709 introduced FileDispositionInfoEx POSIX deletion. The temporary
+     * uninstall helper is a CUP-created regular file, so use only the 1709 flag set here: removing
+     * IGNORE_READONLY_ATTRIBUTE avoids a newer capability that is unnecessary for this object.
+     * If the OS/filesystem still refuses to unlink the running image, fail before root detach and
+     * leave the exact helper path under the existing journal/recovery contract. */
     typedef struct {
         DWORD flags;
     } FileDispositionInfoExCompat;
     enum {
         FILE_DISPOSITION_DELETE_COMPAT = 0x00000001,
         FILE_DISPOSITION_POSIX_COMPAT = 0x00000002,
-        FILE_DISPOSITION_IGNORE_READONLY_COMPAT = 0x00000010,
         FILE_DISPOSITION_INFO_EX_CLASS = 21
     };
     char running[MAX_PATH_LEN];
@@ -963,14 +961,8 @@ CupError system_unlink_running_executable(const char *path) {
     BY_HANDLE_FILE_INFORMATION info;
     SystemPathIdentity opened;
     FileDispositionInfoExCompat disposition;
-    FILE_DISPOSITION_INFO fallback_disposition;
-    FILE_RENAME_INFO *rename_info = NULL;
-    wchar_t stream_name[64];
     wchar_t wide[MAX_PATH_LEN];
-    size_t stream_length;
-    size_t rename_size;
     HANDLE handle;
-    DWORD direct_error = ERROR_SUCCESS;
     DWORD failure_error;
     CupError err;
 
@@ -1001,157 +993,37 @@ CupError system_unlink_running_executable(const char *path) {
                          NULL);
     if (handle == INVALID_HANDLE_VALUE) {
         return running_executable_unlink_failure(
-            "direct-open", path, CUP_ERR_FILESYSTEM, ERROR_SUCCESS, GetLastError());
+            "posix-open", path, CUP_ERR_FILESYSTEM, GetLastError());
     }
     if (!GetFileInformationByHandle(handle, &info)) {
         failure_error = GetLastError();
         (void)CloseHandle(handle);
         return running_executable_unlink_failure(
-            "direct-information", path, CUP_ERR_TRANSACTION, ERROR_SUCCESS, failure_error);
+            "posix-information", path, CUP_ERR_TRANSACTION, failure_error);
     }
     err = identity_from_handle_information(handle, &info, &opened);
     if (err != CUP_OK) {
         (void)CloseHandle(handle);
         return running_executable_unlink_failure(
-            "direct-identity", path, err, ERROR_SUCCESS, ERROR_INVALID_DATA);
+            "posix-identity", path, err, ERROR_INVALID_DATA);
     }
     if (!system_path_identity_equal(&expected, &opened)) {
         (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "direct-identity-mismatch",
-            path,
-            CUP_ERR_TRANSACTION,
-            ERROR_SUCCESS,
-            ERROR_INVALID_DATA);
-    }
-    disposition.flags = FILE_DISPOSITION_DELETE_COMPAT | FILE_DISPOSITION_POSIX_COMPAT |
-                        FILE_DISPOSITION_IGNORE_READONLY_COMPAT;
-    if (SetFileInformationByHandle(handle,
-                                   (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
-                                   &disposition,
-                                   sizeof(disposition))) {
-        (void)CloseHandle(handle);
-        return CUP_OK;
-    }
-    direct_error = GetLastError();
-    (void)CloseHandle(handle);
-
-    /* A mapped executable can still be removed without a third cleanup process on NTFS by
-     * renaming its default data stream first. Use a process-specific stream name so an unexpected
-     * pre-existing stream fails closed instead of replacing data. If the filesystem does not
-     * support stream rename, the caller keeps the pre-detach journal and exact helper residue. */
-    if (_snwprintf(stream_name,
-                   sizeof(stream_name) / sizeof(stream_name[0]),
-                   L":cup-uninstall-%lu",
-                   system_get_process_id()) < 0) {
-        return running_executable_unlink_failure("stream-name",
-                                                 path,
-                                                 CUP_ERR_BUFFER_TOO_SMALL,
-                                                 direct_error,
-                                                 ERROR_INSUFFICIENT_BUFFER);
-    }
-    stream_name[(sizeof(stream_name) / sizeof(stream_name[0])) - 1] = L'\0';
-    stream_length = wcslen(stream_name);
-    rename_size = sizeof(FILE_RENAME_INFO) + stream_length * sizeof(wchar_t);
-    rename_info = calloc(1, rename_size);
-    if (rename_info == NULL) {
-        return running_executable_unlink_failure("stream-allocation",
-                                                 path,
-                                                 CUP_ERR_TEMPORARY,
-                                                 direct_error,
-                                                 ERROR_NOT_ENOUGH_MEMORY);
-    }
-    rename_info->RootDirectory = NULL;
-    rename_info->FileNameLength = (DWORD)(stream_length * sizeof(wchar_t));
-    memcpy(rename_info->FileName,
-           stream_name,
-           stream_length * sizeof(wchar_t));
-
-    handle = CreateFileW(wide,
-                         DELETE | FILE_READ_ATTRIBUTES,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         NULL,
-                         OPEN_EXISTING,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                         NULL);
-    if (handle == INVALID_HANDLE_VALUE) {
-        failure_error = GetLastError();
-        free(rename_info);
-        return running_executable_unlink_failure(
-            "stream-open", path, CUP_ERR_FILESYSTEM, direct_error, failure_error);
-    }
-    if (!GetFileInformationByHandle(handle, &info)) {
-        failure_error = GetLastError();
-        free(rename_info);
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "stream-information", path, CUP_ERR_TRANSACTION, direct_error, failure_error);
-    }
-    err = identity_from_handle_information(handle, &info, &opened);
-    if (err != CUP_OK) {
-        free(rename_info);
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "stream-identity", path, err, direct_error, ERROR_INVALID_DATA);
-    }
-    if (!system_path_identity_equal(&expected, &opened)) {
-        free(rename_info);
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure("stream-identity-mismatch",
+        return running_executable_unlink_failure("posix-identity-mismatch",
                                                  path,
                                                  CUP_ERR_TRANSACTION,
-                                                 direct_error,
                                                  ERROR_INVALID_DATA);
     }
-    if (!SetFileInformationByHandle(
-            handle, FileRenameInfo, rename_info, (DWORD)rename_size)) {
-        failure_error = GetLastError();
-        free(rename_info);
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "stream-rename", path, CUP_ERR_FILESYSTEM, direct_error, failure_error);
-    }
-    free(rename_info);
-    (void)CloseHandle(handle);
 
-    handle = CreateFileW(wide,
-                         DELETE | FILE_READ_ATTRIBUTES,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         NULL,
-                         OPEN_EXISTING,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                         NULL);
-    if (handle == INVALID_HANDLE_VALUE) {
-        return running_executable_unlink_failure(
-            "visible-reopen", path, CUP_ERR_FILESYSTEM, direct_error, GetLastError());
-    }
-    if (!GetFileInformationByHandle(handle, &info)) {
+    disposition.flags = FILE_DISPOSITION_DELETE_COMPAT | FILE_DISPOSITION_POSIX_COMPAT;
+    if (!SetFileInformationByHandle(handle,
+                                    (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
+                                    &disposition,
+                                    sizeof(disposition))) {
         failure_error = GetLastError();
         (void)CloseHandle(handle);
         return running_executable_unlink_failure(
-            "visible-information", path, CUP_ERR_TRANSACTION, direct_error, failure_error);
-    }
-    err = identity_from_handle_information(handle, &info, &opened);
-    if (err != CUP_OK) {
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "visible-identity", path, err, direct_error, ERROR_INVALID_DATA);
-    }
-    if (!system_path_identity_equal(&expected, &opened)) {
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure("visible-identity-mismatch",
-                                                 path,
-                                                 CUP_ERR_TRANSACTION,
-                                                 direct_error,
-                                                 ERROR_INVALID_DATA);
-    }
-    fallback_disposition.DeleteFile = TRUE;
-    if (!SetFileInformationByHandle(
-            handle, FileDispositionInfo, &fallback_disposition, sizeof(fallback_disposition))) {
-        failure_error = GetLastError();
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "visible-delete", path, CUP_ERR_FILESYSTEM, direct_error, failure_error);
+            "posix-delete", path, CUP_ERR_FILESYSTEM, failure_error);
     }
     (void)CloseHandle(handle);
     return CUP_OK;

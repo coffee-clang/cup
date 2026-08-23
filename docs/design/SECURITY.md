@@ -269,11 +269,11 @@ child waits for parent exit, validates the exact root and journal, publishes
 cleanup.
 
 The temporary uninstall child removes its own reserved pathname before it can detach the root.
-The Windows backend keeps that operation native: it verifies file identity, attempts POSIX link
-removal and uses an NTFS default-stream rename when the running image is the last link. The stream
-rename does not authorize any broader path mutation and is followed by another handle-identity
-check before the visible file name is deleted.
-If that operation fails, no root mutation occurs and the canonical journal retains ownership of
+The Windows backend keeps that operation native: it verifies file identity and uses the
+Windows 10 version 1709 `FileDispositionInfoEx` `DELETE | POSIX_SEMANTICS` operation. The helper is
+created by CUP and is not treated as an arbitrary read-only input, so no newer read-only-ignore flag
+or alternate-stream mutation is part of this trust boundary. If that native unlink fails, no root
+mutation occurs and the canonical journal retains ownership of
 the token-bound helper residue. `repair`, while holding canonical exclusive authority and only
 after the active handoff has disappeared, removes that exact regular file by filesystem identity
 before it can clear the stale journal.

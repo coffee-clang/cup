@@ -117,12 +117,11 @@ filesystem explicitly reports that no 128-bit ID exists. A move refreshes identi
 still-open source handle before proving the destination, because some filesystems can change a
 file ID during rename.
 
-The current Windows x64 runtime requires Windows 10 version 1709 or later. Native uninstall first
-tries `FileDispositionInfoEx` POSIX delete semantics for the temporary running helper pathname.
-If Windows rejects removal while that executable still owns its image section, an NTFS-backed
-profile lets the backend rename the mapped default data stream and then remove the now-unbound
-visible file name. No shell cleanup process owns this step. If the filesystem cannot
-perform either native removal path, the failure occurs before root detach; the canonical journal
+The current Windows x64 runtime requires Windows 10 version 1709 or later. Native uninstall uses
+`FileDispositionInfoEx` with the 1709-compatible `DELETE | POSIX_SEMANTICS` flag set to remove the
+temporary running helper pathname. The helper is a CUP-created regular file, so the backend does
+not require the later read-only-ignore flag or an NTFS alternate-stream fallback. If Windows or the
+filesystem refuses that native unlink, the failure occurs before root detach; the canonical journal
 remains recovery evidence and `repair` removes only the exact token-bound helper before cancelling
 the stale transaction.
 
