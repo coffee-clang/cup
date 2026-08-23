@@ -619,11 +619,16 @@ static void test_running_executable_self_unlink(void) {
     char executable[CUP_TEST_TEMP_PATH_SIZE];
     char copy[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
+    char diagnostic[CUP_TEST_TEMP_PATH_SIZE];
+    char diagnostic_text[1024];
     wchar_t wide_copy[CUP_TEST_TEMP_PATH_SIZE];
     wchar_t wide_marker[CUP_TEST_TEMP_PATH_SIZE];
-    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 3];
+    wchar_t wide_diagnostic[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 4];
     STARTUPINFOW startup;
     PROCESS_INFORMATION process;
+    FILE *file;
+    size_t count;
     DWORD exit_code = 1;
     int exists = 1;
 
@@ -631,6 +636,7 @@ static void test_running_executable_self_unlink(void) {
                           system_get_executable_path(executable, sizeof(executable)));
     build_path(copy, sizeof(copy), "self-unlink-probe.exe");
     build_path(marker, sizeof(marker), "self-unlink-probe.done");
+    build_path(diagnostic, sizeof(diagnostic), "self-unlink-probe.log");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, copy));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           windows_utf8_to_wide(copy,
@@ -640,11 +646,18 @@ static void test_running_executable_self_unlink(void) {
                           windows_utf8_to_wide(marker,
                                                wide_marker,
                                                sizeof(wide_marker) / sizeof(wide_marker[0])));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(diagnostic,
+                                               wide_diagnostic,
+                                               sizeof(wide_diagnostic) /
+                                                   sizeof(wide_diagnostic[0])));
     TEST_ASSERT_TRUE(_snwprintf(command,
                                 sizeof(command) / sizeof(command[0]),
-                                L"\"%ls\" --internal-self-unlink-probe \"%ls\"",
+                                L"\"%ls\" --internal-self-unlink-probe \"%ls\" "
+                                L"\"%ls\"",
                                 wide_copy,
-                                wide_marker) > 0);
+                                wide_marker,
+                                wide_diagnostic) > 0);
     command[(sizeof(command) / sizeof(command[0])) - 1] = L'\0';
 
     ZeroMemory(&startup, sizeof(startup));
@@ -664,12 +677,26 @@ static void test_running_executable_self_unlink(void) {
     TEST_ASSERT_TRUE(GetExitCodeProcess(process.hProcess, &exit_code));
     TEST_ASSERT_TRUE(CloseHandle(process.hThread));
     TEST_ASSERT_TRUE(CloseHandle(process.hProcess));
+    if (exit_code != 0) {
+        file = fopen(diagnostic, "rb");
+        if (file != NULL) {
+            count = fread(diagnostic_text, 1, sizeof(diagnostic_text) - 1u, file);
+            diagnostic_text[count] = '\0';
+            (void)fclose(file);
+            fprintf(stderr, "Self-unlink probe diagnostic: %s", diagnostic_text);
+        } else {
+            fprintf(stderr,
+                    "Self-unlink probe failed with exit code %lu and no diagnostic file.\n",
+                    (unsigned long)exit_code);
+        }
+    }
     TEST_ASSERT_EQUAL_UINT32(0, exit_code);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(marker, &exists));
     TEST_ASSERT_TRUE(exists);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(copy, &exists));
     TEST_ASSERT_FALSE(exists);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(diagnostic));
 }
 
 static void test_handoff_helper_start(void) {
@@ -1138,16 +1165,35 @@ static int run_handoff_probe(int argc, char **argv) {
 
 static int run_self_unlink_probe(int argc, char **argv) {
     FILE *file;
+    CupError err;
+    DWORD windows_error;
 
-    if (argc != 3 || system_unlink_running_executable(argv[0]) != CUP_OK) {
+    if (argc != 4) {
         return 2;
+    }
+    if (freopen(argv[3], "wb", stderr) == NULL) {
+        return 3;
+    }
+    err = system_unlink_running_executable(argv[0]);
+    windows_error = GetLastError();
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "self-unlink-result cup_error=%d win32=%lu\n",
+                (int)err,
+                (unsigned long)windows_error);
+        (void)fflush(stderr);
+        return 4;
     }
     file = fopen(argv[2], "wb");
     if (file == NULL) {
-        return 3;
+        fprintf(stderr, "self-unlink-marker-open win32=%lu\n", (unsigned long)GetLastError());
+        (void)fflush(stderr);
+        return 5;
     }
     if (fputs("self-unlink=continued\n", file) == EOF || fclose(file) != 0) {
-        return 4;
+        fprintf(stderr, "self-unlink-marker-write failed\n");
+        (void)fflush(stderr);
+        return 6;
     }
     return 0;
 }
