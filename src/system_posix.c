@@ -600,17 +600,10 @@ CupError system_start_uninstall_helper(const char *helper,
         helper, "--internal-uninstall-helper", root, detached_root, token, lock);
 }
 
-static CupError wait_for_parent_exit(const char *parent_signal_value) {
-    unsigned parsed;
-    int descriptor;
+static CupError wait_for_parent_exit(int descriptor) {
     char byte;
     ssize_t count;
 
-    if (!text_parse_uint(parent_signal_value, 0x7fffffffu, &parsed) || parsed <= STDERR_FILENO) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    descriptor = (int)parsed;
     do {
         count = read(descriptor, &byte, 1);
     } while (count > 0 || (count < 0 && errno == EINTR));
@@ -621,24 +614,28 @@ static CupError wait_for_parent_exit(const char *parent_signal_value) {
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
                                const char *authority_value) {
-    unsigned parsed;
+    unsigned parent_signal;
+    unsigned authority;
     struct stat info;
     CupError err;
 
     if (handoff == NULL || handoff->active ||
-        !text_parse_uint(authority_value, 0x7fffffffu, &parsed) || parsed <= STDERR_FILENO) {
+        !text_parse_uint(parent_signal_value, 0x7fffffffu, &parent_signal) ||
+        parent_signal <= STDERR_FILENO ||
+        !text_parse_uint(authority_value, 0x7fffffffu, &authority) ||
+        authority <= STDERR_FILENO || parent_signal == authority) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = wait_for_parent_exit(parent_signal_value);
+    err = wait_for_parent_exit((int)parent_signal);
     if (err != CUP_OK) {
-        (void)close((int)parsed);
+        (void)close((int)authority);
         return err;
     }
-    if (fstat((int)parsed, &info) != 0 || !S_ISREG(info.st_mode)) {
-        (void)close((int)parsed);
+    if (fstat((int)authority, &info) != 0 || !S_ISREG(info.st_mode)) {
+        (void)close((int)authority);
         return CUP_ERR_FILESYSTEM;
     }
-    handoff->handle = (intptr_t)(int)parsed;
+    handoff->handle = (intptr_t)(int)authority;
     handoff->active = 1;
     return CUP_OK;
 }

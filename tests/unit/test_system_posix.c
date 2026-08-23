@@ -1270,6 +1270,8 @@ static void test_handoff_primitives(void) {
                           system_handoff_accept(&handoff, "invalid", "4"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_handoff_accept(&handoff, "3", "invalid"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(&handoff, "3", "3"));
 
     build_path(ordinary_path, sizeof(ordinary_path), "not-running-executable");
     write_text(ordinary_path, "not the running executable\n");

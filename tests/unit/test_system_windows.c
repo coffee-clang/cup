@@ -598,6 +598,8 @@ static void test_handoff_primitives(void) {
                           system_handoff_accept(&handoff, "invalid", "2"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_handoff_accept(&handoff, "1", "invalid"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_handoff_accept(&handoff, "1", "1"));
 
     build_path(ordinary_path, sizeof(ordinary_path), "not-running-executable.exe");
     write_text(ordinary_path, "not the running executable\n");
@@ -654,6 +656,7 @@ static void test_handoff_helper_start(void) {
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char detached[CUP_TEST_TEMP_PATH_SIZE];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 3];
+    char *line;
     SystemLock lock = {0};
     int active = 0;
 
@@ -697,11 +700,19 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_TRUE(active);
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-uninstall-helper\n"));
-    TEST_ASSERT_NOT_NULL(strstr(contents, temp_dir));
-    TEST_ASSERT_NOT_NULL(strstr(contents, detached));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "handoff-token\n"));
-    TEST_ASSERT_NOT_NULL(strstr(contents, "handles=valid\n"));
+    line = strtok(contents, "\n");
+    TEST_ASSERT_EQUAL_STRING("--internal-uninstall-helper", line);
+    line = strtok(NULL, "\n");
+    TEST_ASSERT_TRUE(path_equal(temp_dir, line));
+    line = strtok(NULL, "\n");
+    TEST_ASSERT_TRUE(path_equal(detached, line));
+    line = strtok(NULL, "\n");
+    TEST_ASSERT_EQUAL_STRING("handoff-token", line);
+    TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
+    TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
+    line = strtok(NULL, "\n");
+    TEST_ASSERT_EQUAL_STRING("handles=valid", line);
+    TEST_ASSERT_NULL(strtok(NULL, "\n"));
 
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));

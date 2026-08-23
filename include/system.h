@@ -80,7 +80,7 @@ CupError system_get_home_dir(char *buffer, size_t size);
 unsigned long system_get_process_id(void);
 
 /* Detached process handoff. The parent must still own the active exclusive canonical lock when
- * starting a helper. The helper receives a parent-lifetime signal and an inherited authority
+ * starting a helper. The helper receives a distinct parent-lifetime signal and inherited authority
  * handle before this call succeeds. Success consumes the caller-visible SystemLock while the
  * parent retains a process-lifetime authority reference: POSIX keeps the shared flock description;
  * Windows releases cup.lock only after parent and child both own the external authority. Detached

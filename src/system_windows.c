@@ -820,17 +820,10 @@ static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
     return 1;
 }
 
-static CupError wait_for_parent_exit(const char *parent_signal_value) {
-    uintptr_t number;
-    HANDLE handle;
+static CupError wait_for_parent_exit(HANDLE handle) {
     char byte;
     DWORD read_count;
 
-    if (!parse_inherited_handle(parent_signal_value, &number)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    handle = (HANDLE)number;
     while (1) {
         if (!ReadFile(handle, &byte, 1, &read_count, NULL)) {
             DWORD error = GetLastError();
@@ -848,21 +841,24 @@ static CupError wait_for_parent_exit(const char *parent_signal_value) {
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
                                const char *authority_value) {
-    uintptr_t number;
+    uintptr_t parent_signal_number;
+    uintptr_t authority_number;
     HANDLE authority;
     DWORD flags;
     CupError err;
 
     if (handoff == NULL || handoff->active ||
-        !parse_inherited_handle(authority_value, &number)) {
+        !parse_inherited_handle(parent_signal_value, &parent_signal_number) ||
+        !parse_inherited_handle(authority_value, &authority_number) ||
+        parent_signal_number == authority_number) {
         return CUP_ERR_INVALID_INPUT;
     }
-    authority = (HANDLE)number;
+    authority = (HANDLE)authority_number;
     if (!GetHandleInformation(authority, &flags)) {
         (void)CloseHandle(authority);
         return CUP_ERR_FILESYSTEM;
     }
-    err = wait_for_parent_exit(parent_signal_value);
+    err = wait_for_parent_exit((HANDLE)parent_signal_number);
     if (err != CUP_OK) {
         (void)CloseHandle(authority);
         return err;
