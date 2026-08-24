@@ -129,7 +129,10 @@ make PLATFORM=<platform> test-integration
 
 On POSIX, `tests/runners/integration-posix.sh` discovers the scripts in
 `tests/integration/posix/`. On Windows, the PowerShell runner discovers the
-native suites in `tests/integration/windows/`. There is no separate persistent
+native suites in `tests/integration/windows/`. Each Windows suite runs in a
+separate PowerShell process with its own GUID-named test home. A failed suite is
+recorded and the remaining suites still run, so later results do not reuse the
+failed suite's environment or managed root. There is no separate persistent
 suite manifest.
 
 ## Combined behavioral tests
@@ -220,16 +223,23 @@ handoff, detach, cleanup and recovery behavior.
 The Windows system unit suite also has real subprocess oracles for helper handoff
 and temporary-helper lifetime. Handoff arguments containing spaces and CUP's
 normalized `/` path spelling must survive the Windows command-line round trip
-unchanged. Separately, a copied test executable inherits a `DELETE_ON_CLOSE`
-handle, proves that handle against its own executable identity, arms the System32
-cleanup carrier and exits. The copy must then disappear. These checks exercise the
-protocol and lifecycle cup actually uses instead of requiring a running Windows
-executable to unlink its own pathname.
+unchanged. Separately, copied test executables inherit a `DELETE_ON_CLOSE`
+handle, prove that handle against their own executable identity, arm the System32
+cleanup carrier and exit with both success and nonzero statuses. Each copy must
+then disappear. These checks exercise the protocol and lifecycle cup actually
+uses instead of requiring a running Windows executable to unlink its own
+pathname.
 
-The Windows uninstall integration suite also exercises a deliberate detached
-payload-cleanup failure. In that case the managed residue and transaction
-evidence must remain, while the temporary helper must still disappear. This
-separates root recovery correctness from helper-process lifetime correctness.
+The Windows uninstall integration suite treats the detached managed root and
+temporary helper as different object classes: detached candidates must be
+directories with the exact token-bound `detaching/detach` journal, while helper
+candidates must be files. Its deliberate payload-cleanup failure first proves
+that the ACL fixture really rejects deletion before cup is launched. The managed
+residue and transaction evidence must then remain, while the temporary helper
+must still disappear. If helper cleanup times out, diagnostics also report
+whether a process is still running from that exact helper path. This separates
+root recovery correctness, fault-injection correctness and helper-process
+lifetime correctness.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may

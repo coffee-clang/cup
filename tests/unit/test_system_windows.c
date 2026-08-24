@@ -627,7 +627,9 @@ static void test_handoff_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
 
-static void test_uninstall_helper_cleanup_lifecycle(void) {
+static void run_uninstall_helper_cleanup_lifecycle_case(const char *copy_name,
+                                                        const wchar_t *probe_mode,
+                                                        DWORD expected_exit_code) {
     char executable[CUP_TEST_TEMP_PATH_SIZE];
     char copy[CUP_TEST_TEMP_PATH_SIZE];
     wchar_t wide_copy[CUP_TEST_TEMP_PATH_SIZE];
@@ -640,9 +642,11 @@ static void test_uninstall_helper_cleanup_lifecycle(void) {
     SIZE_T attribute_size = 0;
     DWORD exit_code = 1;
 
+    TEST_ASSERT_NOT_NULL(copy_name);
+    TEST_ASSERT_NOT_NULL(probe_mode);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_get_executable_path(executable, sizeof(executable)));
-    build_path(copy, sizeof(copy), "cleanup-lifecycle-probe.exe");
+    build_path(copy, sizeof(copy), copy_name);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, copy));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           windows_utf8_to_wide(copy,
@@ -663,9 +667,10 @@ static void test_uninstall_helper_cleanup_lifecycle(void) {
     TEST_ASSERT_NOT_EQUAL(INVALID_HANDLE_VALUE, cleanup_handle);
     TEST_ASSERT_TRUE(_snwprintf(command,
                                 sizeof(command) / sizeof(command[0]),
-                                L"\"%ls\" --internal-cleanup-lifecycle-probe %llu",
+                                L"\"%ls\" --internal-cleanup-lifecycle-probe %llu %ls",
                                 wide_copy,
-                                (unsigned long long)(uintptr_t)cleanup_handle) > 0);
+                                (unsigned long long)(uintptr_t)cleanup_handle,
+                                probe_mode) > 0);
     command[(sizeof(command) / sizeof(command[0])) - 1] = L'\0';
 
     inherited_handles[0] = cleanup_handle;
@@ -703,8 +708,15 @@ static void test_uninstall_helper_cleanup_lifecycle(void) {
     TEST_ASSERT_TRUE(CloseHandle(process.hProcess));
     DeleteProcThreadAttributeList(startup.lpAttributeList);
     HeapFree(GetProcessHeap(), 0, startup.lpAttributeList);
-    TEST_ASSERT_EQUAL_UINT32(0, exit_code);
+    TEST_ASSERT_EQUAL_UINT32(expected_exit_code, exit_code);
     TEST_ASSERT_TRUE(wait_for_path_missing(copy));
+}
+
+static void test_uninstall_helper_cleanup_lifecycle(void) {
+    run_uninstall_helper_cleanup_lifecycle_case(
+        "cleanup-lifecycle-success-probe.exe", L"success", 0);
+    run_uninstall_helper_cleanup_lifecycle_case(
+        "cleanup-lifecycle-failure-probe.exe", L"failure", 7);
 }
 
 static void test_handoff_helper_start(void) {
@@ -1201,10 +1213,19 @@ static int run_handoff_probe(int argc, char **argv) {
 }
 
 static int run_cleanup_lifecycle_probe(int argc, char **argv) {
-    if (argc != 3) {
+    if (argc != 4) {
         return 2;
     }
-    return system_arm_uninstall_helper_cleanup(argv[2]) == CUP_OK ? 0 : 3;
+    if (system_arm_uninstall_helper_cleanup(argv[2]) != CUP_OK) {
+        return 3;
+    }
+    if (strcmp(argv[3], "success") == 0) {
+        return 0;
+    }
+    if (strcmp(argv[3], "failure") == 0) {
+        return 7;
+    }
+    return 4;
 }
 
 int main(int argc, char **argv) {

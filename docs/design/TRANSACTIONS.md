@@ -427,6 +427,11 @@ The important recovery boundaries are:
 - **Durable detach succeeds, but payload cleanup fails:** managed residue and the
   detached `detaching/detach` journal remain together; temporary-helper cleanup
   is independent and still completes after helper exit.
+
+Temporary-helper deletion is tied to process lifetime, not to a successful helper
+exit status. Once the carrier has been armed, either a successful or failing
+helper exit closes the private pipe writer and releases the deferred cleanup
+sequence.
 - **Complete success:** the canonical root is absent, the journal is removed
   last, and the temporary helper disappears after its process lifetime ends.
 
