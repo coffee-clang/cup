@@ -6,12 +6,9 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-$componentDenyRule = $null
-$fixtureDenyRule = $null
-$blockedComponents = $null
-$blockedFixture = $null
 $failedResidue = $null
 $carrierBaselinePids = @()
+$depthFixtureRelative = "components\cleanup-depth"
 
 function Get-DetachedUninstallRoots {
     return @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force -Directory `
@@ -25,6 +22,54 @@ function Get-UninstallHelperFiles {
         -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like ".cup-uninstall-helper-*"
         })
+}
+
+function Convert-ToExtendedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\')) {
+        return '\\?\UNC\' + $full.Substring(2)
+    }
+    return '\\?\' + $full
+}
+
+function New-CleanupDepthFixture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CanonicalRoot
+    )
+
+    $current = Join-Path $CanonicalRoot $depthFixtureRelative
+    [void][IO.Directory]::CreateDirectory((Convert-ToExtendedPath -Path $current))
+
+    # The Windows backend deliberately caps recursive traversal at 128 directory levels. Exceed
+    # that bound with ordinary directories so cleanup fails after root detach without relying on
+    # ACL privileges, timing, sharing races or reparse-point behavior.
+    for ($index = 0; $index -lt 140; $index++) {
+        $current = Join-Path $current "d"
+        [void][IO.Directory]::CreateDirectory((Convert-ToExtendedPath -Path $current))
+    }
+
+    if (-not [IO.Directory]::Exists((Convert-ToExtendedPath -Path $current))) {
+        Fail-Test "cleanup-depth fixture was not created"
+    }
+}
+
+function Remove-CleanupDepthFixture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $fixture = Join-Path $Root $depthFixtureRelative
+    $extended = Convert-ToExtendedPath -Path $fixture
+    if ([IO.Directory]::Exists($extended)) {
+        [IO.Directory]::Delete($extended, $true)
+    }
 }
 
 function Test-DetachedUninstallJournal {
@@ -90,24 +135,20 @@ function Get-ProcessIdsForExecutable {
     return @($matches.ToArray())
 }
 
-function Get-SystemSortProcessIds {
-    $systemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-    if ([string]::IsNullOrWhiteSpace($systemDirectory)) {
-        return @()
-    }
-    $expectedPath = [IO.Path]::GetFullPath((Join-Path $systemDirectory "sort.exe"))
+function Get-CleanupCarrierProcessIds {
     $matches = [System.Collections.Generic.List[int]]::new()
-    foreach ($process in Get-Process -Name "sort" -ErrorAction SilentlyContinue) {
-        try {
-            if ([string]::Equals(
-                    [IO.Path]::GetFullPath($process.Path),
-                    $expectedPath,
-                    [StringComparison]::OrdinalIgnoreCase)) {
-                $matches.Add($process.Id)
+    try {
+        foreach ($process in Get-CimInstance Win32_Process `
+            -Filter "Name = 'powershell.exe'" -ErrorAction Stop) {
+            if (-not [string]::IsNullOrWhiteSpace($process.CommandLine) -and
+                $process.CommandLine.IndexOf(
+                    "CUP_UNINSTALL_CLEANUP_CARRIER=1",
+                    [StringComparison]::Ordinal) -ge 0) {
+                $matches.Add([int]$process.ProcessId)
             }
-        } catch {
-            continue
         }
+    } catch {
+        return @()
     }
     return @($matches.ToArray())
 }
@@ -170,11 +211,11 @@ function Get-UninstallDiagnostics {
         }
     }
 
-    $carrierPids = @(Get-SystemSortProcessIds | Where-Object {
+    $carrierPids = @(Get-CleanupCarrierProcessIds | Where-Object {
         $carrierBaselinePids -notcontains $_
     })
     $carrierText = if ($carrierPids.Count -eq 0) { "none" } else { $carrierPids -join "," }
-    $lines.Add("New System32 sort.exe carrier candidates: $carrierText")
+    $lines.Add("New uninstall cleanup carrier candidates: $carrierText")
     return ($lines -join "`n")
 }
 
@@ -210,52 +251,18 @@ try {
 
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     Write-Utf8NoBom -Path (Join-Path $cupRoot "components\fixture.txt") -Lines @("fixture")
-    $carrierBaselinePids = @(Get-SystemSortProcessIds)
+    $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $output = Invoke-Cup -CommandArgs @("uninstall", "--yes")
     Assert-Contains $output "Uninstall started. The PATH entry was not removed."
     Wait-ForCleanUninstall -CanonicalRoot $cupRoot
 
-    # Force native cleanup to fail after detach. Deny DELETE on the file and FILE_DELETE_CHILD on
-    # its parent explicitly; Windows permits deletion when either right is available. Verify the
-    # fault injection before invoking cup so a broken fixture cannot be mistaken for a cup failure.
+    # Force cleanup to fail deterministically after detach by exceeding the backend's bounded
+    # recursive-walk depth. This exercises recovery evidence without ACL or timing assumptions.
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
-    $blockedComponents = Join-Path $cupRoot "components"
-    $blockedFixture = Join-Path $blockedComponents "fixture.txt"
-    New-Item -ItemType Directory -Force -Path (Join-Path $cupRoot "bin") | Out-Null
-    Write-Utf8NoBom -Path $blockedFixture -Lines @("fixture")
-    Copy-Item -LiteralPath $Script:CupTestExecutable `
-        -Destination (Join-Path $cupRoot "bin\cup.exe") -Force
+    New-CleanupDepthFixture -CanonicalRoot $cupRoot
 
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    $componentDenyRule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $identity,
-        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
-        [Security.AccessControl.AccessControlType]::Deny)
-    $fixtureDenyRule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $identity,
-        [Security.AccessControl.FileSystemRights]::Delete,
-        [Security.AccessControl.AccessControlType]::Deny)
-
-    $acl = Get-Acl -LiteralPath $blockedComponents
-    [void]$acl.AddAccessRule($componentDenyRule)
-    Set-Acl -LiteralPath $blockedComponents -AclObject $acl
-    $acl = Get-Acl -LiteralPath $blockedFixture
-    [void]$acl.AddAccessRule($fixtureDenyRule)
-    Set-Acl -LiteralPath $blockedFixture -AclObject $acl
-
-    $deleteWasDenied = $false
-    try {
-        [System.IO.File]::Delete($blockedFixture)
-    } catch [System.UnauthorizedAccessException] {
-        $deleteWasDenied = $true
-    }
-    if (-not $deleteWasDenied -or
-        -not (Test-Path -LiteralPath $blockedFixture -PathType Leaf)) {
-        Fail-Test "cleanup-failure ACL fixture did not reliably deny deletion"
-    }
-
-    $carrierBaselinePids = @(Get-SystemSortProcessIds)
+    $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $failedOutput = Invoke-Cup -CommandArgs @("uninstall", "--yes")
     Assert-Contains $failedOutput "Uninstall started. The PATH entry was not removed."
 
@@ -286,7 +293,7 @@ try {
 
     Assert-PathMissing $cupRoot
     Assert-PathExists (Join-Path $failedResidue "transaction.txt")
-    Assert-PathExists (Join-Path $failedResidue "components\fixture.txt")
+    Assert-PathExists (Join-Path $failedResidue $depthFixtureRelative)
     $detachedRoots = @(Get-DetachedUninstallRoots)
     if ($detachedRoots.Count -ne 1 -or
         -not [string]::Equals(
@@ -298,8 +305,8 @@ try {
             (Get-UninstallDiagnostics -CanonicalRoot $cupRoot))
     }
 
-    # Root recovery evidence and temporary-helper lifetime are separate invariants. Even when
-    # managed cleanup fails, the DELETE_ON_CLOSE carrier must release the helper after child exit.
+    # Recovery evidence and temporary-helper lifetime are separate invariants. Even when managed
+    # cleanup fails, the process-wait carrier must release the helper after actual child exit.
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $deadline) {
         if (@(Get-UninstallHelperFiles).Count -eq 0) {
@@ -315,46 +322,20 @@ try {
 
     Write-Host "Windows uninstall tests passed."
 } finally {
-    # Remove the injected ACLs from every root location that can legitimately own them. Do not
-    # depend on the test having recognized the journal correctly: teardown must not mask the
-    # original assertion if the root detached but its recovery evidence was malformed.
-    $aclRoots = [System.Collections.Generic.List[string]]::new()
-    if ($null -ne $blockedComponents) {
-        $canonicalAclRoot = Split-Path -Parent $blockedComponents
-        if (-not [string]::IsNullOrWhiteSpace($canonicalAclRoot)) {
-            $aclRoots.Add($canonicalAclRoot)
-        }
-    }
+    # The deliberate over-depth residue is outside normal cleanup bounds. Remove just that fixture
+    # with an extended path so the shared test-environment teardown can handle the ordinary tree.
     if (-not [string]::IsNullOrWhiteSpace($Script:CupTestHome)) {
+        $canonical = Join-Path $Script:CupTestHome ".cup"
+        try {
+            Remove-CleanupDepthFixture -Root $canonical
+        } catch {
+            # Preserve the primary test result; shared teardown remains the final cleanup authority.
+        }
         foreach ($detached in @(Get-DetachedUninstallRoots)) {
-            if ($aclRoots -notcontains $detached.FullName) {
-                $aclRoots.Add($detached.FullName)
-            }
-        }
-    }
-
-    foreach ($aclRoot in $aclRoots) {
-        $aclComponents = Join-Path $aclRoot "components"
-        $aclFixture = Join-Path $aclComponents "fixture.txt"
-
-        if ($null -ne $fixtureDenyRule -and
-            (Test-Path -LiteralPath $aclFixture -PathType Leaf)) {
             try {
-                $acl = Get-Acl -LiteralPath $aclFixture
-                [void]$acl.RemoveAccessRuleSpecific($fixtureDenyRule)
-                Set-Acl -LiteralPath $aclFixture -AclObject $acl
+                Remove-CleanupDepthFixture -Root $detached.FullName
             } catch {
-                # Cleanup is best effort; Remove-TestEnvironment remains the final authority.
-            }
-        }
-        if ($null -ne $componentDenyRule -and
-            (Test-Path -LiteralPath $aclComponents -PathType Container)) {
-            try {
-                $acl = Get-Acl -LiteralPath $aclComponents
-                [void]$acl.RemoveAccessRuleSpecific($componentDenyRule)
-                Set-Acl -LiteralPath $aclComponents -AclObject $acl
-            } catch {
-                # Cleanup is best effort; Remove-TestEnvironment remains the final authority.
+                # Preserve the primary test result; shared teardown remains the final cleanup authority.
             }
         }
     }

@@ -223,23 +223,24 @@ handoff, detach, cleanup and recovery behavior.
 The Windows system unit suite also has real subprocess oracles for helper handoff
 and temporary-helper lifetime. Handoff arguments containing spaces and CUP's
 normalized `/` path spelling must survive the Windows command-line round trip
-unchanged. Separately, copied test executables inherit a `DELETE_ON_CLOSE`
-handle, prove that handle against their own executable identity, arm the System32
-cleanup carrier and exit with both success and nonzero statuses. Each copy must
-then disappear. These checks exercise the protocol and lifecycle cup actually
-uses instead of requiring a running Windows executable to unlink its own
-pathname.
+unchanged. A copied executable also proves the inherited `DELETE_ON_CLOSE`
+handle against its own identity; the test retains the final cleanup handle until
+the process object is signaled and verifies deletion after both zero and nonzero
+exit. The production handoff test separately exercises the real parent-side
+cleanup carrier and requires the temporary helper to disappear after a nonzero
+probe exit.
 
 The Windows uninstall integration suite treats the detached managed root and
 temporary helper as different object classes: detached candidates must be
 directories with the exact token-bound `detaching/detach` journal, while helper
-candidates must be files. Its deliberate payload-cleanup failure first proves
-that the ACL fixture really rejects deletion before cup is launched. The managed
-residue and transaction evidence must then remain, while the temporary helper
-must still disappear. If helper cleanup times out, diagnostics also report
-whether a process is still running from that exact helper path. This separates
-root recovery correctness, fault-injection correctness and helper-process
-lifetime correctness.
+candidates must be files. Its deliberate payload-cleanup failure uses an
+ordinary directory tree deeper than the backend's bounded recursion limit. The
+Windows system unit suite independently checks that the same removal primitive
+rejects that over-depth shape, so the integration fault does not depend on ACL
+privileges or timing. The managed residue and transaction evidence must remain,
+while the temporary helper must still disappear. If helper cleanup times out,
+diagnostics report whether a process is still running from that exact helper
+path and whether a new cleanup-carrier PowerShell process is still present.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may

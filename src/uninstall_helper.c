@@ -255,11 +255,10 @@ CupError uninstall_helper_run(const char *root,
     if (text_is_empty(cleanup_handle_value)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    /* A Windows executable remains mapped while this helper runs. Before accepting handoff or
-     * touching the managed root, prove that the inherited cleanup handle names this executable and
-     * transfer only that handle's lifetime to a deterministic System32 cleanup carrier. If arming
-     * fails, the canonical root and scheduled/handoff journal are still untouched. */
-    err = system_arm_uninstall_helper_cleanup(cleanup_handle_value);
+    /* The parent arms deferred helper deletion before releasing the canonical lock. Before
+     * accepting handoff or touching the managed root, prove that this inherited cleanup handle
+     * names the exact running executable, then close the helper's copy. */
+    err = system_validate_uninstall_helper_cleanup(cleanup_handle_value);
     if (err != CUP_OK) {
         return err;
     }

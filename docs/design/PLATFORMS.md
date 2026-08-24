@@ -135,14 +135,18 @@ Instead, the parent binds a `DELETE_ON_CLOSE` handle to the exact helper file
 before launch. The helper verifies that inherited handle against its own running
 executable before accepting handoff.
 
-That delete handle must remain alive until the helper process has terminated.
-The helper therefore starts `%SystemRoot%\System32\sort.exe` as a small
-*lifetime carrier*. A private pipe keeps that process alive while the helper is
-running. The carrier receives only the cleanup handle, the pipe read end and
-`NUL` output handles; it receives no cup root, uninstall token, journal or
-handoff authority. When the helper exits, the pipe writer closes, `sort.exe`
-receives EOF and exits, and the final cleanup handle is released. No timer or
-`PATH` lookup is part of this protocol.
+That delete handle must remain alive until the helper process has actually
+terminated. The parent therefore starts the built-in Windows PowerShell executable
+from the system directory as a small *lifetime carrier*. It inherits only the helper
+process handle, the cleanup handle, a readiness event and `NUL` standard
+handles; it receives no cup root, uninstall token, journal or handoff authority.
+
+The carrier wraps the inherited process handle in a Windows wait object, signals
+readiness, and waits for the process object itself to become signaled. The parent
+does not release `cup.lock` until that readiness signal has been observed. When
+the helper terminates, Windows signals its process object; only then does the
+carrier exit and release the final `DELETE_ON_CLOSE` handle. No PID polling,
+timer-based lifetime guess or `PATH` lookup is part of this protocol.
 
 The complete uninstall sequence and its recovery boundaries are described in
 [Transactions](TRANSACTIONS.md).
@@ -259,8 +263,9 @@ Windows uses the deferred cleanup mechanism described above.
 After parent exit, the child validates the root and uninstall journal, publishes
 `detaching/detach`, then performs the root move and no-follow cleanup itself.
 Windows retries only bounded transient sharing failures during the root move.
-All Windows cleanup uses the native long-path filesystem backend; PowerShell is
-not part of the uninstall protocol.
+All managed-root cleanup uses the native long-path filesystem backend. Windows
+PowerShell participates only as the handle-only lifetime carrier described
+above; it does not receive managed paths or perform filesystem cleanup.
 
 ### `cup update cup`
 

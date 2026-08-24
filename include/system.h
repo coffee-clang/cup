@@ -98,11 +98,10 @@ CupError system_start_uninstall_helper(const char *helper,
                                        const char *token,
                                        SystemLock *lock);
 #if defined(_WIN32)
-/* Arm deferred deletion of the current Windows uninstall helper. The value identifies the
- * inherited DELETE_ON_CLOSE handle prepared by the parent. The backend proves that handle names
- * this exact running executable and transfers only its cleanup lifetime to a System32 cleanup
- * carrier; it does not transfer root, journal, token or handoff authority. */
-CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value);
+/* Validate the inherited DELETE_ON_CLOSE handle against the exact running uninstall helper. The
+ * parent has already armed a separate cleanup carrier that waits on this process object; the helper
+ * closes its inherited cleanup-handle copy after the identity proof and before accepting handoff. */
+CupError system_validate_uninstall_helper_cleanup(const char *cleanup_handle_value);
 #endif
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,

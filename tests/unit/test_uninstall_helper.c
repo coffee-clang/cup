@@ -24,7 +24,7 @@ static CupError copy_result;
 static CupError executable_result;
 static CupError start_result;
 static CupError unlink_result;
-static CupError cleanup_arm_result;
+static CupError cleanup_validate_result;
 static CupError handoff_result;
 static CupError root_validate_result;
 static CupError journal_load_result;
@@ -49,7 +49,7 @@ static int copy_calls;
 static int remove_helper_calls;
 static int start_calls;
 static int unlink_calls;
-static int cleanup_arm_calls;
+static int cleanup_validate_calls;
 static int handoff_accept_calls;
 static int handoff_release_calls;
 static int validate_calls;
@@ -61,7 +61,7 @@ static int remove_contents_calls;
 static int remove_journal_calls;
 static int remove_root_calls;
 static int sequence;
-static int cleanup_arm_sequence;
+static int cleanup_validate_sequence;
 static int handoff_sequence;
 static int detaching_sequence;
 static int move_sequence;
@@ -73,7 +73,7 @@ static void reset_scenario(void) {
     executable_result = CUP_OK;
     start_result = CUP_OK;
     unlink_result = CUP_OK;
-    cleanup_arm_result = CUP_OK;
+    cleanup_validate_result = CUP_OK;
     handoff_result = CUP_OK;
     root_validate_result = CUP_OK;
     journal_load_result = CUP_OK;
@@ -98,7 +98,7 @@ static void reset_scenario(void) {
     remove_helper_calls = 0;
     start_calls = 0;
     unlink_calls = 0;
-    cleanup_arm_calls = 0;
+    cleanup_validate_calls = 0;
     handoff_accept_calls = 0;
     handoff_release_calls = 0;
     validate_calls = 0;
@@ -110,7 +110,7 @@ static void reset_scenario(void) {
     remove_journal_calls = 0;
     remove_root_calls = 0;
     sequence = 0;
-    cleanup_arm_sequence = 0;
+    cleanup_validate_sequence = 0;
     handoff_sequence = 0;
     detaching_sequence = 0;
     move_sequence = 0;
@@ -221,11 +221,11 @@ CupError system_start_uninstall_helper(const char *helper,
 }
 
 #if defined(_WIN32)
-CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value) {
+CupError system_validate_uninstall_helper_cleanup(const char *cleanup_handle_value) {
     TEST_ASSERT_EQUAL_STRING("cleanup", cleanup_handle_value);
-    cleanup_arm_calls++;
-    cleanup_arm_sequence = ++sequence;
-    return cleanup_arm_result;
+    cleanup_validate_calls++;
+    cleanup_validate_sequence = ++sequence;
+    return cleanup_validate_result;
 }
 #else
 CupError system_unlink_running_executable(const char *path) {
@@ -541,12 +541,12 @@ static void test_run_rejects_before_root_mutation(void) {
                                                "wait",
                                                "authority",
                                                NULL));
-    TEST_ASSERT_EQUAL_INT(0, cleanup_arm_calls);
+    TEST_ASSERT_EQUAL_INT(0, cleanup_validate_calls);
     TEST_ASSERT_EQUAL_INT(0, handoff_accept_calls);
 
-    cleanup_arm_result = CUP_ERR_FILESYSTEM;
+    cleanup_validate_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
-    TEST_ASSERT_EQUAL_INT(1, cleanup_arm_calls);
+    TEST_ASSERT_EQUAL_INT(1, cleanup_validate_calls);
     TEST_ASSERT_EQUAL_INT(0, handoff_accept_calls);
     TEST_ASSERT_EQUAL_INT(0, move_calls);
 #else
@@ -560,10 +560,10 @@ static void test_run_rejects_before_root_mutation(void) {
     handoff_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
 #if defined(_WIN32)
-    TEST_ASSERT_EQUAL_INT(1, cleanup_arm_calls);
+    TEST_ASSERT_EQUAL_INT(1, cleanup_validate_calls);
     TEST_ASSERT_EQUAL_INT(0, unlink_calls);
-    TEST_ASSERT_TRUE(cleanup_arm_sequence > 0);
-    TEST_ASSERT_TRUE(handoff_sequence > cleanup_arm_sequence);
+    TEST_ASSERT_TRUE(cleanup_validate_sequence > 0);
+    TEST_ASSERT_TRUE(handoff_sequence > cleanup_validate_sequence);
 #else
     TEST_ASSERT_EQUAL_INT(1, unlink_calls);
 #endif

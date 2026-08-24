@@ -279,11 +279,14 @@ instead binds a `DELETE_ON_CLOSE` handle to the exact helper file before launch,
 and the child proves that inherited handle against its own running executable.
 The handle therefore cannot become cleanup authority for an unrelated file.
 
-Windows transfers only the lifetime of that verified cleanup handle to a fixed
-System32 carrier process. The carrier receives no root path, uninstall token,
-transaction data or handoff authority. If it cannot be armed, uninstall stops
-before root mutation. Once armed, temporary-helper cleanup is independent of
-whether detached-root payload cleanup later succeeds.
+Windows keeps that verified cleanup handle alive in the built-in Windows
+PowerShell process resolved from the system directory. The carrier receives only
+the helper process handle, cleanup handle and readiness event; it receives no
+root path, uninstall token, transaction data or handoff authority. The parent
+requires the readiness event before releasing the canonical lock. If the carrier
+cannot be armed, the child is stopped while still pre-handoff and uninstall
+returns before root mutation. Once armed, temporary-helper cleanup is independent
+of whether detached-root payload cleanup later succeeds.
 
 On POSIX, handoff authority is the original flock open-file description. On
 Windows, it is a named per-user kernel object outside the managed root. Both

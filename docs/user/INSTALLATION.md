@@ -54,7 +54,10 @@ The executable is normally placed at:
 ```
 
 The PowerShell installer applies the same download and verification rules and
-the same checks for choosing and protecting the installation root.
+the same checks for choosing and protecting the installation root. On Windows,
+`cup uninstall` also starts the built-in Windows PowerShell process briefly to
+keep temporary-helper deletion separate from the helper itself. PowerShell does
+not remove the managed CUP files.
 
 ## Other Windows shells
 

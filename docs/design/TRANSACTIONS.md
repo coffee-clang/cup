@@ -14,7 +14,7 @@ The root layout and `state.txt` are described in [State](STATE.md).
 | detached root | the token-named sibling used after uninstall moves the root |
 | native helper | a copied cup executable that continues update or uninstall after the parent exits |
 | handoff authority | temporary exclusive ownership held while work moves from parent to helper |
-| cleanup carrier | Windows-only process that keeps the helper deletion handle alive until helper exit |
+| cleanup carrier | Windows-only process that holds the helper deletion handle until the helper has terminated |
 
 These terms describe ownership and process lifetime. They do not create separate
 user-visible commands or additional transaction files.
@@ -396,15 +396,17 @@ POSIX
 
 Windows
   parent binds DELETE_ON_CLOSE to the exact helper file
+  parent starts the handle-only cleanup carrier and waits for its readiness event
   child proves the inherited cleanup handle == its running executable
-  child starts the fixed System32 carrier with that handle and a private pipe
-  carrier holds the handle until helper process exit closes the pipe writer
+  carrier waits on the helper process object itself
+  carrier releases the cleanup handle only after that process object is signaled
 ```
 
 The Windows carrier is deliberately not a second uninstall implementation. It
 knows no root, token, journal or handoff authority and performs no cup filesystem
-walk. Its only job is to keep the verified cleanup handle alive until the helper
-has terminated.
+walk. Its only job is to wait on the inherited helper process handle and keep the
+verified cleanup handle alive until that process has terminated. The parent
+requires an explicit readiness signal before it can release the canonical lock.
 
 After this platform preflight succeeds, the common transaction is:
 
@@ -428,10 +430,10 @@ The important recovery boundaries are:
   detached `detaching/detach` journal remain together; temporary-helper cleanup
   is independent and still completes after helper exit.
 
-Temporary-helper deletion is tied to process lifetime, not to a successful helper
-exit status. Once the carrier has been armed, either a successful or failing
-helper exit closes the private pipe writer and releases the deferred cleanup
-sequence.
+Temporary-helper deletion is tied to actual helper-process termination, not to a
+successful exit status. Once the carrier has been armed, either a successful or
+failing helper termination signals the process object. The carrier then exits and
+releases the final cleanup handle.
 - **Complete success:** the canonical root is absent, the journal is removed
   last, and the temporary helper disappears after its process lifetime ends.
 

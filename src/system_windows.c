@@ -456,10 +456,6 @@ unsigned long system_get_process_id(void) {
 
 static HANDLE handoff_parent_signal = NULL;
 static HANDLE handoff_parent_authority = NULL;
-/* Kept open only by the uninstall helper. The private pipe writer is deliberately not released
- * during normal helper cleanup. Process teardown closes it, allowing the System32 cleanup carrier
- * to release the deferred-cleanup handle only after the helper itself has terminated. */
-static HANDLE uninstall_cleanup_pipe_writer = NULL;
 
 /* The authority key comes from the user-profile directory identity, never from .cup itself.
  * Root admission can therefore reject an active detach before opening anything in the managed
@@ -706,6 +702,174 @@ cleanup:
     return err;
 }
 
+static CupError start_uninstall_cleanup_carrier(HANDLE helper_process,
+                                                HANDLE cleanup_handle,
+                                                DWORD *native_error) {
+    SECURITY_ATTRIBUTES security;
+    HANDLE ready_event = NULL;
+    HANDLE null_handle = INVALID_HANDLE_VALUE;
+    HANDLE inherited_handles[4];
+    HANDLE wait_handles[2];
+    wchar_t system_directory[MAX_PATH_LEN];
+    wchar_t carrier_path[MAX_PATH_LEN];
+    wchar_t command[MAX_PATH_LEN * 3];
+    STARTUPINFOEXW startup;
+    PROCESS_INFORMATION carrier;
+    UINT system_length;
+    DWORD wait_result;
+    int attributes_initialized = 0;
+    int written;
+    CupError err = CUP_ERR_FILESYSTEM;
+
+    if (helper_process == NULL || cleanup_handle == NULL || native_error == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+
+    ZeroMemory(&security, sizeof(security));
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&carrier, sizeof(carrier));
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    if (!SetHandleInformation(helper_process, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) ||
+        !SetHandleInformation(cleanup_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+        *native_error = GetLastError();
+        goto cleanup;
+    }
+
+    ready_event = CreateEventW(&security, TRUE, FALSE, NULL);
+    if (ready_event == NULL) {
+        *native_error = GetLastError();
+        goto cleanup;
+    }
+    null_handle = CreateFileW(L"NUL",
+                              GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              &security,
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL,
+                              NULL);
+    if (null_handle == INVALID_HANDLE_VALUE) {
+        *native_error = GetLastError();
+        goto cleanup;
+    }
+
+    system_length = GetSystemDirectoryW(system_directory, MAX_PATH_LEN);
+    if (system_length == 0 || system_length >= MAX_PATH_LEN) {
+        *native_error = GetLastError();
+        err = system_length >= MAX_PATH_LEN ? CUP_ERR_BUFFER_TOO_SMALL : CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+    written = _snwprintf(carrier_path,
+                         MAX_PATH_LEN,
+                         L"%ls\\WindowsPowerShell\\v1.0\\powershell.exe",
+                         system_directory);
+    if (written < 0 || written >= MAX_PATH_LEN) {
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto cleanup;
+    }
+
+    /*
+     * The carrier wraps the process and readiness handles with non-owning SafeWaitHandle instances.
+     * A zero-time process wait proves that the inherited process handle is waitable before readiness
+     * is signaled. Windows signals that process object after termination, so the carrier's inherited
+     * DELETE_ON_CLOSE handle outlives helper image teardown.
+     */
+    written = _snwprintf(
+        command,
+        sizeof(command) / sizeof(command[0]),
+        L"\"%ls\" -NoLogo -NoProfile -NonInteractive -Command "
+        L"\"$CUP_UNINSTALL_CLEANUP_CARRIER=1;"
+        L"$p=[System.Threading.ManualResetEvent]::new($false);"
+        L"$p.SafeWaitHandle=[Microsoft.Win32.SafeHandles.SafeWaitHandle]::new("
+        L"[IntPtr][Int64]%llu,$false);"
+        L"$r=[System.Threading.EventWaitHandle]::new("
+        L"$false,[System.Threading.EventResetMode]::ManualReset);"
+        L"$r.SafeWaitHandle=[Microsoft.Win32.SafeHandles.SafeWaitHandle]::new("
+        L"[IntPtr][Int64]%llu,$false);"
+        L"$done=$p.WaitOne(0);[void]$r.Set();if(-not $done){[void]$p.WaitOne()}\"",
+        carrier_path,
+        (unsigned long long)(uintptr_t)helper_process,
+        (unsigned long long)(uintptr_t)ready_event);
+    if (written < 0 || (size_t)written >= sizeof(command) / sizeof(command[0])) {
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto cleanup;
+    }
+
+    inherited_handles[0] = helper_process;
+    inherited_handles[1] = cleanup_handle;
+    inherited_handles[2] = ready_event;
+    inherited_handles[3] = null_handle;
+    err = initialize_inherited_startup(&startup,
+                                       inherited_handles,
+                                       sizeof(inherited_handles) / sizeof(inherited_handles[0]),
+                                       &attributes_initialized,
+                                       native_error);
+    if (err != CUP_OK) {
+        goto cleanup;
+    }
+    startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = null_handle;
+    startup.StartupInfo.hStdOutput = null_handle;
+    startup.StartupInfo.hStdError = null_handle;
+    if (!CreateProcessW(carrier_path,
+                        command,
+                        NULL,
+                        NULL,
+                        TRUE,
+                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                            EXTENDED_STARTUPINFO_PRESENT,
+                        NULL,
+                        NULL,
+                        &startup.StartupInfo,
+                        &carrier)) {
+        *native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    wait_handles[0] = ready_event;
+    wait_handles[1] = carrier.hProcess;
+    wait_result = WaitForMultipleObjects((DWORD)(sizeof(wait_handles) / sizeof(wait_handles[0])),
+                                         wait_handles,
+                                         FALSE,
+                                         10000);
+    if (wait_result != WAIT_OBJECT_0) {
+        if (wait_result == WAIT_FAILED) {
+            *native_error = GetLastError();
+        } else if (wait_result == WAIT_TIMEOUT) {
+            *native_error = ERROR_TIMEOUT;
+        } else {
+            *native_error = ERROR_PROCESS_ABORTED;
+        }
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    err = CUP_OK;
+
+cleanup:
+    if (err != CUP_OK && carrier.hProcess != NULL &&
+        WaitForSingleObject(carrier.hProcess, 0) == WAIT_TIMEOUT) {
+        (void)TerminateProcess(carrier.hProcess, 1);
+        (void)WaitForSingleObject(carrier.hProcess, 5000);
+    }
+    if (carrier.hThread != NULL) {
+        (void)CloseHandle(carrier.hThread);
+    }
+    if (carrier.hProcess != NULL) {
+        (void)CloseHandle(carrier.hProcess);
+    }
+    if (ready_event != NULL) {
+        (void)CloseHandle(ready_event);
+    }
+    if (null_handle != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(null_handle);
+    }
+    release_inherited_startup(&startup, attributes_initialized);
+    return err;
+}
+
 static CupError start_handoff_helper(const char *helper,
                                      const char *mode,
                                      const char *root,
@@ -831,6 +995,20 @@ static CupError start_handoff_helper(const char *helper,
         goto cleanup;
     }
 
+    if (cleanup_handle != NULL) {
+        err = start_uninstall_cleanup_carrier(
+            process.hProcess, cleanup_handle, &process_error);
+        if (err != CUP_OK) {
+            /*
+             * The child cannot mutate the managed root while this parent still owns the
+             * parent-lifetime pipe and canonical lock. Stop it before returning an arming failure.
+             */
+            (void)TerminateProcess(process.hProcess, 1);
+            (void)WaitForSingleObject(process.hProcess, 5000);
+            goto cleanup;
+        }
+    }
+
     CloseHandle(process.hThread);
     process.hThread = NULL;
     CloseHandle(process.hProcess);
@@ -932,43 +1110,27 @@ static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
     return 1;
 }
 
-CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value) {
-    SECURITY_ATTRIBUTES security;
+CupError system_validate_uninstall_helper_cleanup(const char *cleanup_handle_value) {
     HANDLE cleanup_handle = NULL;
-    HANDLE read_handle = NULL;
-    HANDLE write_handle = NULL;
-    HANDLE null_handle = INVALID_HANDLE_VALUE;
-    HANDLE inherited_handles[3];
     BY_HANDLE_FILE_INFORMATION information;
     SystemPathIdentity cleanup_identity;
     SystemPathIdentity running_identity;
     uintptr_t cleanup_number;
     char running[MAX_PATH_LEN];
-    wchar_t system_directory[MAX_PATH_LEN];
-    wchar_t carrier_path[MAX_PATH_LEN];
-    wchar_t command[MAX_PATH_LEN + 4];
-    STARTUPINFOEXW startup;
-    PROCESS_INFORMATION process;
-    UINT system_length;
     DWORD native_error = ERROR_SUCCESS;
-    int attributes_initialized = 0;
-    int written;
     CupError err = CUP_ERR_FILESYSTEM;
 
-    ZeroMemory(&security, sizeof(security));
-    ZeroMemory(&startup, sizeof(startup));
-    ZeroMemory(&process, sizeof(process));
     memset(&cleanup_identity, 0, sizeof(cleanup_identity));
     memset(&running_identity, 0, sizeof(running_identity));
-    if (text_is_empty(cleanup_handle_value) || uninstall_cleanup_pipe_writer != NULL ||
+    if (text_is_empty(cleanup_handle_value) ||
         !parse_inherited_handle(cleanup_handle_value, &cleanup_number)) {
         return CUP_ERR_INVALID_INPUT;
     }
     cleanup_handle = (HANDLE)cleanup_number;
 
-    /* The parent opened DELETE_ON_CLOSE only after binding the reserved helper pathname to a
-     * regular file. Rebind the inherited handle to the actual running image here; a forged or
-     * aliased non-file handle must fail before any root or journal mutation. */
+    /* The parent binds DELETE_ON_CLOSE to the reserved helper before launch. Rebind the inherited
+     * handle to this running image before accepting handoff; the child then closes its copy because
+     * the parent-side cleanup carrier owns the post-termination lifetime. */
     if (!GetFileInformationByHandle(cleanup_handle, &information)) {
         native_error = GetLastError();
         goto cleanup;
@@ -993,122 +1155,12 @@ CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value) {
         }
         goto cleanup;
     }
-    if (!SetHandleInformation(cleanup_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-        native_error = GetLastError();
-        err = CUP_ERR_FILESYSTEM;
-        goto cleanup;
-    }
-
-    security.nLength = sizeof(security);
-    security.bInheritHandle = TRUE;
-    if (!CreatePipe(&read_handle, &write_handle, &security, 0) ||
-        !SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, 0)) {
-        native_error = GetLastError();
-        err = CUP_ERR_FILESYSTEM;
-        goto cleanup;
-    }
-    null_handle = CreateFileW(L"NUL",
-                              GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              &security,
-                              OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL,
-                              NULL);
-    if (null_handle == INVALID_HANDLE_VALUE) {
-        native_error = GetLastError();
-        err = CUP_ERR_FILESYSTEM;
-        goto cleanup;
-    }
-
-    system_length = GetSystemDirectoryW(system_directory, MAX_PATH_LEN);
-    if (system_length == 0 || system_length >= MAX_PATH_LEN) {
-        native_error = GetLastError();
-        err = system_length >= MAX_PATH_LEN ? CUP_ERR_BUFFER_TOO_SMALL : CUP_ERR_FILESYSTEM;
-        goto cleanup;
-    }
-    written = _snwprintf(carrier_path, MAX_PATH_LEN, L"%ls\\sort.exe", system_directory);
-    if (written < 0 || written >= MAX_PATH_LEN) {
-        err = CUP_ERR_BUFFER_TOO_SMALL;
-        goto cleanup;
-    }
-    written = _snwprintf(command,
-                         sizeof(command) / sizeof(command[0]),
-                         L"\"%ls\"",
-                         carrier_path);
-    if (written < 0 || (size_t)written >= sizeof(command) / sizeof(command[0])) {
-        err = CUP_ERR_BUFFER_TOO_SMALL;
-        goto cleanup;
-    }
-
-    inherited_handles[0] = read_handle;
-    inherited_handles[1] = cleanup_handle;
-    inherited_handles[2] = null_handle;
-    err = initialize_inherited_startup(&startup,
-                                       inherited_handles,
-                                       sizeof(inherited_handles) / sizeof(inherited_handles[0]),
-                                       &attributes_initialized,
-                                       &native_error);
-    if (err != CUP_OK) {
-        goto cleanup;
-    }
-    startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = read_handle;
-    startup.StartupInfo.hStdOutput = null_handle;
-    startup.StartupInfo.hStdError = null_handle;
-    if (!CreateProcessW(carrier_path,
-                        command,
-                        NULL,
-                        NULL,
-                        TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
-                            EXTENDED_STARTUPINFO_PRESENT,
-                        NULL,
-                        NULL,
-                        &startup.StartupInfo,
-                        &process)) {
-        native_error = GetLastError();
-        err = CUP_ERR_FILESYSTEM;
-        goto cleanup;
-    }
-
-    (void)CloseHandle(process.hThread);
-    process.hThread = NULL;
-    (void)CloseHandle(process.hProcess);
-    process.hProcess = NULL;
-    (void)CloseHandle(read_handle);
-    read_handle = NULL;
-    (void)CloseHandle(null_handle);
-    null_handle = INVALID_HANDLE_VALUE;
-    (void)CloseHandle(cleanup_handle);
-    cleanup_handle = NULL;
-
-    /* sort.exe blocks on the private pipe until this helper exits. It owns no CUP authority or
-     * path information; its only CUP-specific resource is the inherited cleanup handle. Closing
-     * the writer here would be too early, so retain it until process teardown. */
-    uninstall_cleanup_pipe_writer = write_handle;
-    write_handle = NULL;
     err = CUP_OK;
 
 cleanup:
-    if (process.hThread != NULL) {
-        (void)CloseHandle(process.hThread);
-    }
-    if (process.hProcess != NULL) {
-        (void)CloseHandle(process.hProcess);
-    }
-    if (read_handle != NULL) {
-        (void)CloseHandle(read_handle);
-    }
-    if (write_handle != NULL) {
-        (void)CloseHandle(write_handle);
-    }
-    if (null_handle != INVALID_HANDLE_VALUE) {
-        (void)CloseHandle(null_handle);
-    }
     if (cleanup_handle != NULL) {
         (void)CloseHandle(cleanup_handle);
     }
-    release_inherited_startup(&startup, attributes_initialized);
     if (err != CUP_OK && native_error != ERROR_SUCCESS) {
         SetLastError(native_error);
     }

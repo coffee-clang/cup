@@ -205,8 +205,8 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
     /* Success consumes the canonical lock only after the child already owns equivalent handoff
-     * authority. From that point the helper owns journal recovery and root destruction; Windows
-     * also carries the parent's exact DELETE_ON_CLOSE handle for its own later cleanup. */
+     * authority. From that point the helper owns journal recovery and root destruction; on Windows
+     * a separately armed carrier owns the helper's deferred DELETE_ON_CLOSE lifetime. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
         printf("Uninstall started. The PATH entry was not removed.\n");

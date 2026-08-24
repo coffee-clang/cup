@@ -558,6 +558,43 @@ static void test_identity_bound_path_removal(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(original, NULL));
 }
 
+static void test_tree_depth_limit(void) {
+    char root[CUP_TEST_TEMP_PATH_SIZE];
+    char current[CUP_TEST_TEMP_PATH_SIZE];
+    unsigned int depth;
+    int exists;
+
+    build_path(root, sizeof(root), "depth-limit");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(root));
+    TEST_ASSERT_TRUE(snprintf(current, sizeof(current), "%s", root) > 0);
+
+    for (depth = 0; depth < 140; ++depth) {
+        size_t length = strlen(current);
+        int written = snprintf(current + length, sizeof(current) - length, "/d");
+
+        TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(current) - length);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(current));
+    }
+
+    /* The uninstall failure fixture relies on this bounded traversal contract. A single deep chain
+     * keeps the failure deterministic and ensures the failed walk has no earlier siblings to remove. */
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
+                          system_remove_tree_contents(root, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(current, &exists));
+    TEST_ASSERT_TRUE(exists);
+
+    for (depth = 0; depth < 140; ++depth) {
+        char *slash;
+
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(current));
+        slash = strrchr(current, '/');
+        TEST_ASSERT_NOT_NULL(slash);
+        *slash = '\0';
+    }
+    TEST_ASSERT_EQUAL_STRING(root, current);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(root));
+}
+
 static void test_handoff_primitives(void) {
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char parent_signal_value[32];
@@ -584,7 +621,7 @@ static void test_handoff_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_handoff_accept(&handoff, "1", "1"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          system_arm_uninstall_helper_cleanup("invalid"));
+                          system_validate_uninstall_helper_cleanup("invalid"));
 
     ZeroMemory(&security, sizeof(security));
     security.nLength = sizeof(security);
@@ -700,10 +737,14 @@ static void run_uninstall_helper_cleanup_lifecycle_case(const char *copy_name,
                                     NULL,
                                     &startup.StartupInfo,
                                     &process));
-    TEST_ASSERT_TRUE(CloseHandle(cleanup_handle));
-    cleanup_handle = INVALID_HANDLE_VALUE;
+    /*
+     * Keep the parent cleanup handle until the process object is signaled. This is the ordering the
+     * production cleanup carrier must reproduce; closing it during child teardown is too early.
+     */
     TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(process.hProcess, 10000));
     TEST_ASSERT_TRUE(GetExitCodeProcess(process.hProcess, &exit_code));
+    TEST_ASSERT_TRUE(CloseHandle(cleanup_handle));
+    cleanup_handle = INVALID_HANDLE_VALUE;
     TEST_ASSERT_TRUE(CloseHandle(process.hThread));
     TEST_ASSERT_TRUE(CloseHandle(process.hProcess));
     DeleteProcThreadAttributeList(startup.lpAttributeList);
@@ -1193,7 +1234,7 @@ static int run_handoff_probe(int argc, char **argv) {
     if (uninstall &&
         (cleanup_handle == NULL || !GetHandleInformation(cleanup_handle, &flags) ||
          !GetFileInformationByHandle(cleanup_handle, &information) ||
-         system_arm_uninstall_helper_cleanup(argv[argc - 1]) != CUP_OK)) {
+         system_validate_uninstall_helper_cleanup(argv[argc - 1]) != CUP_OK)) {
         return 3;
     }
     file = fopen(marker, "wb");
@@ -1209,14 +1250,16 @@ static int run_handoff_probe(int argc, char **argv) {
     if (fputs("handles=valid\n", file) == EOF || fclose(file) != 0) {
         return 5;
     }
-    return 0;
+    /* The uninstall start test intentionally exits nonzero: helper cleanup must depend only on
+     * process termination, never on the child operation result. */
+    return uninstall ? 7 : 0;
 }
 
 static int run_cleanup_lifecycle_probe(int argc, char **argv) {
     if (argc != 4) {
         return 2;
     }
-    if (system_arm_uninstall_helper_cleanup(argv[2]) != CUP_OK) {
+    if (system_validate_uninstall_helper_cleanup(argv[2]) != CUP_OK) {
         return 3;
     }
     if (strcmp(argv[3], "success") == 0) {
@@ -1256,6 +1299,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_reparse_points_are_not_followed);
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
+    RUN_TEST(test_tree_depth_limit);
     RUN_TEST(test_handoff_primitives);
     RUN_TEST(test_uninstall_helper_cleanup_lifecycle);
     RUN_TEST(test_copy_replace_and_temporary_objects);
