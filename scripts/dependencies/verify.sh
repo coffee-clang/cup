@@ -15,6 +15,12 @@ if [ "${1:-}" = --clean-root ]; then
         exit 2
     }
     require_tool cmp
+    require_tool mktemp
+    if [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" != 1 ]; then
+        export CUP_DEPS_ROOT_LOCK_ACTIVE=1
+        dependency_run_root_locked "$2" bash "$0" "$@"
+        exit $?
+    fi
     dependency_clean_root "$2"
     exit 0
 fi

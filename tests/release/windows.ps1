@@ -994,8 +994,11 @@ try {
             try {
                 $candidateVersion = @(& $installed --version 2>$null)
                 if ($LASTEXITCODE -eq 0 -and $candidateVersion -ceq "cup $nextVersion") {
-                    $updatedInstalledVersion = $candidateVersion
-                    break
+                    & $installed doctor *> $null
+                    if ($LASTEXITCODE -eq 0) {
+                        $updatedInstalledVersion = $candidateVersion
+                        break
+                    }
                 }
             } catch {
                 # The helper may be between atomic replacement steps; retry until the deadline.

@@ -81,7 +81,7 @@ cup_path_resolve_ops_helper() {
 cup_path_ops() {
     cup_path_resolve_ops_helper || return 1
     case "${1:-}" in
-        mkdir-unique|run-build)
+        mkdir-unique|run-lock|run-build)
             "$CUP_PATH_OPS_RESOLVED_LAUNCHER" "$@"
             ;;
         *)
@@ -401,6 +401,22 @@ cup_path_prepare_build_root() {
     _cup_path_root=$1
     cup_path_validate_absolute_clean "$_cup_path_root" 'build root' || return 1
     cup_path_ops prepare-build-root "$_cup_path_root"
+}
+
+cup_path_run_lock() {
+    _cup_path_lock=$1
+    shift
+    [ "${1:-}" = -- ] || {
+        cup_path_error 'locked command requires -- before the command'
+        return 1
+    }
+    shift
+    [ "$#" -gt 0 ] || {
+        cup_path_error 'locked command is missing'
+        return 1
+    }
+    cup_path_validate_absolute_clean "$_cup_path_lock" 'lock file' || return 1
+    cup_path_ops run-lock "$_cup_path_lock" -- "$@"
 }
 
 cup_path_run_build() {

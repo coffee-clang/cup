@@ -838,6 +838,9 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_EQUAL_UINT32(0, exit_code);
 
     TEST_ASSERT_TRUE(wait_for_path(marker));
+    /* The marker pathname can appear before the helper finishes writing it.
+     * Cleanup of the temporary executable proves that the helper has exited. */
+    TEST_ASSERT_TRUE(wait_for_path_missing(helper));
     read_text(marker, contents, sizeof(contents));
     line = strtok(contents, "\n");
     TEST_ASSERT_EQUAL_STRING("--internal-uninstall-helper", line);
@@ -855,7 +858,6 @@ static void test_handoff_helper_start(void) {
     line = strtok(NULL, "\n");
     TEST_ASSERT_EQUAL_STRING("handoff=accepted", line);
     TEST_ASSERT_NULL(strtok(NULL, "\n"));
-    TEST_ASSERT_TRUE(wait_for_path_missing(helper));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
     TEST_ASSERT_FALSE(active);
 

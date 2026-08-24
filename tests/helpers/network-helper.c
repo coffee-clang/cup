@@ -159,24 +159,49 @@ static void remove_owned_file(const char *path) {
 }
 
 static int write_ready_file(const char *path, unsigned short port) {
+    char *temporary;
     FILE *file;
+    size_t path_length;
     int write_ok;
     int close_ok;
+    int publish_ok;
 
     if (path == NULL) {
         return 1;
     }
-    file = open_exclusive_file(path, "wb");
+    path_length = strlen(path);
+    temporary = malloc(path_length + sizeof(".tmp"));
+    if (temporary == NULL) {
+        return 0;
+    }
+    memcpy(temporary, path, path_length);
+    memcpy(temporary + path_length, ".tmp", sizeof(".tmp"));
+
+    file = open_exclusive_file(temporary, "wb");
     if (file == NULL) {
+        free(temporary);
         return 0;
     }
     write_ok = fprintf(file, "%u\n", (unsigned)port) > 0;
     close_ok = fclose(file) == 0;
     if (!write_ok || !close_ok) {
-        remove_owned_file(path);
+        remove_owned_file(temporary);
+        free(temporary);
         return 0;
     }
-    return 1;
+
+    /* Publish readiness only after the payload is complete. Tests use private
+     * paths, so an existing destination is an error rather than replacement. */
+#if defined(_WIN32)
+    publish_ok = _access(path, 0) != 0 && rename(temporary, path) == 0;
+#else
+    publish_ok = access(path, F_OK) != 0 && rename(temporary, path) == 0;
+#endif
+    if (!publish_ok) {
+        remove_owned_file(temporary);
+    }
+    free(temporary);
+    return publish_ok;
 }
 
 static void sleep_milliseconds(long delay_ms) {

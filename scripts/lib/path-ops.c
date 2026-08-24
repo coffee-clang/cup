@@ -31,7 +31,7 @@
 #include <unistd.h>
 #endif
 
-#define CUP_PATH_OPS_PROTOCOL 2
+#define CUP_PATH_OPS_PROTOCOL 3
 #define CUP_PATH_OPS_MAX_DEPTH 128u
 #define CUP_PATH_OPS_UNIQUE_ATTEMPTS 256u
 #define CUP_PATH_OPS_UNIQUE_CHARS 6u
@@ -1145,15 +1145,15 @@ static wchar_t *windows_wide_argument(const char *argument) {
     wchar_t *wide;
 
     if (argument == NULL) {
-        fail_message("locked build command contains a null argument");
+        fail_message("locked command contains a null argument");
     }
     count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, argument, -1, NULL, 0);
     if (count <= 0) {
-        fail_message("locked build command contains invalid UTF-8");
+        fail_message("locked command contains invalid UTF-8");
     }
     wide = malloc((size_t)count * sizeof(*wide));
     if (wide == NULL) {
-        fail_message("could not allocate locked build command argument");
+        fail_message("could not allocate locked command argument");
     }
     if (MultiByteToWideChar(CP_UTF8,
                             MB_ERR_INVALID_CHARS,
@@ -1162,7 +1162,7 @@ static wchar_t *windows_wide_argument(const char *argument) {
                             wide,
                             count) != count) {
         free(wide);
-        fail_message("could not convert locked build command argument");
+        fail_message("could not convert locked command argument");
     }
     return wide;
 }
@@ -1172,7 +1172,7 @@ static void windows_command_append(wchar_t *line,
                                    size_t *length,
                                    wchar_t value) {
     if (*length + 1 >= capacity) {
-        fail_message("locked build command line is too long");
+        fail_message("locked command line is too long");
     }
     line[(*length)++] = value;
 }
@@ -1226,7 +1226,7 @@ static wchar_t *windows_build_command_line(char *const command[]) {
 
     line = calloc(CUP_WINDOWS_COMMAND_LINE_CAP, sizeof(*line));
     if (line == NULL) {
-        fail_message("could not allocate locked build command line");
+        fail_message("could not allocate locked command line");
     }
     for (index = 0; command[index] != NULL; ++index) {
         wchar_t *argument = windows_wide_argument(command[index]);
@@ -1270,7 +1270,7 @@ static int windows_run_command(char *const command[]) {
                         &startup,
                         &process)) {
         free(command_line);
-        fail_message("could not start locked build command: %s", command[0]);
+        fail_message("could not start locked command: %s", command[0]);
     }
     free(command_line);
 
@@ -1279,16 +1279,82 @@ static int windows_run_command(char *const command[]) {
         !GetExitCodeProcess(process.hProcess, &exit_code)) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
-        fail_message("could not wait for locked build command: %s", command[0]);
+        fail_message("could not wait for locked command: %s", command[0]);
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return (int)exit_code;
 }
+#else
+static int posix_run_command(char *const command[]) {
+    int wait_status;
+    pid_t child;
+
+    child = fork();
+    if (child < 0) {
+        fail_message("could not start locked command: %s", command[0]);
+    }
+    if (child == 0) {
+        execvp(command[0], command);
+        fprintf(stderr,
+                "path ops: execute locked command '%s': %s\n",
+                command[0],
+                strerror(errno));
+        _exit(127);
+    }
+
+    while (waitpid(child, &wait_status, 0) < 0) {
+        if (errno != EINTR) {
+            fail_message("could not wait for locked command: %s", command[0]);
+        }
+    }
+    if (WIFEXITED(wait_status)) {
+        return WEXITSTATUS(wait_status);
+    }
+    if (WIFSIGNALED(wait_status)) {
+        return 128 + WTERMSIG(wait_status);
+    }
+    return 1;
+}
 #endif
+
+static int run_command(char *const command[]) {
+    if (command == NULL || command[0] == NULL) {
+        fail_message("locked execution requires a command");
+    }
+#if defined(_WIN32)
+    /* The launcher suppresses MSYS rewriting while entering this native helper.
+     * Restore normal conversion for the actual nested MSYS command. */
+    if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0) {
+        fail_message("could not restore MSYS argument conversion for locked command");
+    }
+    return windows_run_command(command);
+#else
+    return posix_run_command(command);
+#endif
+}
+
+static int run_file_locked(const char *path, char *const command[]) {
+    SystemLock lock = {0};
+    CupError err;
+    int child_status;
+
+    require_clean_path(path);
+    err = system_lock_acquire_existing(&lock, path, SYSTEM_LOCK_EXCLUSIVE);
+    if (err == CUP_ERR_LOCK) {
+        fail_message("lock is busy: %s", path);
+    }
+    if (err != CUP_OK) {
+        fail_system("lock file", path, err);
+    }
+    child_status = run_command(command);
+    system_lock_release(&lock);
+    return child_status;
+}
 
 static int run_build_locked(const char *root, char *const command[]) {
     BuildRootLock locked;
+    int child_status;
 
     if (command == NULL || command[0] == NULL) {
         fail_message("run-build requires a command");
@@ -1297,61 +1363,10 @@ static int run_build_locked(const char *root, char *const command[]) {
     lock_build_root(root, &locked);
     test_pause("after-build-lock");
     require_locked_root_unchanged(root, &locked);
-
-#if defined(_WIN32)
-    {
-        int child_status;
-
-        /* The launcher suppresses MSYS rewriting while entering this native helper.
-         * Restore normal conversion for the actual nested MSYS build command. */
-        if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0) {
-            system_lock_release(&locked.lock);
-            fail_message("could not restore MSYS argument conversion for locked build command");
-        }
-        child_status = windows_run_command(command);
-
-        require_locked_root_unchanged(root, &locked);
-        system_lock_release(&locked.lock);
-        return child_status;
-    }
-#else
-    {
-        int wait_status;
-        pid_t child;
-
-        child = fork();
-        if (child < 0) {
-            system_lock_release(&locked.lock);
-            fail_message("could not start locked build command: %s", command[0]);
-        }
-        if (child == 0) {
-            execvp(command[0], command);
-            fprintf(stderr,
-                    "path ops: execute locked build command '%s': %s\n",
-                    command[0],
-                    strerror(errno));
-            _exit(127);
-        }
-
-        while (waitpid(child, &wait_status, 0) < 0) {
-            if (errno != EINTR) {
-                system_lock_release(&locked.lock);
-                fail_message("could not wait for locked build command: %s", command[0]);
-            }
-        }
-
-        require_locked_root_unchanged(root, &locked);
-        system_lock_release(&locked.lock);
-
-        if (WIFEXITED(wait_status)) {
-            return WEXITSTATUS(wait_status);
-        }
-        if (WIFSIGNALED(wait_status)) {
-            return 128 + WTERMSIG(wait_status);
-        }
-        return 1;
-    }
-#endif
+    child_status = run_command(command);
+    require_locked_root_unchanged(root, &locked);
+    system_lock_release(&locked.lock);
+    return child_status;
 }
 
 static void clean_build_root(const char *root) {
@@ -1486,6 +1501,9 @@ int main(int argc, char **argv) {
     if (strcmp(command, "prepare-build-root") == 0 && argc == 3) {
         prepare_build_root(argv[2]);
         return 0;
+    }
+    if (strcmp(command, "run-lock") == 0 && argc >= 5 && strcmp(argv[3], "--") == 0) {
+        return run_file_locked(argv[2], &argv[4]);
     }
     if (strcmp(command, "run-build") == 0 && argc >= 5 && strcmp(argv[3], "--") == 0) {
         return run_build_locked(argv[2], &argv[4]);

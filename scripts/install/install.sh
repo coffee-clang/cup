@@ -340,6 +340,10 @@ installed_version_is_expected() {
     [ "$output" = "cup $CUP_RELEASE_VERSION" ]
 }
 
+installed_runtime_is_ready() {
+    "$1" --internal-runtime-ready >/dev/null 2>&1
+}
+
 directory_is_empty() {
     directory=$1
     for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
@@ -388,7 +392,8 @@ wait_for_commit() {
                 [ ! -e "$candidate/transaction.txt" ] && [ ! -L "$candidate/transaction.txt" ] &&
                 [ -d "$candidate/staging" ] && [ ! -L "$candidate/staging" ] &&
                 directory_is_empty "$candidate/staging" &&
-                installed_version_is_expected "$binary"; then
+                installed_version_is_expected "$binary" &&
+                installed_runtime_is_ready "$binary"; then
             INSTALLED_BINARY=$binary
             export INSTALLED_BINARY
             return 0
@@ -396,7 +401,7 @@ wait_for_commit() {
         attempts=$((attempts + 1))
         sleep 1
     done
-    fail 'timed out while the canonical update helper committed the installation'
+    fail 'timed out while waiting for the installed cup to become ready'
 }
 
 validate_identity

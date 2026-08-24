@@ -128,6 +128,15 @@ dependency_require_whitespace_free_path "dependency source directory" "$SRC_DIR"
 dependency_require_whitespace_free_path "dependency build directory" "$BUILD_DIR"
 dependency_require_whitespace_free_path "dependency prefix" "$DEPS_PREFIX"
 
+require_tool cmp
+require_tool mktemp
+
+if [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" != 1 ]; then
+    export CUP_DEPS_ROOT_LOCK_ACTIVE=1 PLATFORM DEPS_ROOT DEPS_PREFIX
+    dependency_run_root_locked "$DEPS_ROOT" bash "$0" "$@"
+    exit $?
+fi
+
 library_flags() {
     if [ "$CUP_POSIX_BOOTSTRAP_LIB64" = 1 ]; then
         printf '%s' "-L$PREFIX/lib -L$PREFIX/lib64"
@@ -363,11 +372,10 @@ main() {
     esac
     profile=$(dependency_profile "$PLATFORM")
     metadata=$(dependency_metadata "$PLATFORM" "$profile")
-    dependency_acquire_build_lock "$DEPS_ROOT"
-    trap 'abort_dependency_prefix; dependency_release_build_lock' EXIT
+    dependency_require_root_lock
+    trap 'abort_dependency_prefix' EXIT
     prepare_dependency_prefix "$DEPS_PREFIX" "$metadata" 1
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
-        dependency_release_build_lock
         trap - EXIT
         exit 0
     fi
@@ -407,7 +415,6 @@ main() {
         "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_FINAL_PREFIX"
     verify
     finish_dependency_prefix "$PREFIX"
-    dependency_release_build_lock
     trap - EXIT HUP INT TERM
 }
 

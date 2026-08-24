@@ -9,7 +9,6 @@ CUP_DEPS_FINAL_PREFIX=
 CUP_DEPS_STAGE_ROOT=
 CUP_DEPS_BUILD_PREFIX=
 CUP_DEPS_USE_OPENSSL=1
-CUP_DEPS_BUILD_LOCK=
 
 # Stable root ownership metadata. It intentionally excludes platform and build
 # inputs because those belong to install/.cup-dependencies.
@@ -31,14 +30,6 @@ dependency_stream_matches_file() {
     rm -f -- "$temporary"
     return "$status"
 }
-
-dependency_read_canonical_owner() {
-    local file="$1" owner
-    owner=$(sed -n '1p' "$file") || return 1
-    printf '%s\n' "$owner" | dependency_stream_matches_file "$file" || return 1
-    printf '%s\n' "$owner"
-}
-
 
 dependency_validate_root_path() {
     local root="$1"
@@ -65,11 +56,20 @@ dependency_lock_path() {
     printf '%s/.%s.cup-dependencies.lock\n' "$parent" "$name"
 }
 
-# Prevent builders and cleanup from mutating one managed dependency root
-# concurrently. The lock is adjacent to the root so it survives deps-clean.
-dependency_acquire_build_lock() {
+# The adjacent file carries stable ownership metadata. path-ops holds a native
+# process lock on that file for the full operation, so process termination
+# releases ownership without PID files or stale-lock reclamation.
+dependency_lock_metadata() {
+    printf '%s\n' \
+        'format=1' \
+        'product=coffee-clang/cup' \
+        'kind=dependency-lock' \
+        'layout=1'
+}
+
+dependency_prepare_root_lock() {
     local root="$1"
-    local lock parent owner owner_file entry temporary
+    local lock parent
 
     dependency_validate_root_path "$root" || return 1
     parent=$(dirname "$root")
@@ -77,68 +77,45 @@ dependency_acquire_build_lock() {
     lock=$(dependency_lock_path "$root")
     cup_path_validate_absolute_clean "$lock" "dependency lock" || return 1
 
-    if ! cup_path_create_directory_exclusive "$lock" "dependency lock" 2>/dev/null; then
-        cup_path_check_directory_chain "$lock" 0 "dependency lock" || return 1
-        owner_file="$lock/owner"
-        if [ ! -f "$owner_file" ] || [ -L "$owner_file" ]; then
-            echo "Error: dependency lock is ambiguous and was preserved: $lock" >&2
-            return 1
-        fi
-        owner=$(dependency_read_canonical_owner "$owner_file" 2>/dev/null || true)
-        case "$owner" in
-            ''|*[!0-9]*|0|0*)
-                echo "Error: dependency lock has an invalid owner and was preserved: $lock" >&2
-                return 1
-                ;;
-        esac
-        if kill -0 "$owner" 2>/dev/null; then
-            echo "Error: another dependency operation is active for $root (PID $owner)." >&2
-            return 1
-        fi
-        for entry in "$lock"/* "$lock"/.[!.]* "$lock"/..?*; do
-            [ -e "$entry" ] || [ -L "$entry" ] || continue
-            [ "$entry" = "$owner_file" ] || {
-                echo "Error: stale dependency lock contains unexpected data and was preserved: $lock" >&2
+    if [ ! -e "$lock" ] && [ ! -L "$lock" ]; then
+        if ! dependency_lock_metadata |
+            cup_path_write_file "$lock" 0644 no-replace 2>/dev/null; then
+            # A concurrent creator may already have atomically published it.
+            [ -e "$lock" ] || [ -L "$lock" ] || {
+                echo "Error: could not create dependency lock metadata: $lock" >&2
                 return 1
             }
-        done
-        cup_path_remove_file "$owner_file" "stale dependency lock owner" || return 1
-        cup_path_remove_empty_directory "$lock" "stale dependency lock" || return 1
-        cup_path_create_directory_exclusive "$lock" "dependency lock" || {
-            echo "Error: could not acquire dependency lock: $lock" >&2
-            return 1
-        }
+        fi
     fi
-
-    if ! printf '%s\n' "$$" | cup_path_write_file "$lock/owner" 0644 replace; then
-        cup_path_remove_empty_directory "$lock" 'dependency lock' >/dev/null 2>&1 || true
-        echo "Error: could not record dependency lock owner: $lock" >&2
+    cup_path_require_regular_file "$lock" "dependency lock" >/dev/null 2>&1 || {
+        echo "Error: dependency lock is not a regular managed file: $lock" >&2
         return 1
-    fi
-    CUP_DEPS_BUILD_LOCK=$lock
+    }
+    dependency_lock_metadata | dependency_stream_matches_file "$lock" || {
+        echo "Error: dependency lock metadata is invalid and was preserved: $lock" >&2
+        return 1
+    }
+    printf '%s\n' "$lock"
 }
 
-dependency_release_build_lock() {
-    local owner=
-    local owner_file
+dependency_run_root_locked() {
+    local root="$1"
+    local lock
+    shift
 
-    [ -n "$CUP_DEPS_BUILD_LOCK" ] || return 0
-    owner_file="$CUP_DEPS_BUILD_LOCK/owner"
-    if [ -f "$owner_file" ] && [ ! -L "$owner_file" ]; then
-        owner=$(dependency_read_canonical_owner "$owner_file" 2>/dev/null || true)
-    fi
-    if [ "$owner" = "$$" ]; then
-        cup_path_remove_file "$owner_file" "dependency lock owner" || {
-            CUP_DEPS_BUILD_LOCK=
-            return 1
-        }
-        cup_path_remove_empty_directory "$CUP_DEPS_BUILD_LOCK" "dependency lock" || {
-            echo "Error: dependency lock contains unexpected data and was preserved: $CUP_DEPS_BUILD_LOCK" >&2
-            CUP_DEPS_BUILD_LOCK=
-            return 1
-        }
-    fi
-    CUP_DEPS_BUILD_LOCK=
+    [ "$#" -gt 0 ] || {
+        echo 'Error: dependency lock requires a command.' >&2
+        return 1
+    }
+    lock=$(dependency_prepare_root_lock "$root") || return 1
+    cup_path_run_lock "$lock" -- "$@"
+}
+
+dependency_require_root_lock() {
+    [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" = 1 ] || {
+        echo 'Error: dependency operation entered without its native dependency-root lock.' >&2
+        return 1
+    }
 }
 
 dependency_root_marker_valid() {
@@ -254,9 +231,8 @@ dependency_clean_root() {
     local status=0
 
     dependency_validate_root_path "$root" || return 1
-    dependency_acquire_build_lock "$root" || return 1
+    dependency_require_root_lock || return 1
     if [ ! -e "$root" ] && [ ! -L "$root" ]; then
-        dependency_release_build_lock
         return 0
     fi
     if ! cup_path_check_directory_chain "$root" 0 "dependency root"; then
@@ -267,6 +243,5 @@ dependency_clean_root() {
     elif ! cup_path_remove_directory_tree "$root" 'dependency root'; then
         status=1
     fi
-    dependency_release_build_lock
     return "$status"
 }

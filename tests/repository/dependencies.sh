@@ -215,58 +215,58 @@ rm -rf -- "$metadata_stage"
 
 lock_root="$TMP_ROOT/build-lock"
 lock_path=$(dependency_lock_path "$lock_root")
-dependency_acquire_build_lock "$lock_root"
-[ -f "$lock_path/owner" ] || {
-    echo 'dependency build lock did not record its owner' >&2
-    exit 1
-}
-if (dependency_acquire_build_lock "$lock_root") >"$TMP_ROOT/lock.out" 2>&1; then
-    echo 'dependency build lock accepted a concurrent owner' >&2
-    exit 1
-fi
-assert_contains "$(cat "$TMP_ROOT/lock.out")" \
-    'another dependency operation is active'
-dependency_release_build_lock
-[ ! -e "$lock_path" ] || {
-    echo 'dependency build lock was not released' >&2
-    exit 1
-}
+prepared_lock=$(dependency_prepare_root_lock "$lock_root")
+[ "$prepared_lock" = "$lock_path" ] || fail 'dependency lock path changed during preparation'
+[ -f "$lock_path" ] && [ ! -L "$lock_path" ] ||
+    fail 'dependency lock metadata was not published as a regular file'
+dependency_lock_metadata | dependency_stream_matches_file "$lock_path" ||
+    fail 'dependency lock metadata does not match the canonical format'
 
-# An ownerless lock is the deterministic state observed while its creator is
-# between directory creation and owner publication. Acquisition must fail and
-# preserve the incomplete lock without depending on scheduler timing.
-mkdir -p "$lock_path"
-if dependency_acquire_build_lock "$lock_root" \
-        >"$TMP_ROOT/ownerless-lock.out" 2>&1; then
-    fail 'dependency lock acquisition stole an ownerless lock'
+# Native process ownership must reject a second concurrent operation and become
+# available automatically after the holder exits.
+lock_ready="$TMP_ROOT/dependency-lock.ready"
+lock_continue="$TMP_ROOT/dependency-lock.continue"
+dependency_run_root_locked "$lock_root" sh -c '
+    : > "$1"
+    while [ ! -f "$2" ]; do sleep 0.01; done
+' sh "$lock_ready" "$lock_continue" &
+lock_holder=$!
+attempt=0
+while [ ! -f "$lock_ready" ] && [ "$attempt" -lt 200 ]; do
+    kill -0 "$lock_holder" 2>/dev/null || fail 'dependency lock holder exited before readiness'
+    attempt=$((attempt + 1))
+    sleep 0.01
+done
+[ -f "$lock_ready" ] || fail 'dependency lock holder did not become ready'
+if dependency_run_root_locked "$lock_root" true >"$TMP_ROOT/lock.out" 2>&1; then
+    fail 'dependency-root lock accepted a concurrent owner'
 fi
-[ -d "$lock_path" ] || fail 'ownerless dependency lock was removed'
-[ ! -e "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ] ||
-    fail 'ownerless dependency lock received an owner'
-assert_contains "$(cat "$TMP_ROOT/ownerless-lock.out")" \
-    'ambiguous and was preserved'
-printf '%s\n' malformed > "$lock_path/owner"
-if dependency_acquire_build_lock "$lock_root" >"$TMP_ROOT/malformed-lock.out" 2>&1; then
-    echo 'dependency build lock stole a malformed lock' >&2
-    exit 1
-fi
-[ "$(cat "$lock_path/owner")" = malformed ] || fail 'malformed lock owner was replaced'
-assert_contains "$(cat "$TMP_ROOT/malformed-lock.out")" \
-    'invalid owner and was preserved'
-rm -f -- "$lock_path/owner"
-rmdir -- "$lock_path"
+assert_contains "$(cat "$TMP_ROOT/lock.out")" 'lock is busy'
+: > "$lock_continue"
+wait "$lock_holder"
+dependency_run_root_locked "$lock_root" true
 
-sleep 0.01 &
-dead_owner=$!
-wait "$dead_owner"
-mkdir -p "$lock_path"
-printf '%s\n' "$dead_owner" > "$lock_path/owner"
-dependency_acquire_build_lock "$lock_root"
-[ "$(cat "$lock_path/owner")" = "$$" ] || {
-    echo 'stale dependency build lock was not recovered' >&2
-    exit 1
-}
-dependency_release_build_lock
+# The persistent metadata file is the ownership boundary. Foreign or legacy
+# contents are preserved rather than adopted as a lock.
+foreign_lock_root="$TMP_ROOT/foreign-build-lock"
+foreign_lock_path=$(dependency_lock_path "$foreign_lock_root")
+printf '%s\n' foreign > "$foreign_lock_path"
+if dependency_prepare_root_lock "$foreign_lock_root" >"$TMP_ROOT/foreign-lock.out" 2>&1; then
+    fail 'dependency lock accepted foreign metadata'
+fi
+[ "$(cat "$foreign_lock_path")" = foreign ] || fail 'foreign dependency lock was modified'
+assert_contains "$(cat "$TMP_ROOT/foreign-lock.out")" \
+    'dependency lock metadata is invalid and was preserved'
+
+legacy_lock_root="$TMP_ROOT/legacy-build-lock"
+legacy_lock_path=$(dependency_lock_path "$legacy_lock_root")
+mkdir "$legacy_lock_path"
+if dependency_prepare_root_lock "$legacy_lock_root" >"$TMP_ROOT/legacy-lock.out" 2>&1; then
+    fail 'dependency lock accepted a legacy directory lock'
+fi
+[ -d "$legacy_lock_path" ] || fail 'legacy dependency lock directory was removed'
+assert_contains "$(cat "$TMP_ROOT/legacy-lock.out")" \
+    'dependency lock is not a regular managed file'
 
 # Dependency roots reject symlinks in any existing parent component before
 # creating the root marker, lock, staging or source directories.

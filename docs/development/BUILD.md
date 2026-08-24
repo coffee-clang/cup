@@ -272,6 +272,13 @@ make PLATFORM=<platform> deps-clean
 validates and never repairs it. `deps-force` performs a new transactional build.
 `deps-clean` removes only a marked dependency root.
 
+Mutating operations on one dependency root are serialized by an adjacent managed
+lock file. `path-ops` holds the platform-native process lock while the builder or
+cleaner runs: `flock` owns the open file on POSIX and `LockFileEx` owns the handle
+on Windows. The metadata file remains in place between operations, while the OS
+releases the active lock automatically when its owner exits. This avoids PID-based
+stale-lock reclamation and keeps one lock identity across rebuilds and cleanup.
+
 Source archives are downloaded to a managed cache, checked against the lock and
 extracted into private staging directories. Libraries are built into a staged
 prefix. The complete result is verified before it replaces the final prefix, so

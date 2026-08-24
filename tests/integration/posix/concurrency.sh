@@ -131,6 +131,13 @@ while [ ! -f "$request_ready" ] && [ "$attempt" -lt 200 ]; do
 done
 [ -f "$request_ready" ] || fail 'first install did not reach the synchronized download'
 
+# The installer completion probe must use the same runtime lock boundary as normal
+# commands: it is unavailable while this synchronized mutation owns the lock.
+if HOME="$TEST_HOME" "$CUP" --internal-runtime-ready \
+        >"$TMP_ROOT/runtime-ready-busy.out" 2>&1; then
+    fail 'runtime readiness probe succeeded while a mutation held cup.lock'
+fi
+
 status_b=0
 (
     cd "$DEV_ROOT"
@@ -152,6 +159,9 @@ if [ "$status_a" -ne 0 ]; then
         "$status_a" "$(cat "$TMP_ROOT/install-a.out")" >&2
     fail 'first synchronized install did not complete successfully'
 fi
+HOME="$TEST_HOME" "$CUP" --internal-runtime-ready \
+    >"$TMP_ROOT/runtime-ready-after.out" 2>&1 ||
+    fail 'runtime readiness probe did not recover after the mutation completed'
 
 first_text=$(cat "$TMP_ROOT/install-a.out")
 second_text=$(cat "$TMP_ROOT/install-b.out")

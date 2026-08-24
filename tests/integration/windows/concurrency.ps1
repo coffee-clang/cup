@@ -165,6 +165,14 @@ try {
         Fail-Test "first install did not reach the synchronized download"
     }
 
+    # The same internal completion probe used by the installer must remain
+    # unavailable while the first mutation owns the runtime lock.
+    $readyBusy = Start-CupCapture -Arguments @("--internal-runtime-ready")
+    $readyBusyResult = Complete-CupCapture -Capture $readyBusy
+    if ($readyBusyResult.ExitCode -eq 0) {
+        Fail-Test "runtime readiness probe succeeded while a mutation held cup.lock"
+    }
+
     $captureB = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
     $resultB = Complete-CupCapture -Capture $captureB
     if ($resultB.ExitCode -eq 0) {
@@ -177,6 +185,11 @@ try {
     if ($resultA.ExitCode -ne 0) {
         Fail-Test ("first synchronized install failed`n" +
             "[$($resultA.ExitCode)] $($resultA.Output)")
+    }
+    $readyAfter = Start-CupCapture -Arguments @("--internal-runtime-ready")
+    $readyAfterResult = Complete-CupCapture -Capture $readyAfter
+    if ($readyAfterResult.ExitCode -ne 0) {
+        Fail-Test "runtime readiness probe did not recover after the mutation completed"
     }
     Assert-Contains $resultA.Output "Installed compiler clang@22.1.5"
     if (-not ($resultB.Output.Contains("another cup operation is currently running") -or

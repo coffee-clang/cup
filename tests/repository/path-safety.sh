@@ -64,13 +64,13 @@ ambient_resolved=$TMP_ROOT/ambient-resolved-helper
 cat > "$ambient_resolved" <<EOF_AMBIENT_RESOLVED
 #!/bin/sh
 : > '$TMP_ROOT/ambient-resolved-used'
-printf '%s\n' 2
+printf '%s\n' 3
 EOF_AMBIENT_RESOLVED
 chmod 0700 "$ambient_resolved"
 resolved_protocol=$(CUP_PATH_OPS_RESOLVED_HELPER="$ambient_resolved" sh -c \
     '. "$1"; cup_path_ops protocol' sh \
     "$PROJECT_ROOT/scripts/lib/path-safety.sh")
-assert_equals "$resolved_protocol" 2
+assert_equals "$resolved_protocol" 3
 assert_missing "$TMP_ROOT/ambient-resolved-used"
 
 # Operations whose representation changes at the MSYS/native boundary must
@@ -86,12 +86,12 @@ cat > "$boundary_helper" <<'EOF_BOUNDARY_HELPER'
 set -eu
 case "${1:-}" in
     protocol)
-        printf '%s\n' 2
+        printf '%s\n' 3
         ;;
     check-dir)
         exit 0
         ;;
-    mkdir-unique|run-build)
+    mkdir-unique|run-lock|run-build)
         printf '%s\n' 'special operation bypassed launcher' >&2
         exit 97
         ;;
@@ -113,7 +113,7 @@ case "${1:-}" in
         mkdir "$CUP_BOUNDARY_CREATED"
         printf '%s\n' "$CUP_BOUNDARY_CREATED"
         ;;
-    run-build)
+    run-lock|run-build)
         exit 0
         ;;
     *)
@@ -139,6 +139,14 @@ CUP_BOUNDARY_CREATED="$boundary_created" \
     sh -c '. "$1"; cup_path_run_build "$2" -- true' \
     sh "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$TMP_ROOT/boundary"
 assert_contains "$(cat "$boundary_log")" 'run-build'
+CUP_PATH_OPS_TESTING=1 \
+CUP_PATH_OPS_LAUNCHER="$boundary_launcher" \
+CUP_BOUNDARY_HELPER="$boundary_helper" \
+CUP_BOUNDARY_LOG="$boundary_log" \
+CUP_BOUNDARY_CREATED="$boundary_created" \
+    sh -c '. "$1"; cup_path_run_lock "$2/lock" -- true' \
+    sh "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$TMP_ROOT/boundary"
+assert_contains "$(cat "$boundary_log")" 'run-lock'
 boundary_log_before=$(cat "$boundary_log")
 boundary_protocol=$(CUP_PATH_OPS_TESTING=1 \
     CUP_PATH_OPS_LAUNCHER="$boundary_launcher" \
@@ -147,7 +155,7 @@ boundary_protocol=$(CUP_PATH_OPS_TESTING=1 \
     CUP_BOUNDARY_CREATED="$boundary_created" \
     sh -c '. "$1"; cup_path_ops protocol' \
     sh "$PROJECT_ROOT/scripts/lib/path-safety.sh")
-assert_equals "$boundary_protocol" 2
+assert_equals "$boundary_protocol" 3
 assert_equals "$(cat "$boundary_log")" "$boundary_log_before"
 
 # The MSYS launcher must select the native Windows filesystem helper.
@@ -174,7 +182,7 @@ done
 cat > "$out" <<'EOF_FAKE_HELPER'
 #!/bin/sh
 [ "${1:-}" = protocol ] || exit 2
-printf '%s\n' 2
+printf '%s\n' 3
 EOF_FAKE_HELPER
 exit 0
 EOF_FAKE_CC
@@ -306,7 +314,7 @@ mkdir "$compiler_space"
 ln -s "$(command -v cc)" "$compiler_space/cc"
 compiler_protocol=$(CUP_PATH_OPS_TESTING=1 CUP_PATH_OPS_CC="$compiler_space/cc" \
     "$PROJECT_ROOT/scripts/lib/path-ops.sh" protocol)
-assert_equals "$compiler_protocol" 2
+assert_equals "$compiler_protocol" 3
 
 wait_for_file() {
     path=$1
@@ -441,7 +449,7 @@ chmod 0700 "$ambient_binary"
 protocol_output=$(_CUP_PATH_OPS_BINARY="$ambient_binary" sh -c \
     '. "$1"; cup_path_ops protocol' sh \
     "$PROJECT_ROOT/scripts/lib/path-safety.sh")
-assert_equals "$protocol_output" 2
+assert_equals "$protocol_output" 3
 assert_missing "$TMP_ROOT/ambient-binary-used"
 
 if CUP_PATH_OPS_CC=/bin/false "$PROJECT_ROOT/scripts/lib/path-ops.sh" protocol \

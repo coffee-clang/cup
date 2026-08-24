@@ -4,6 +4,7 @@
  */
 
 #include "commands.h"
+#include "command_context.h"
 
 #include "error.h"
 #include "exit_status.h"
@@ -1189,6 +1190,30 @@ int main(int argc, char *argv[]) {
         status = exit_status_from_error(result);
         layout_root_snapshot_end();
         return status;
+    }
+
+    /* The installer uses the normal read-only command context as a completion probe. Success
+     * means the canonical runtime can be locked and validated after the detached helper releases
+     * its exclusive authority; it does not require an otherwise issue-free doctor report. */
+    if (argc == 2 && strcmp(argv[1], "--internal-runtime-ready") == 0) {
+        CommandContext context;
+        int context_active = 0;
+
+        result = layout_root_snapshot_begin();
+        if (result == CUP_OK) {
+            result = command_context_begin_read_only(&context, NULL);
+            if (result == CUP_OK) {
+                context_active = 1;
+                if (!context.runtime_available) {
+                    result = CUP_ERR_NOT_INSTALLED;
+                }
+            }
+        }
+        if (context_active) {
+            command_context_end(&context);
+        }
+        layout_root_snapshot_end();
+        return exit_status_from_error(result);
     }
 
     /* Internal helper modes bypass the public CLI. Handoff acceptance waits for parent exit and

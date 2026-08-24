@@ -17,7 +17,7 @@ PATH_HEADER=$PROJECT_ROOT/include/path.h
 SYSTEM_HEADER=$PROJECT_ROOT/include/system.h
 TEXT_HEADER=$PROJECT_ROOT/include/text.h
 WINDOWS_UTF_HEADER=$PROJECT_ROOT/include/windows_utf.h
-PROTOCOL=2
+PROTOCOL=3
 WINDOWS_WINNT=0x0A00
 
 HOST_SYSTEM=$(uname -s 2>/dev/null || true)

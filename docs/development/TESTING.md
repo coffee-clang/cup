@@ -119,7 +119,8 @@ The integration layer covers:
 
 Network scenarios use local fixtures. They do not depend on a public server.
 The helper is built from the test dependency prefix and keeps the tests
-repeatable.
+repeatable. Readiness files with payload are published only after the complete
+payload has been closed, so pathname visibility is a valid readiness boundary.
 
 Run integration tests with:
 
@@ -174,7 +175,7 @@ one. Its checks cover:
 - repository structure and unsupported tooling;
 - controlled test environments;
 - safe build/dependency path handling and deterministic race fixtures;
-- dependency lock, build recipes and prefix compatibility;
+- dependency source lock, native dependency-root locking, build recipes and prefix compatibility;
 - CA-bundle metadata and generation;
 - Make targets and build configuration;
 - readable numeric GitHub Action version refs and workflow permissions;

@@ -136,6 +136,15 @@ if [ "${1:-}" = --version ]; then
     printf 'cup %s\n' "${CUP_TEST_RELEASE_VERSION:?}"
     exit 0
 fi
+if [ "${1:-}" = --internal-runtime-ready ]; then
+    if [ -n "${CUP_TEST_RUNTIME_READY_RETRY_FILE:-}" ] &&
+        [ ! -e "$CUP_TEST_RUNTIME_READY_RETRY_FILE" ]; then
+        : > "$CUP_TEST_RUNTIME_READY_RETRY_FILE"
+        exit 1
+    fi
+    printf 'Doctor found no issues.\n'
+    exit 0
+fi
 [ "$#" -eq 2 ] && [ "$1" = --internal-bootstrap ]
 source_directory=$2
 case "$source_directory" in /*) ;; *) exit 81 ;; esac
@@ -232,6 +241,32 @@ run_success() {
 run_success sh sh
 if command -v dash >/dev/null 2>&1; then run_success dash dash; fi
 if command -v busybox >/dev/null 2>&1; then run_success busybox busybox sh; fi
+
+# The installer must not report success until the installed binary can acquire
+# its runtime snapshot. The fixture makes the first readiness probe fail and the
+# second succeed, modelling the detached helper releasing its lock.
+ready_fixture=$WORK/fixture-runtime-ready
+ready_home=$WORK/home-runtime-ready
+ready_trace=$WORK/bootstrap-runtime-ready.trace
+ready_downloads=$WORK/downloads-runtime-ready.trace
+ready_probe=$WORK/runtime-ready.probe
+prepare_fixture "$ready_fixture"
+mkdir -m 0700 "$ready_home"
+: > "$ready_downloads"
+ready_output=$(
+    HOME="$ready_home" PATH="$WORK/mock-bin:$PATH" \
+        CUP_FIXTURE="$ready_fixture" \
+        CUP_DOWNLOAD_TRACE="$ready_downloads" \
+        CUP_BOOTSTRAP_TRACE="$ready_trace" \
+        CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_TEST_RUNTIME_READY_RETRY_FILE="$ready_probe" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 \
+        CUP_INSTALL_ALLOW_INSECURE=1 CUP_INSTALL_WAIT_ATTEMPTS=3 \
+        sh "$WORK/install.sh" 2>&1
+)
+[ -f "$ready_probe" ] || fail 'installer did not probe installed runtime readiness'
+printf '%s\n' "$ready_output" | grep -F "cup $VERSION installed successfully." >/dev/null ||
+    fail 'installer did not retry until the installed runtime became ready'
 
 # The POSIX entrypoint may hand off to PowerShell only after authenticating the
 # Windows installer through the existing platform-to-common checksum chain.

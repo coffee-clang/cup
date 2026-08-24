@@ -70,6 +70,27 @@ static int wait_for_path(const char *path, int should_exist) {
     return 0;
 }
 
+static int wait_for_exclusive_lock(const char *path) {
+    struct timespec pause = {0, 20000000L};
+    int attempt;
+
+    for (attempt = 0; attempt < 250; ++attempt) {
+        SystemLock lock = {0};
+        CupError err =
+            system_lock_acquire_existing(&lock, path, SYSTEM_LOCK_EXCLUSIVE);
+
+        if (err == CUP_OK) {
+            system_lock_release(&lock);
+            return 1;
+        }
+        if (err != CUP_ERR_LOCK) {
+            return 0;
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+    return 0;
+}
+
 /* Test cases grouped by the public contract they exercise. */
 
 static void test_home_process(void) {
@@ -1522,6 +1543,7 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_TRUE(WIFEXITED(status));
     TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
     TEST_ASSERT_TRUE(wait_for_path(update_marker, 1));
+    TEST_ASSERT_TRUE(wait_for_exclusive_lock(lock_path));
     read_text(update_marker, contents, sizeof(contents));
     TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-update-helper\n"));
     TEST_ASSERT_NOT_NULL(strstr(contents, root));
@@ -1552,15 +1574,13 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_TRUE(WIFEXITED(status));
     TEST_ASSERT_EQUAL_INT(0, WEXITSTATUS(status));
     TEST_ASSERT_TRUE(wait_for_path(uninstall_marker, 1));
+    TEST_ASSERT_TRUE(wait_for_exclusive_lock(lock_path));
     read_text(uninstall_marker, contents, sizeof(contents));
     TEST_ASSERT_NOT_NULL(strstr(contents, "--internal-uninstall-helper\n"));
     TEST_ASSERT_NOT_NULL(strstr(contents, root));
     TEST_ASSERT_NOT_NULL(strstr(contents, detached));
     TEST_ASSERT_NOT_NULL(strstr(contents, "uninstall-token\n"));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
-    system_lock_release(&lock);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(root, NULL));
     TEST_ASSERT_EQUAL_INT(0, unlink(helper));
     TEST_ASSERT_EQUAL_INT(0, unlink(update_marker));

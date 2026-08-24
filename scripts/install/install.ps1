@@ -378,6 +378,15 @@ function Test-ExpectedCupBinary([string]$Path) {
     }
 }
 
+function Test-CupReady([string]$Path) {
+    try {
+        & $Path --internal-runtime-ready *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Get-BootstrapRoot([string[]]$Output) {
     $records = @($Output | Where-Object {
         $_.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal)
@@ -410,12 +419,13 @@ function Wait-ForCommit([string]$Root) {
             -not [IO.File]::Exists($transaction) -and
             -not [IO.Directory]::Exists($transaction) -and
             (Test-DirectoryEmpty $staging) -and
-            (Test-ExpectedCupBinary $binary)) {
+            (Test-ExpectedCupBinary $binary) -and
+            (Test-CupReady $binary)) {
             return $binary
         }
         Start-Sleep -Seconds 1
     }
-    Fail 'timed out while the canonical update helper committed the installation'
+    Fail 'timed out while waiting for the installed cup to become ready'
 }
 
 try {

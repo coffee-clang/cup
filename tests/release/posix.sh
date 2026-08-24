@@ -284,7 +284,8 @@ attempt=0
 while [ "$attempt" -lt 200 ]; do
     if [ ! -e "$test_home/.cup/transaction.txt" ] &&
         HOME="$test_home" "$installed_cup" --version 2>/dev/null |
-            grep -Fx "cup $next_version" >/dev/null; then
+            grep -Fx "cup $next_version" >/dev/null &&
+        HOME="$test_home" "$installed_cup" doctor >/dev/null 2>&1; then
         break
     fi
     attempt=$((attempt + 1))
