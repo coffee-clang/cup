@@ -1940,13 +1940,6 @@ CupError system_get_path_identity(const char *path, SystemPathIdentity *identity
     return CUP_OK;
 }
 
-int system_path_identity_equal(const SystemPathIdentity *left,
-                               const SystemPathIdentity *right) {
-    return left != NULL && right != NULL && left->valid && right->valid &&
-           left->volume == right->volume && left->object == right->object &&
-           left->object_high == right->object_high && left->kind == right->kind;
-}
-
 CupError system_file_size(const char *path, long long *file_size) {
     struct stat info;
 

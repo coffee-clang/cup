@@ -350,12 +350,12 @@ static CupError install_plan_validate_item(InstallPlanItem *item,
     {
         PackageIdentity identity;
 
-        err = package_identity_from_selector(&identity,
-                                             item->component,
-                                             context->host_platform,
-                                             context->target_platform,
-                                             request.resolved_selector,
-                                             stderr);
+        err = package_identity_init(&identity,
+                                    item->component,
+                                    request.selector.tool,
+                                    context->host_platform,
+                                    context->target_platform,
+                                    request.resolved_release);
         if (err == CUP_OK) {
             err = package_artifact_spec_build(
                 &item->artifact_spec, &context->catalog, &identity, format);

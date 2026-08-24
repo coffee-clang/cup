@@ -82,7 +82,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "Examples:\n  cup install gcc\n  cup install gcc@stable\n  cup install compiler\n"
      "  cup install compiler gcc@stable\n  cup install profile "
      "standard\n  cup install toolchain llvm\n"
-     "Effects:\n  Each package is downloaded, validated and committed atomically.\n"
+     "Effects:\n  Each package is staged and validated before its recoverable commit.\n"
      "  Group installs are sequential and not atomic as a whole.\n"
      "  Installing an already valid package leaves it unchanged."},
     {"remove",

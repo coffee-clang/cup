@@ -327,27 +327,24 @@ CupError package_catalog_get_default_format(const PackageCatalog *catalog,
     return text_copy(buffer, size, "tar.xz");
 }
 
-CupError package_identity_from_selector(PackageIdentity *identity,
-                                        const char *component,
-                                        const char *host,
-                                        const char *target,
-                                        const char *entry,
-                                        FILE *diagnostics) {
-    (void)diagnostics;
-    char tool[MAX_IDENTIFIER_LEN];
-    char version[MAX_IDENTIFIER_LEN];
-    CupError err =
-        package_selector_parse_parts(entry, tool, sizeof(tool), version, sizeof(version));
-
-    if (err != CUP_OK) {
-        return err;
+CupError package_identity_init(PackageIdentity *identity,
+                               const char *component,
+                               const char *tool,
+                               const char *host,
+                               const char *target,
+                               const char *version) {
+    if (identity == NULL || component == NULL || tool == NULL || host == NULL || target == NULL ||
+        version == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
     memset(identity, 0, sizeof(*identity));
-    strcpy(identity->component, component);
-    strcpy(identity->tool, tool);
-    strcpy(identity->host_platform, host);
-    strcpy(identity->target_platform, target);
-    strcpy(identity->version, version);
+    if (text_copy(identity->component, sizeof(identity->component), component) != CUP_OK ||
+        text_copy(identity->tool, sizeof(identity->tool), tool) != CUP_OK ||
+        text_copy(identity->host_platform, sizeof(identity->host_platform), host) != CUP_OK ||
+        text_copy(identity->target_platform, sizeof(identity->target_platform), target) != CUP_OK ||
+        text_copy(identity->version, sizeof(identity->version), version) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
     return CUP_OK;
 }
 

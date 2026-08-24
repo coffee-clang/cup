@@ -252,11 +252,15 @@ try {
     Initialize-TestEnvironment -Name "uninstall" -ExecutablePath $CupExecutablePath
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
+    $uninstallStartedMessage =
+        "Uninstall started; cleanup continues in the background. " +
+        "You can close this terminal. The PATH entry was not removed."
+
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     Write-Utf8NoBom -Path (Join-Path $cupRoot "components\fixture.txt") -Lines @("fixture")
     $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $output = Invoke-Cup -CommandArgs @("uninstall", "--yes")
-    Assert-Contains $output "Uninstall started. The PATH entry was not removed."
+    Assert-Contains $output $uninstallStartedMessage
     Wait-ForCleanUninstall -CanonicalRoot $cupRoot
 
     # Force cleanup to fail deterministically after detach with a shallow tree whose full path
@@ -267,7 +271,7 @@ try {
 
     $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $failedOutput = Invoke-Cup -CommandArgs @("uninstall", "--yes")
-    Assert-Contains $failedOutput "Uninstall started. The PATH entry was not removed."
+    Assert-Contains $failedOutput $uninstallStartedMessage
 
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $deadline) {

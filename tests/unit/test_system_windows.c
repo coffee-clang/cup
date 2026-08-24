@@ -827,6 +827,14 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_TRUE(GetExitCodeProcess(parent.hProcess, &exit_code));
     TEST_ASSERT_TRUE(CloseHandle(parent.hThread));
     TEST_ASSERT_TRUE(CloseHandle(parent.hProcess));
+    if (exit_code != 0) {
+        int diagnostic_exists = 0;
+
+        if (system_path_exists(marker, &diagnostic_exists) == CUP_OK && diagnostic_exists) {
+            read_text(marker, contents, sizeof(contents));
+            fprintf(stderr, "Handoff parent probe failure:\n%s", contents);
+        }
+    }
     TEST_ASSERT_EQUAL_UINT32(0, exit_code);
 
     TEST_ASSERT_TRUE(wait_for_path(marker));
@@ -1216,24 +1224,52 @@ static void test_private_directory_tree_removal_and_locks(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(private_directory));
 }
 
+static void write_handoff_parent_error(const char *marker,
+                                       const char *stage,
+                                       CupError err,
+                                       DWORD native_error) {
+    FILE *file;
+
+    if (marker == NULL || stage == NULL) {
+        return;
+    }
+    file = fopen(marker, "wb");
+    if (file == NULL) {
+        return;
+    }
+    (void)fprintf(file,
+                  "parent_stage=%s\ncup_error=%d\nnative_error=%lu\n",
+                  stage,
+                  (int)err,
+                  (unsigned long)native_error);
+    (void)fclose(file);
+}
+
 static int run_handoff_parent_probe(int argc, char **argv) {
     SystemLock lock = {0};
     CupError err;
+    DWORD native_error;
     int active = 0;
 
     if (argc != 8 || _putenv_s("CUP_TEST_HANDOFF_MARKER", argv[7]) != 0) {
         return 2;
     }
+    SetLastError(ERROR_SUCCESS);
     err = system_lock_acquire(&lock, argv[3], SYSTEM_LOCK_EXCLUSIVE);
     if (err != CUP_OK) {
+        write_handoff_parent_error(argv[7], "lock", err, GetLastError());
         return 3;
     }
+    SetLastError(ERROR_SUCCESS);
     err = system_start_uninstall_helper(argv[2], argv[4], argv[5], argv[6], &lock);
     if (err != CUP_OK) {
+        native_error = GetLastError();
+        write_handoff_parent_error(argv[7], "start", err, native_error);
         system_lock_release(&lock);
         return 10 + (int)err;
     }
     if (lock.active || system_handoff_active(&active) != CUP_OK || !active) {
+        write_handoff_parent_error(argv[7], "authority", CUP_ERR_TRANSACTION, GetLastError());
         return 4;
     }
     return 0;

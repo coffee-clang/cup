@@ -30,7 +30,7 @@
      FIELD_PACKAGE_VERSION)
 
 /* Package journal schema and operation names. state.txt remains the commit point for
- * install/remove. */
+ * package install, update and remove operations. */
 void package_transaction_init(PackageTransaction *transaction) {
     if (transaction != NULL) {
         memset(transaction, 0, sizeof(*transaction));

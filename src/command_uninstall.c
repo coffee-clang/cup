@@ -209,7 +209,8 @@ CupError command_uninstall(int assume_yes) {
      * a separately armed carrier owns the helper's deferred DELETE_ON_CLOSE lifetime. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
-        printf("Uninstall started. The PATH entry was not removed.\n");
+        printf("Uninstall started; cleanup continues in the background. "
+               "You can close this terminal. The PATH entry was not removed.\n");
         journal_created = 0;
     }
 

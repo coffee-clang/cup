@@ -139,7 +139,7 @@ agree.
 
 ### Commit point
 
-For package install and remove, the deciding step is replacement of `state.txt`.
+For package install, update and remove, the deciding step is replacement of `state.txt`.
 Download, cache verification, extraction and package validation are
 reconstructible work, so they do not need a package journal. The journal begins
 immediately before the first canonical package mutation:

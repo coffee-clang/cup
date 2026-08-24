@@ -76,7 +76,7 @@ Windows.
 Portable code uses the API in `system.h`.
 
 ```text
-system.c            shared traversal and platform-neutral checks
+system.c            platform-neutral queries and path-identity comparison
 system_posix.c      openat/fstatat/unlinkat, POSIX locks and processes
 system_windows.c    Windows paths, handles, reparse checks and processes
 ```
@@ -129,26 +129,21 @@ Windows x64 is built against the Windows 10 API baseline
 (`_WIN32_WINNT=0x0A00`). That build setting does not by itself identify the
 oldest Windows 10 release that is qualified to run cup.
 
-Windows uninstall also has one platform-specific problem: a running `.exe` is a
-mapped executable image, so cup does not require it to unlink its own pathname.
-Instead, the parent binds a `DELETE_ON_CLOSE` handle to the exact helper file
-before launch. The helper verifies that inherited handle against its own running
-executable before accepting handoff.
+Windows uninstall has one additional platform problem: a running `.exe` is a
+mapped executable image, so cup does not rely on POSIX-style unlink of the
+helper pathname. The parent instead binds `DELETE_ON_CLOSE` to the exact helper
+file, and the child proves that inherited handle against its own running image
+before accepting handoff.
 
-That delete handle must remain alive until the helper process has actually
-terminated. The parent therefore starts the built-in Windows PowerShell executable
-from the system directory as a small *lifetime carrier*. It inherits only the helper
-process handle, the cleanup handle, a readiness event and `NUL` standard
-handles; it receives no cup root, uninstall token, journal or handoff authority.
+The final cleanup handle must outlive the helper process. A built-in Windows
+PowerShell process resolved from the system directory acts only as that lifetime
+carrier: it receives the helper process handle, cleanup handle, readiness event
+and `NUL` standard handles, but no cup root, token, journal or handoff authority.
+The parent observes readiness before releasing `cup.lock`; the carrier releases
+the cleanup handle only after the helper process object is signaled. No PID
+polling, lifetime timer or `PATH` lookup is used.
 
-The carrier wraps the inherited process handle in a Windows wait object, signals
-readiness, and waits for the process object itself to become signaled. The parent
-does not release `cup.lock` until that readiness signal has been observed. When
-the helper terminates, Windows signals its process object; only then does the
-carrier exit and release the final `DELETE_ON_CLOSE` handle. No PID polling,
-timer-based lifetime guess or `PATH` lookup is part of this protocol.
-
-The complete uninstall sequence and its recovery boundaries are described in
+The complete ordering and recovery boundaries are described in
 [Transactions](TRANSACTIONS.md).
 
 ## Internal path representation
@@ -246,11 +241,11 @@ process could create the destination between those two steps.
 ## Native detached helpers
 
 Both self-update and uninstall run a copied native cup executable after the
-initiating process exits. The parent-lifetime proof is an inherited operating-system object; helpers do
-not pass or poll a PID. Detached helpers do not retain
-the caller's standard streams: POSIX reconnects stdin/stdout/stderr to
-`/dev/null`, while Windows inherits only the explicitly allowlisted handles
-required by that operation.
+initiating process exits. Parent lifetime is proved by an inherited operating-
+system object rather than a PID. Detached helpers do not retain the caller's
+standard streams: POSIX reconnects stdin/stdout/stderr to `/dev/null`, while
+Windows inherits only the explicitly allowlisted handles required by the
+operation.
 
 ### Uninstall
 

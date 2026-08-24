@@ -220,28 +220,24 @@ The Windows installer is exercised by PowerShell release and integration tests.
 Windows uninstall is native and is exercised through the executable, including
 handoff, detach, cleanup and recovery behavior.
 
-The Windows system unit suite also has real subprocess oracles for helper handoff
-and temporary-helper lifetime. Handoff arguments containing spaces and CUP's
-normalized `/` path spelling must survive the Windows command-line round trip
-unchanged. A copied executable also proves the inherited `DELETE_ON_CLOSE`
-handle against its own identity; the test retains the final cleanup handle until
-the process object is signaled and verifies deletion after both zero and nonzero
-exit. The production handoff test uses a dedicated parent subprocess, so the
-helper waits for a real parent-process exit before accepting authority. It then
-requires the parent-side cleanup carrier to remove the temporary helper after a
-nonzero probe exit.
+The Windows system unit suite uses real subprocess oracles for helper handoff and
+temporary-helper lifetime. Handoff arguments containing spaces and CUP's
+normalized `/` spelling must survive the command-line round trip unchanged. A
+dedicated parent process proves that the helper accepts authority only after the
+real parent lifetime ends. A copied helper also proves its inherited
+`DELETE_ON_CLOSE` handle against the running executable and must disappear after
+both successful and failing process termination. If helper startup fails, the
+probe records both the CUP error and the native Windows error without changing
+the production timeout or handoff policy.
 
-The Windows uninstall integration suite treats the detached managed root and
-temporary helper as different object classes: detached candidates must be
-directories with the exact token-bound `detaching/detach` journal, while helper
-candidates must be files. Its deliberate payload-cleanup failure uses a shallow
-ordinary directory tree whose ASCII pathname exceeds CUP's internal path bound.
-This reaches the cleanup failure after detach without depending on ACLs, open
-handles, reparse points, timing or extreme recursion depth. The managed residue
-and transaction evidence must remain, while the temporary helper must still
-disappear. If helper cleanup times out, diagnostics report whether a process is
-still running from that exact helper path and whether a new cleanup-carrier
-PowerShell process is still present.
+The Windows uninstall integration suite keeps detached managed roots and
+temporary helper files as separate object classes. Its deliberate post-detach
+cleanup failure uses a shallow ordinary tree with a pathname beyond CUP's
+internal path bound, avoiding ACL, open-handle, reparse-point, timing and deep
+recursion dependencies. The expected result is retained detached payload plus
+its token-bound transaction evidence, while temporary-helper cleanup still
+completes. Timeout diagnostics distinguish a lingering exact helper process from
+the handle-only cleanup carrier.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may

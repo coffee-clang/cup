@@ -294,23 +294,22 @@ CupError tool_preferences_set(ToolPreferences *preferences,
                               const char *component,
                               const char *tool) {
     PackageScope scope;
+    char validated_tool[MAX_IDENTIFIER_LEN];
     ToolPreference *entry;
     int index;
     CupError err;
-
-    char validated_tool[MAX_IDENTIFIER_LEN];
 
     if (preferences == NULL ||
         package_scope_init(&scope, component, host_platform, target_platform) != CUP_OK ||
         registry_validate_tool(component, tool) != CUP_OK) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (!preference_count_within_capacity(preferences)) {
-        return CUP_ERR_VALIDATION;
-    }
     err = text_copy(validated_tool, sizeof(validated_tool), tool);
     if (err != CUP_OK) {
         return err;
+    }
+    if (!preference_count_within_capacity(preferences)) {
+        return CUP_ERR_VALIDATION;
     }
     index = preference_index(preferences, &scope);
     if (index < 0) {
@@ -323,7 +322,10 @@ CupError tool_preferences_set(ToolPreferences *preferences,
     } else {
         entry = &preferences->items[index];
     }
-    memcpy(entry->tool, validated_tool, sizeof(entry->tool));
+    err = text_copy(entry->tool, sizeof(entry->tool), validated_tool);
+    if (err != CUP_OK) {
+        return err;
+    }
     return CUP_OK;
 }
 

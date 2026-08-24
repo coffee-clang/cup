@@ -43,10 +43,10 @@ static inline CupError windows_utf8_to_wide(const char *input,
     return written == 0 ? windows_text_conversion_error() : CUP_OK;
 }
 
-/* Convert a UTF-8 filesystem path to one absolute Windows long-path name. */
-static inline CupError windows_utf8_to_wide_path(const char *input,
-                                                  wchar_t *output,
-                                                  size_t output_count) {
+/* Normalize one CUP filesystem path and resolve it to an ordinary absolute Windows name. */
+static inline CupError windows_utf8_to_wide_absolute_path(const char *input,
+                                                           wchar_t *output,
+                                                           size_t output_count) {
     char normalized[MAX_PATH_LEN];
     wchar_t converted[MAX_PATH_LEN];
     wchar_t absolute[MAX_PATH_LEN];
@@ -54,6 +54,7 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
     size_t input_length;
     size_t i;
     size_t required;
+    CupError err;
 
     if (input == NULL || output == NULL || output_count == 0) {
         return CUP_ERR_INVALID_INPUT;
@@ -63,16 +64,13 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
     memcpy(normalized, input, input_length + 1);
-    {
-        CupError err = path_normalize(normalized);
-
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = windows_utf8_to_wide(normalized, converted, MAX_PATH_LEN);
-        if (err != CUP_OK) {
-            return err;
-        }
+    err = path_normalize(normalized);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = windows_utf8_to_wide(normalized, converted, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
     }
 
     for (i = 0; converted[i] != L'\0'; ++i) {
@@ -87,6 +85,29 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
     }
     if (length >= MAX_PATH_LEN) {
         return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    required = wcslen(absolute) + 1;
+    if (required > output_count) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(output, absolute, required * sizeof(*output));
+    return CUP_OK;
+}
+
+/* Convert a UTF-8 filesystem path to one absolute Windows long-path name. */
+static inline CupError windows_utf8_to_wide_path(const char *input,
+                                                  wchar_t *output,
+                                                  size_t output_count) {
+    wchar_t absolute[MAX_PATH_LEN];
+    size_t required;
+    CupError err;
+
+    if (input == NULL || output == NULL || output_count == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = windows_utf8_to_wide_absolute_path(input, absolute, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
     }
 
     if (absolute[0] == L'\\' && absolute[1] == L'\\') {
@@ -113,54 +134,7 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
 static inline CupError windows_utf8_to_wide_process_path(const char *input,
                                                           wchar_t *output,
                                                           size_t output_count) {
-    char normalized[MAX_PATH_LEN];
-    wchar_t converted[MAX_PATH_LEN];
-    wchar_t absolute[MAX_PATH_LEN];
-    DWORD length;
-    size_t input_length;
-    size_t i;
-    size_t required;
-
-    if (input == NULL || output == NULL || output_count == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    input_length = strlen(input);
-    if (input_length >= sizeof(normalized)) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(normalized, input, input_length + 1);
-    {
-        CupError err = path_normalize(normalized);
-
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = windows_utf8_to_wide(normalized, converted, MAX_PATH_LEN);
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-
-    for (i = 0; converted[i] != L'\0'; ++i) {
-        if (converted[i] == L'/') {
-            converted[i] = L'\\';
-        }
-    }
-
-    length = GetFullPathNameW(converted, MAX_PATH_LEN, absolute, NULL);
-    if (length == 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (length >= MAX_PATH_LEN) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-
-    required = wcslen(absolute) + 1;
-    if (required > output_count) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(output, absolute, required * sizeof(*output));
-    return CUP_OK;
+    return windows_utf8_to_wide_absolute_path(input, output, output_count);
 }
 
 #endif

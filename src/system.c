@@ -6,6 +6,13 @@
 
 #include "text.h"
 
+int system_path_identity_equal(const SystemPathIdentity *left,
+                               const SystemPathIdentity *right) {
+    return left != NULL && right != NULL && left->valid && right->valid &&
+           left->volume == right->volume && left->object == right->object &&
+           left->object_high == right->object_high && left->kind == right->kind;
+}
+
 CupError system_path_exists(const char *path, int *exists) {
     SystemPathKind kind;
     CupError err;

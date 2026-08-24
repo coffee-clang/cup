@@ -151,17 +151,21 @@ cup uninstall
 cup uninstall --yes
 ```
 
-Without `--yes`, `cup` asks for confirmation. Uninstall first moves the managed
-root away from its normal `.cup` or `.coffee-cup` path, then removes that detached
-tree after the original command has exited. This avoids deleting the directory
-in place while cup is still running from it.
+Without `--yes`, `cup` asks for confirmation. The command validates the managed
+root, records the uninstall transaction and starts a native helper while it still
+holds exclusive authority. The helper waits for the original `cup` process to
+exit before it takes over, validates the same transaction, detaches the managed
+root from `.cup` or `.coffee-cup`, and cleans the detached tree.
 
-PATH is not changed. If cleanup fails after the move, cup leaves the detached
-directory and its recovery information in place instead of guessing what is safe
-to delete. A later installation does not automatically adopt or remove that
-residue. The temporary helper executable has a separate cleanup lifecycle, so a
-failure while removing the detached root does not intentionally leave that
-helper behind.
+The command returns after that handoff has been established, so final cleanup may
+continue briefly in the background. Once `cup` reports that uninstall has
+started, the terminal does not need to remain open. PATH is not changed.
+
+If cleanup fails after the detach, cup leaves the detached directory and its
+recovery information in place instead of guessing what is safe to delete. A
+later installation does not automatically adopt or remove that residue. The
+temporary helper executable has a separate cleanup lifecycle, so a failure while
+removing the detached root does not intentionally leave that helper behind.
 
 ## Troubleshooting
 

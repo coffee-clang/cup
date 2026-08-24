@@ -305,10 +305,12 @@ if find "$test_home/.cup/staging" -mindepth 1 -name 'cup-update-*' -print -quit 
 fi
 
 # The assembled release performs its detached uninstall smoke test.
+uninstall_started_message='Uninstall started; cleanup continues in the background. '
+uninstall_started_message="${uninstall_started_message}You can close this terminal. "
+uninstall_started_message="${uninstall_started_message}The PATH entry was not removed."
 uninstall_output=$(HOME="$test_home" "$installed_cup" uninstall --yes 2>&1)
 printf '%s\n' "$uninstall_output"
-printf '%s\n' "$uninstall_output" | grep -F \
-    'Uninstall started. The PATH entry was not removed.' >/dev/null
+printf '%s\n' "$uninstall_output" | grep -F "$uninstall_started_message" >/dev/null
 if ! cup_test_wait_for_uninstall "$test_home/.cup" "$test_home"; then
     residue=$(cup_test_uninstall_residue "$test_home")
     [ ! -e "$test_home/.cup" ] && [ ! -L "$test_home/.cup" ] ||

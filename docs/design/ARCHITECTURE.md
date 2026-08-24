@@ -329,7 +329,7 @@ The C source files are grouped below by responsibility.
 
 | Module | Responsibility |
 |---|---|
-| `system.c` | portable filesystem queries and shared traversal |
+| `system.c` | platform-neutral filesystem queries and path-identity comparison |
 | `system_posix.c` | POSIX filesystem, lock and process primitives |
 | `system_windows.c` | Windows filesystem, locks, processes and deferred helper cleanup |
 | `platform.c` | host detection and platform validation |

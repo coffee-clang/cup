@@ -266,14 +266,15 @@ static CupError load_current_user(TOKEN_USER **user) {
     return CUP_OK;
 }
 
-static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descriptor) {
+static CupError build_current_user_security_descriptor(
+    const wchar_t *sddl_format, PSECURITY_DESCRIPTOR *descriptor) {
     TOKEN_USER *user = NULL;
     LPWSTR sid_text = NULL;
     wchar_t sddl[2048];
     CupError err;
     int written;
 
-    if (descriptor == NULL) {
+    if (sddl_format == NULL || descriptor == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *descriptor = NULL;
@@ -287,7 +288,7 @@ static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descript
     }
     written = _snwprintf(sddl,
                          sizeof(sddl) / sizeof(sddl[0]),
-                         L"O:%lsD:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+                         sddl_format,
                          sid_text,
                          sid_text);
     LocalFree(sid_text);
@@ -302,42 +303,16 @@ static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descript
     return CUP_OK;
 }
 
+static CupError build_private_security_descriptor(PSECURITY_DESCRIPTOR *descriptor) {
+    return build_current_user_security_descriptor(
+        L"O:%lsD:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", descriptor);
+}
+
 /* Kernel coordination objects do not inherit filesystem ACE flags. Keep the handoff authority
  * private to the current user plus the normal local administrative principals. */
 static CupError build_private_kernel_security_descriptor(PSECURITY_DESCRIPTOR *descriptor) {
-    TOKEN_USER *user = NULL;
-    LPWSTR sid_text = NULL;
-    wchar_t sddl[2048];
-    CupError err;
-    int written;
-
-    if (descriptor == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *descriptor = NULL;
-    err = load_current_user(&user);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (!ConvertSidToStringSidW(user->User.Sid, &sid_text)) {
-        free(user);
-        return CUP_ERR_FILESYSTEM;
-    }
-    written = _snwprintf(sddl,
-                         sizeof(sddl) / sizeof(sddl[0]),
-                         L"O:%lsD:P(A;;GA;;;%ls)(A;;GA;;;SY)(A;;GA;;;BA)",
-                         sid_text,
-                         sid_text);
-    LocalFree(sid_text);
-    free(user);
-    if (written < 0 || (size_t)written >= sizeof(sddl) / sizeof(sddl[0])) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl, SDDL_REVISION_1, descriptor, NULL)) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    return CUP_OK;
+    return build_current_user_security_descriptor(
+        L"O:%lsD:P(A;;GA;;;%ls)(A;;GA;;;SY)(A;;GA;;;BA)", descriptor);
 }
 
 static int sid_is_private_principal(PSID sid, PSID user_sid) {
@@ -1063,6 +1038,7 @@ CupError system_start_uninstall_helper(const char *helper,
                                        const char *token,
                                        SystemLock *lock) {
     HANDLE cleanup_handle = NULL;
+    DWORD native_error = ERROR_SUCCESS;
     CupError err;
 
     if (text_is_empty(detached_root)) {
@@ -1079,7 +1055,13 @@ CupError system_start_uninstall_helper(const char *helper,
                                token,
                                cleanup_handle,
                                lock);
+    if (err != CUP_OK) {
+        native_error = GetLastError();
+    }
     (void)CloseHandle(cleanup_handle);
+    if (err != CUP_OK && native_error != ERROR_SUCCESS) {
+        SetLastError(native_error);
+    }
     return err;
 }
 
@@ -2551,13 +2533,6 @@ CupError system_get_path_identity(const char *path, SystemPathIdentity *identity
     err = identity_from_handle_information(handle, &information, identity);
     (void)CloseHandle(handle);
     return err;
-}
-
-int system_path_identity_equal(const SystemPathIdentity *left,
-                               const SystemPathIdentity *right) {
-    return left != NULL && right != NULL && left->valid && right->valid &&
-           left->volume == right->volume && left->object == right->object &&
-           left->object_high == right->object_high && left->kind == right->kind;
 }
 
 CupError system_file_size(const char *path, long long *file_size) {

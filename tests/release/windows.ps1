@@ -1042,12 +1042,14 @@ try {
     }
 
     # The assembled candidate performs its detached uninstall smoke test.
+    $uninstallStartedMessage =
+        "Uninstall started; cleanup continues in the background. " +
+        "You can close this terminal. The PATH entry was not removed."
     $uninstallOutput = & $installed uninstall --yes 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup uninstall failed with exit code $LASTEXITCODE"
     }
-    if (($uninstallOutput -join "`n") -notlike
-        "*Uninstall started. The PATH entry was not removed.*") {
+    if (($uninstallOutput -join "`n") -notlike "*$uninstallStartedMessage*") {
         throw "Installed cup uninstall did not report detached removal"
     }
     $cupRoot = Join-Path $env:USERPROFILE ".cup"
