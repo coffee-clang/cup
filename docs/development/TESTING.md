@@ -233,14 +233,14 @@ probe exit.
 The Windows uninstall integration suite treats the detached managed root and
 temporary helper as different object classes: detached candidates must be
 directories with the exact token-bound `detaching/detach` journal, while helper
-candidates must be files. Its deliberate payload-cleanup failure uses an
-ordinary directory tree deeper than the backend's bounded recursion limit. The
-Windows system unit suite independently checks that the same removal primitive
-rejects that over-depth shape, so the integration fault does not depend on ACL
-privileges or timing. The managed residue and transaction evidence must remain,
-while the temporary helper must still disappear. If helper cleanup times out,
-diagnostics report whether a process is still running from that exact helper
-path and whether a new cleanup-carrier PowerShell process is still present.
+candidates must be files. Its deliberate payload-cleanup failure uses a shallow
+ordinary directory tree whose ASCII pathname exceeds CUP's internal path bound.
+This reaches the cleanup failure after detach without depending on ACLs, open
+handles, reparse points, timing or extreme recursion depth. The managed residue
+and transaction evidence must remain, while the temporary helper must still
+disappear. If helper cleanup times out, diagnostics report whether a process is
+still running from that exact helper path and whether a new cleanup-carrier
+PowerShell process is still present.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may
@@ -283,6 +283,14 @@ Thresholds are applied independently to each platform. A missing branch on
 Windows should not be hidden by a higher Linux result. Coverage filters include
 production sources rather than test fixtures. Profile, object and report inputs
 come only from the current isolated coverage build.
+
+Windows GCC unit tests and helpers are compiled transactionally in private staging
+directories and published under their final owners before execution. Their
+hardwired profile paths are relocated at runtime with `GCOV_PREFIX`. The native
+Windows build maps the MSYS drive mount to one additional `GCOV_PREFIX_STRIP`
+level when the runtime prefix arrives as `D:/...`. Repository checks reject
+recreated `.unit.*` or `.helpers.*` staging directories and require
+each `.gcda` counter to remain paired with its `.gcno` note in the final owner.
 
 A new test should come from a missing behavior or error contract, not from the
 goal of executing an otherwise meaningless line.

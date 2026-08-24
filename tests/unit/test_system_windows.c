@@ -558,43 +558,6 @@ static void test_identity_bound_path_removal(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(original, NULL));
 }
 
-static void test_tree_depth_limit(void) {
-    char root[CUP_TEST_TEMP_PATH_SIZE];
-    char current[CUP_TEST_TEMP_PATH_SIZE];
-    unsigned int depth;
-    int exists;
-
-    build_path(root, sizeof(root), "depth-limit");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(root));
-    TEST_ASSERT_TRUE(snprintf(current, sizeof(current), "%s", root) > 0);
-
-    for (depth = 0; depth < 140; ++depth) {
-        size_t length = strlen(current);
-        int written = snprintf(current + length, sizeof(current) - length, "/d");
-
-        TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(current) - length);
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(current));
-    }
-
-    /* The uninstall failure fixture relies on this bounded traversal contract. A single deep chain
-     * keeps the failure deterministic and ensures the failed walk has no earlier siblings to remove. */
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          system_remove_tree_contents(root, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(current, &exists));
-    TEST_ASSERT_TRUE(exists);
-
-    for (depth = 0; depth < 140; ++depth) {
-        char *slash;
-
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(current));
-        slash = strrchr(current, '/');
-        TEST_ASSERT_NOT_NULL(slash);
-        *slash = '\0';
-    }
-    TEST_ASSERT_EQUAL_STRING(root, current);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(root));
-}
-
 static void test_handoff_primitives(void) {
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char parent_signal_value[32];
@@ -1299,7 +1262,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_reparse_points_are_not_followed);
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
-    RUN_TEST(test_tree_depth_limit);
     RUN_TEST(test_handoff_primitives);
     RUN_TEST(test_uninstall_helper_cleanup_lifecycle);
     RUN_TEST(test_copy_replace_and_temporary_objects);

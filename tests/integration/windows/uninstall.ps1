@@ -8,7 +8,7 @@ param(
 
 $failedResidue = $null
 $carrierBaselinePids = @()
-$depthFixtureRelative = "components\cleanup-depth"
+$longPathFixtureRelative = "components\cleanup-long-path"
 
 function Get-DetachedUninstallRoots {
     return @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force -Directory `
@@ -30,42 +30,45 @@ function Convert-ToExtendedPath {
         [string]$Path
     )
 
-    $full = [IO.Path]::GetFullPath($Path)
+    $full = if ([IO.Path]::IsPathRooted($Path)) { $Path } else { [IO.Path]::GetFullPath($Path) }
     if ($full.StartsWith('\\')) {
         return '\\?\UNC\' + $full.Substring(2)
     }
     return '\\?\' + $full
 }
 
-function New-CleanupDepthFixture {
+function New-CleanupLongPathFixture {
     param(
         [Parameter(Mandatory = $true)]
         [string]$CanonicalRoot
     )
 
-    $current = Join-Path $CanonicalRoot $depthFixtureRelative
+    $current = Join-Path $CanonicalRoot $longPathFixtureRelative
     [void][IO.Directory]::CreateDirectory((Convert-ToExtendedPath -Path $current))
 
-    # The Windows backend deliberately caps recursive traversal at 128 directory levels. Exceed
-    # that bound with ordinary directories so cleanup fails after root detach without relying on
-    # ACL privileges, timing, sharing races or reparse-point behavior.
-    for ($index = 0; $index -lt 140; $index++) {
-        $current = Join-Path $current "d"
+    # Keep recursion shallow enough for sanitizer builds while making the ASCII path comfortably
+    # exceed CUP's 1024-byte internal path buffer. Cleanup therefore fails after detach at the
+    # path-representation boundary rather than because of ACLs, open handles or timing.
+    for ($index = 0; $index -lt 18; $index++) {
+        $segment = ('segment-{0:D2}-' -f $index) + ('x' * 52)
+        $current = Join-Path $current $segment
         [void][IO.Directory]::CreateDirectory((Convert-ToExtendedPath -Path $current))
     }
 
-    if (-not [IO.Directory]::Exists((Convert-ToExtendedPath -Path $current))) {
-        Fail-Test "cleanup-depth fixture was not created"
+    $full = $current
+    if ($full.Length -le 1100 -or
+        -not [IO.Directory]::Exists((Convert-ToExtendedPath -Path $current))) {
+        Fail-Test "cleanup long-path fixture was not created beyond the CUP path bound"
     }
 }
 
-function Remove-CleanupDepthFixture {
+function Remove-CleanupLongPathFixture {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
     )
 
-    $fixture = Join-Path $Root $depthFixtureRelative
+    $fixture = Join-Path $Root $longPathFixtureRelative
     $extended = Convert-ToExtendedPath -Path $fixture
     if ([IO.Directory]::Exists($extended)) {
         [IO.Directory]::Delete($extended, $true)
@@ -256,11 +259,11 @@ try {
     Assert-Contains $output "Uninstall started. The PATH entry was not removed."
     Wait-ForCleanUninstall -CanonicalRoot $cupRoot
 
-    # Force cleanup to fail deterministically after detach by exceeding the backend's bounded
-    # recursive-walk depth. This exercises recovery evidence without ACL or timing assumptions.
+    # Force cleanup to fail deterministically after detach with a shallow tree whose full path
+    # exceeds CUP's internal path representation. This avoids ACL, open-handle and timing effects.
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
-    New-CleanupDepthFixture -CanonicalRoot $cupRoot
+    New-CleanupLongPathFixture -CanonicalRoot $cupRoot
 
     $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $failedOutput = Invoke-Cup -CommandArgs @("uninstall", "--yes")
@@ -293,7 +296,7 @@ try {
 
     Assert-PathMissing $cupRoot
     Assert-PathExists (Join-Path $failedResidue "transaction.txt")
-    Assert-PathExists (Join-Path $failedResidue $depthFixtureRelative)
+    Assert-PathExists (Join-Path $failedResidue $longPathFixtureRelative)
     $detachedRoots = @(Get-DetachedUninstallRoots)
     if ($detachedRoots.Count -ne 1 -or
         -not [string]::Equals(
@@ -322,18 +325,18 @@ try {
 
     Write-Host "Windows uninstall tests passed."
 } finally {
-    # The deliberate over-depth residue is outside normal cleanup bounds. Remove just that fixture
-    # with an extended path so the shared test-environment teardown can handle the ordinary tree.
+    # The deliberate long-path residue is outside CUP's normal path representation. Remove just
+    # that fixture through an extended path before the shared test-environment teardown.
     if (-not [string]::IsNullOrWhiteSpace($Script:CupTestHome)) {
         $canonical = Join-Path $Script:CupTestHome ".cup"
         try {
-            Remove-CleanupDepthFixture -Root $canonical
+            Remove-CleanupLongPathFixture -Root $canonical
         } catch {
             # Preserve the primary test result; shared teardown remains the final cleanup authority.
         }
         foreach ($detached in @(Get-DetachedUninstallRoots)) {
             try {
-                Remove-CleanupDepthFixture -Root $detached.FullName
+                Remove-CleanupLongPathFixture -Root $detached.FullName
             } catch {
                 # Preserve the primary test result; shared teardown remains the final cleanup authority.
             }

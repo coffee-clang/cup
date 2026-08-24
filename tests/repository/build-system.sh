@@ -1020,7 +1020,7 @@ for coverage_build_script in tests/build/unit.sh tests/build/helpers.sh; do
 done
 
 . "$PROJECT_ROOT/tests/support/posix/coverage.sh"
-assert_equals 8 "$(cup_coverage_gcov_strip_components \
+assert_equals 9 "$(cup_coverage_gcov_strip_components \
     'D:/a/cup/cup/build/windows-x64/coverage/tests/unit')"
 assert_equals 8 "$(cup_coverage_gcov_strip_components \
     '/a/cup/cup/build/windows-x64/coverage/tests/unit')"
