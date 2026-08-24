@@ -206,6 +206,12 @@ download_asset() {
     [ -f "$destination" ] && [ ! -L "$destination" ] && [ -s "$destination" ] ||
         fail "downloaded asset is not a non-empty regular file: $asset"
     size=$(wc -c < "$destination") || fail "could not measure $asset"
+    # wc may pad a single count (for example on BSD/macOS). Accept only that
+    # formatting whitespace around one numeric value.
+    # shellcheck disable=SC2086
+    set -- $size
+    [ "$#" -eq 1 ] || fail "could not measure $asset"
+    size=$1
     case "$size" in
         ''|*[!0-9]*) fail "could not measure $asset" ;;
     esac

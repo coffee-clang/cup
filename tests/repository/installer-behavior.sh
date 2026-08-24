@@ -242,6 +242,40 @@ run_success sh sh
 if command -v dash >/dev/null 2>&1; then run_success dash dash; fi
 if command -v busybox >/dev/null 2>&1; then run_success busybox busybox sh; fi
 
+# BSD/macOS wc may pad a single count with leading spaces. The installer must
+# normalize that presentation without weakening the numeric size check.
+mkdir -p "$WORK/bsd-wc-bin"
+real_wc=$(command -v wc) || fail 'wc is unavailable for the BSD-style fixture'
+cat > "$WORK/bsd-wc-bin/wc" <<'MOCK_BSD_WC'
+#!/usr/bin/env sh
+set -eu
+result=$("${CUP_REAL_WC:?}" "$@") || exit $?
+case "${1:-}" in
+    -c) printf '    %s\n' "$result" ;;
+    *) printf '%s\n' "$result" ;;
+esac
+MOCK_BSD_WC
+chmod 0755 "$WORK/bsd-wc-bin/wc"
+bsd_wc_fixture=$WORK/fixture-bsd-wc
+bsd_wc_home=$WORK/home-bsd-wc
+bsd_wc_trace=$WORK/bootstrap-bsd-wc.trace
+bsd_wc_downloads=$WORK/downloads-bsd-wc.trace
+prepare_fixture "$bsd_wc_fixture"
+mkdir -m 0700 "$bsd_wc_home"
+: > "$bsd_wc_downloads"
+bsd_wc_output=$(
+    HOME="$bsd_wc_home" PATH="$WORK/bsd-wc-bin:$WORK/mock-bin:$PATH" \
+        CUP_REAL_WC="$real_wc" CUP_FIXTURE="$bsd_wc_fixture" \
+        CUP_DOWNLOAD_TRACE="$bsd_wc_downloads" CUP_BOOTSTRAP_TRACE="$bsd_wc_trace" \
+        CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+        CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1
+)
+printf '%s\n' "$bsd_wc_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
+    printf '%s\n' "$bsd_wc_output" >&2
+    fail 'installer rejected BSD-style padded wc output'
+}
+
 # The installer must not report success until the installed binary can acquire
 # its runtime snapshot. The fixture makes the first readiness probe fail and the
 # second succeed, modelling the detached helper releasing its lock.

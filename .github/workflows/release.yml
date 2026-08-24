@@ -413,7 +413,7 @@ jobs:
         run: |
           set -euo pipefail
           inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
-          candidate="$RUNNER_TEMP/cup-release-windows-x64"
+          candidate=$(cygpath -u "$RUNNER_TEMP")/cup-release-windows-x64
           scripts/release/assemble-candidate.sh "$candidate" \
             "$inputs/common" \
             "$PWD/build/release/platforms/windows-x64/public"

@@ -102,5 +102,8 @@ grep -Fq 'artifact-ids: ${{ matrix.dependency_artifact_id }}' "$workflows/releas
     fail 'release workflow does not select dependency evidence by artifact ID'
 grep -Fq 'tests_run_attempt:' "$workflows/release.yml" ||
     fail 'release workflow does not expose the Tests run attempt'
+grep -Fq 'candidate=$(cygpath -u "$RUNNER_TEMP")/cup-release-windows-x64' \
+    "$workflows/release.yml" ||
+    fail 'release workflow does not normalize the Windows candidate path for POSIX assembly'
 
 printf 'CI security policy tests passed.\n'
