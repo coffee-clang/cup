@@ -217,12 +217,14 @@ The Windows installer is exercised by PowerShell release and integration tests.
 Windows uninstall is native and is exercised through the executable, including
 handoff, detach, cleanup and recovery behavior.
 
-The Windows system unit suite also has a real subprocess oracle for the temporary
-helper lifetime. A copied test executable inherits a `DELETE_ON_CLOSE` handle,
-proves that handle against its own executable identity, arms the System32 cleanup
-carrier and exits. The copy must then disappear. This tests the lifecycle cup
-actually uses instead of requiring a running Windows executable to unlink its
-own pathname.
+The Windows system unit suite also has real subprocess oracles for helper handoff
+and temporary-helper lifetime. Handoff arguments containing spaces and CUP's
+normalized `/` path spelling must survive the Windows command-line round trip
+unchanged. Separately, a copied test executable inherits a `DELETE_ON_CLOSE`
+handle, proves that handle against its own executable identity, arms the System32
+cleanup carrier and exits. The copy must then disappear. These checks exercise the
+protocol and lifecycle cup actually uses instead of requiring a running Windows
+executable to unlink its own pathname.
 
 The Windows uninstall integration suite also exercises a deliberate detached
 payload-cleanup failure. In that case the managed residue and transaction

@@ -297,10 +297,12 @@ Windows  parent and child retain a named per-user kernel authority outside <cup-
 The child waits for the inherited parent-lifetime object to close rather than
 polling a PID. It is detached from the initiating command's standard streams, so
 command capture receives EOF when the parent exits rather than when the helper
-finishes. After parent exit, the update child returns to the canonical lock. On POSIX,
-it converts the inherited flock authority directly into its `SystemLock`. On
-Windows, it acquires `cup.lock` while the external authority is still active and
-then releases that temporary authority.
+finishes. On Windows, root path arguments retain CUP's normalized internal spelling
+through command-line serialization; only the helper executable itself is converted
+to an ordinary native process path. After parent exit, the update child returns to
+the canonical lock. On POSIX, it converts the inherited flock authority directly
+into its `SystemLock`. On Windows, it acquires `cup.lock` while the external
+authority is still active and then releases that temporary authority.
 
 Only after that transition does the helper:
 

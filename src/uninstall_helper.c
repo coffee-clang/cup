@@ -191,6 +191,8 @@ static CupError validate_handoff(const char *root,
         return CUP_ERR_TRANSACTION;
     }
     err = build_detached_path(expected_detached, sizeof(expected_detached), root, journal);
+    /* The parent preserves CUP's normalized path spelling through helper argv. Exact equality
+     * therefore binds this request to the detached target derived from the authenticated journal. */
     if (err != CUP_OK || strcmp(expected_detached, detached_root) != 0) {
         return CUP_ERR_TRANSACTION;
     }

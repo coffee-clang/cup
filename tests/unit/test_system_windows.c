@@ -255,6 +255,7 @@ static void test_home_and_process_identity(void) {
 static void test_utf_and_identity_contract(void) {
     static const char malformed_utf8[] = {(char)0xc3, '(', '\0'};
     wchar_t wide[8];
+    wchar_t protocol_wide[64];
     SystemPathKind kind;
     SystemPathIdentity first = {1u, 2u, 3u, SYSTEM_PATH_REGULAR_FILE, 1};
     SystemPathIdentity second = first;
@@ -263,6 +264,12 @@ static void test_utf_and_identity_contract(void) {
                           windows_utf8_to_wide("x", wide, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           windows_utf8_to_wide(malformed_utf8, wide, 8));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        windows_utf8_to_wide("C:/Users/Test/.cup",
+                             protocol_wide,
+                             sizeof(protocol_wide) / sizeof(protocol_wide[0])));
+    TEST_ASSERT_EQUAL_INT(0, wcscmp(L"C:/Users/Test/.cup", protocol_wide));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_get_path_kind(malformed_utf8, &kind));
 
@@ -705,7 +712,8 @@ static void test_handoff_helper_start(void) {
     char helper[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
-    char detached[CUP_TEST_TEMP_PATH_SIZE];
+    char protocol_root[CUP_TEST_TEMP_PATH_SIZE];
+    char protocol_detached[CUP_TEST_TEMP_PATH_SIZE];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 3];
     char *line;
     SystemLock lock = {0};
@@ -718,7 +726,10 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, helper));
     build_path(marker, sizeof(marker), "handoff-started.txt");
     build_path(lock_path, sizeof(lock_path), "handoff-start.lock");
-    build_path(detached, sizeof(detached), "handoff-detached");
+    build_path(protocol_root, sizeof(protocol_root), "protocol root");
+    build_path(protocol_detached, sizeof(protocol_detached), "protocol detached");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_root));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_detached));
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", marker));
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -746,8 +757,11 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_start_uninstall_helper(
-                              helper, temp_dir, detached, "handoff-token", &lock));
+                          system_start_uninstall_helper(helper,
+                                                        protocol_root,
+                                                        protocol_detached,
+                                                        "handoff-token",
+                                                        &lock));
     TEST_ASSERT_FALSE(lock.active);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
     TEST_ASSERT_TRUE(active);
@@ -756,9 +770,9 @@ static void test_handoff_helper_start(void) {
     line = strtok(contents, "\n");
     TEST_ASSERT_EQUAL_STRING("--internal-uninstall-helper", line);
     line = strtok(NULL, "\n");
-    TEST_ASSERT_TRUE(path_equal(temp_dir, line));
+    TEST_ASSERT_EQUAL_STRING(protocol_root, line);
     line = strtok(NULL, "\n");
-    TEST_ASSERT_TRUE(path_equal(detached, line));
+    TEST_ASSERT_EQUAL_STRING(protocol_detached, line);
     line = strtok(NULL, "\n");
     TEST_ASSERT_EQUAL_STRING("handoff-token", line);
     TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));

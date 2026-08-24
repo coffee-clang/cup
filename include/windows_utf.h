@@ -107,7 +107,9 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
     return CUP_OK;
 }
 
-/* External process arguments use ordinary absolute paths, not Windows device prefixes. */
+/* Convert a filesystem pathname for a Windows API/process-path operand that requires an ordinary
+ * absolute name rather than a device prefix. Do not use this for CUP protocol arguments: their
+ * normalized internal spelling must survive an argv round trip unchanged. */
 static inline CupError windows_utf8_to_wide_process_path(const char *input,
                                                           wchar_t *output,
                                                           size_t output_count) {

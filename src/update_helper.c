@@ -406,6 +406,8 @@ CupError update_helper_run(const char *root,
     if (err == CUP_OK) {
         err = layout_get_root(selected_root, sizeof(selected_root));
     }
+    /* Helper argv preserves the parent's normalized root spelling, so exact equality is a
+     * deliberate transaction check rather than a filesystem-equivalence comparison. */
     if (err == CUP_OK && strcmp(selected_root, root) != 0) {
         err = CUP_ERR_TRANSACTION;
     }

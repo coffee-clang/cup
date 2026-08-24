@@ -85,8 +85,9 @@ unsigned long system_get_process_id(void);
  * Success consumes the caller-visible SystemLock while the parent retains a process-lifetime
  * authority reference: POSIX keeps the shared flock description; Windows releases cup.lock only
  * after parent and child both own the external authority. Detached helpers do not inherit the
- * caller's standard streams. Root admission checks system_handoff_active() before inspection and
- * again after locking. */
+ * caller's standard streams. Root arguments cross the Windows process boundary without changing
+ * cup's normalized internal path spelling. Root admission checks system_handoff_active() before
+ * inspection and again after locking. */
 CupError system_start_update_helper(const char *helper,
                                     const char *root,
                                     const char *token,

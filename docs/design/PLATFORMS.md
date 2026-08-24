@@ -110,9 +110,12 @@ image. cup uses that property only on POSIX.
 The Windows backend uses wide-character Windows APIs. UTF-8 project paths are
 converted through the private helpers in `windows_utf.h`.
 
-Managed filesystem paths use the long-path form where required. Paths passed to
-external processes use the normal Windows path representation instead of a device
-prefix that the child may not understand.
+Managed filesystem paths use the long-path form where required. A pathname used
+as a Windows API or process-path operand is converted to the ordinary absolute
+Windows representation instead of a device prefix that the child may not understand.
+CUP protocol arguments are different: normalized root paths passed to detached CUP
+helpers keep their internal `/` spelling across the UTF-8/UTF-16 argv boundary so
+the child can validate them against paths reconstructed by the layout layer.
 
 The backend checks reparse points, uses handle identities for later operations
 and configures inherited handles explicitly for detached helpers. Identity

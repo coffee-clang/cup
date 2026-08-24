@@ -759,13 +759,15 @@ static CupError start_handoff_helper(const char *helper,
         err = windows_utf8_to_wide(mode, wide_mode, sizeof(wide_mode) / sizeof(wide_mode[0]));
     }
     if (err == CUP_OK) {
-        err = windows_utf8_to_wide_process_path(root, wide_root, MAX_PATH_LEN);
+        /* Root arguments are CUP protocol data, not paths consumed by CreateProcessW. Preserve
+         * their normalized internal spelling so the helper can compare them to layout output. */
+        err = windows_utf8_to_wide(root, wide_root, MAX_PATH_LEN);
     }
     if (err == CUP_OK) {
         err = windows_utf8_to_wide(token, wide_token, MAX_TRANSACTION_TOKEN_LEN);
     }
     if (err == CUP_OK && detached_root != NULL) {
-        err = windows_utf8_to_wide_process_path(detached_root, wide_detached, MAX_PATH_LEN);
+        err = windows_utf8_to_wide(detached_root, wide_detached, MAX_PATH_LEN);
     }
     if (err != CUP_OK) {
         goto cleanup;
