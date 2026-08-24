@@ -491,7 +491,8 @@ static void test_value_errors(void) {
     TEST_ASSERT_TRUE(snprintf(body,
                               sizeof(body),
                               "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5,22.1.5-RC1\n"
+                              "compiler.clang.linux-x64.linux-x64."
+                              "available_versions=22.1.5,22.1.5-RC1\n"
                               "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
                               "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
                               "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
@@ -607,7 +608,8 @@ static void test_template_errors(void) {
 #undef WRITE_BAD
 }
 
-static void assert_invalid_catalog_load_and_resolution(PackageCatalog *catalog, char *value) {    TEST_ASSERT_EQUAL_INT(
+static void assert_invalid_catalog_load_and_resolution(PackageCatalog *catalog, char *value) {
+    TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_catalog_resolve_stable(
             catalog, NULL, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));

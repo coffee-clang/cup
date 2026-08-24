@@ -1,7 +1,9 @@
 /*
  * Runs uninstall from a temporary native copy outside the managed root. The parent prepares all
- * persistent state and hands over exclusive authority; this helper waits for parent exit, detaches
- * the exact root, removes its contents without following links, then releases the handoff.
+ * persistent state and hands over exclusive authority. POSIX removes the helper pathname while it
+ * is running; Windows instead arms deferred helper deletion before handoff. The helper then waits
+ * for parent exit, detaches the exact root, removes managed payload without following links and
+ * preserves the journal whenever cleanup cannot complete.
  */
 
 #include "uninstall_helper.h"
@@ -229,12 +231,15 @@ CupError uninstall_helper_run(const char *root,
                               const char *detached_root,
                               const char *token,
                               const char *parent_signal_value,
-                              const char *authority_value) {
+                              const char *authority_value,
+                              const char *cleanup_handle_value) {
     SystemHandoff handoff = {0};
     SystemPathIdentity root_identity;
     UninstallJournal journal;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
+#if !defined(_WIN32)
     char helper[MAX_PATH_LEN];
+#endif
     CupError err;
 
     memset(&root_identity, 0, sizeof(root_identity));
@@ -244,19 +249,34 @@ CupError uninstall_helper_run(const char *root,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    /* Remove the temporary helper name as soon as its exact reserved identity is proven. The
-     * mapped process remains executable on both supported backends, so no third cleanup process is
-     * needed and an unexpected later failure cannot strand the helper file. */
+#if defined(_WIN32)
+    if (text_is_empty(cleanup_handle_value)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    /* A Windows executable remains mapped while this helper runs. Before accepting handoff or
+     * touching the managed root, prove that the inherited cleanup handle names this executable and
+     * transfer only that handle's lifetime to a deterministic System32 cleanup carrier. If arming
+     * fails, the canonical root and scheduled/handoff journal are still untouched. */
+    err = system_arm_uninstall_helper_cleanup(cleanup_handle_value);
+    if (err != CUP_OK) {
+        return err;
+    }
+#else
+    if (cleanup_handle_value != NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    /* POSIX can unlink the temporary helper pathname while the process continues using its already
+     * opened image. The backend binds the reserved pathname to this exact running executable before
+     * removing it. */
     err = build_helper_path(helper, sizeof(helper), root, token);
     if (err != CUP_OK) {
         return err;
     }
-    /* The backend verifies that this reserved helper path names the current executable by native
-     * identity. Avoid textual path equality: Windows path spelling and case are not identity. */
     err = system_unlink_running_executable(helper);
     if (err != CUP_OK) {
         return err;
     }
+#endif
 
     err = system_handoff_accept(&handoff, parent_signal_value, authority_value);
     if (err != CUP_OK) {

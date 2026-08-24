@@ -475,7 +475,8 @@ static void test_invalid_backup(void) {
     {
         char expected_backup[1024];
 
-        TEST_ASSERT_TRUE(snprintf(expected_backup, sizeof(expected_backup), "%s.invalid.1", path) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(expected_backup, sizeof(expected_backup), "%s.invalid.1", path) > 0);
         TEST_ASSERT_EQUAL_STRING(expected_backup, backup);
     }
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(path, &exists));

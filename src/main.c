@@ -1192,15 +1192,24 @@ int main(int argc, char *argv[]) {
     }
 
     /* Internal helper modes bypass the public CLI. Handoff acceptance waits for parent exit and
-     * carries exclusive authority before either helper mutates managed state. */
+     * carries exclusive authority before either helper mutates managed state. Windows uninstall
+     * also receives the parent's deferred-cleanup handle so the temporary helper can disappear
+     * after its executable image is no longer mapped. */
     if (argc == 6 && strcmp(argv[1], "--internal-update-helper") == 0) {
         result = update_helper_run(argv[2], argv[3], argv[4], argv[5]);
         return exit_status_from_error(result);
     }
-    if (argc == 7 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
-        result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6]);
+#if defined(_WIN32)
+    if (argc == 8 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
+        result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
         return exit_status_from_error(result);
     }
+#else
+    if (argc == 7 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
+        result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6], NULL);
+        return exit_status_from_error(result);
+    }
+#endif
     if (argc < 2) {
         print_usage(stderr);
         return CUP_STATUS_USAGE;

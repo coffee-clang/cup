@@ -175,7 +175,8 @@ Loading fails for:
 - unknown components or tools;
 - invalid host or target platforms;
 - duplicated versions or formats;
-- non-canonical concrete release names (including uppercase forms or `stable` as a real version);
+- non-canonical concrete release names, including uppercase forms or `stable`
+  used as a real version;
 - unsupported archive formats;
 - a default format missing from `formats`;
 - a stable version missing from `available_versions`;
@@ -412,7 +413,8 @@ retried forever.
 
 ## Limits
 
-cup limits package scans and archive work to bounded arrays and counters. Important ceilings include:
+cup limits package scans and archive work to bounded arrays and counters. Important
+ceilings include:
 
 ```text
 262,144 entries

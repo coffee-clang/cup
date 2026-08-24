@@ -302,7 +302,10 @@ static void test_strict_load(void) {
         "format=1\noperation=uninstall\nphase=scheduled\n"
         "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=256\n",
         "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=999999999999999999999\n",
+        "temporary_name=.cup-uninstall-token\n"
+        "token=token\n"
+        "stage=handoff\n"
+        "error=999999999999999999999\n",
         "format=1\noperation=uninstall\nphase=scheduled\n"
         "temporary_name=.cup-uninstall-\ntoken=token\nstage=handoff\nerror=0\n",
         "format=1\noperation=uninstall\nphase=scheduled\n"

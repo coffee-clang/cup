@@ -140,6 +140,19 @@ static int wait_for_path(const char *path) {
     return 0;
 }
 
+static int wait_for_path_missing(const char *path) {
+    int attempt;
+
+    for (attempt = 0; attempt < 100; ++attempt) {
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES &&
+            GetLastError() == ERROR_FILE_NOT_FOUND) {
+            return 1;
+        }
+        Sleep(50);
+    }
+    return 0;
+}
+
 static int add_everyone_deny_ace(const char *path) {
     wchar_t wide_path[CUP_TEST_TEMP_PATH_SIZE];
     BYTE everyone_buffer[SECURITY_MAX_SID_SIZE];
@@ -540,7 +553,6 @@ static void test_identity_bound_path_removal(void) {
 
 static void test_handoff_primitives(void) {
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
-    char ordinary_path[CUP_TEST_TEMP_PATH_SIZE];
     char parent_signal_value[32];
     char authority_value[32];
     SystemHandoff handoff = {0};
@@ -550,7 +562,6 @@ static void test_handoff_primitives(void) {
     HANDLE write_handle = NULL;
     HANDLE authority = NULL;
     int active = 1;
-    int exists = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_handoff_active(NULL));
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
@@ -565,14 +576,8 @@ static void test_handoff_primitives(void) {
                           system_handoff_accept(&handoff, "1", "invalid"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_handoff_accept(&handoff, "1", "1"));
-
-    build_path(ordinary_path, sizeof(ordinary_path), "not-running-executable.exe");
-    write_text(ordinary_path, "not the running executable\n");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          system_unlink_running_executable(ordinary_path));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(ordinary_path, &exists));
-    TEST_ASSERT_TRUE(exists);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(ordinary_path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          system_arm_uninstall_helper_cleanup("invalid"));
 
     ZeroMemory(&security, sizeof(security));
     security.nLength = sizeof(security);
@@ -615,92 +620,89 @@ static void test_handoff_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
 
-static void test_running_executable_self_unlink(void) {
+static void test_uninstall_helper_cleanup_lifecycle(void) {
     char executable[CUP_TEST_TEMP_PATH_SIZE];
     char copy[CUP_TEST_TEMP_PATH_SIZE];
-    char marker[CUP_TEST_TEMP_PATH_SIZE];
-    char diagnostic[CUP_TEST_TEMP_PATH_SIZE];
-    char diagnostic_text[1024];
     wchar_t wide_copy[CUP_TEST_TEMP_PATH_SIZE];
-    wchar_t wide_marker[CUP_TEST_TEMP_PATH_SIZE];
-    wchar_t wide_diagnostic[CUP_TEST_TEMP_PATH_SIZE];
-    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 4];
-    STARTUPINFOW startup;
+    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 2];
+    SECURITY_ATTRIBUTES security;
+    STARTUPINFOEXW startup;
     PROCESS_INFORMATION process;
-    FILE *file;
-    size_t count;
+    HANDLE cleanup_handle = INVALID_HANDLE_VALUE;
+    HANDLE inherited_handles[1];
+    SIZE_T attribute_size = 0;
     DWORD exit_code = 1;
-    int exists = 1;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_get_executable_path(executable, sizeof(executable)));
-    build_path(copy, sizeof(copy), "self-unlink-probe.exe");
-    build_path(marker, sizeof(marker), "self-unlink-probe.done");
-    build_path(diagnostic, sizeof(diagnostic), "self-unlink-probe.log");
+    build_path(copy, sizeof(copy), "cleanup-lifecycle-probe.exe");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, copy));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           windows_utf8_to_wide(copy,
                                                wide_copy,
                                                sizeof(wide_copy) / sizeof(wide_copy[0])));
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          windows_utf8_to_wide(marker,
-                                               wide_marker,
-                                               sizeof(wide_marker) / sizeof(wide_marker[0])));
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          windows_utf8_to_wide(diagnostic,
-                                               wide_diagnostic,
-                                               sizeof(wide_diagnostic) /
-                                                   sizeof(wide_diagnostic[0])));
+
+    ZeroMemory(&security, sizeof(security));
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    cleanup_handle = CreateFileW(wide_copy,
+                                 DELETE | FILE_READ_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 &security,
+                                 OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+                                     FILE_FLAG_DELETE_ON_CLOSE,
+                                 NULL);
+    TEST_ASSERT_NOT_EQUAL(INVALID_HANDLE_VALUE, cleanup_handle);
     TEST_ASSERT_TRUE(_snwprintf(command,
                                 sizeof(command) / sizeof(command[0]),
-                                L"\"%ls\" --internal-self-unlink-probe \"%ls\" "
-                                L"\"%ls\"",
+                                L"\"%ls\" --internal-cleanup-lifecycle-probe %llu",
                                 wide_copy,
-                                wide_marker,
-                                wide_diagnostic) > 0);
+                                (unsigned long long)(uintptr_t)cleanup_handle) > 0);
     command[(sizeof(command) / sizeof(command[0])) - 1] = L'\0';
 
+    inherited_handles[0] = cleanup_handle;
     ZeroMemory(&startup, sizeof(startup));
     ZeroMemory(&process, sizeof(process));
-    startup.cb = sizeof(startup);
+    startup.StartupInfo.cb = sizeof(startup);
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+    TEST_ASSERT_TRUE(attribute_size > 0);
+    startup.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attribute_size);
+    TEST_ASSERT_NOT_NULL(startup.lpAttributeList);
+    TEST_ASSERT_TRUE(InitializeProcThreadAttributeList(
+        startup.lpAttributeList, 1, 0, &attribute_size));
+    TEST_ASSERT_TRUE(UpdateProcThreadAttribute(startup.lpAttributeList,
+                                               0,
+                                               PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                               inherited_handles,
+                                               sizeof(inherited_handles),
+                                               NULL,
+                                               NULL));
     TEST_ASSERT_TRUE(CreateProcessW(wide_copy,
                                     command,
                                     NULL,
                                     NULL,
-                                    FALSE,
-                                    CREATE_NO_WINDOW,
+                                    TRUE,
+                                    CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                                     NULL,
                                     NULL,
-                                    &startup,
+                                    &startup.StartupInfo,
                                     &process));
+    TEST_ASSERT_TRUE(CloseHandle(cleanup_handle));
+    cleanup_handle = INVALID_HANDLE_VALUE;
     TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(process.hProcess, 10000));
     TEST_ASSERT_TRUE(GetExitCodeProcess(process.hProcess, &exit_code));
     TEST_ASSERT_TRUE(CloseHandle(process.hThread));
     TEST_ASSERT_TRUE(CloseHandle(process.hProcess));
-    if (exit_code != 0) {
-        file = fopen(diagnostic, "rb");
-        if (file != NULL) {
-            count = fread(diagnostic_text, 1, sizeof(diagnostic_text) - 1u, file);
-            diagnostic_text[count] = '\0';
-            (void)fclose(file);
-            fprintf(stderr, "Self-unlink probe diagnostic: %s", diagnostic_text);
-        } else {
-            fprintf(stderr,
-                    "Self-unlink probe failed with exit code %lu and no diagnostic file.\n",
-                    (unsigned long)exit_code);
-        }
-    }
+    DeleteProcThreadAttributeList(startup.lpAttributeList);
+    HeapFree(GetProcessHeap(), 0, startup.lpAttributeList);
     TEST_ASSERT_EQUAL_UINT32(0, exit_code);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(marker, &exists));
-    TEST_ASSERT_TRUE(exists);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(copy, &exists));
-    TEST_ASSERT_FALSE(exists);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(diagnostic));
+    TEST_ASSERT_TRUE(wait_for_path_missing(copy));
 }
 
 static void test_handoff_helper_start(void) {
     char executable[CUP_TEST_TEMP_PATH_SIZE];
+    char helper[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char detached[CUP_TEST_TEMP_PATH_SIZE];
@@ -712,6 +714,8 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_get_executable_path(executable, sizeof(executable)));
+    build_path(helper, sizeof(helper), "handoff-helper-probe.exe");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, helper));
     build_path(marker, sizeof(marker), "handoff-started.txt");
     build_path(lock_path, sizeof(lock_path), "handoff-start.lock");
     build_path(detached, sizeof(detached), "handoff-detached");
@@ -737,13 +741,13 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_FALSE(active);
     system_lock_release(&lock);
 
-    /* Run the successful start last. The backend intentionally retains its parent-side authority and
-     * lifetime signal until this test process exits. */
+    /* Run the successful start last. The backend intentionally retains its parent-side authority
+     * and lifetime signal until this test process exits. */
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_start_uninstall_helper(
-                              executable, temp_dir, detached, "handoff-token", &lock));
+                              helper, temp_dir, detached, "handoff-token", &lock));
     TEST_ASSERT_FALSE(lock.active);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
     TEST_ASSERT_TRUE(active);
@@ -759,9 +763,11 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_EQUAL_STRING("handoff-token", line);
     TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
     TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
+    TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
     line = strtok(NULL, "\n");
     TEST_ASSERT_EQUAL_STRING("handles=valid", line);
     TEST_ASSERT_NULL(strtok(NULL, "\n"));
+    TEST_ASSERT_TRUE(wait_for_path_missing(helper));
 
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
@@ -1134,17 +1140,34 @@ static int run_handoff_probe(int argc, char **argv) {
     FILE *file;
     HANDLE wait_handle;
     HANDLE authority_handle;
+    HANDLE cleanup_handle = NULL;
     DWORD flags;
+    BY_HANDLE_FILE_INFORMATION information;
+    int uninstall;
     int i;
 
     if (marker == NULL || marker[0] == '\0' || argc < 6) {
         return 2;
     }
-    wait_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - 2], NULL, 10);
-    authority_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - 1], NULL, 10);
+    uninstall = strcmp(argv[1], "--internal-uninstall-helper") == 0;
+    if (uninstall && argc != 8) {
+        return 2;
+    }
+    wait_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - (uninstall ? 3 : 2)], NULL, 10);
+    authority_handle =
+        (HANDLE)(uintptr_t)_strtoui64(argv[argc - (uninstall ? 2 : 1)], NULL, 10);
+    if (uninstall) {
+        cleanup_handle = (HANDLE)(uintptr_t)_strtoui64(argv[argc - 1], NULL, 10);
+    }
     if (wait_handle == NULL || authority_handle == NULL ||
         !GetHandleInformation(wait_handle, &flags) ||
         !GetHandleInformation(authority_handle, &flags)) {
+        return 3;
+    }
+    if (uninstall &&
+        (cleanup_handle == NULL || !GetHandleInformation(cleanup_handle, &flags) ||
+         !GetFileInformationByHandle(cleanup_handle, &information) ||
+         system_arm_uninstall_helper_cleanup(argv[argc - 1]) != CUP_OK)) {
         return 3;
     }
     file = fopen(marker, "wb");
@@ -1163,46 +1186,18 @@ static int run_handoff_probe(int argc, char **argv) {
     return 0;
 }
 
-static int run_self_unlink_probe(int argc, char **argv) {
-    FILE *file;
-    CupError err;
-    DWORD windows_error;
-
-    if (argc != 4) {
+static int run_cleanup_lifecycle_probe(int argc, char **argv) {
+    if (argc != 3) {
         return 2;
     }
-    if (freopen(argv[3], "wb", stderr) == NULL) {
-        return 3;
-    }
-    err = system_unlink_running_executable(argv[0]);
-    windows_error = GetLastError();
-    if (err != CUP_OK) {
-        fprintf(stderr,
-                "self-unlink-result cup_error=%d win32=%lu\n",
-                (int)err,
-                (unsigned long)windows_error);
-        (void)fflush(stderr);
-        return 4;
-    }
-    file = fopen(argv[2], "wb");
-    if (file == NULL) {
-        fprintf(stderr, "self-unlink-marker-open win32=%lu\n", (unsigned long)GetLastError());
-        (void)fflush(stderr);
-        return 5;
-    }
-    if (fputs("self-unlink=continued\n", file) == EOF || fclose(file) != 0) {
-        fprintf(stderr, "self-unlink-marker-write failed\n");
-        (void)fflush(stderr);
-        return 6;
-    }
-    return 0;
+    return system_arm_uninstall_helper_cleanup(argv[2]) == CUP_OK ? 0 : 3;
 }
 
 int main(int argc, char **argv) {
     DWORD length;
 
-    if (argc > 1 && strcmp(argv[1], "--internal-self-unlink-probe") == 0) {
-        return run_self_unlink_probe(argc, argv);
+    if (argc > 1 && strcmp(argv[1], "--internal-cleanup-lifecycle-probe") == 0) {
+        return run_cleanup_lifecycle_probe(argc, argv);
     }
     if (argc > 1 &&
         (strcmp(argv[1], "--internal-update-helper") == 0 ||
@@ -1227,7 +1222,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_parent_reparse_components_are_rejected);
     RUN_TEST(test_identity_bound_path_removal);
     RUN_TEST(test_handoff_primitives);
-    RUN_TEST(test_running_executable_self_unlink);
+    RUN_TEST(test_uninstall_helper_cleanup_lifecycle);
     RUN_TEST(test_copy_replace_and_temporary_objects);
     RUN_TEST(test_shared_script_primitives);
     RUN_TEST(test_private_directory_tree_removal_and_locks);

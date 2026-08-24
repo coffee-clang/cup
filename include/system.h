@@ -80,12 +80,13 @@ CupError system_get_home_dir(char *buffer, size_t size);
 unsigned long system_get_process_id(void);
 
 /* Detached process handoff. The parent must still own the active exclusive canonical lock when
- * starting a helper. The helper receives a distinct parent-lifetime signal and inherited authority
- * handle before this call succeeds. Success consumes the caller-visible SystemLock while the
- * parent retains a process-lifetime authority reference: POSIX keeps the shared flock description;
- * Windows releases cup.lock only after parent and child both own the external authority. Detached
- * helpers do not inherit the caller's standard streams. Root admission checks
- * system_handoff_active() before inspection and again after locking. */
+ * starting a helper. Every helper receives distinct parent-lifetime and authority objects; Windows
+ * uninstall additionally inherits the exact deferred-cleanup handle for its temporary executable.
+ * Success consumes the caller-visible SystemLock while the parent retains a process-lifetime
+ * authority reference: POSIX keeps the shared flock description; Windows releases cup.lock only
+ * after parent and child both own the external authority. Detached helpers do not inherit the
+ * caller's standard streams. Root admission checks system_handoff_active() before inspection and
+ * again after locking. */
 CupError system_start_update_helper(const char *helper,
                                     const char *root,
                                     const char *token,
@@ -95,6 +96,13 @@ CupError system_start_uninstall_helper(const char *helper,
                                        const char *detached_root,
                                        const char *token,
                                        SystemLock *lock);
+#if defined(_WIN32)
+/* Arm deferred deletion of the current Windows uninstall helper. The value identifies the
+ * inherited DELETE_ON_CLOSE handle prepared by the parent. The backend proves that handle names
+ * this exact running executable and transfers only its cleanup lifetime to a System32 cleanup
+ * carrier; it does not transfer root, journal, token or handoff authority. */
+CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value);
+#endif
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
                                const char *authority_value);
@@ -110,10 +118,13 @@ void system_handoff_release(SystemHandoff *handoff);
  * authority. */
 CupError system_handoff_active(int *active);
 
-/* Resolve and, where supported, unlink the running executable without preventing the current
- * process from finishing. The latter is used only by temporary native helpers. */
+/* Resolve the running executable. POSIX temporary helpers can also unlink the exact running
+ * pathname while the process continues; Windows uninstall instead uses deferred DELETE_ON_CLOSE
+ * cleanup because a mapped executable image cannot be assumed to support POSIX-style unlink. */
 CupError system_get_executable_path(char *buffer, size_t size);
+#if !defined(_WIN32)
 CupError system_unlink_running_executable(const char *path);
+#endif
 
 /* Single-path filesystem operations. */
 CupError system_make_directory(const char *path);

@@ -313,7 +313,8 @@ CupError update_helper_prepare(void) {
 CupError update_helper_start(const char *root, const char *token, SystemLock *lock) {
     char expected_root[MAX_PATH_LEN];
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_test_path(expected_root, sizeof(expected_root), "installed"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, copy_test_path(expected_root, sizeof(expected_root), "installed"));
     TEST_ASSERT_EQUAL_STRING(expected_root, root);
     TEST_ASSERT_NOT_NULL(token);
     TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));

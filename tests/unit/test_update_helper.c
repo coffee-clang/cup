@@ -444,8 +444,9 @@ CupError system_start_update_helper(const char *helper,
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
                                const char *authority_value) {
-    if (handoff == NULL || handoff->active || parent_signal_value == NULL || authority_value == NULL ||
-        parent_signal_value[0] == '\0' || authority_value[0] == '\0' ||
+    if (handoff == NULL || handoff->active || parent_signal_value == NULL ||
+        authority_value == NULL || parent_signal_value[0] == '\0' ||
+        authority_value[0] == '\0' ||
         strcmp(parent_signal_value, "invalid") == 0 || strcmp(authority_value, "invalid") == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -801,7 +802,8 @@ static void test_missing_destination_is_installed_from_absent_evidence(void) {
     TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
     assert_file_text(path, "new");
     TEST_ASSERT_EQUAL_INT(5, replace_calls);
 }
@@ -844,7 +846,8 @@ static void test_asset_path_failures_abort_before_commit(void) {
         layout_fail_call = fail_call;
         make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
         TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_TRANSACTION, update_helper_run(root, "token", parent_signal_value, "authority"));
+            CUP_ERR_TRANSACTION,
+            update_helper_run(root, "token", parent_signal_value, "authority"));
         TEST_ASSERT_EQUAL_INT(0, failure_recorded);
         TEST_ASSERT_EQUAL_INT(0, recovery_calls);
     }
@@ -882,7 +885,8 @@ static void test_commit_keeps_executable_continuously_available(void) {
 
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
     TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
@@ -904,7 +908,8 @@ static void test_cleanup_failure_does_not_turn_committed_update_into_failure(voi
     cleanup_result = CUP_ERR_FILESYSTEM;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
     TEST_ASSERT_EQUAL_INT(0, failure_recorded);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
@@ -925,7 +930,8 @@ static void test_recovery_finalizes_committed_generation(void) {
     recovery_result = CUP_UPDATE_RECOVERY_FINALIZED;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(1, journal_cleared);
     TEST_ASSERT_EQUAL_INT(1, failure_recorded);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
@@ -944,7 +950,9 @@ static void test_failure_delegates_binary_rollback_to_detached_helper(void) {
     replace_fail_call = 5;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(0, journal_cleared);
     TEST_ASSERT_EQUAL_INT(1, failure_recorded);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
@@ -990,9 +998,12 @@ static void test_prepare_reports_copy_and_permission_failures(void) {
 static void test_run_rejects_invalid_handoff(void) {
     char parent_signal_value[32];
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_run(root, "token", "invalid", "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, update_helper_run(root, "token", "invalid", "authority"));
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, update_helper_run(root, "other", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        update_helper_run(root, "other", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(0, replace_calls);
 }
 
@@ -1006,7 +1017,9 @@ static void test_missing_staged_asset_fails_validation(void) {
     expected_failure_error = CUP_ERR_VALIDATION;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION,
+        update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(0, copy_calls);
     TEST_ASSERT_EQUAL_INT(0, replace_calls);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
@@ -1020,7 +1033,9 @@ static void test_backup_copy_failure_aborts_before_commit(void) {
     copy_fail_call = 1;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_TRANSACTION,
+        update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(1, copy_calls);
     TEST_ASSERT_EQUAL_INT(0, replace_calls);
     TEST_ASSERT_EQUAL_INT(0, recovery_calls);
@@ -1036,7 +1051,8 @@ static void test_marker_durability_failure_is_commit_error(void) {
     expected_failure_error = CUP_ERR_COMMIT;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(4, replace_calls);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
     TEST_ASSERT_EQUAL_INT(1, failure_recorded);
@@ -1049,7 +1065,8 @@ static void test_permission_failure_after_replace_is_commit_error(void) {
     expected_failure_error = CUP_ERR_COMMIT;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
     TEST_ASSERT_EQUAL_INT(1, replace_calls);
     TEST_ASSERT_EQUAL_INT(1, recovery_calls);
     TEST_ASSERT_EQUAL_INT(1, failure_recorded);

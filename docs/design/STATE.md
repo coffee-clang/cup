@@ -232,8 +232,8 @@ to have different defaults on the same machine.
 
 ## User preferences
 
-`preferences.txt` stores choices used by abbreviated installs. Its persisted document begins
-with the schema marker:
+`preferences.txt` stores choices used by abbreviated installs. Its persisted
+document begins with the schema marker:
 
 ```text
 format=1

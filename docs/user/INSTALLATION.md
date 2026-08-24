@@ -110,7 +110,6 @@ name outside `.cup` and `.coffee-cup`, then run the current official installer.
 Recover only data accepted by the current formats. Do not copy unknown recovery
 files into the new installation, and do not create `root.txt` manually.
 
-
 ## Reinstallation
 
 Running the official installer again replaces the `cup` program files only
@@ -149,13 +148,17 @@ cup uninstall
 cup uninstall --yes
 ```
 
-Without `--yes`, `cup` asks for confirmation. Uninstall detaches the selected `cup` root from its
-canonical path and arranges cleanup of the detached tree after the running command exits.
+Without `--yes`, `cup` asks for confirmation. Uninstall first moves the managed
+root away from its normal `.cup` or `.coffee-cup` path, then removes that detached
+tree after the original command has exited. This avoids deleting the directory
+in place while cup is still running from it.
 
-PATH is not changed. If cleanup fails after the root has been detached, CUP leaves the
-detached sibling intact rather than guessing at deletion. A later installation does not
-automatically adopt or remove that sibling; inspect its retained ownership evidence before
-removing it manually.
+PATH is not changed. If cleanup fails after the move, cup leaves the detached
+directory and its recovery information in place instead of guessing what is safe
+to delete. A later installation does not automatically adopt or remove that
+residue. The temporary helper executable has a separate cleanup lifecycle, so a
+failure while removing the detached root does not intentionally leave that
+helper behind.
 
 ## Troubleshooting
 

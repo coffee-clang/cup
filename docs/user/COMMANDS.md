@@ -250,11 +250,15 @@ A non-zero exit status means that at least one problem was found.
 cup repair
 ```
 
-Handles recovery cases that `cup` can resolve safely. It can recover interrupted
-package or `cup update cup` operations, resolve a stale pre-detach uninstall
-handoff when its ownership and inactivity can be proved, preserve invalid
-packages for diagnosis, repair stored state and rebuild commands from valid
-defaults.
+Handles recovery cases that `cup` can resolve safely. Depending on the saved
+evidence, it can:
+
+- recover interrupted package or `cup update cup` operations;
+- resolve a stale pre-detach uninstall handoff when ownership and inactivity can
+  be proved;
+- preserve invalid packages for diagnosis;
+- repair stored state;
+- rebuild commands from valid defaults.
 
 Unknown or ambiguous data is left untouched and reported. `repair` never
 replaces the main `cup` or `cup.exe` executable; use the official installer when

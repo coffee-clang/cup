@@ -112,6 +112,24 @@ try {
     Assert-PathExists (Join-Path $failedResidue "transaction.txt")
     Assert-PathExists (Join-Path $failedResidue "components\fixture.txt")
 
+    # Cleanup failure belongs to the detached managed root, not to the temporary executable's
+    # lifetime. The deferred DELETE_ON_CLOSE carrier must still disappear after the helper exits.
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    $helperResidue = @()
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $helperResidue = @(Get-ChildItem -LiteralPath $Script:CupTestHome -Force `
+            -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like ".cup-uninstall-helper-*"
+            })
+        if ($helperResidue.Count -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($helperResidue.Count -ne 0) {
+        Fail-Test "failed uninstall left temporary helper behind: $($helperResidue[0].FullName)"
+    }
+
     Write-Host "Windows uninstall tests passed."
 } finally {
     if ($null -ne $denyRule) {

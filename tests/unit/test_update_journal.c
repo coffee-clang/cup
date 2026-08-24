@@ -637,21 +637,41 @@ static void assert_invalid_journal(const char *text) {
 static void test_strict_load(void) {
     static const char *invalid[] = {
         "format=2\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=unknown\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=unknown\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=other\ntoken=u-other\nversion=1.2.3\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=bad token\nversion=1.2.3\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-y\nversion=1.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-y\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=01.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=01.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
@@ -659,31 +679,80 @@ static void test_strict_load(void) {
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1..3\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3.4\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3.4\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1000000.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1000000.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=1\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=1\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=text\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=text\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=-1\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=-1\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=256\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=256\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=999999999999999999999\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=999999999999999999999\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=failed\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=19\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=19\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=failed\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=pending\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=pending\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=invalid\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=invalid\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=none\nunknown=x\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n"
+        "unknown=x\n",
         "format=1\nformat=1\noperation=cup-update\nphase=scheduled\n"
-        "temporary_name=cup-update-x\ntoken=u-cup-update-x\nversion=1.2.3\nerror=0\nrecovery=none\n",
+        "temporary_name=cup-update-x\n"
+        "token=u-cup-update-x\n"
+        "version=1.2.3\n"
+        "error=0\n"
+        "recovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
         "temporary_name=cup-update-x\ntoken=\nversion=1.2.3\nerror=0\nrecovery=none\n",
         "format=1\noperation=cup-update\nphase=scheduled\n"
@@ -1264,7 +1333,8 @@ static void test_interrupted_rollback_can_retry_from_intact_backups(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, path_join(backup, sizeof(backup), staging, CUP_UPDATE_PACKAGES_OLD));
     TEST_ASSERT_TRUE(test_access_exists(backup));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_package_catalog_path(destination, sizeof(destination)));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, layout_get_package_catalog_path(destination, sizeof(destination)));
     assert_file_text(destination, "old");
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_install_policy_path(destination, sizeof(destination)));
     assert_file_text(destination, "new");

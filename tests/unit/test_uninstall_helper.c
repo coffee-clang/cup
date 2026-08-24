@@ -24,6 +24,7 @@ static CupError copy_result;
 static CupError executable_result;
 static CupError start_result;
 static CupError unlink_result;
+static CupError cleanup_arm_result;
 static CupError handoff_result;
 static CupError root_validate_result;
 static CupError journal_load_result;
@@ -48,6 +49,7 @@ static int copy_calls;
 static int remove_helper_calls;
 static int start_calls;
 static int unlink_calls;
+static int cleanup_arm_calls;
 static int handoff_accept_calls;
 static int handoff_release_calls;
 static int validate_calls;
@@ -59,6 +61,8 @@ static int remove_contents_calls;
 static int remove_journal_calls;
 static int remove_root_calls;
 static int sequence;
+static int cleanup_arm_sequence;
+static int handoff_sequence;
 static int detaching_sequence;
 static int move_sequence;
 
@@ -69,6 +73,7 @@ static void reset_scenario(void) {
     executable_result = CUP_OK;
     start_result = CUP_OK;
     unlink_result = CUP_OK;
+    cleanup_arm_result = CUP_OK;
     handoff_result = CUP_OK;
     root_validate_result = CUP_OK;
     journal_load_result = CUP_OK;
@@ -93,6 +98,7 @@ static void reset_scenario(void) {
     remove_helper_calls = 0;
     start_calls = 0;
     unlink_calls = 0;
+    cleanup_arm_calls = 0;
     handoff_accept_calls = 0;
     handoff_release_calls = 0;
     validate_calls = 0;
@@ -104,6 +110,8 @@ static void reset_scenario(void) {
     remove_journal_calls = 0;
     remove_root_calls = 0;
     sequence = 0;
+    cleanup_arm_sequence = 0;
+    handoff_sequence = 0;
     detaching_sequence = 0;
     move_sequence = 0;
 }
@@ -212,6 +220,14 @@ CupError system_start_uninstall_helper(const char *helper,
     return start_result;
 }
 
+#if defined(_WIN32)
+CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value) {
+    TEST_ASSERT_EQUAL_STRING("cleanup", cleanup_handle_value);
+    cleanup_arm_calls++;
+    cleanup_arm_sequence = ++sequence;
+    return cleanup_arm_result;
+}
+#else
 CupError system_unlink_running_executable(const char *path) {
     char helper[MAX_PATH_LEN];
 
@@ -220,6 +236,7 @@ CupError system_unlink_running_executable(const char *path) {
     unlink_calls++;
     return unlink_result;
 }
+#endif
 
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
@@ -228,6 +245,7 @@ CupError system_handoff_accept(SystemHandoff *handoff,
     TEST_ASSERT_EQUAL_STRING("wait", parent_signal_value);
     TEST_ASSERT_EQUAL_STRING("authority", authority_value);
     handoff_accept_calls++;
+    handoff_sequence = ++sequence;
     if (handoff_result != CUP_OK) {
         return handoff_result;
     }
@@ -506,33 +524,62 @@ static void test_stale_helper_cleanup_is_identity_bound(void) {
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, helper_kind);
 }
 
+static CupError run_helper(void) {
+#if defined(_WIN32)
+    return uninstall_helper_run(root, detached, token, "wait", "authority", "cleanup");
+#else
+    return uninstall_helper_run(root, detached, token, "wait", "authority", NULL);
+#endif
+}
+
 static void test_run_rejects_before_root_mutation(void) {
-    unlink_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          uninstall_helper_run(root,
+                                               detached,
+                                               token,
+                                               "wait",
+                                               "authority",
+                                               NULL));
+    TEST_ASSERT_EQUAL_INT(0, cleanup_arm_calls);
+    TEST_ASSERT_EQUAL_INT(0, handoff_accept_calls);
+
+    cleanup_arm_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
+    TEST_ASSERT_EQUAL_INT(1, cleanup_arm_calls);
     TEST_ASSERT_EQUAL_INT(0, handoff_accept_calls);
     TEST_ASSERT_EQUAL_INT(0, move_calls);
+#else
+    unlink_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
+    TEST_ASSERT_EQUAL_INT(0, handoff_accept_calls);
+    TEST_ASSERT_EQUAL_INT(0, move_calls);
+#endif
 
     reset_scenario();
     handoff_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_INT(1, cleanup_arm_calls);
+    TEST_ASSERT_EQUAL_INT(0, unlink_calls);
+    TEST_ASSERT_TRUE(cleanup_arm_sequence > 0);
+    TEST_ASSERT_TRUE(handoff_sequence > cleanup_arm_sequence);
+#else
     TEST_ASSERT_EQUAL_INT(1, unlink_calls);
+#endif
     TEST_ASSERT_EQUAL_INT(0, validate_calls);
     TEST_ASSERT_EQUAL_INT(0, move_calls);
 
     reset_scenario();
     strcpy(journal_token, "other");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, run_helper());
     TEST_ASSERT_EQUAL_INT(1, handoff_release_calls);
     TEST_ASSERT_EQUAL_INT(0, detaching_writes);
     TEST_ASSERT_EQUAL_INT(0, move_calls);
 }
 
 static void test_detaching_evidence_precedes_move(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, run_helper());
     TEST_ASSERT_EQUAL_INT(1, detaching_writes);
     TEST_ASSERT_EQUAL_INT(1, move_calls);
     TEST_ASSERT_TRUE(detaching_sequence > 0);
@@ -543,8 +590,7 @@ static void test_not_applied_move_records_failed_detach(void) {
     move_result = CUP_ERR_FILESYSTEM;
     move_state = SYSTEM_COMMIT_NOT_APPLIED;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
     TEST_ASSERT_EQUAL_INT(1, failed_writes);
     TEST_ASSERT_EQUAL_INT(0, remove_contents_calls);
     TEST_ASSERT_EQUAL_INT(1, handoff_release_calls);
@@ -554,8 +600,7 @@ static void test_uncertain_commit_preserves_detached_evidence(void) {
     move_result = CUP_ERR_COMMIT;
     move_state = SYSTEM_COMMIT_APPLIED;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, run_helper());
     TEST_ASSERT_EQUAL_INT(0, failed_writes);
     TEST_ASSERT_EQUAL_INT(0, remove_contents_calls);
     TEST_ASSERT_EQUAL_INT(0, remove_journal_calls);
@@ -563,8 +608,7 @@ static void test_uncertain_commit_preserves_detached_evidence(void) {
 }
 
 static void test_durable_detach_removes_payload_then_journal_then_root(void) {
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, run_helper());
     TEST_ASSERT_EQUAL_INT(2, journal_load_calls);
     TEST_ASSERT_EQUAL_INT(1, remove_contents_calls);
     TEST_ASSERT_EQUAL_INT(1, remove_journal_calls);
@@ -575,8 +619,7 @@ static void test_durable_detach_removes_payload_then_journal_then_root(void) {
 static void test_cleanup_failure_keeps_journal_and_root(void) {
     remove_contents_result = CUP_ERR_FILESYSTEM;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          uninstall_helper_run(root, detached, token, "wait", "authority"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, run_helper());
     TEST_ASSERT_EQUAL_INT(1, remove_contents_calls);
     TEST_ASSERT_EQUAL_INT(0, remove_journal_calls);
     TEST_ASSERT_EQUAL_INT(0, remove_root_calls);

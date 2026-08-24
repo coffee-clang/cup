@@ -100,17 +100,21 @@ static void test_package_paths(void) {
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/install.cfg", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_preferences_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/preferences.txt", home) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(expected, sizeof(expected), "%s/.cup/config/preferences.txt", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_common_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.common", home) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.common", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
     TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.%s", home, host) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.%s", home, host) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/bin/%s", home, CUP_BINARY_FILENAME) > 0);
+    TEST_ASSERT_TRUE(
+        snprintf(expected, sizeof(expected), "%s/.cup/bin/%s", home, CUP_BINARY_FILENAME) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     /* Package and cache paths derive exclusively from the validated concrete identity. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_build_install_path(path, sizeof(path), &identity));
@@ -692,7 +696,8 @@ static void test_root_snapshot_is_stable_and_identity_bound(void) {
     {
         char expected_root[1024];
 
-        TEST_ASSERT_TRUE(snprintf(expected_root, sizeof(expected_root), "%s/.cup", second_home) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(expected_root, sizeof(expected_root), "%s/.cup", second_home) > 0);
         TEST_ASSERT_TRUE(path_equal(expected_root, selected));
     }
 }

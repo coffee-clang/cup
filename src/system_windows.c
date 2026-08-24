@@ -456,9 +456,14 @@ unsigned long system_get_process_id(void) {
 
 static HANDLE handoff_parent_signal = NULL;
 static HANDLE handoff_parent_authority = NULL;
+/* Kept open only by the uninstall helper. The private pipe writer is deliberately not released
+ * during normal helper cleanup. Process teardown closes it, allowing the System32 cleanup carrier
+ * to release the deferred-cleanup handle only after the helper itself has terminated. */
+static HANDLE uninstall_cleanup_pipe_writer = NULL;
 
-/* The authority key is derived from the user-profile directory identity, never from .cup itself. That
- * lets root admission reject an active detach before opening any object inside the managed tree. */
+/* The authority key comes from the user-profile directory identity, never from .cup itself.
+ * Root admission can therefore reject an active detach before opening anything in the managed
+ * tree. */
 static CupError build_handoff_name(wchar_t *name, size_t capacity) {
     char home[MAX_PATH_LEN];
     SystemPathIdentity identity;
@@ -618,17 +623,102 @@ static void release_inherited_startup(STARTUPINFOEXW *startup,
     }
 }
 
+static CupError open_uninstall_cleanup_handle(const char *helper, HANDLE *cleanup_handle) {
+    wchar_t wide_helper[MAX_PATH_LEN];
+    BY_HANDLE_FILE_INFORMATION information;
+    SystemPathIdentity expected;
+    SystemPathIdentity opened;
+    HANDLE verified = INVALID_HANDLE_VALUE;
+    HANDLE cleanup = INVALID_HANDLE_VALUE;
+    DWORD native_error = ERROR_SUCCESS;
+    CupError err;
+
+    if (text_is_empty(helper) || cleanup_handle == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *cleanup_handle = NULL;
+
+    err = system_get_path_identity(helper, &expected);
+    if (err != CUP_OK || !expected.valid || expected.kind != SYSTEM_PATH_REGULAR_FILE) {
+        return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
+    }
+    err = windows_utf8_to_wide_path(helper, wide_helper, MAX_PATH_LEN);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    /* First open and prove the exact no-follow file object without delete-on-close. ReOpenFile then
+     * attaches cleanup semantics to that same object, avoiding a second pathname lookup between
+     * identity proof and DELETE_ON_CLOSE ownership. */
+    verified = CreateFileW(wide_helper,
+                           FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL,
+                           OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                           NULL);
+    if (verified == INVALID_HANDLE_VALUE) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    if (!GetFileInformationByHandle(verified, &information)) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+    err = identity_from_handle_information(verified, &information, &opened);
+    if (err != CUP_OK || !opened.valid || opened.kind != SYSTEM_PATH_REGULAR_FILE ||
+        !system_path_identity_equal(&expected, &opened)) {
+        if (err == CUP_OK) {
+            err = CUP_ERR_TRANSACTION;
+        }
+        goto cleanup;
+    }
+
+    cleanup = ReOpenFile(verified,
+                         DELETE | FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE);
+    if (cleanup == INVALID_HANDLE_VALUE) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+    if (!SetHandleInformation(cleanup, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    *cleanup_handle = cleanup;
+    cleanup = INVALID_HANDLE_VALUE;
+    err = CUP_OK;
+
+cleanup:
+    if (cleanup != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(cleanup);
+    }
+    if (verified != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(verified);
+    }
+    if (err != CUP_OK && native_error != ERROR_SUCCESS) {
+        SetLastError(native_error);
+    }
+    return err;
+}
+
 static CupError start_handoff_helper(const char *helper,
                                      const char *mode,
                                      const char *root,
                                      const char *detached_root,
                                      const char *token,
+                                     HANDLE cleanup_handle,
                                      SystemLock *lock) {
     SECURITY_ATTRIBUTES security;
     HANDLE read_handle = NULL;
     HANDLE write_handle = NULL;
     HANDLE authority_handle = NULL;
-    HANDLE inherited_handles[2];
+    HANDLE inherited_handles[3];
+    size_t inherited_count = 2;
     wchar_t wide_helper[MAX_PATH_LEN];
     wchar_t wide_mode[64];
     wchar_t wide_root[MAX_PATH_LEN];
@@ -648,7 +738,8 @@ static CupError start_handoff_helper(const char *helper,
     if (text_is_empty(helper) || text_is_empty(mode) || text_is_empty(root) ||
         text_is_empty(token) || lock == NULL || !lock->active ||
         lock->mode != SYSTEM_LOCK_EXCLUSIVE || handoff_parent_signal != NULL ||
-        handoff_parent_authority != NULL) {
+        handoff_parent_authority != NULL ||
+        (detached_root == NULL ? cleanup_handle != NULL : cleanup_handle == NULL)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -693,14 +784,15 @@ static CupError start_handoff_helper(const char *helper,
     } else {
         written = _snwprintf(command,
                              sizeof(command) / sizeof(command[0]),
-                             L"\"%ls\" %ls \"%ls\" \"%ls\" \"%ls\" %llu %llu",
+                             L"\"%ls\" %ls \"%ls\" \"%ls\" \"%ls\" %llu %llu %llu",
                              wide_helper,
                              wide_mode,
                              wide_root,
                              wide_detached,
                              wide_token,
                              (unsigned long long)(uintptr_t)read_handle,
-                             (unsigned long long)(uintptr_t)authority_handle);
+                             (unsigned long long)(uintptr_t)authority_handle,
+                             (unsigned long long)(uintptr_t)cleanup_handle);
     }
     if (written < 0 || (size_t)written >= sizeof(command) / sizeof(command[0])) {
         err = CUP_ERR_BUFFER_TOO_SMALL;
@@ -709,9 +801,13 @@ static CupError start_handoff_helper(const char *helper,
 
     inherited_handles[0] = read_handle;
     inherited_handles[1] = authority_handle;
+    if (cleanup_handle != NULL) {
+        inherited_handles[2] = cleanup_handle;
+        inherited_count = 3;
+    }
     err = initialize_inherited_startup(&startup,
                                        inherited_handles,
-                                       sizeof(inherited_handles) / sizeof(inherited_handles[0]),
+                                       inherited_count,
                                        &attributes_initialized,
                                        &process_error);
     if (err != CUP_OK) {
@@ -741,7 +837,7 @@ static CupError start_handoff_helper(const char *helper,
     read_handle = NULL;
 
     /* The child already owns the external authority. Release cup.lock only after that overlap
-     * exists, then keep the parent authority alive until this process exits so an early child failure
+     * exists. Keep the parent authority alive until this process exits so an early child failure
      * cannot open an admission gap. */
     system_lock_release(lock);
     handoff_parent_signal = write_handle;
@@ -778,7 +874,7 @@ CupError system_start_update_helper(const char *helper,
                                     const char *token,
                                     SystemLock *lock) {
     return start_handoff_helper(
-        helper, "--internal-update-helper", root, NULL, token, lock);
+        helper, "--internal-update-helper", root, NULL, token, NULL, lock);
 }
 
 CupError system_start_uninstall_helper(const char *helper,
@@ -786,11 +882,25 @@ CupError system_start_uninstall_helper(const char *helper,
                                        const char *detached_root,
                                        const char *token,
                                        SystemLock *lock) {
+    HANDLE cleanup_handle = NULL;
+    CupError err;
+
     if (text_is_empty(detached_root)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    return start_handoff_helper(
-        helper, "--internal-uninstall-helper", root, detached_root, token, lock);
+    err = open_uninstall_cleanup_handle(helper, &cleanup_handle);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = start_handoff_helper(helper,
+                               "--internal-uninstall-helper",
+                               root,
+                               detached_root,
+                               token,
+                               cleanup_handle,
+                               lock);
+    (void)CloseHandle(cleanup_handle);
+    return err;
 }
 
 static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
@@ -818,6 +928,189 @@ static int parse_inherited_handle(const char *value, uintptr_t *parsed) {
     }
     *parsed = number;
     return 1;
+}
+
+CupError system_arm_uninstall_helper_cleanup(const char *cleanup_handle_value) {
+    SECURITY_ATTRIBUTES security;
+    HANDLE cleanup_handle = NULL;
+    HANDLE read_handle = NULL;
+    HANDLE write_handle = NULL;
+    HANDLE null_handle = INVALID_HANDLE_VALUE;
+    HANDLE inherited_handles[3];
+    BY_HANDLE_FILE_INFORMATION information;
+    SystemPathIdentity cleanup_identity;
+    SystemPathIdentity running_identity;
+    uintptr_t cleanup_number;
+    char running[MAX_PATH_LEN];
+    wchar_t system_directory[MAX_PATH_LEN];
+    wchar_t carrier_path[MAX_PATH_LEN];
+    wchar_t command[MAX_PATH_LEN + 4];
+    STARTUPINFOEXW startup;
+    PROCESS_INFORMATION process;
+    UINT system_length;
+    DWORD native_error = ERROR_SUCCESS;
+    int attributes_initialized = 0;
+    int written;
+    CupError err = CUP_ERR_FILESYSTEM;
+
+    ZeroMemory(&security, sizeof(security));
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    memset(&cleanup_identity, 0, sizeof(cleanup_identity));
+    memset(&running_identity, 0, sizeof(running_identity));
+    if (text_is_empty(cleanup_handle_value) || uninstall_cleanup_pipe_writer != NULL ||
+        !parse_inherited_handle(cleanup_handle_value, &cleanup_number)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    cleanup_handle = (HANDLE)cleanup_number;
+
+    /* The parent opened DELETE_ON_CLOSE only after binding the reserved helper pathname to a
+     * regular file. Rebind the inherited handle to the actual running image here; a forged or
+     * aliased non-file handle must fail before any root or journal mutation. */
+    if (!GetFileInformationByHandle(cleanup_handle, &information)) {
+        native_error = GetLastError();
+        goto cleanup;
+    }
+    err = identity_from_handle_information(cleanup_handle, &information, &cleanup_identity);
+    if (err != CUP_OK || !cleanup_identity.valid ||
+        cleanup_identity.kind != SYSTEM_PATH_REGULAR_FILE) {
+        if (err == CUP_OK) {
+            err = CUP_ERR_TRANSACTION;
+        }
+        goto cleanup;
+    }
+    err = system_get_executable_path(running, sizeof(running));
+    if (err == CUP_OK) {
+        err = system_get_path_identity(running, &running_identity);
+    }
+    if (err != CUP_OK || !running_identity.valid ||
+        running_identity.kind != SYSTEM_PATH_REGULAR_FILE ||
+        !system_path_identity_equal(&cleanup_identity, &running_identity)) {
+        if (err == CUP_OK) {
+            err = CUP_ERR_TRANSACTION;
+        }
+        goto cleanup;
+    }
+    if (!SetHandleInformation(cleanup_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    if (!CreatePipe(&read_handle, &write_handle, &security, 0) ||
+        !SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, 0)) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+    null_handle = CreateFileW(L"NUL",
+                              GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              &security,
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL,
+                              NULL);
+    if (null_handle == INVALID_HANDLE_VALUE) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    system_length = GetSystemDirectoryW(system_directory, MAX_PATH_LEN);
+    if (system_length == 0 || system_length >= MAX_PATH_LEN) {
+        native_error = GetLastError();
+        err = system_length >= MAX_PATH_LEN ? CUP_ERR_BUFFER_TOO_SMALL : CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+    written = _snwprintf(carrier_path, MAX_PATH_LEN, L"%ls\\sort.exe", system_directory);
+    if (written < 0 || written >= MAX_PATH_LEN) {
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto cleanup;
+    }
+    written = _snwprintf(command,
+                         sizeof(command) / sizeof(command[0]),
+                         L"\"%ls\"",
+                         carrier_path);
+    if (written < 0 || (size_t)written >= sizeof(command) / sizeof(command[0])) {
+        err = CUP_ERR_BUFFER_TOO_SMALL;
+        goto cleanup;
+    }
+
+    inherited_handles[0] = read_handle;
+    inherited_handles[1] = cleanup_handle;
+    inherited_handles[2] = null_handle;
+    err = initialize_inherited_startup(&startup,
+                                       inherited_handles,
+                                       sizeof(inherited_handles) / sizeof(inherited_handles[0]),
+                                       &attributes_initialized,
+                                       &native_error);
+    if (err != CUP_OK) {
+        goto cleanup;
+    }
+    startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = read_handle;
+    startup.StartupInfo.hStdOutput = null_handle;
+    startup.StartupInfo.hStdError = null_handle;
+    if (!CreateProcessW(carrier_path,
+                        command,
+                        NULL,
+                        NULL,
+                        TRUE,
+                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                            EXTENDED_STARTUPINFO_PRESENT,
+                        NULL,
+                        NULL,
+                        &startup.StartupInfo,
+                        &process)) {
+        native_error = GetLastError();
+        err = CUP_ERR_FILESYSTEM;
+        goto cleanup;
+    }
+
+    (void)CloseHandle(process.hThread);
+    process.hThread = NULL;
+    (void)CloseHandle(process.hProcess);
+    process.hProcess = NULL;
+    (void)CloseHandle(read_handle);
+    read_handle = NULL;
+    (void)CloseHandle(null_handle);
+    null_handle = INVALID_HANDLE_VALUE;
+    (void)CloseHandle(cleanup_handle);
+    cleanup_handle = NULL;
+
+    /* sort.exe blocks on the private pipe until this helper exits. It owns no CUP authority or
+     * path information; its only CUP-specific resource is the inherited cleanup handle. Closing
+     * the writer here would be too early, so retain it until process teardown. */
+    uninstall_cleanup_pipe_writer = write_handle;
+    write_handle = NULL;
+    err = CUP_OK;
+
+cleanup:
+    if (process.hThread != NULL) {
+        (void)CloseHandle(process.hThread);
+    }
+    if (process.hProcess != NULL) {
+        (void)CloseHandle(process.hProcess);
+    }
+    if (read_handle != NULL) {
+        (void)CloseHandle(read_handle);
+    }
+    if (write_handle != NULL) {
+        (void)CloseHandle(write_handle);
+    }
+    if (null_handle != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(null_handle);
+    }
+    if (cleanup_handle != NULL) {
+        (void)CloseHandle(cleanup_handle);
+    }
+    release_inherited_startup(&startup, attributes_initialized);
+    if (err != CUP_OK && native_error != ERROR_SUCCESS) {
+        SetLastError(native_error);
+    }
+    return err;
 }
 
 static CupError wait_for_parent_exit(HANDLE handle) {
@@ -879,9 +1172,9 @@ CupError system_handoff_acquire_lock(SystemHandoff *handoff,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    /* A process that passed the pre-root handoff check just before handoff may briefly hold cup.lock, but
-     * its mandatory post-lock handoff check must make it retreat. Retry only that synchronization
-     * class and keep the wait finite. */
+    /* A process that passed the pre-root handoff check just before handoff may briefly hold
+     * cup.lock, but its mandatory post-lock handoff check must make it retreat. Retry only that
+     * synchronization class and keep the wait finite. */
     for (attempt = 0; attempt < 500; ++attempt) {
         err = system_lock_acquire_existing(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
         if (err != CUP_ERR_LOCK) {
@@ -923,111 +1216,6 @@ CupError system_get_executable_path(char *buffer, size_t size) {
     return err == CUP_OK ? path_normalize(buffer) : err;
 }
 
-static CupError running_executable_unlink_failure(const char *stage,
-                                                   const char *path,
-                                                   CupError err,
-                                                   DWORD error_code) {
-    if (error_code == ERROR_SUCCESS) {
-        error_code = ERROR_INVALID_DATA;
-    }
-    fprintf(stderr,
-            "Windows running-executable unlink failed: stage=%s cup_error=%d "
-            "win32=%lu path=%s\n",
-            text_is_empty(stage) ? "unknown" : stage,
-            (int)err,
-            (unsigned long)error_code,
-            text_is_empty(path) ? "<none>" : path);
-    SetLastError(error_code);
-    return err;
-}
-
-CupError system_unlink_running_executable(const char *path) {
-    /* Windows 10 version 1709 introduced FileDispositionInfoEx POSIX deletion. The temporary
-     * uninstall helper is a CUP-created regular file, so use only the 1709 flag set here: removing
-     * IGNORE_READONLY_ATTRIBUTE avoids a newer capability that is unnecessary for this object.
-     * If the OS/filesystem still refuses to unlink the running image, fail before root detach and
-     * leave the exact helper path under the existing journal/recovery contract. */
-    typedef struct {
-        DWORD flags;
-    } FileDispositionInfoExCompat;
-    enum {
-        FILE_DISPOSITION_DELETE_COMPAT = 0x00000001,
-        FILE_DISPOSITION_POSIX_COMPAT = 0x00000002,
-        FILE_DISPOSITION_INFO_EX_CLASS = 21
-    };
-    char running[MAX_PATH_LEN];
-    SystemPathIdentity expected;
-    SystemPathIdentity current;
-    BY_HANDLE_FILE_INFORMATION info;
-    SystemPathIdentity opened;
-    FileDispositionInfoExCompat disposition;
-    wchar_t wide[MAX_PATH_LEN];
-    HANDLE handle;
-    DWORD failure_error;
-    CupError err;
-
-    if (text_is_empty(path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    err = system_get_executable_path(running, sizeof(running));
-    if (err == CUP_OK) {
-        err = system_get_path_identity(running, &expected);
-    }
-    if (err == CUP_OK) {
-        err = system_get_path_identity(path, &current);
-    }
-    if (err != CUP_OK || !expected.valid || expected.kind != SYSTEM_PATH_REGULAR_FILE ||
-        !system_path_identity_equal(&expected, &current)) {
-        return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
-    }
-    err = windows_utf8_to_wide_path(path, wide, MAX_PATH_LEN);
-    if (err != CUP_OK) {
-        return err;
-    }
-    handle = CreateFileW(wide,
-                         DELETE | FILE_READ_ATTRIBUTES,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         NULL,
-                         OPEN_EXISTING,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                         NULL);
-    if (handle == INVALID_HANDLE_VALUE) {
-        return running_executable_unlink_failure(
-            "posix-open", path, CUP_ERR_FILESYSTEM, GetLastError());
-    }
-    if (!GetFileInformationByHandle(handle, &info)) {
-        failure_error = GetLastError();
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "posix-information", path, CUP_ERR_TRANSACTION, failure_error);
-    }
-    err = identity_from_handle_information(handle, &info, &opened);
-    if (err != CUP_OK) {
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "posix-identity", path, err, ERROR_INVALID_DATA);
-    }
-    if (!system_path_identity_equal(&expected, &opened)) {
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure("posix-identity-mismatch",
-                                                 path,
-                                                 CUP_ERR_TRANSACTION,
-                                                 ERROR_INVALID_DATA);
-    }
-
-    disposition.flags = FILE_DISPOSITION_DELETE_COMPAT | FILE_DISPOSITION_POSIX_COMPAT;
-    if (!SetFileInformationByHandle(handle,
-                                    (FILE_INFO_BY_HANDLE_CLASS)FILE_DISPOSITION_INFO_EX_CLASS,
-                                    &disposition,
-                                    sizeof(disposition))) {
-        failure_error = GetLastError();
-        (void)CloseHandle(handle);
-        return running_executable_unlink_failure(
-            "posix-delete", path, CUP_ERR_FILESYSTEM, failure_error);
-    }
-    (void)CloseHandle(handle);
-    return CUP_OK;
-}
 
 /* Wide-API creation, copy, replacement and recursive mutation with reparse-point checks. */
 static CupError absolute_normalized_path(const char *path, char *output, size_t output_size) {

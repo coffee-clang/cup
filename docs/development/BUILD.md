@@ -194,8 +194,8 @@ The source build uses these libraries:
 - **c-ares** is libcurl's resolver on the supported builds.
 - **OpenSSL** is the POSIX TLS backend. Windows uses Schannel instead.
 
-SHA-256 for cup files is implemented by `src/third_party/sha256.c`; OpenSSL is not used as a
-second checksum implementation.
+SHA-256 for cup files is implemented by `src/third_party/sha256.c`. OpenSSL is
+not used as a second checksum implementation.
 
 ### Used only by tests
 

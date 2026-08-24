@@ -19,6 +19,7 @@ CupError uninstall_helper_run(const char *root,
                               const char *detached_root,
                               const char *token,
                               const char *parent_signal_value,
-                              const char *authority_value);
+                              const char *authority_value,
+                              const char *cleanup_handle_value);
 
 #endif /* CUP_UNINSTALL_HELPER_H */

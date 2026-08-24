@@ -1,6 +1,7 @@
 /*
  * Validates the managed root, records uninstall in transaction.txt and hands exclusive authority
- * to a temporary native copy. The helper detaches and removes the root after this process exits.
+ * to a temporary native copy. The helper owns root detach/cleanup after this process exits; on
+ * Windows its temporary executable deletion is armed separately before the root can be mutated.
  */
 
 #include "commands.h"
@@ -204,7 +205,8 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
     /* Success consumes the canonical lock only after the child already owns equivalent handoff
-     * authority. From that point the helper owns both journal recovery and root destruction. */
+     * authority. From that point the helper owns journal recovery and root destruction; Windows
+     * also carries the parent's exact DELETE_ON_CLOSE handle for its own later cleanup. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
         printf("Uninstall started. The PATH entry was not removed.\n");

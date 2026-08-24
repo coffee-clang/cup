@@ -244,7 +244,8 @@ SHA256SUMS.windows-x64
 The checksum split is intentional:
 
 - `SHA256SUMS.common` covers files shared by all platforms;
-- each platform checksum covers its executable, `release.txt` and the exact common checksum file.
+- each platform checksum covers its executable, `release.txt` and the exact
+  common checksum file.
 
 This lets installers and `cup update cup` verify both the shared generation and
 the platform-specific files without trusting two unrelated manifests.
@@ -409,7 +410,7 @@ instead of pretending the update was completed.
 | `scripts/build/finalize-release.sh` | Finalize one inspected platform bundle |
 | `scripts/release/common-assets.sh` | Build files shared by every platform |
 | `scripts/release/build-platform.sh` | Combine one native bundle with common assets |
-| `scripts/release/assemble-candidate.sh` | Merge validated release parts into one flat candidate directory |
+| `scripts/release/assemble-candidate.sh` | Merge validated parts into one flat candidate |
 | `scripts/release/publish.sh` | Compare and publish the candidate on GitHub |
 
 None of these scripts rebuilds or rewrites a candidate after assembly.

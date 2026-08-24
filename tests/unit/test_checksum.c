@@ -167,7 +167,8 @@ static void test_hash_output_contracts(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           checksum_sha256_bytes(NULL, sizeof(data), digest, sizeof(digest)));
     TEST_ASSERT_EQUAL_STRING("", digest);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, checksum_sha256_bytes(data, sizeof(data), digest, sizeof(digest)));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, checksum_sha256_bytes(data, sizeof(data), digest, sizeof(digest)));
     TEST_ASSERT_EQUAL_STRING(
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", digest);
 

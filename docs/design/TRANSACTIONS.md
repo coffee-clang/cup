@@ -6,6 +6,19 @@ types: package changes, cup executable updates and uninstall.
 
 The root layout and `state.txt` are described in [State](STATE.md).
 
+## Terms used on this page
+
+| Term | Meaning |
+|---|---|
+| canonical root | the active managed root, normally `.cup` |
+| detached root | the token-named sibling used after uninstall moves the root |
+| native helper | a copied cup executable that continues update or uninstall after the parent exits |
+| handoff authority | temporary exclusive ownership held while work moves from parent to helper |
+| cleanup carrier | Windows-only process that keeps the helper deletion handle alive until helper exit |
+
+These terms describe ownership and process lifetime. They do not create separate
+user-visible commands or additional transaction files.
+
 ## Shared transaction file
 
 Every operation uses:
@@ -97,10 +110,11 @@ package URL
 checksum URL
 ```
 
-Install/profile/toolchain preflight resolves these values from one shared state/catalog
-snapshot before the first package mutation. The shared preflight context is then released;
-each package installation acquires its own exclusive context and revalidates mutable state.
-`stable` is not resolved again for the already-pinned artifact.
+Install, profile and toolchain preflight resolve these values from one shared
+state/catalog snapshot before the first package mutation. The shared preflight
+context is then released. Each package installation acquires its own exclusive
+context and revalidates mutable state. `stable` is not resolved again for an
+already pinned artifact.
 
 The cache returns a `VerifiedArtifact` with the archive still open. Preflight and
 extraction consume the same file that was hashed.
@@ -126,9 +140,9 @@ agree.
 ### Commit point
 
 For package install and remove, the deciding step is replacement of `state.txt`.
-Download, cache verification, extraction and package validation are reconstructible work and
-do not need a package journal. The journal begins only immediately before the first canonical
-package mutation:
+Download, cache verification, extraction and package validation are
+reconstructible work, so they do not need a package journal. The journal begins
+immediately before the first canonical package mutation:
 
 ```text
 prepare/validate staging
@@ -172,10 +186,10 @@ package identity is absent from valid state
 ```
 
 A cleanup error after state commit is reported as a commit problem. cup does not
-blindly roll state back after the deciding write may already be visible. Retryable
-directory-chain creation and tree removal can leave partial filesystem progress;
-recovery therefore preserves that uncertainty as a commit problem, while an explicit
-failed restoration remains a rollback error.
+blindly roll state back after the deciding write may already be visible. Directory
+creation and tree removal can stop after making only part of their filesystem
+change, so recovery preserves that uncertainty as a commit problem. A restoration
+that was attempted and failed is reported separately as a rollback error.
 
 ## Initial bootstrap
 
@@ -196,7 +210,8 @@ The hidden command:
 6. prepares the runtime directories;
 7. stages the same installed cup assets used by `cup update cup`;
 8. writes the update-style journal;
-9. starts the native update helper and returns once the asynchronous handoff is scheduled.
+9. starts the native update helper and returns once the asynchronous handoff is
+   scheduled.
 
 The public POSIX and PowerShell installers own completion waiting: they wait for
 the journal/staging transition to finish and verify the exact installed version
@@ -230,7 +245,8 @@ recovery=none|pending|rolled-back
 ```
 
 `<CupError>` is a nonzero value from the current internal `CupError` domain
-(`CUP_ERR_INVALID_INPUT` through `CUP_ERR_INTERRUPT`); arbitrary positive integers are invalid.
+(`CUP_ERR_INVALID_INPUT` through `CUP_ERR_INTERRUPT`). Arbitrary positive
+integers are invalid.
 
 Field combinations must match:
 
@@ -281,9 +297,9 @@ Windows  parent and child retain a named per-user kernel authority outside <cup-
 The child waits for the inherited parent-lifetime object to close rather than
 polling a PID. It is detached from the initiating command's standard streams, so
 command capture receives EOF when the parent exits rather than when the helper
-finishes. After parent exit, the update child returns to the canonical lock:
-on POSIX it converts the inherited flock authority directly into its `SystemLock`;
-on Windows it acquires `cup.lock` while the external authority is still active,
+finishes. After parent exit, the update child returns to the canonical lock. On POSIX,
+it converts the inherited flock authority directly into its `SystemLock`. On
+Windows, it acquires `cup.lock` while the external authority is still active and
 then releases that temporary authority.
 
 Only after that transition does the helper:
@@ -363,24 +379,58 @@ failed     stage=detach   error=6
 
 The parent then copies its running native executable to a reserved temporary
 sibling outside the managed root and starts it in the internal uninstall-helper
-mode. Starting that child uses the same continuous handoff primitive as
+mode. Starting the child uses the same continuous handoff rule as
 `cup update cup`: the parent still owns `cup.lock` when child authority is
-established, and successful handoff consumes the caller-visible lock without
-creating an authority gap.
+established, so there is no interval without a mutation owner.
 
-The child removes its own temporary pathname after proving by native identity
-that the reserved path names the running helper. On Windows the backend uses the
-Windows 10 version 1709 `FileDispositionInfoEx` `DELETE | POSIX_SEMANTICS` operation; it does not
-mutate NTFS alternate streams or switch to a second deletion algorithm. It then waits for parent
-exit, accepts the inherited handoff authority, validates the
-exact root, journal, token and detached destination, and publishes
-`detaching/detach` before the namespace move.
+Before the common uninstall transaction can change the root, the temporary
+helper must have a safe cleanup plan:
 
-If that pre-detach self-unlink fails, the child performs no root mutation. The canonical
-`scheduled/handoff` journal remains the owner of the reserved
-`.cup-uninstall-helper-<token>[.exe]` sibling. Before `repair` clears that stale journal it removes
-only that exact token-bound regular file by retained filesystem identity; failure to prove or
-remove it keeps the journal as blocker.
+```text
+POSIX
+  prove reserved helper pathname == running executable
+  unlink that pathname
+  continue from the already-open executable image
+
+Windows
+  parent binds DELETE_ON_CLOSE to the exact helper file
+  child proves the inherited cleanup handle == its running executable
+  child starts the fixed System32 carrier with that handle and a private pipe
+  carrier holds the handle until helper process exit closes the pipe writer
+```
+
+The Windows carrier is deliberately not a second uninstall implementation. It
+knows no root, token, journal or handoff authority and performs no cup filesystem
+walk. Its only job is to keep the verified cleanup handle alive until the helper
+has terminated.
+
+After this platform preflight succeeds, the common transaction is:
+
+1. accept handoff and wait for the parent to exit;
+2. validate the exact root, journal, token and detached destination;
+3. publish `detaching/detach`;
+4. move the canonical root to the detached sibling;
+5. remove managed payload while preserving `transaction.txt`;
+6. remove `transaction.txt` by its retained identity;
+7. remove the empty detached root.
+
+The important recovery boundaries are:
+
+- **Windows cleanup carrier cannot be armed:** the canonical root is untouched,
+  `scheduled/handoff` remains, and the exact token-bound helper may remain for
+  `repair`.
+- **Carrier armed, but failure occurs before a durable detach:** the canonical
+  root and journal remain; the temporary helper is still scheduled to disappear
+  when the helper process exits.
+- **Durable detach succeeds, but payload cleanup fails:** managed residue and the
+  detached `detaching/detach` journal remain together; temporary-helper cleanup
+  is independent and still completes after helper exit.
+- **Complete success:** the canonical root is absent, the journal is removed
+  last, and the temporary helper disappears after its process lifetime ends.
+
+Before `repair` clears a stale canonical `scheduled/handoff` transaction it
+removes only the exact token-bound helper regular file by filesystem identity.
+Failure to prove or remove that file keeps the journal as a blocker.
 
 ```text
 <cup-root> -> <home>/.cup-uninstall-<token>
@@ -417,8 +467,9 @@ not adopt or delete detached siblings automatically.
 `repair` only resolves a journal still present in the canonical root. While it
 owns the canonical exclusive lock and no named detached sibling exists, a stale
 `scheduled/handoff` or `failed` pre-detach transaction can be cancelled or
-acknowledged. Any token-bound temporary native helper is removed first. If the detached sibling
-exists, helper ownership cannot be proved, or cleanup fails, evidence is preserved.
+acknowledged. Any token-bound temporary native helper is removed first. If the
+detached sibling exists, helper ownership cannot be proved, or cleanup fails,
+evidence is preserved.
 
 ## Repair order
 

@@ -54,10 +54,10 @@ Windows %USERPROFILE%\.cup
 
 The fallback is `.coffee-cup` on the same home directory.
 
-POSIX uses `HOME`. Its value must already be a clean, non-root absolute path: cup does not
-canonicalize `.`/`..`, repeated or trailing separators, or backslashes into a different managed
-root. Windows uses `USERPROFILE`. The program does not infer the root from the executable path and does
-not support an environment override.
+POSIX uses `HOME`. Its value must already be a clean, non-root absolute path.
+cup does not turn `.`/`..`, repeated or trailing separators, or backslashes into
+a different managed root. Windows uses `USERPROFILE`. The program does not infer
+the root from the executable path and does not support an environment override.
 
 ## Executable and helper names
 
@@ -101,6 +101,10 @@ fsync
 
 Symbolic links are not followed for managed path traversal.
 
+A temporary POSIX uninstall helper can remove its own exact pathname after
+proving native identity and continue running through the already-open executable
+image. cup uses that property only on POSIX.
+
 ### Windows implementation
 
 The Windows backend uses wide-character Windows APIs. UTF-8 project paths are
@@ -110,20 +114,35 @@ Managed filesystem paths use the long-path form where required. Paths passed to
 external processes use the normal Windows path representation instead of a device
 prefix that the child may not understand.
 
-The backend checks reparse points, uses handle identities for later operations,
-and configures inherited handles explicitly for detached helpers. Identity snapshots use the
-128-bit Windows file ID where the filesystem provides one, with the legacy ID only when the
-filesystem explicitly reports that no 128-bit ID exists. A move refreshes identity through its
-still-open source handle before proving the destination, because some filesystems can change a
-file ID during rename.
+The backend checks reparse points, uses handle identities for later operations
+and configures inherited handles explicitly for detached helpers. Identity
+snapshots use the 128-bit Windows file ID where the filesystem provides one.
+The legacy ID is used only when the filesystem explicitly reports that no
+128-bit ID exists. After a move, the backend refreshes identity through the
+still-open source handle before proving the destination because some filesystems
+can change a file ID during rename.
 
-The current Windows x64 runtime requires Windows 10 version 1709 or later. Native uninstall uses
-`FileDispositionInfoEx` with the 1709-compatible `DELETE | POSIX_SEMANTICS` flag set to remove the
-temporary running helper pathname. The helper is a CUP-created regular file, so the backend does
-not require the later read-only-ignore flag or an NTFS alternate-stream fallback. If Windows or the
-filesystem refuses that native unlink, the failure occurs before root detach; the canonical journal
-remains recovery evidence and `repair` removes only the exact token-bound helper before cancelling
-the stale transaction.
+Windows x64 is built against the Windows 10 API baseline
+(`_WIN32_WINNT=0x0A00`). That build setting does not by itself identify the
+oldest Windows 10 release that is qualified to run cup.
+
+Windows uninstall also has one platform-specific problem: a running `.exe` is a
+mapped executable image, so cup does not require it to unlink its own pathname.
+Instead, the parent binds a `DELETE_ON_CLOSE` handle to the exact helper file
+before launch. The helper verifies that inherited handle against its own running
+executable before accepting handoff.
+
+That delete handle must remain alive until the helper process has terminated.
+The helper therefore starts `%SystemRoot%\System32\sort.exe` as a small
+*lifetime carrier*. A private pipe keeps that process alive while the helper is
+running. The carrier receives only the cleanup handle, the pipe read end and
+`NUL` output handles; it receives no cup root, uninstall token, journal or
+handoff authority. When the helper exits, the pipe writer closes, `sort.exe`
+receives EOF and exits, and the final cleanup handle is released. No timer or
+`PATH` lookup is part of this protocol.
+
+The complete uninstall sequence and its recovery boundaries are described in
+[Transactions](TRANSACTIONS.md).
 
 ## Internal path representation
 
@@ -220,20 +239,22 @@ process could create the destination between those two steps.
 ## Native detached helpers
 
 Both self-update and uninstall run a copied native cup executable after the
-initiating process exits. The parent-lifetime proof is an inherited operating-
-system object; helpers do not pass or poll a PID. Detached helpers do not retain
-the caller's standard streams: POSIX reconnects stdin/stdout/stderr to `/dev/null`,
-while Windows inherits only the explicitly allowlisted handoff handles.
+initiating process exits. The parent-lifetime proof is an inherited operating-system object; helpers do
+not pass or poll a PID. Detached helpers do not retain
+the caller's standard streams: POSIX reconnects stdin/stdout/stderr to
+`/dev/null`, while Windows inherits only the explicitly allowlisted handles
+required by that operation.
 
 ### Uninstall
 
 The parent creates a unique native helper copy outside the managed root, starts
 it while still holding the exclusive canonical lock and establishes handoff
-authority before that lock can be released. The child removes its own temporary
-pathname after native identity verification, waits for parent exit, validates
-the root and uninstall journal, publishes `detaching/detach`, then performs the
-root move and no-follow cleanup itself.
+authority before that lock can be released. Temporary-helper cleanup is armed
+before the root can be mutated: POSIX unlinks the verified running helper path;
+Windows uses the deferred cleanup mechanism described above.
 
+After parent exit, the child validates the root and uninstall journal, publishes
+`detaching/detach`, then performs the root move and no-follow cleanup itself.
 Windows retries only bounded transient sharing failures during the root move.
 All Windows cleanup uses the native long-path filesystem backend; PowerShell is
 not part of the uninstall protocol.
@@ -287,9 +308,10 @@ macOS deployment target  13.0
 Windows _WIN32_WINNT      0x0A00
 ```
 
-These values describe the build configuration rather than deriving runtime support by themselves.
-The Windows 10 version 1709 floor above comes from a required native filesystem primitive; the
-oldest claimed platform version still requires matching native qualification evidence.
+These values describe the build configuration rather than deriving runtime
+support by themselves. In particular, `_WIN32_WINNT=0x0A00` selects the Windows
+10 API baseline; it does not name a specific Windows 10 feature release. The
+oldest supported runtime still requires matching native qualification evidence.
 
 ## Linked-binary policy
 

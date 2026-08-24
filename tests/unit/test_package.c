@@ -899,8 +899,9 @@ static void assert_scan_issue_quarantine(const PackageList *packages) {
     build_path(original_path, sizeof(original_path), "replaced-package-leaf");
     TEST_ASSERT_EQUAL_INT(0, rename(replacement_path, original_path));
     write_text(replacement_path, "replacement\n");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION, package_quarantine(invalid_leaf, recovery_path, sizeof(recovery_path)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          package_quarantine(
+                              invalid_leaf, recovery_path, sizeof(recovery_path)));
     TEST_ASSERT_TRUE(test_access_exists(replacement_path));
     TEST_ASSERT_EQUAL_INT(0, test_unlink(original_path));
 

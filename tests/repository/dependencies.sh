@@ -1049,7 +1049,12 @@ metadata_ambient=$(
 )
 [ "$metadata_unset" = "$metadata_ambient" ] ||
     fail 'macOS dependency metadata depends on non-canonical ambient state'
-canonical_macos_target=$(PATH="$IDENTITY_BIN:$PATH" bash -eu -c     '. "$1"; dependency_macos_deployment_target macos-x64 apple-clang'     sh "$DEPENDENCY_COMMON")
+canonical_macos_target=$(
+    PATH="$IDENTITY_BIN:$PATH" bash -eu -c '
+        . "$1"
+        dependency_macos_deployment_target macos-x64 apple-clang
+    ' sh "$DEPENDENCY_COMMON"
+)
 [ "$canonical_macos_target" = 13.0 ] ||
     fail 'canonical macOS deployment target changed unexpectedly'
 make_macos_target=$(sed -n 's/^CUP_MACOS_DEPLOYMENT_TARGET := //p' "$ROOT/Makefile")

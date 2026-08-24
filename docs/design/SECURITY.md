@@ -155,14 +155,20 @@ complete decoder preflight pass.
 Extraction writes only inside a private staging directory created for the
 selected package identity.
 
-The extraction pass owns structural admission. It requires one safe top-level
-directory, accepts only directories and regular files, rejects symbolic links,
-hard links and special objects, validates the portable relative-path grammar,
-detects ASCII case-fold and file/directory collisions, enforces path depth and
-size/resource bounds, and creates files without following links. Existing
-unexpected objects cause a failure instead of being reused. Size and format
-checks are repeated here because this is a new decoder/read/write pass, not a
-second validation of an unchanged in-memory result.
+The extraction pass owns structural admission. Before writing an entry, it
+checks that:
+
+- the archive has one safe top-level directory;
+- entries are only directories or regular files;
+- symbolic links, hard links and special objects are absent;
+- relative paths satisfy the portable path grammar;
+- names do not collide after ASCII case folding or file/directory normalization;
+- depth, per-file size and total resource limits remain within bounds.
+
+Files are created without following links. Existing unexpected objects cause a
+failure instead of being reused. Size and format checks are repeated here
+because extraction is a new decoder/read/write pass, not a second validation of
+an unchanged in-memory result.
 
 The extracted package is not installed immediately. cup first validates the
 package root, the semantic identity in `info.txt` and every declared executable
@@ -183,14 +189,15 @@ open or remove child
 ```
 
 The final operation rechecks that it is still acting on the object seen during
-enumeration. A replacement with the same name is not accepted automatically. These checks occur
-immediately before the native mutation; they are not a kernel-level pathname compare-and-swap
-against a hostile process controlling the same user account, which is outside the threat model
-described above.
+enumeration. A replacement with the same name is not accepted automatically.
+These checks happen immediately before the native mutation. They are not a
+kernel-level pathname compare-and-swap against a hostile process controlling the
+same user account; that case is outside the threat model described above.
 
-Native recursive operations never traverse links/reparse points, keep the identity of
-observed entries and refuse to cross a device or volume boundary. Enumeration reports such
-entries to policy callers; recursive removal may unlink the link entry itself without following it.
+Native recursive operations never traverse links or reparse points. They retain
+the identity of observed entries and refuse to cross a device or volume
+boundary. Enumeration reports those entries to policy callers; recursive
+removal may remove the link entry itself without following it.
 
 Uninstall detach and cleanup use the native C filesystem layer on every supported
 platform. The copied helper receives continuous handoff authority, validates the
@@ -261,38 +268,43 @@ combined.
 
 ## Uninstall
 
-Uninstall does not delete the running root in place. The parent creates a temporary
-native helper outside the managed root and starts it while still holding the canonical
-exclusive lock. Handoff authority is established before that lock can disappear. The
-child waits for parent exit, validates the exact root and journal, publishes
-`detaching/detach`, moves the root to its unique sibling and performs native no-follow
-cleanup.
+Uninstall does not delete the running root in place. A copied native helper
+receives continuous handoff authority, validates the exact root and transaction,
+detaches that root to its reserved sibling path and then performs native
+no-follow cleanup.
 
-The temporary uninstall child removes its own reserved pathname before it can detach the root.
-The Windows backend keeps that operation native: it verifies file identity and uses the
-Windows 10 version 1709 `FileDispositionInfoEx` `DELETE | POSIX_SEMANTICS` operation. The helper is
-created by CUP and is not treated as an arbitrary read-only input, so no newer read-only-ignore flag
-or alternate-stream mutation is part of this trust boundary. If that native unlink fails, no root
-mutation occurs and the canonical journal retains ownership of
-the token-bound helper residue. `repair`, while holding canonical exclusive authority and only
-after the active handoff has disappeared, removes that exact regular file by filesystem identity
-before it can clear the stale journal.
+The temporary helper executable has its own identity and lifetime checks. POSIX
+proves the reserved pathname is the running helper before unlinking it. Windows
+instead binds a `DELETE_ON_CLOSE` handle to the exact helper file before launch,
+and the child proves that inherited handle against its own running executable.
+The handle therefore cannot become cleanup authority for an unrelated file.
 
-On POSIX the handoff authority is the original flock open-file description. On
-Windows it is a named per-user kernel object outside the managed root, allowing
-`cup.lock` to close before the root is moved without admitting a competing process.
+Windows transfers only the lifetime of that verified cleanup handle to a fixed
+System32 carrier process. The carrier receives no root path, uninstall token,
+transaction data or handoff authority. If it cannot be armed, uninstall stops
+before root mutation. Once armed, temporary-helper cleanup is independent of
+whether detached-root payload cleanup later succeeds.
 
-Cleanup preserves `transaction.txt` until every other managed entry is gone. If
-cleanup fails while managed payload remains, that strict journal remains as ownership
-evidence; `root.txt` and the executable may already have been removed. A later
-installer does not automatically adopt or delete the detached sibling.
+On POSIX, handoff authority is the original flock open-file description. On
+Windows, it is a named per-user kernel object outside the managed root. Both
+mechanisms preserve exclusive mutation authority while the parent exits and the
+child takes over.
+
+Cleanup keeps `transaction.txt` until every other managed entry is gone. If
+cleanup fails while managed payload remains, that strict journal remains as
+ownership evidence; `root.txt` and the executable may already have been removed.
+A later installer does not automatically adopt or delete the detached sibling.
+
+The exact ordering and recovery cases are documented in
+[Transactions](TRANSACTIONS.md).
 
 ## CI and release data
 
-Project-owned workflows use readable numeric GitHub Action version references. Version
-changes are reviewed explicitly in workflow diffs, and the repository does not use an
-automatic dependency-update bot. The separate Pages workflow belongs to the protected
-website surface and does not participate in the cup build, test or release trust chain.
+Project-owned workflows use readable numeric GitHub Action version references.
+Version changes are reviewed explicitly in workflow diffs, and the repository
+does not use an automatic dependency-update bot. The separate Pages workflow
+belongs to the protected website surface and does not participate in the cup
+build, test or release trust chain.
 
 Checkout credentials are disabled in the cup build, test and release
 workflows.
@@ -313,8 +325,8 @@ hashes of the checked files
 
 The release workflow selects one successful Tests run and verifies those fields
 before using an artifact. Raw targets, compiler/resource-compiler paths and full
-vendor strings remain diagnostic fields rather than cross-runner equality keys. Artifacts from
-different run attempts are not mixed.
+vendor strings remain diagnostic fields rather than cross-runner equality
+keys. Artifacts from different run attempts are not mixed.
 
 Candidate assembly accepts the complete expected asset set. Publication checks
 tag/commit identity, draft provenance and existing asset bytes before making a

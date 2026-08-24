@@ -517,7 +517,10 @@ static CupError start_handoff_helper(const char *helper,
             close((int)lock->handle);
         }
         if (!detach_standard_streams() || setsid() < 0 ||
-            text_format(parent_signal_value, sizeof(parent_signal_value), "%d", parent_fds[0]) != CUP_OK ||
+            text_format(parent_signal_value,
+                        sizeof(parent_signal_value),
+                        "%d",
+                        parent_fds[0]) != CUP_OK ||
             text_format(authority_value, sizeof(authority_value), "%d", authority_fd) != CUP_OK) {
             status_byte = 1;
             do {

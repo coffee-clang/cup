@@ -167,9 +167,9 @@ the lock and check the transaction state before changing files.
 ### Package request and artifact
 
 Catalog lookup produces a `PackageArtifactSpec`. It contains only the concrete
-package identity, selected archive format, package URL and checksum URL. Cache names,
-download limits and catalog snapshot metadata remain owned by their source modules rather
-than being copied into the artifact specification.
+package identity, selected archive format, package URL and checksum URL. Cache
+names, download limits and catalog-snapshot metadata stay with the modules that
+own them instead of being copied into the artifact specification.
 
 The cache returns a `VerifiedArtifact`. This object owns the regular file that was
 size-checked and hashed. Extraction consumes that same open stream, so the code
@@ -210,6 +210,14 @@ and verify a release generation before calling the hidden C bootstrap entry
 point. Detached update and uninstall continuation is performed by native copies
 of the cup executable, so platform filesystem identity and cleanup rules remain
 inside the C system layer.
+
+Uninstall deliberately separates two lifetimes. `uninstall_helper.c` owns the
+managed-root transaction: validate the journal, detach the exact root and remove
+its payload. The platform backend owns the temporary helper executable itself.
+POSIX can unlink the running helper pathname; Windows cannot rely on that
+property, so `system_windows.c` prepares deferred deletion before launch and
+keeps the final handle lifetime outside the helper process. This difference does
+not create two uninstall transaction models.
 
 Repository scripts own development tasks:
 
@@ -271,7 +279,7 @@ The C source files are grouped below by responsibility.
 | `self_update.c` | discover, compare, download and stage a cup release |
 | `update_helper.c` | detached replacement of installed assets |
 | `update_journal.c` | executable-update schema and recovery |
-| `uninstall_helper.c` | native root detach and cleanup |
+| `uninstall_helper.c` | native root detach, cleanup and recovery ordering |
 | `uninstall_journal.c` | uninstall schema and recovery |
 | `runtime_journal.c` | shared `transaction.txt` file operations |
 | `release_metadata.c` | `release.txt` parsing and validation |
@@ -323,7 +331,7 @@ The C source files are grouped below by responsibility.
 |---|---|
 | `system.c` | portable filesystem queries and shared traversal |
 | `system_posix.c` | POSIX filesystem, lock and process primitives |
-| `system_windows.c` | Windows filesystem, lock and process primitives |
+| `system_windows.c` | Windows filesystem, locks, processes and deferred helper cleanup |
 | `platform.c` | host detection and platform validation |
 | `interrupt.c` | Ctrl+C and signal state |
 | `exit_status.c` | mapping `CupError` to public exit status |

@@ -834,7 +834,8 @@ static void test_extra_paths(void) {
 
         build_path(unreadable_tree, sizeof(unreadable_tree), "unreadable-tree");
         TEST_ASSERT_EQUAL_INT(0, mkdir(unreadable_tree, 0700));
-        TEST_ASSERT_TRUE(snprintf(unreadable_child, sizeof(unreadable_child), "%s/file", unreadable_tree) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(unreadable_child, sizeof(unreadable_child), "%s/file", unreadable_tree) > 0);
         write_text(unreadable_child, "data");
         TEST_ASSERT_EQUAL_INT(0, chmod(unreadable_child, 0000));
         TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_tree(unreadable_tree, NULL));
@@ -876,8 +877,10 @@ static void test_trusted_operations_reject_symlinked_parent(void) {
         FILE *temporary_file = NULL;
         SystemLock lock = {0};
 
-        TEST_ASSERT_TRUE(
-            snprintf(linked_directory, sizeof(linked_directory), "%s/new-directory", linked_parent) > 0);
+        TEST_ASSERT_TRUE(snprintf(linked_directory,
+                                  sizeof(linked_directory),
+                                  "%s/new-directory",
+                                  linked_parent) > 0);
         TEST_ASSERT_TRUE(
             snprintf(linked_exclusive, sizeof(linked_exclusive), "%s/new-file", linked_parent) > 0);
         TEST_ASSERT_TRUE(snprintf(linked_copy, sizeof(linked_copy), "%s/value", linked_parent) > 0);
@@ -908,9 +911,11 @@ static void test_trusted_operations_reject_symlinked_parent(void) {
             size_t count = 0;
 
             TEST_ASSERT_EQUAL_INT(
-                CUP_ERR_FILESYSTEM, system_list_directory(linked_directory, count_callback, &count));
+                CUP_ERR_FILESYSTEM,
+                system_list_directory(linked_directory, count_callback, &count));
             TEST_ASSERT_EQUAL_INT(
-                CUP_ERR_FILESYSTEM, system_walk_directory(linked_directory, count_callback, &count));
+                CUP_ERR_FILESYSTEM,
+                system_walk_directory(linked_directory, count_callback, &count));
             TEST_ASSERT_EQUAL_size_t(0, count);
         }
         TEST_ASSERT_TRUE(access(safe_copy, F_OK) != 0);
@@ -924,7 +929,8 @@ static void test_trusted_operations_reject_symlinked_parent(void) {
         char linked_private[1024];
         int is_private = 0;
 
-        TEST_ASSERT_TRUE(snprintf(real_private, sizeof(real_private), "%s/private", real_parent) > 0);
+        TEST_ASSERT_TRUE(
+            snprintf(real_private, sizeof(real_private), "%s/private", real_parent) > 0);
         TEST_ASSERT_TRUE(
             snprintf(linked_private, sizeof(linked_private), "%s/private", linked_parent) > 0);
         TEST_ASSERT_EQUAL_INT(0, mkdir(real_private, 0755));
@@ -1288,7 +1294,10 @@ static void test_handoff_primitives(void) {
     TEST_ASSERT_EQUAL_INT(0, pipe(signal_fds));
     TEST_ASSERT_TRUE(signal_fds[0] > STDERR_FILENO);
     TEST_ASSERT_TRUE(signal_fds[1] > STDERR_FILENO);
-    TEST_ASSERT_TRUE(snprintf(parent_signal_value, sizeof(parent_signal_value), "%d", signal_fds[0]) > 0);
+    TEST_ASSERT_TRUE(snprintf(parent_signal_value,
+                              sizeof(parent_signal_value),
+                              "%d",
+                              signal_fds[0]) > 0);
     TEST_ASSERT_TRUE(
         snprintf(authority_value, sizeof(authority_value), "%d", authority_fd) > 0);
 

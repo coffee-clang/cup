@@ -33,13 +33,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef unsigned int RepairAssetFlags;
-
-enum {
-    REPAIR_ASSET_EXECUTABLE = 1u << 0,
-    REPAIR_ASSET_READ_ONLY = 1u << 1
-};
-
 /* Shared repair helpers. */
 #if CUP_VERSION_OFFICIAL
 /* Official-asset restoration. Each file is downloaded, verified and committed independently so the

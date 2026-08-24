@@ -139,8 +139,10 @@ make PLATFORM=<platform> test
 ```
 
 For Linux and macOS this builds cup, the unit binaries and the test helpers, then
-runs the POSIX unit and integration runners. The Bash-based build/test scripts remain compatible with the Bash version
-available on supported macOS runners. For Windows it uses the UCRT64 build and the native PowerShell integration runner.
+runs the POSIX unit and integration runners. The Bash-based build/test scripts
+remain compatible with the Bash version available on supported macOS runners.
+For Windows, the target uses the UCRT64 build and the native PowerShell
+integration runner.
 
 The focused build target is:
 
@@ -200,15 +202,32 @@ Where available, the repository suite checks syntax with:
 - BusyBox `sh`.
 
 It also runs the generated installer while optional text-processing utilities
-are blocked. The scenarios check canonical release versions and checksum text,
-curl transport options, the explicit curl prerequisite and post-download size
-rejection, signal exit status, the exact root reported by the bootstrap, the
-exact installed version, permissions, marker and cleanup results. Commands that the
-installer requires are declared and checked before the installation starts.
+are blocked. The scenarios check:
+
+- canonical release versions and checksum text;
+- curl transport policy, prerequisites and post-download size rejection;
+- signal exit status;
+- the exact root and version reported after bootstrap;
+- permissions, ownership marker and cleanup results.
+
+Commands required by the installer are declared and checked before installation
+starts.
 
 The Windows installer is exercised by PowerShell release and integration tests.
-Windows uninstall is native and is exercised through the executable, including its
+Windows uninstall is native and is exercised through the executable, including
 handoff, detach, cleanup and recovery behavior.
+
+The Windows system unit suite also has a real subprocess oracle for the temporary
+helper lifetime. A copied test executable inherits a `DELETE_ON_CLOSE` handle,
+proves that handle against its own executable identity, arms the System32 cleanup
+carrier and exits. The copy must then disappear. This tests the lifecycle cup
+actually uses instead of requiring a running Windows executable to unlink its
+own pathname.
+
+The Windows uninstall integration suite also exercises a deliberate detached
+payload-cleanup failure. In that case the managed residue and transaction
+evidence must remain, while the temporary helper must still disappear. This
+separates root recovery correctness from helper-process lifetime correctness.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
 AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may
