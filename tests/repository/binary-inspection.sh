@@ -141,18 +141,30 @@ EOF_NM
 
 cat >"$fake_bin/x86_64-w64-mingw32-objdump" <<'EOF_OBJDUMP'
 #!/bin/sh
+tool=${0##*/}
 case "${1:-}" in
     -f)
-        cat <<EOF_HEADER
+        if [ "$tool" = llvm-objdump ]; then
+            cat <<EOF_HEADER
+$2:	file format coff-x86-64
+architecture: ${FAKE_PE_ARCH:-x86_64}
+start address: 0x0000000000000000
+EOF_HEADER
+        else
+            cat <<EOF_HEADER
 $2:     file format pei-x86-64
 architecture: ${FAKE_PE_ARCH:-i386:x86-64}, flags 0x0000012f:
 HAS_RELOC, EXEC_P, HAS_LINENO, HAS_DEBUG, HAS_SYMS, HAS_LOCALS, D_PAGED
 EOF_HEADER
+        fi
         ;;
     -h|-t)
         exit 0
         ;;
     -p)
+        printf 'Characteristics 0x22\n'
+        [ "${FAKE_PE_EXECUTABLE:-1}" = 1 ] && printf '\texecutable\n'
+        printf '\tlarge address aware\n'
         printf 'Subsystem\t\t00000003 (%s)\n' "${FAKE_PE_SUBSYSTEM:-Windows CUI}"
         old_ifs=$IFS
         IFS=,
@@ -172,8 +184,10 @@ EOF_HEADER
         ;;
 esac
 EOF_OBJDUMP
+cp "$fake_bin/x86_64-w64-mingw32-objdump" "$fake_bin/llvm-objdump"
 chmod +x "$fake_bin/file" "$fake_bin/readelf" "$fake_bin/lipo" \
-    "$fake_bin/otool" "$fake_bin/nm" "$fake_bin/x86_64-w64-mingw32-objdump"
+    "$fake_bin/otool" "$fake_bin/nm" "$fake_bin/x86_64-w64-mingw32-objdump" \
+    "$fake_bin/llvm-objdump"
 
 inspect() {
     PATH="$fake_bin:$PATH" "$PROJECT_ROOT/scripts/build/inspect-binary.sh" "$@"
@@ -293,6 +307,13 @@ assert_contains "$pe_text" 'resource_directory=present'
 assert_contains "$pe_text" 'dynamic_base=yes'
 assert_contains "$pe_text" 'nx_compat=yes'
 
+# GNU objdump reports i386:x86-64 while LLVM objdump reports x86_64 for the
+# same COFF machine. Both are valid x86-64 evidence and must pass the same gate.
+llvm_pe_report=$TMP_ROOT/windows-llvm-objdump.txt
+CUP_OBJDUMP=llvm-objdump FAKE_FORMAT=pe inspect \
+    windows-x64 release "$binary" "$llvm_pe_report"
+assert_contains "$(cat "$llvm_pe_report")" 'architecture=x86_64'
+
 if FAKE_FORMAT=pe FAKE_PE_DLLS=KERNEL32.dll,libgcc_s_seh-1.dll inspect \
         windows-x64 development "$binary" "$TMP_ROOT/pe-runtime.txt" \
         >"$TMP_ROOT/pe-runtime.out" 2>&1; then
@@ -306,6 +327,12 @@ if FAKE_FORMAT=pe FAKE_PE_ARCH=i386 inspect windows-x64 development \
     fail 'wrong PE architecture was accepted'
 fi
 assert_contains "$(cat "$TMP_ROOT/pe-arch.out")" 'architecture does not match windows-x64'
+
+if FAKE_FORMAT=pe FAKE_PE_EXECUTABLE=0 inspect windows-x64 development \
+        "$binary" "$TMP_ROOT/pe-executable.txt" >"$TMP_ROOT/pe-executable.out" 2>&1; then
+    fail 'non-executable PE object was accepted'
+fi
+assert_contains "$(cat "$TMP_ROOT/pe-executable.out")" 'PE/COFF object is not executable'
 
 if FAKE_FORMAT=pe FAKE_PE_RESOURCE=0 inspect windows-x64 development \
         "$binary" "$TMP_ROOT/pe-resource.txt" >"$TMP_ROOT/pe-resource.out" 2>&1; then

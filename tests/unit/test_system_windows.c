@@ -731,9 +731,20 @@ static void test_handoff_helper_start(void) {
     char protocol_root[CUP_TEST_TEMP_PATH_SIZE];
     char protocol_detached[CUP_TEST_TEMP_PATH_SIZE];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 3];
+    wchar_t wide_executable[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_helper[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_marker[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_lock[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_root[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t wide_detached[CUP_TEST_TEMP_PATH_SIZE];
+    wchar_t command[CUP_TEST_TEMP_PATH_SIZE * 6];
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION parent;
+    DWORD exit_code = 1;
     char *line;
     SystemLock lock = {0};
     int active = 0;
+    int written;
 
     TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
@@ -746,8 +757,6 @@ static void test_handoff_helper_start(void) {
     build_path(protocol_detached, sizeof(protocol_detached), "protocol detached");
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_root));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_detached));
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", marker));
-
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_start_update_helper(NULL, temp_dir, "token", &lock));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -768,19 +777,58 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_FALSE(active);
     system_lock_release(&lock);
 
-    /* Run the successful start last. The backend intentionally retains its parent-side authority
-     * and lifetime signal until this test process exits. */
+    /*
+     * A successful handoff cannot be tested with this Unity process as the
+     * parent: production keeps the parent-lifetime pipe open until that process
+     * exits. Run the real start in a short-lived parent subprocess so the helper
+     * executes the same handoff wait as production.
+     */
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
+                          windows_utf8_to_wide_process_path(
+                              executable, wide_executable, CUP_TEST_TEMP_PATH_SIZE));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_start_uninstall_helper(helper,
-                                                        protocol_root,
-                                                        protocol_detached,
-                                                        "handoff-token",
-                                                        &lock));
-    TEST_ASSERT_FALSE(lock.active);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
-    TEST_ASSERT_TRUE(active);
+                          windows_utf8_to_wide(helper, wide_helper, CUP_TEST_TEMP_PATH_SIZE));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(marker, wide_marker, CUP_TEST_TEMP_PATH_SIZE));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(lock_path, wide_lock, CUP_TEST_TEMP_PATH_SIZE));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(protocol_root, wide_root, CUP_TEST_TEMP_PATH_SIZE));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          windows_utf8_to_wide(
+                              protocol_detached, wide_detached, CUP_TEST_TEMP_PATH_SIZE));
+    written = _snwprintf(command,
+                         sizeof(command) / sizeof(command[0]),
+                         L"\"%ls\" --internal-handoff-parent-probe \"%ls\" \"%ls\" "
+                         L"\"%ls\" \"%ls\" handoff-token \"%ls\"",
+                         wide_executable,
+                         wide_helper,
+                         wide_lock,
+                         wide_root,
+                         wide_detached,
+                         wide_marker);
+    TEST_ASSERT_TRUE(written > 0 &&
+                     (size_t)written < sizeof(command) / sizeof(command[0]));
+
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&parent, sizeof(parent));
+    startup.cb = sizeof(startup);
+    TEST_ASSERT_TRUE(CreateProcessW(wide_executable,
+                                    command,
+                                    NULL,
+                                    NULL,
+                                    FALSE,
+                                    CREATE_NO_WINDOW,
+                                    NULL,
+                                    NULL,
+                                    &startup,
+                                    &parent));
+    TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(parent.hProcess, 30000));
+    TEST_ASSERT_TRUE(GetExitCodeProcess(parent.hProcess, &exit_code));
+    TEST_ASSERT_TRUE(CloseHandle(parent.hThread));
+    TEST_ASSERT_TRUE(CloseHandle(parent.hProcess));
+    TEST_ASSERT_EQUAL_UINT32(0, exit_code);
+
     TEST_ASSERT_TRUE(wait_for_path(marker));
     read_text(marker, contents, sizeof(contents));
     line = strtok(contents, "\n");
@@ -796,10 +844,13 @@ static void test_handoff_helper_start(void) {
     TEST_ASSERT_NOT_NULL(strtok(NULL, "\n"));
     line = strtok(NULL, "\n");
     TEST_ASSERT_EQUAL_STRING("handles=valid", line);
+    line = strtok(NULL, "\n");
+    TEST_ASSERT_EQUAL_STRING("handoff=accepted", line);
     TEST_ASSERT_NULL(strtok(NULL, "\n"));
     TEST_ASSERT_TRUE(wait_for_path_missing(helper));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_FALSE(active);
 
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_TEST_HANDOFF_MARKER", ""));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
 }
@@ -1165,6 +1216,29 @@ static void test_private_directory_tree_removal_and_locks(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(private_directory));
 }
 
+static int run_handoff_parent_probe(int argc, char **argv) {
+    SystemLock lock = {0};
+    CupError err;
+    int active = 0;
+
+    if (argc != 8 || _putenv_s("CUP_TEST_HANDOFF_MARKER", argv[7]) != 0) {
+        return 2;
+    }
+    err = system_lock_acquire(&lock, argv[3], SYSTEM_LOCK_EXCLUSIVE);
+    if (err != CUP_OK) {
+        return 3;
+    }
+    err = system_start_uninstall_helper(argv[2], argv[4], argv[5], argv[6], &lock);
+    if (err != CUP_OK) {
+        system_lock_release(&lock);
+        return 10 + (int)err;
+    }
+    if (lock.active || system_handoff_active(&active) != CUP_OK || !active) {
+        return 4;
+    }
+    return 0;
+}
+
 static int run_handoff_probe(int argc, char **argv) {
     const char *marker = getenv("CUP_TEST_HANDOFF_MARKER");
     FILE *file;
@@ -1173,6 +1247,8 @@ static int run_handoff_probe(int argc, char **argv) {
     HANDLE cleanup_handle = NULL;
     DWORD flags;
     BY_HANDLE_FILE_INFORMATION information;
+    SystemHandoff handoff = {0};
+    CupError err;
     int uninstall;
     int i;
 
@@ -1200,21 +1276,31 @@ static int run_handoff_probe(int argc, char **argv) {
          system_validate_uninstall_helper_cleanup(argv[argc - 1]) != CUP_OK)) {
         return 3;
     }
+    err = system_handoff_accept(&handoff,
+                                argv[argc - (uninstall ? 3 : 2)],
+                                argv[argc - (uninstall ? 2 : 1)]);
+    if (err != CUP_OK) {
+        return 6;
+    }
     file = fopen(marker, "wb");
     if (file == NULL) {
+        system_handoff_release(&handoff);
         return 4;
     }
     for (i = 1; i < argc; ++i) {
         if (fprintf(file, "%s\n", argv[i]) < 0) {
             fclose(file);
+            system_handoff_release(&handoff);
             return 5;
         }
     }
-    if (fputs("handles=valid\n", file) == EOF || fclose(file) != 0) {
+    if (fputs("handles=valid\nhandoff=accepted\n", file) == EOF || fclose(file) != 0) {
+        system_handoff_release(&handoff);
         return 5;
     }
-    /* The uninstall start test intentionally exits nonzero: helper cleanup must depend only on
-     * process termination, never on the child operation result. */
+    system_handoff_release(&handoff);
+    /* Helper cleanup depends on process termination, not on the operation
+     * result. */
     return uninstall ? 7 : 0;
 }
 
@@ -1239,6 +1325,9 @@ int main(int argc, char **argv) {
 
     if (argc > 1 && strcmp(argv[1], "--internal-cleanup-lifecycle-probe") == 0) {
         return run_cleanup_lifecycle_probe(argc, argv);
+    }
+    if (argc > 1 && strcmp(argv[1], "--internal-handoff-parent-probe") == 0) {
+        return run_handoff_parent_probe(argc, argv);
     }
     if (argc > 1 &&
         (strcmp(argv[1], "--internal-update-helper") == 0 ||

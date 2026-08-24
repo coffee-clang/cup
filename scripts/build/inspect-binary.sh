@@ -370,11 +370,25 @@ inspect_pe() {
     esac
     objdump=$(find_pe_objdump)
     coff_header=$($objdump -f "$binary") || fail "$objdump could not read the COFF header"
-    printf '%s\n' "$coff_header" |
-        grep -Ei 'architecture:[[:space:]]*(i386:x86-64|x86-64|amd64)' >/dev/null ||
-        fail 'PE/COFF architecture does not match windows-x64'
-    printf '%s\n' "$coff_header" | grep -E 'EXEC_P' >/dev/null || fail 'PE/COFF object is not executable'
+    coff_architecture=$(printf '%s\n' "$coff_header" | awk '
+        /^architecture:[[:space:]]*/ {
+            sub(/^architecture:[[:space:]]*/, "")
+            sub(/,.*/, "")
+            print
+            exit
+        }
+    ')
+    case "$coff_architecture" in
+        i386:x86-64|x86-64|x86_64|amd64) ;;
+        *)
+            fail "PE/COFF architecture does not match windows-x64: "\
+                "${coff_architecture:-missing} ($objdump)"
+            ;;
+    esac
     pe_headers=$($objdump -p "$binary") || fail "$objdump could not read PE headers"
+    printf '%s\n' "$pe_headers" |
+        grep -Ei '^[[:space:]]*executable[[:space:]]*$' >/dev/null ||
+        fail 'PE/COFF object is not executable'
     subsystem=$(printf '%s\n' "$pe_headers" | awk '
         $1 == "Subsystem" {
             sub(/^[[:space:]]*Subsystem[[:space:]]+[^[:space:]]+[[:space:]]*/, "")

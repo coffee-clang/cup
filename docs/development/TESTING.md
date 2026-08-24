@@ -226,9 +226,10 @@ normalized `/` path spelling must survive the Windows command-line round trip
 unchanged. A copied executable also proves the inherited `DELETE_ON_CLOSE`
 handle against its own identity; the test retains the final cleanup handle until
 the process object is signaled and verifies deletion after both zero and nonzero
-exit. The production handoff test separately exercises the real parent-side
-cleanup carrier and requires the temporary helper to disappear after a nonzero
-probe exit.
+exit. The production handoff test uses a dedicated parent subprocess, so the
+helper waits for a real parent-process exit before accepting authority. It then
+requires the parent-side cleanup carrier to remove the temporary helper after a
+nonzero probe exit.
 
 The Windows uninstall integration suite treats the detached managed root and
 temporary helper as different object classes: detached candidates must be
