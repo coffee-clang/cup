@@ -434,16 +434,17 @@ static CupError prepare_bootstrap_operation(BootstrapOperation *operation,
     if (err == CUP_OK) {
         err = runtime_journal_require_none();
     }
-    if (err != CUP_OK) {
-        return err;
+    if (err == CUP_OK) {
+        err = layout_ensure_runtime();
     }
-
-    err = layout_ensure_runtime();
     if (err == CUP_OK) {
         err = ensure_bootstrap_state();
     }
     if (err == CUP_OK) {
         err = layout_ensure_assets();
+    }
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: could not prepare bootstrap transaction.\n");
     }
     return err;
 }
@@ -505,9 +506,15 @@ CupError bootstrap_start(const char *source_directory, const char *running_binar
     err = prepare_bootstrap_operation(&operation, source_directory, running_binary);
     if (err == CUP_OK) {
         err = stage_bootstrap_generation(&operation, running_binary);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Error: could not stage verified bootstrap generation.\n");
+        }
     }
     if (err == CUP_OK) {
         err = update_helper_start(operation.root, operation.token, &operation.lock);
+        if (err != CUP_OK) {
+            fprintf(stderr, "Error: could not start bootstrap update helper.\n");
+        }
     }
 
     if (err == CUP_OK) {

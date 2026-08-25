@@ -1044,6 +1044,10 @@ static void test_copy_replace_and_temporary_objects(void) {
                                                        "directory",
                                                        temporary_directory,
                                                        sizeof(temporary_directory)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_directory_is_private(temporary_directory, &exists));
+    TEST_ASSERT_TRUE(exists);
+    assert_private_acl_is_inheritable(temporary_directory);
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         system_create_temp_directory(

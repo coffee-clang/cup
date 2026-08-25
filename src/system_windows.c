@@ -2357,6 +2357,8 @@ CupError system_create_temp_directory(const char *directory,
                                       const char *prefix,
                                       char *path,
                                       size_t path_size) {
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    SECURITY_ATTRIBUTES attributes;
     unsigned long attempt;
     CupError err;
 
@@ -2365,30 +2367,44 @@ CupError system_create_temp_directory(const char *directory,
         return CUP_ERR_INVALID_INPUT;
     }
     err = validate_temp_directory(directory);
+    if (err == CUP_OK) {
+        /* Match the owner-private mkdtemp contract on POSIX. Bootstrap and update staging
+         * generations are revalidated after copying, so an inherited Windows DACL is not
+         * sufficient even when the parent directory itself is private. */
+        err = build_private_security_descriptor(&descriptor);
+    }
     if (err != CUP_OK) {
         return err;
     }
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor;
 
     for (attempt = 0; attempt < 256; ++attempt) {
         wchar_t wide_path[MAX_PATH_LEN];
+        DWORD create_error;
 
         err = build_temp_candidate(directory, prefix, ".tmp", attempt, path, path_size);
         if (err != CUP_OK) {
-            return err;
+            break;
         }
         err = windows_utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);
         if (err != CUP_OK) {
-            return err;
+            break;
         }
-        if (CreateDirectoryW(wide_path, NULL)) {
+        if (CreateDirectoryW(wide_path, &attributes)) {
+            LocalFree(descriptor);
             return CUP_OK;
         }
-        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) {
-            return CUP_ERR_TEMPORARY;
+        create_error = GetLastError();
+        if (create_error != ERROR_FILE_EXISTS && create_error != ERROR_ALREADY_EXISTS) {
+            err = CUP_ERR_TEMPORARY;
+            break;
         }
     }
 
-    return CUP_ERR_TEMPORARY;
+    LocalFree(descriptor);
+    return err == CUP_OK ? CUP_ERR_TEMPORARY : err;
 }
 
 CupError system_make_unique_temp_path(const char *directory,
