@@ -219,8 +219,8 @@ function Receive-Asset([string]$Name) {
                 if (-not $response.IsSuccessStatusCode) {
                     Fail "could not download $Name"
                 }
-                if ($response.Content.Headers.ContentLength.HasValue -and
-                    $response.Content.Headers.ContentLength.Value -gt $maximum) {
+                $contentLength = $response.Content.Headers.ContentLength
+                if ($null -ne $contentLength -and $contentLength -gt $maximum) {
                     Fail "downloaded asset is too large: $Name"
                 }
 

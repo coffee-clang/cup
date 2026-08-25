@@ -577,46 +577,6 @@ try {
         throw "HTTP test helper did not become ready"
     }
 
-    Test-InstallerFinalLowSpeedWindow
-
-    Test-InstallerMetadataFailure -Name 'invalid-version' -Lines @(
-        'format=1',
-        'version=0.2',
-        "commit=$SourceSha"
-    ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
-    Test-InstallerMetadataFailure -Name 'format-key-case' -Lines @(
-        'Format=1',
-        "version=$Version",
-        "commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata has an unsupported format'
-    Test-InstallerMetadataFailure -Name 'version-key-case' -Lines @(
-        'format=1',
-        "Version=$Version",
-        "commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata version does not match the installer'
-    Test-InstallerMetadataFailure -Name 'commit-key-case' -Lines @(
-        'format=1',
-        "version=$Version",
-        "Commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata commit does not match the installer'
-    $mismatchedVersion = if ($Version -eq '0.0.0') { '0.0.1' } else { '0.0.0' }
-    Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
-        'format=1',
-        "version=$mismatchedVersion",
-        "commit=$SourceSha"
-    ) -ExpectedMessage (
-        "release metadata version mismatch: expected '$Version', " +
-        "received '$mismatchedVersion'"
-    )
-    Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
-        'format=1',
-        "version=$Version",
-        'commit=fedcba9876543210fedcba9876543210fedcba98'
-    ) -ExpectedMessage (
-        "release metadata commit mismatch: expected '$SourceSha', received " +
-        "'fedcba9876543210fedcba9876543210fedcba98'"
-    )
-
     if (Test-Path -LiteralPath $testProfile) {
         Remove-Item -LiteralPath $testProfile -Recurse -Force
     }
@@ -1074,6 +1034,49 @@ try {
     if ($residues.Count -ne 0) {
         throw "Release uninstall left staging behind: $($residues[0].FullName)"
     }
+
+    # Run negative transport and metadata policy cases after the complete positive
+    # release lifecycle so one diagnostic-policy failure cannot hide later
+    # installer/runtime compatibility failures in the same native run.
+    Test-InstallerFinalLowSpeedWindow
+
+    Test-InstallerMetadataFailure -Name 'invalid-version' -Lines @(
+        'format=1',
+        'version=0.2',
+        "commit=$SourceSha"
+    ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
+    Test-InstallerMetadataFailure -Name 'format-key-case' -Lines @(
+        'Format=1',
+        "version=$Version",
+        "commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata has an unsupported format'
+    Test-InstallerMetadataFailure -Name 'version-key-case' -Lines @(
+        'format=1',
+        "Version=$Version",
+        "commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata version does not match the installer'
+    Test-InstallerMetadataFailure -Name 'commit-key-case' -Lines @(
+        'format=1',
+        "version=$Version",
+        "Commit=$SourceSha"
+    ) -ExpectedMessage 'release metadata commit does not match the installer'
+    $mismatchedVersion = if ($Version -eq '0.0.0') { '0.0.1' } else { '0.0.0' }
+    Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
+        'format=1',
+        "version=$mismatchedVersion",
+        "commit=$SourceSha"
+    ) -ExpectedMessage (
+        "release metadata version mismatch: expected '$Version', " +
+        "received '$mismatchedVersion'"
+    )
+    Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
+        'format=1',
+        "version=$Version",
+        'commit=fedcba9876543210fedcba9876543210fedcba98'
+    ) -ExpectedMessage (
+        "release metadata commit mismatch: expected '$SourceSha', received " +
+        "'fedcba9876543210fedcba9876543210fedcba98'"
+    )
 } finally {
     Set-Location -LiteralPath $originalLocation
     foreach ($name in $originalEnvironment.Keys) {

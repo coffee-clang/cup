@@ -67,6 +67,17 @@ grep -F -- '[Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid' \
 grep -F -- '[IO.Directory]::CreateDirectory($path, $security)' \
     "$ROOT/scripts/install/install.ps1" >/dev/null
 
+# Windows PowerShell adapts Nullable<T> properties to their scalar value/null.
+# Do not require Nullable<T> members such as HasValue/Value on Content-Length.
+! grep -F -- 'ContentLength.HasValue' "$ROOT/scripts/install/install.ps1" >/dev/null ||
+    fail 'Windows installer assumes Nullable<T>.HasValue survives PowerShell adaptation'
+! grep -F -- 'ContentLength.Value' "$ROOT/scripts/install/install.ps1" >/dev/null ||
+    fail 'Windows installer assumes Nullable<T>.Value survives PowerShell adaptation'
+grep -F -- '$contentLength = $response.Content.Headers.ContentLength' \
+    "$ROOT/scripts/install/install.ps1" >/dev/null
+grep -F -- '$null -ne $contentLength -and $contentLength -gt $maximum' \
+    "$ROOT/scripts/install/install.ps1" >/dev/null
+
 SCRIPT_DIR="$ROOT/scripts/release"
 # shellcheck source=scripts/release/common.sh
 . "$SCRIPT_DIR/common.sh"
