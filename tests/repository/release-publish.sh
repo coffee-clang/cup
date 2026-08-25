@@ -263,6 +263,21 @@ done
 [ "$(stat -c '%a' "$assembled")" = 755 ] ||
     fail 'assembled candidate directory mode is not 0755'
 
+# Failed assembly must clean both managed staging and its private entry list.
+assembly_failure_part=$TMP_ROOT/assembly-failure-part
+assembly_failure_tmp=$TMP_ROOT/assembly-failure-tmp
+mkdir -p "$assembly_failure_part" "$assembly_failure_tmp"
+: > "$assembly_failure_part/empty"
+if TMPDIR="$assembly_failure_tmp" "$ROOT/scripts/release/assemble-candidate.sh" \
+        "$TMP_ROOT/assembly-failure-output" "$assembly_failure_part" \
+        >"$TMP_ROOT/assembly-failure.out" 2>&1; then
+    fail 'candidate assembly unexpectedly accepted an empty release asset'
+fi
+[ -z "$(find "$assembly_failure_tmp" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    fail 'failed candidate assembly left temporary entry-list state behind'
+[ ! -e "$TMP_ROOT/assembly-failure-output" ] ||
+    fail 'failed candidate assembly published an output directory'
+
 # MSYS2 synthesizes executable mode bits for .exe files even when the canonical
 # transported mode is 0644. Validate the release-mode policy directly so the
 # fixture does not change the path-ops platform backend selected by uname.

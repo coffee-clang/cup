@@ -9,6 +9,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/cup-installer-behavior.XXXXXX")"
 VERSION=$(tr -d '\n' < "$ROOT/VERSION")
 TAG=v$VERSION
 SHA=0123456789abcdef0123456789abcdef01234567
+CUP_TEST_CP=$(command -v cp) || exit 1
+CUP_TEST_MKDIR=$(command -v mkdir) || exit 1
+export CUP_TEST_CP CUP_TEST_MKDIR
 
 cleanup() {
     [ ! -e "$WORK" ] || rm -rf -- "$WORK"
@@ -47,6 +50,22 @@ done
 grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.sh" >/dev/null
 grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.ps1" >/dev/null
 grep -F -- '$MaxRedirects = if ($BaseUrlOverridden) { 0 } else { 10 }' "$ROOT/scripts/install/install.ps1" >/dev/null
+
+# Windows private transport ACLs use SID objects directly and are applied when
+# the directory is created, avoiding account-name translation and a
+# create-then-protect window.
+! grep -F -- '$identity.User.Value' "$ROOT/scripts/install/install.ps1" >/dev/null ||
+    fail 'Windows installer translates the current user SID through an account-name string'
+! grep -F -- "'NT AUTHORITY\SYSTEM'" "$ROOT/scripts/install/install.ps1" >/dev/null ||
+    fail 'Windows installer depends on the localized SYSTEM account name'
+! grep -F -- "'BUILTIN\Administrators'" "$ROOT/scripts/install/install.ps1" >/dev/null ||
+    fail 'Windows installer depends on the localized Administrators account name'
+grep -F -- '[Security.Principal.WellKnownSidType]::LocalSystemSid' \
+    "$ROOT/scripts/install/install.ps1" >/dev/null
+grep -F -- '[Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid' \
+    "$ROOT/scripts/install/install.ps1" >/dev/null
+grep -F -- '[IO.Directory]::CreateDirectory($path, $security)' \
+    "$ROOT/scripts/install/install.ps1" >/dev/null
 
 SCRIPT_DIR="$ROOT/scripts/release"
 # shellcheck source=scripts/release/common.sh
@@ -95,7 +114,7 @@ esac
 [ "$speed_time" = 30 ] && [ "$speed_limit" = 1024 ]
 [ -n "$max_filesize" ]
 printf '%s\n' "${url##*/}" >> "$CUP_DOWNLOAD_TRACE"
-cp "$CUP_FIXTURE/${url##*/}" "$output"
+"$CUP_TEST_CP" "$CUP_FIXTURE/${url##*/}" "$output"
 MOCK_CURL
 chmod 0755 "$WORK/mock-bin/curl"
 
@@ -165,9 +184,9 @@ elif [ ! -e "$fallback" ] && [ ! -L "$fallback" ]; then
 else
     exit 84
 fi
-mkdir -p "$root/bin" "$root/staging"
+"$CUP_TEST_MKDIR" -p "$root/bin" "$root/staging"
 printf 'format=1\nproduct=coffee-clang/cup\nlayout=1\n' > "$root/root.txt"
-cp "$0" "$root/bin/cup"
+"$CUP_TEST_CP" "$0" "$root/bin/cup"
 chmod 0700 "$root/bin/cup"
 printf 'CUP_BOOTSTRAP_ROOT=%s\n' "$root"
 printf 'Verified cup installation scheduled.\n'
@@ -241,6 +260,36 @@ run_success() {
 run_success sh sh
 if command -v dash >/dev/null 2>&1; then run_success dash dash; fi
 if command -v busybox >/dev/null 2>&1; then run_success busybox busybox sh; fi
+
+# A normal POSIX installation must not depend on undeclared host utilities.
+# The fixture itself uses absolute test-only helpers, while PATH exposes only
+# the shell plus the commands require_commands() deliberately accepts.
+portable_bin=$WORK/portable-bin
+portable_fixture=$WORK/fixture-portable-path
+portable_home=$WORK/home-portable-path
+portable_trace=$WORK/bootstrap-portable-path.trace
+portable_downloads=$WORK/downloads-portable-path.trace
+mkdir -p "$portable_bin"
+for tool in chmod cmp mktemp rm sha256sum sh sleep uname wc; do
+    tool_path=$(command -v "$tool") || fail "test prerequisite is unavailable: $tool"
+    ln -s "$tool_path" "$portable_bin/$tool"
+done
+cp "$WORK/mock-bin/curl" "$portable_bin/curl"
+chmod 0755 "$portable_bin/curl"
+prepare_fixture "$portable_fixture"
+mkdir -m 0700 "$portable_home"
+: > "$portable_downloads"
+portable_output=$(
+    HOME="$portable_home" PATH="$portable_bin" \
+        CUP_FIXTURE="$portable_fixture" CUP_DOWNLOAD_TRACE="$portable_downloads" \
+        CUP_BOOTSTRAP_TRACE="$portable_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+        CUP_INSTALL_WAIT_ATTEMPTS=2 /bin/sh "$WORK/install.sh" 2>&1
+)
+printf '%s\n' "$portable_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
+    printf '%s\n' "$portable_output" >&2
+    fail 'POSIX installer depends on an undeclared external command'
+}
 
 # BSD/macOS wc may pad a single count with leading spaces. The installer must
 # normalize that presentation without weakening the numeric size check.

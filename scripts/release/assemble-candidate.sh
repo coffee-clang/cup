@@ -26,7 +26,9 @@ cup_path_prepare_directory_chain "$parent" "candidate output parent" || exit 1
 staging=$(cup_path_create_unique_directory \
     "$parent/.cup-candidate.XXXXXX" "candidate staging" 0755) || exit 1
 cup_path_check_directory_chain "$staging" 0 "candidate staging" || exit 1
+names=
 cleanup_assembly() {
+    [ -z "${names:-}" ] || rm -f -- "$names"
     [ -z "${staging:-}" ] || cup_path_remove_directory_tree "$staging" 'candidate staging'
 }
 trap cleanup_assembly EXIT
@@ -39,31 +41,27 @@ for part in "$@"; do
     names=$(mktemp "${TMPDIR:-/tmp}/cup-release-part.XXXXXX")
     for source in "$part"/* "$part"/.[!.]* "$part"/..?*; do
         [ -e "$source" ] || [ -L "$source" ] || continue
-        [ -f "$source" ] && [ ! -L "$source" ] || {
-            rm -f -- "$names"
+        [ -f "$source" ] && [ ! -L "$source" ] ||
             fail "release part contains a non-regular entry: $source"
-        }
         basename -- "$source" >> "$names"
     done
     LC_ALL=C sort -o "$names" "$names"
     while IFS= read -r name; do
         [ -n "$name" ] || continue
         case "$name" in .|..|*/*|*\\*)
-            rm -f -- "$names"
             fail "unsafe release asset name: $name"
             ;;
         esac
         source=$part/$name
         require_nonempty_file "$source"
-        [ ! -e "$staging/$name" ] && [ ! -L "$staging/$name" ] || {
-            rm -f -- "$names"
+        [ ! -e "$staging/$name" ] && [ ! -L "$staging/$name" ] ||
             fail "duplicate release asset: $name"
-        }
         mode=$(release_asset_mode "$name")
         cup_path_copy_file "$source" "$staging/$name" "$mode" replace ||
             fail "could not copy release asset: $source"
     done < "$names"
     rm -f -- "$names"
+    names=
 done
 
 assembled_assets=$(

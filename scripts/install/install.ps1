@@ -102,7 +102,6 @@ function Resolve-WaitAttempts {
 
 function New-PrivateDirectory {
     $path = Join-Path ([IO.Path]::GetTempPath()) ("cup-install-" + [Guid]::NewGuid().ToString('N'))
-    [IO.Directory]::CreateDirectory($path) | Out-Null
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $security = New-Object Security.AccessControl.DirectorySecurity
     $security.SetOwner($identity.User)
@@ -110,7 +109,14 @@ function New-PrivateDirectory {
     $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
         [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $propagation = [Security.AccessControl.PropagationFlags]::None
-    foreach ($principal in @($identity.User.Value, 'NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')) {
+    $principals = @(
+        $identity.User,
+        [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::LocalSystemSid, $null),
+        [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    )
+    foreach ($principal in $principals) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $principal,
             [Security.AccessControl.FileSystemRights]::FullControl,
@@ -119,7 +125,7 @@ function New-PrivateDirectory {
             [Security.AccessControl.AccessControlType]::Allow)
         [void]$security.AddAccessRule($rule)
     }
-    [IO.Directory]::SetAccessControl($path, $security)
+    [IO.Directory]::CreateDirectory($path, $security) | Out-Null
     return $path
 }
 
