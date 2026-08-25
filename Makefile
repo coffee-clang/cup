@@ -1254,6 +1254,7 @@ test-release: deps-check
 	case '$(PLATFORM)' in \
 		windows-x64) \
 			CUP_TEST_BUILD_ROOT="$$(cygpath -w '$(BUILD_ROOT)')" \
+			CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 			powershell.exe -NoProfile -ExecutionPolicy Bypass \
 				-File "$$(cygpath -w '$(PROJECT_ROOT)/tests/release/windows.ps1')" \
 				-ReleaseDir "$$(cygpath -w '$(RELEASE_DIR)')" \

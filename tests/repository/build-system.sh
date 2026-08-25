@@ -876,6 +876,18 @@ grep -Fq "cup_path_run_build '\$(BUILD_ROOT)' --" "$PROJECT_ROOT/Makefile" ||
 grep -Fq 'cup_path_clean_build_root "$$root"' "$PROJECT_ROOT/Makefile" ||
     fail 'make clean does not use the canonical build-root clean operation'
 
+# Release tests build helpers in the selected configuration. The Windows
+# runner must receive the same value instead of falling back to development.
+release_windows_block=$(awk '
+    /^test-release:/ { in_release = 1 }
+    in_release && /windows-x64\)/ { in_windows = 1 }
+    in_windows { print }
+    in_windows && /;;/ { exit }
+' "$PROJECT_ROOT/Makefile")
+assert_contains "$release_windows_block" 'tests/release/windows.ps1'
+assert_contains "$release_windows_block" \
+    "CUP_TEST_CONFIGURATION='\$(CUP_TEST_CONFIGURATION)'"
+
 # Every existing component of a managed build path is inspected before a
 # marker is created or a tree is removed. A symlinked ancestor must never turn
 # BUILD_DIR into an alias for an external directory.
