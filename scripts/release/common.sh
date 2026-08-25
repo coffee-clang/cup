@@ -227,8 +227,18 @@ validate_release_asset_modes() {
         actual_mode=$(stat -c '%a' "$asset_directory/$asset_name" 2>/dev/null ||
             stat -f '%Lp' "$asset_directory/$asset_name" 2>/dev/null) ||
             fail "could not inspect release asset mode: $asset_name"
-        [ "$actual_mode" = "${expected_mode#0}" ] ||
+        if [ "$actual_mode" != "${expected_mode#0}" ]; then
+            # MSYS2 synthesizes the executable bit for .exe files from the filename rather
+            # than a portable Unix mode. The final release snapshot is assembled on POSIX and
+            # still normalizes the Windows executable to the canonical 0644 mode there.
+            case "${MSYSTEM:-}" in
+                UCRT64|CLANG64)
+                    [ "$asset_name" = cup-windows-x64.exe ] &&
+                        [ "$expected_mode" = 0644 ] && [ "$actual_mode" = 755 ] && continue
+                    ;;
+            esac
             fail "release asset has mode $actual_mode, expected ${expected_mode#0}: $asset_name"
+        fi
     done
 }
 

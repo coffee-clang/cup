@@ -172,6 +172,8 @@ create_work_directory() {
     WORK=$(mktemp -d "${TMPDIR:-/tmp}/cup-install.XXXXXX") ||
         fail 'could not create the private transport directory'
     chmod 0700 "$WORK" || fail 'could not protect the transport directory'
+    WORK=$(CDPATH= cd -- "$WORK" && pwd -P) ||
+        fail 'could not resolve the private transport directory'
     case "$WORK" in
         /*)
             ;;

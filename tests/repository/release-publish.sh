@@ -263,6 +263,35 @@ done
 [ "$(stat -c '%a' "$assembled")" = 755 ] ||
     fail 'assembled candidate directory mode is not 0755'
 
+# MSYS2 synthesizes executable mode bits for .exe files even when the canonical
+# transported mode is 0644. Validate the release-mode policy directly so the
+# fixture does not change the path-ops platform backend selected by uname.
+mode_bin=$TMP_ROOT/mode-bin
+mode_fixture=$TMP_ROOT/mode-fixture
+mkdir -p "$mode_bin" "$mode_fixture"
+printf 'windows\n' > "$mode_fixture/cup-windows-x64.exe"
+cat > "$mode_bin/stat" <<'MOCK_MODE_STAT'
+#!/usr/bin/env sh
+set -eu
+printf '%s\n' "${CUP_TEST_WINDOWS_EXE_MODE:?}"
+MOCK_MODE_STAT
+chmod 0755 "$mode_bin/stat"
+validate_windows_mode() {
+    mode=$1
+    PATH="$mode_bin:$PATH" MSYSTEM=UCRT64 CUP_TEST_WINDOWS_EXE_MODE="$mode" \
+        sh -c 'SCRIPT_DIR=$1; . "$SCRIPT_DIR/common.sh"; \
+            validate_release_asset_modes "$2" cup-windows-x64.exe' \
+        sh "$ROOT/scripts/release" "$mode_fixture"
+}
+validate_windows_mode 755
+if validate_windows_mode 777 >"$TMP_ROOT/msys-bad.out" 2>&1; then
+    fail 'MSYS2 mode tolerance accepted an unrelated Windows executable mode'
+fi
+assert_contains "$(cat "$TMP_ROOT/msys-bad.out")" \
+    'release asset has mode 777, expected 644: cup-windows-x64.exe'
+[ "$(stat -c '%a' "$assembled/cup-windows-x64.exe")" = 644 ] ||
+    fail 'MSYS2 mode tolerance changed the canonical Windows executable mode'
+
 # Invalid provenance fails before any GitHub operation.
 cp "$DIST/provenance.txt" "$TMP_ROOT/provenance.valid"
 printf 'release_run_attempt=%s\n' "$RELEASE_RUN_ATTEMPT" >> "$DIST/provenance.txt"

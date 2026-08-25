@@ -276,6 +276,38 @@ printf '%s\n' "$bsd_wc_output" | grep -F "cup $VERSION installed successfully." 
     fail 'installer rejected BSD-style padded wc output'
 }
 
+# macOS temporary directories may be reached through aliases such as /var or
+# /tmp. The installer must pass the physical private directory to the bootstrap
+# so the bootstrap's no-follow directory-chain validation remains meaningful.
+physical_tmp=$WORK/physical-tmp
+alias_tmp=$WORK/alias-tmp
+mkdir -m 0700 "$physical_tmp"
+ln -s "$physical_tmp" "$alias_tmp"
+physical_fixture=$WORK/fixture-physical-tmp
+physical_home=$WORK/home-physical-tmp
+physical_trace=$WORK/bootstrap-physical-tmp.trace
+physical_downloads=$WORK/downloads-physical-tmp.trace
+prepare_fixture "$physical_fixture"
+mkdir -m 0700 "$physical_home"
+: > "$physical_downloads"
+physical_output=$(
+    HOME="$physical_home" TMPDIR="$alias_tmp" PATH="$WORK/mock-bin:$PATH" \
+        CUP_FIXTURE="$physical_fixture" CUP_DOWNLOAD_TRACE="$physical_downloads" \
+        CUP_BOOTSTRAP_TRACE="$physical_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+        CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1
+)
+printf '%s\n' "$physical_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
+    printf '%s\n' "$physical_output" >&2
+    fail 'installer rejected a private transport directory reached through a symlink alias'
+}
+physical_source=$(tr -d '\n' < "$physical_trace")
+case "$physical_source" in
+    "$physical_tmp"/cup-install.*) ;;
+    *) fail "installer did not canonicalize the private transport directory: $physical_source" ;;
+esac
+[ ! -e "$physical_source" ] || fail 'canonical private transport directory was not removed'
+
 # The installer must not report success until the installed binary can acquire
 # its runtime snapshot. The fixture makes the first readiness probe fail and the
 # second succeed, modelling the detached helper releasing its lock.
