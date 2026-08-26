@@ -431,6 +431,7 @@ unsigned long system_get_process_id(void) {
 
 static HANDLE handoff_parent_signal = NULL;
 static HANDLE handoff_parent_authority = NULL;
+static const DWORD uninstall_carrier_ready_timeout_ms = 30000u;
 
 /* The authority key comes from the user-profile directory identity, never from .cup itself.
  * Root admission can therefore reject an active detach before opening anything in the managed
@@ -805,10 +806,12 @@ static CupError start_uninstall_cleanup_carrier(HANDLE helper_process,
 
     wait_handles[0] = ready_event;
     wait_handles[1] = carrier.hProcess;
+    /* PowerShell startup is external to CUP and can be delayed by host load. Keep the pre-handoff
+     * readiness wait bounded while allowing a cold carrier process to initialize. */
     wait_result = WaitForMultipleObjects((DWORD)(sizeof(wait_handles) / sizeof(wait_handles[0])),
                                          wait_handles,
                                          FALSE,
-                                         10000);
+                                         uninstall_carrier_ready_timeout_ms);
     if (wait_result != WAIT_OBJECT_0) {
         if (wait_result == WAIT_FAILED) {
             *native_error = GetLastError();

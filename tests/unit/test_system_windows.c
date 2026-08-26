@@ -823,7 +823,9 @@ static void test_handoff_helper_start(void) {
                                     NULL,
                                     &startup,
                                     &parent));
-    TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(parent.hProcess, 30000));
+    /* The outer probe timeout must exceed the production carrier readiness bound and its bounded
+     * failure cleanup so the test observes the parent's result instead of racing it. */
+    TEST_ASSERT_EQUAL_UINT32(WAIT_OBJECT_0, WaitForSingleObject(parent.hProcess, 60000));
     TEST_ASSERT_TRUE(GetExitCodeProcess(parent.hProcess, &exit_code));
     TEST_ASSERT_TRUE(CloseHandle(parent.hThread));
     TEST_ASSERT_TRUE(CloseHandle(parent.hProcess));
