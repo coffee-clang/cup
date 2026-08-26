@@ -166,12 +166,10 @@ compile_helper() {
     fi
 }
 
-if helper_scope_applies posix "$PLATFORM"; then
-    archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
-        PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
-    compile_helper posix archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
-        $archive_libs
-fi
+archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
+    PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
+compile_helper all archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
+    $archive_libs
 compile_helper posix process-group "$ROOT/tests/helpers/process-group.c"
 
 event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \

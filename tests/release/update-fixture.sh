@@ -90,7 +90,10 @@ next_version=$(next_test_version "$VERSION") ||
     fail "no supported semantic version follows $VERSION"
 # Keep the test-only VERSION outside the checkout so an official fixture build remains clean even
 # when BUILD_DIR names a custom, non-ignored directory inside the repository.
-version_file=$(mktemp "${TMPDIR:-/tmp}/cup-release-update-version.XXXXXX") ||
+temporary_parent=$(cup_path_resolve_host_temporary_directory \
+    'release update VERSION temporary directory') ||
+    fail 'could not resolve update VERSION temporary directory'
+version_file=$(mktemp "$temporary_parent/cup-release-update-version.XXXXXX") ||
     fail 'could not create update VERSION fixture'
 # Keep the recursive Make selector relative when the parent BUILD_DIR is relative; converting it
 # to an absolute checkout path would incorrectly reject otherwise-supported checkout spaces.

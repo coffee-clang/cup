@@ -5,7 +5,6 @@ param(
     [string]$CupExecutablePath
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
-. (Join-Path $PSScriptRoot "..\..\support\windows\archive-fixtures.ps1")
 
 try {
     Initialize-TestEnvironment -Name "filesystem" -ExecutablePath $CupExecutablePath
@@ -33,13 +32,10 @@ try {
     $zipLongPath = (
         "clang-$longVersion-windows-x64-windows-x64/" +
         $relativeLongPath.Replace('\', '/'))
-    $extraEntries = @(
-        [pscustomobject]@{
-            Name = $zipLongPath
-            Content = "long path payload`n"
-        }
-    )
-    [void](New-CustomZipPackage -Version $longVersion -ExtraEntries $extraEntries)
+    [void](New-ZipPackageFixture `
+        -Version $longVersion `
+        -ExtraPath $zipLongPath `
+        -ExtraContent "long path payload`n")
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@$longVersion") | Out-Null
     $longPackageRoot = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\$longVersion")

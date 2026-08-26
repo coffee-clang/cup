@@ -11,9 +11,20 @@ export TESTS_ROOT
 
 test_begin build-system
 
+case "$(uname -s 2>/dev/null || true)" in
+    MSYS*|MINGW*|CYGWIN*)
+        printf '%s\n' \
+            'Build-system repository contracts are POSIX-hosted; native Windows build tooling is covered by path-safety and source tests.'
+        exit 0
+        ;;
+esac
+
 # Make command-line variables from an outer repository gate must not alter
 # the isolated dry runs below. Every scenario supplies the inputs it owns.
-unset MAKEFLAGS MAKEOVERRIDES BUILD_DIR
+unset MAKEFLAGS MAKEOVERRIDES BUILD_DIR DEPS_ROOT DEPS_PREFIX \
+    CUP_DEPENDENCY_PROFILE CUP_TEST_PLATFORM PLATFORM CC WINDRES \
+    MACOSX_DEPLOYMENT_TARGET OS MSYSTEM MINGW_PREFIX \
+    PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432
 
 # A recursive make's long --no-print-directory option is not the short -n flag.
 # The build lock must remain active for that normal recursive invocation, while
@@ -340,8 +351,10 @@ assert_contains "$new_dependency_metadata" "dependency_toolchain_sha256=$depende
 # Use the real project Makefile with deterministic local stubs so this repository contract exercises
 # Make's timestamp graph without requiring native dependency compilation.
 graph_project=$TMP_ROOT/semantic-graph-project
-cp -R "$PROJECT_ROOT" "$graph_project"
-rm -rf "$graph_project/build"
+mkdir "$graph_project"
+for graph_entry in Makefile VERSION certs config include scripts src; do
+    cp -R "$PROJECT_ROOT/$graph_entry" "$graph_project/"
+done
 
 cat > "$graph_project/scripts/dependencies/verify.sh" <<'EOF_GRAPH_VERIFY'
 #!/bin/sh
@@ -483,7 +496,8 @@ graph_make() {
         make -C "$graph_project" --no-print-directory -s \
         PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=development \
         CUP_INTERNAL_DEPS_TARGET=deps-check BUILD_DIR="$graph_build" \
-        DEPS_PREFIX="$prefix" CC="$graph_cc" all
+        DEPS_ROOT="$TMP_ROOT/semantic-deps-root" DEPS_PREFIX="$prefix" \
+        CC="$graph_cc" all
 }
 
 : > "$graph_trace"
@@ -714,7 +728,7 @@ cat >"$FAKE_UNAME_DIR/uname" <<'EOF_UNAME'
 #!/bin/sh
 case "$1" in
     -s)
-        printf '%s\n' UnknownOS
+        printf '%s\n' Linux
         ;;
     -m)
         printf '%s\n' unknown-architecture
@@ -727,7 +741,8 @@ EOF_UNAME
 chmod +x "$FAKE_UNAME_DIR/uname"
 if (
     cd "$PROJECT_ROOT"
-    PATH="$FAKE_UNAME_DIR:$PATH" MAKEFLAGS= MAKEOVERRIDES= \
+    PATH="$FAKE_UNAME_DIR:$PATH" OS= PROCESSOR_ARCHITEW6432= \
+        PROCESSOR_ARCHITECTURE= MAKEFLAGS= MAKEOVERRIDES= \
         PLATFORM=linux/amd64 make --no-print-directory -n all
 ) >"$TMP_ROOT/make-unsupported-native.out" 2>&1; then
     fail 'unsupported native architecture was silently treated as x64'
@@ -1103,7 +1118,7 @@ windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
 assert_not_contains "$windows_helper_list" 'binary-patch.exe'
 assert_contains "$windows_helper_list" 'network-helper.exe'
 assert_not_contains "$windows_helper_list" 'process-group'
-assert_not_contains "$windows_helper_list" 'archive-fixture'
+assert_contains "$windows_helper_list" 'archive-fixture.exe'
 posix_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list linux-x64)
 assert_contains "$posix_helper_list" 'archive-fixture'
 assert_contains "$posix_helper_list" 'process-group'
@@ -1112,6 +1127,17 @@ assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
+assert_contains "$helper_builder_text" 'compile_helper all archive-fixture'
+windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
+assert_contains "$windows_common_text" 'function New-ZipPackageFixture'
+assert_contains "$windows_common_text" "Get-TestHelperPath -Name 'archive-fixture'"
+[ ! -e "$PROJECT_ROOT/tests/support/windows/archive-fixtures.ps1" ] ||
+    fail 'retired Windows archive-fixtures.ps1 still exists'
+windows_release_text=$(cat "$PROJECT_ROOT/tests/release/windows.ps1")
+assert_contains "$windows_release_text" 'slow-http-server --ready-file'
+assert_not_contains "$windows_release_text" 'slow-http-server.ps1'
+[ ! -e "$PROJECT_ROOT/tests/support/windows/slow-http-server.ps1" ] ||
+    fail 'retired Windows slow-http-server.ps1 still exists'
 update_fixture_builder="$PROJECT_ROOT/tests/release/update-fixture.sh"
 [ "$($update_fixture_builder --next-version 9.9.9)" = 9.9.10 ] ||
     fail 'release update fixture still depends on same-length versions'
@@ -1125,7 +1151,9 @@ if "$update_fixture_builder" --next-version '1.*.3' >/dev/null 2>&1; then
 fi
 update_fixture_text=$(cat "$update_fixture_builder")
 assert_contains "$update_fixture_text" 'CUP_VERSION_FILE=$version_file'
-assert_contains "$update_fixture_text" 'mktemp "${TMPDIR:-/tmp}/cup-release-update-version.XXXXXX"'
+assert_contains "$update_fixture_text" 'cup_path_resolve_host_temporary_directory'
+assert_contains "$update_fixture_text" 'mktemp "$temporary_parent/cup-release-update-version.XXXXXX"'
+assert_not_contains "$update_fixture_text" '${TMPDIR:-/tmp}/cup-release-update-version.XXXXXX'
 assert_not_contains "$update_fixture_text" 'version_file=$BUILD_ROOT/'
 assert_contains "$update_fixture_text" 'set -- make -C "$ROOT" --no-print-directory release-candidate'
 assert_contains "$update_fixture_text" 'RELEASE_COMMON_DIR=$fixture_common_dir'

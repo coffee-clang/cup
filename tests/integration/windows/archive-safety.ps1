@@ -5,7 +5,18 @@ param(
     [string]$CupExecutablePath
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
-. (Join-Path $PSScriptRoot "..\..\support\windows\archive-fixtures.ps1")
+
+
+function Assert-InstallRejected([string]$Version) {
+    $output = Invoke-Cup `
+        -CommandArgs @('install', 'compiler', "clang@$Version") `
+        -ExpectFailure
+    Assert-Contains $output 'Cached package is invalid; downloading it again...'
+    Assert-NotContains `
+        (Invoke-Cup -CommandArgs @('list', 'compiler')) `
+        "compiler:clang@$Version"
+    return $output
+}
 
 try {
     Initialize-TestEnvironment -Name "archive-safety" -ExecutablePath $CupExecutablePath
@@ -41,16 +52,10 @@ try {
         -Value $caseVersion `
         -Mode "Prepend"
     $casePackage = "clang-$caseVersion-windows-x64-windows-x64"
-    $caseEntries = @(
-        [pscustomobject]@{
-            Name = "$casePackage/bin/CLANG.cmd"
-            Content = "collision`n"
-        }
-    )
-    $caseFixture = New-CustomZipPackage -Version $caseVersion -ExtraEntries $caseEntries
-    Assert-ZipContainsExactEntries -Archive $caseFixture.Archive -Names @(
-        "$casePackage/bin/clang.cmd",
-        "$casePackage/bin/CLANG.cmd")
+    [void](New-ZipPackageFixture `
+        -Version $caseVersion `
+        -ExtraPath "$casePackage/bin/CLANG.cmd" `
+        -ExtraContent "collision`n")
     [void](Assert-InstallRejected $caseVersion)
 
     $traversalVersion = "30.1.2"
@@ -61,17 +66,10 @@ try {
         -Value $traversalVersion `
         -Mode "Prepend"
     $traversalPackage = "clang-$traversalVersion-windows-x64-windows-x64"
-    $traversalEntries = @(
-        [pscustomobject]@{
-            Name = "$traversalPackage/../escape.txt"
-            Content = "escape`n"
-        }
-    )
-    $traversalFixture = New-CustomZipPackage `
+    [void](New-ZipPackageFixture `
         -Version $traversalVersion `
-        -ExtraEntries $traversalEntries
-    Assert-ZipContainsExactEntries -Archive $traversalFixture.Archive -Names @(
-        "$traversalPackage/../escape.txt")
+        -ExtraPath "$traversalPackage/../escape.txt" `
+        -ExtraContent "escape`n")
     [void](Assert-InstallRejected $traversalVersion)
     $escapedPath = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\escape.txt")
@@ -86,17 +84,10 @@ try {
         -Mode "Prepend"
     $backslashPackage = "clang-$backslashVersion-windows-x64-windows-x64"
     $backslashEntry = "$backslashPackage/bin\escape.cmd"
-    $backslashEntries = @(
-        [pscustomobject]@{
-            Name = $backslashEntry
-            Content = "escape`n"
-        }
-    )
-    $backslashFixture = New-CustomZipPackage `
+    [void](New-ZipPackageFixture `
         -Version $backslashVersion `
-        -ExtraEntries $backslashEntries
-    Assert-ZipContainsExactEntries -Archive $backslashFixture.Archive -Names @(
-        $backslashEntry)
+        -ExtraPath $backslashEntry `
+        -ExtraContent "escape`n")
     [void](Assert-InstallRejected $backslashVersion)
 
     $mismatchVersion = "30.1.3"
@@ -112,7 +103,7 @@ try {
         -Field "default_format" `
         -Value "tar.gz" `
         -Mode "Replace"
-    $mismatchFixture = New-CustomZipPackage -Version $mismatchVersion -ExtraEntries @()
+    $mismatchFixture = New-ZipPackageFixture -Version $mismatchVersion
     $mismatchArchive = Join-Path (Split-Path -Parent $mismatchFixture.Archive) `
         "$($mismatchFixture.PackageName).tar.gz"
     Move-Item -LiteralPath $mismatchFixture.Archive -Destination $mismatchArchive

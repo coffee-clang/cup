@@ -697,6 +697,7 @@ SRC := $(COMMON_SRC) $(SYSTEM_SRC)
 CA_BUNDLE_OBJ := $(OBJ_DIR)/ca_bundle.o
 OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRC)) $(CA_BUNDLE_OBJ) \
     $(COVERAGE_ENTRY_OBJ) $(RESOURCE_OBJ)
+OBJECT_DIRS := $(sort $(dir $(OBJ)))
 override PROJECT_HEADERS := $(wildcard include/*.h include/third_party/*.h)
 override PROJECT_HEADER_DIRS := include include/third_party
 MDBOOK := $(if $(wildcard ./mdbook),./mdbook,mdbook)
@@ -764,7 +765,7 @@ endif
     validate-release test test-integration test-unit test-unit-build \
     test-helpers _test-helpers test-build test-release test-windows _test-windows \
     test-portability-linux test-coverage test-sanitizers update-ca-bundle \
-    check-ca-bundle FORCE
+    check-ca-bundle FORCE _prepare-object-directories
 
 BUILD_RECURSE = $(MAKE) --no-print-directory _build \
     PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
@@ -899,6 +900,12 @@ $(BUILD_ROOT_MARKER):
 	fi; \
 	cup_path_prepare_build_root "$$root"
 
+_prepare-object-directories: | $(BUILD_ROOT_MARKER)
+	@. '$(PATH_SAFETY)'; \
+	for directory in $(foreach directory,$(OBJECT_DIRS),'$(abspath $(directory))'); do \
+		cup_path_prepare_child_directory '$(BUILD_ROOT)' "$$directory" 'object directory' || exit 1; \
+	done
+
 deps:
 	@case "$(PLATFORM)" in \
 		linux-*|macos-*) builder=./scripts/dependencies/build-posix.sh ;; \
@@ -1015,30 +1022,25 @@ $(BUILD_CONFIG): FORCE Makefile scripts/build/write-config.sh | $(BUILD_ROOT_MAR
 		CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/build/write-config.sh '$(abspath $@)'
 
 $(OBJ): $(BUILD_CONFIG) $(PROJECT_HEADERS) $(PROJECT_HEADER_DIRS) $(VERSION_HEADER) \
-        $(CA_BUNDLE_HEADER) Makefile | $(VERSION_STAMP) $(CA_BUNDLE_STAMP)
+        $(CA_BUNDLE_HEADER) Makefile | $(VERSION_STAMP) $(CA_BUNDLE_STAMP) _prepare-object-directories
 
 $(TARGET): $(OBJ) $(BUILD_CONFIG) Makefile
 	@. '$(PATH_SAFETY)'; cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(BIN_DIR))' 'binary directory'
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(OBJ) -o "$@" $(LDFLAGS) $(LDLIBS)
 
 $(CA_BUNDLE_OBJ): $(CA_BUNDLE_SOURCE) $(CA_BUNDLE_HEADER) $(BUILD_CONFIG)
-	@. '$(PATH_SAFETY)'; cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(dir $@))' 'object directory'
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c "$(CA_BUNDLE_SOURCE)" -o "$@"
 
 ifneq ($(strip $(COVERAGE_ENTRY_OBJ)),)
 $(COVERAGE_ENTRY_OBJ): tests/helpers/coverage-entry.c $(BUILD_CONFIG)
-	@. '$(PATH_SAFETY)'; cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(dir $@))' 'object directory'
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c "$<" -o "$@"
 endif
 
 $(OBJ_DIR)/%.o: src/%.c $(BUILD_CONFIG)
-	@. '$(PATH_SAFETY)'; cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(dir $@))' 'object directory'
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c "$<" -o "$@"
 
 ifeq ($(PLATFORM),windows-x64)
 $(RESOURCE_OBJ): $(VERSION_RESOURCE) $(VERSION_HEADER) $(BUILD_CONFIG) Makefile
-	@. '$(PATH_SAFETY)'; \
-		cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(dir $@))' 'resource object directory'
 	$(WINDRES) -I$(call escape_spaces,$(GENERATED_DIR)) "$<" -O coff -o "$@"
 endif
 
@@ -1205,6 +1207,7 @@ test-integration: $(CUP_INTERNAL_DEPS_TARGET)
 		CUP_TEST_CONFIGURATION=development
 	@case '$(PLATFORM)' in \
 		windows-x64) \
+			CUP_TEST_PLATFORM=windows-x64 ./tests/repository/path-safety.sh && \
 			CUP_TEST_BUILD_ROOT="$$(cygpath -w '$(BUILD_ROOT)')" \
 			powershell.exe -NoProfile -ExecutionPolicy Bypass \
 				-File "$$(cygpath -w '$(PROJECT_ROOT)/tests/runners/integration-windows.ps1')" \
@@ -1336,6 +1339,7 @@ _test-windows: $(CUP_INTERNAL_DEPS_TARGET)
 		PLATFORM=windows-x64 \
 		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)'
+	@CUP_TEST_PLATFORM=windows-x64 ./tests/repository/path-safety.sh
 	@env \
 		CUP_TEST_PLATFORM=windows-x64 \
 		CUP_TEST_BUILD_ROOT='$(BUILD_ROOT)' \

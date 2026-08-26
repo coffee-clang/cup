@@ -239,6 +239,132 @@ static struct event *install_stop_signal(struct event_base *base, int signal_num
 }
 #endif
 
+/* One-shot response used to test the installer's final low-speed window. */
+static int send_all(evutil_socket_t socket_fd,
+                    const unsigned char *data,
+                    size_t size) {
+    size_t sent = 0;
+
+    while (sent < size) {
+        int count = send(socket_fd,
+                         (const char *)data + sent,
+                         (int)(size - sent),
+                         0);
+        if (count <= 0) {
+            return 0;
+        }
+        sent += (size_t)count;
+    }
+    return 1;
+}
+
+static int read_http_headers(evutil_socket_t socket_fd) {
+    unsigned char tail[4] = {0, 0, 0, 0};
+    size_t count = 0;
+
+    while (count < REQUEST_LIMIT) {
+        unsigned char byte;
+        int received = recv(socket_fd, (char *)&byte, 1, 0);
+
+        if (received != 1) {
+            return 0;
+        }
+        tail[count % 4] = byte;
+        count++;
+        if (count >= 4 &&
+            tail[(count - 4) % 4] == '\r' &&
+            tail[(count - 3) % 4] == '\n' &&
+            tail[(count - 2) % 4] == '\r' &&
+            tail[(count - 1) % 4] == '\n') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int run_slow_http_server(int argc, char **argv) {
+    static const unsigned char header[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 2760\r\n"
+        "Connection: close\r\n\r\n";
+    unsigned char block[512];
+    unsigned char tail[100];
+    struct sockaddr_in address;
+    ev_socklen_t address_length = (ev_socklen_t)sizeof(address);
+    const evutil_socket_t invalid_socket = (evutil_socket_t)EVUTIL_INVALID_SOCKET;
+    evutil_socket_t listener = invalid_socket;
+    evutil_socket_t client = invalid_socket;
+    unsigned short port = 0;
+    const char *ready_file;
+    int index;
+    int status = 1;
+
+    if (argc != 2 || strcmp(argv[0], "--ready-file") != 0) {
+        fprintf(stderr,
+                "usage: network-helper slow-http-server --ready-file PATH\n");
+        return 2;
+    }
+    ready_file = argv[1];
+
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(0);
+    if (evutil_inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) {
+        return 1;
+    }
+    listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == invalid_socket ||
+        bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(listener, 1) != 0 ||
+        getsockname(listener, (struct sockaddr *)&address, &address_length) != 0) {
+        fprintf(stderr, "slow HTTP fixture could not bind loopback socket\n");
+        goto cleanup;
+    }
+    port = ntohs(address.sin_port);
+    if (port == 0 || !write_ready_file(ready_file, port)) {
+        fprintf(stderr, "slow HTTP fixture could not publish readiness\n");
+        goto cleanup;
+    }
+
+    client = accept(listener, NULL, NULL);
+    if (client == invalid_socket || !read_http_headers(client)) {
+        fprintf(stderr, "slow HTTP fixture did not receive complete request headers\n");
+        goto cleanup;
+    }
+    if (!send_all(client, header, sizeof(header) - 1)) {
+        goto cleanup;
+    }
+
+    memset(block, 'a', sizeof(block));
+    for (index = 0; index < 5; ++index) {
+        if (!send_all(client, block, sizeof(block))) {
+            goto cleanup;
+        }
+        if (index != 4) {
+            sleep_milliseconds(300);
+        }
+    }
+
+    memset(tail, 'b', sizeof(tail));
+    for (index = 0; index < 2; ++index) {
+        sleep_milliseconds(600);
+        if (!send_all(client, tail, sizeof(tail))) {
+            goto cleanup;
+        }
+    }
+    sleep_milliseconds(300);
+    status = 0;
+
+cleanup:
+    if (client != invalid_socket) {
+        evutil_closesocket(client);
+    }
+    if (listener != invalid_socket) {
+        evutil_closesocket(listener);
+    }
+    return status;
+}
+
 /* Static HTTP fixture server. */
 static int parse_http_options(int argc, char **argv, HttpOptions *options) {
     int index;
@@ -756,7 +882,7 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         fprintf(stderr,
-                "usage: %s http-server ... | connect-proxy ...\n",
+                "usage: %s http-server ... | slow-http-server ... | connect-proxy ...\n",
                 argv[0]);
         return 2;
     }
@@ -766,6 +892,8 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "http-server") == 0) {
         status = run_http_server(argc - 2, argv + 2);
+    } else if (strcmp(argv[1], "slow-http-server") == 0) {
+        status = run_slow_http_server(argc - 2, argv + 2);
     } else if (strcmp(argv[1], "connect-proxy") == 0) {
         status = run_connect_proxy(argc - 2, argv + 2);
     } else {

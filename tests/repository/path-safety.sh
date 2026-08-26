@@ -18,9 +18,109 @@ file_mode() {
 
 test_begin path-safety
 
-case "$(uname -s 2>/dev/null || true)" in
+HOST_SYSTEM=$(uname -s 2>/dev/null || true)
+case "$HOST_SYSTEM" in
     MSYS*|MINGW*|CYGWIN*)
-        printf '%s\n' 'Path-safety descriptor-race tests are POSIX-native only.'
+        command -v cygpath >/dev/null 2>&1 || fail 'cygpath is required for Windows path-safety tests'
+        command -v cmd.exe >/dev/null 2>&1 || fail 'cmd.exe is required for Windows path-safety tests'
+        . "$PROJECT_ROOT/scripts/lib/path-safety.sh"
+
+        # MSYS drive mounts such as /c are native filesystem roots after
+        # cygpath conversion and must be rejected before any native mutation.
+        system_drive=$(MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c 'echo %SystemDrive%' |
+            tr -d '\r' | sed -n '1p')
+        [ -n "$system_drive" ] || fail 'could not resolve the Windows system drive'
+        drive_root=$(cygpath -u "$system_drive/") || fail 'could not convert the Windows system drive'
+        while [ "$drive_root" != / ]; do
+            case "$drive_root" in
+                */) drive_root=${drive_root%/} ;;
+                *) break ;;
+            esac
+        done
+        if cup_path_validate_absolute_clean "$drive_root" 'Windows drive root' \
+                >"$TMP_ROOT/drive-root.out" 2>&1; then
+            fail 'Windows drive root was accepted as a managed shell path'
+        fi
+        assert_contains "$(cat "$TMP_ROOT/drive-root.out")" 'filesystem root'
+
+        temporary_parent=$TMP_ROOT/temporary-parent
+        mkdir "$temporary_parent"
+        resolved_temporary_parent=$(TMPDIR="$temporary_parent///" \
+            cup_path_resolve_host_temporary_directory 'temporary parent test')
+        assert_equals "$resolved_temporary_parent" "$temporary_parent"
+        native_temporary_parent=$(cygpath -w "$temporary_parent")
+        resolved_native_temporary_parent=$(TMPDIR="${native_temporary_parent}\\" \
+            cup_path_resolve_host_temporary_directory 'native temporary parent test')
+        assert_equals "$resolved_native_temporary_parent" "$temporary_parent"
+
+        # No global MSYS conversion exclusion is allowed. The native carrier
+        # must preserve shell-owned environment values and restore conversion
+        # only when it starts the nested MSYS command.
+        build_probe=$TMP_ROOT/build-boundary
+        cup_path_prepare_build_root "$build_probe"
+        lock_probe=$TMP_ROOT/lock-boundary
+        : > "$lock_probe"
+        expected_version=$PROJECT_ROOT/VERSION
+        probe_deps_root=$TMP_ROOT/deps-root
+        probe_deps_prefix=$probe_deps_root/install
+        expected_msystem=${MSYSTEM:-}
+        expected_mingw_prefix=${MINGW_PREFIX:-}
+        for operation in run-lock run-build; do
+            if [ "$operation" = run-lock ]; then
+                probe_path=$lock_probe
+            else
+                probe_path=$build_probe
+            fi
+            MSYS2_ARG_CONV_EXCL= MSYS2_ENV_CONV_EXCL= \
+            CUP_VERSION_FILE="$expected_version" \
+            DEPS_ROOT="$probe_deps_root" DEPS_PREFIX="$probe_deps_prefix" \
+                cup_path_ops "$operation" "$probe_path" -- sh -eu -c '
+                    [ "${MSYSTEM:-}" = "$1" ]
+                    [ "${MINGW_PREFIX:-}" = "$2" ]
+                    [ "${DEPS_ROOT:-}" = "$3" ]
+                    [ "${DEPS_PREFIX:-}" = "$4" ]
+                    [ "${CUP_VERSION_FILE:-}" = "$5" ]
+                ' sh "$expected_msystem" "$expected_mingw_prefix" \
+                    "$probe_deps_root" "$probe_deps_prefix" "$expected_version" ||
+                fail "$operation did not preserve the MSYS shell environment"
+        done
+
+        helper=$("$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper)
+        [ -f "$helper" ] && [ ! -L "$helper" ] && [ -x "$helper" ] ||
+            fail "native Windows filesystem helper is unsafe: $helper"
+        helper_protocol=$("$PROJECT_ROOT/scripts/lib/path-ops.sh" \
+            --resolved-helper "$helper" protocol)
+        assert_equals "$helper_protocol" 3
+        helper_mode=$(file_mode "$helper")
+        case "$helper_mode" in
+            0[0-7][0-7][0-7]) helper_mode=${helper_mode#0} ;;
+        esac
+        case "${helper_mode#?}" in
+            *[2367]*) fail "native Windows filesystem helper is shared-writable: $helper_mode" ;;
+        esac
+
+        # Windows junctions are the native equivalent relevant to no-follow
+        # path ownership. MSYS ln -s may deep-copy instead, so create the
+        # reparse point with the Windows primitive that the product must reject.
+        external_parent=$TMP_ROOT/external-parent
+        junction_parent=$TMP_ROOT/junction-parent
+        mkdir "$external_parent"
+        external_windows=$(cygpath -w "$external_parent")
+        junction_windows=$(cygpath -w "$junction_parent")
+        MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c mklink /J \
+            "$junction_windows" "$external_windows" >/dev/null 2>&1 ||
+            fail 'could not create Windows junction path-safety fixture'
+        if cup_path_prepare_build_root "$junction_parent/output" \
+                >"$TMP_ROOT/junction-parent.out" 2>&1; then
+            fail 'build root marker followed a Windows junction parent'
+        fi
+        assert_missing "$external_parent/output"
+        MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c rmdir "$junction_windows" \
+            >/dev/null 2>&1 ||
+            fail 'could not remove Windows junction path-safety fixture'
+
+        cup_path_clean_build_root "$build_probe"
+        printf '%s\n' 'Native Windows path-boundary tests passed.'
         exit 0
         ;;
 esac
@@ -32,6 +132,14 @@ if cup_path_validate_absolute_clean "$TMP_ROOT/back\slash" 'backslash test path'
     fail 'single backslash was accepted in a managed POSIX path'
 fi
 assert_contains "$(cat "$TMP_ROOT/backslash.out")" 'must use forward slashes'
+
+# Host temporary-directory resolution owns TMPDIR normalization before a path
+# enters the strict managed-path contract.
+temporary_parent=$TMP_ROOT/temporary-parent
+mkdir "$temporary_parent"
+resolved_temporary_parent=$(TMPDIR="$temporary_parent///" \
+    cup_path_resolve_host_temporary_directory 'temporary parent test')
+assert_equals "$resolved_temporary_parent" "$temporary_parent"
 
 helper=$TMP_ROOT/path-ops-testing
 cc -std=c11 -O2 -Wall -Wextra -Werror -U_WIN32 \
@@ -213,11 +321,18 @@ assert_not_contains "$(cat "$PROJECT_ROOT/include/windows_utf.h")" 'windows_prep
 launcher_winnt=$(sed -n 's/^WINDOWS_WINNT=//p' "$PROJECT_ROOT/scripts/lib/path-ops.sh")
 make_winnt=$(sed -n 's/^CUP_WINDOWS_WINNT := //p' "$PROJECT_ROOT/Makefile")
 assert_equals "$launcher_winnt" "$make_winnt"
-assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" '/ucrt64/bin/gcc'
-assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" '/clang64/bin/clang'
-assert_contains "$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")" "MSYS2_ARG_CONV_EXCL='*' exec"
+path_ops_launcher=$(cat "$PROJECT_ROOT/scripts/lib/path-ops.sh")
+assert_contains "$path_ops_launcher" '/ucrt64/bin/gcc'
+assert_contains "$path_ops_launcher" '/clang64/bin/clang'
+assert_contains "$path_ops_launcher" "MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*'"
+assert_contains "$path_ops_launcher" 'NATIVE_PATH=$(native_path "$2")'
+assert_contains "$path_ops_launcher" '--resolved-helper'
 path_ops_source=$(cat "$PROJECT_ROOT/scripts/lib/path-ops.c")
 assert_contains "$path_ops_source" '_putenv_s("MSYS2_ARG_CONV_EXCL", "")'
+assert_contains "$path_ops_source" '_putenv_s("MSYS2_ENV_CONV_EXCL", "")'
+assert_contains "$path_ops_source" 'check_shell_absolute(argv[2])'
+assert_contains "$path_ops_source" 'check_shell_within(argv[2], argv[3])'
+assert_contains "$path_ops_launcher" 'unsupported Windows filesystem-helper command'
 assert_contains "$path_ops_source" 'return path_equal(parent, child_prefix) != 0;'
 assert_contains "$path_ops_source" 'if (path_equal(source, destination)'
 
@@ -249,6 +364,38 @@ cat > "$hash_bin/shasum" <<'EOF_BROKEN_SHASUM'
 exit 127
 EOF_BROKEN_SHASUM
 chmod 0700 "$hash_bin/shasum"
+fast_protocol=$(PATH="$hash_bin:/usr/bin:/bin" CUP_PATH_OPS_TESTING=1 \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" --resolved-helper "$helper" protocol)
+assert_equals "$fast_protocol" 3
+
+# MSYS2 may project chmod 0700 as 0755 on NTFS. The resolved-helper fast path
+# must accept that read/execute projection but still reject shared write access.
+cat > "$hash_bin/cygpath" <<'EOF_FAKE_CYGPATH'
+#!/bin/sh
+printf '%s\n' "$2"
+EOF_FAKE_CYGPATH
+chmod 0700 "$hash_bin/cygpath"
+chmod 0755 "$helper"
+windows_projected_protocol=$(PATH="$hash_bin:/usr/bin:/bin" \
+    OS=Windows_NT CUP_PATH_OPS_TESTING=1 \
+    "$PROJECT_ROOT/scripts/lib/path-ops.sh" --resolved-helper "$helper" protocol)
+assert_equals "$windows_projected_protocol" 3
+chmod 0775 "$helper"
+if PATH="$hash_bin:/usr/bin:/bin" OS=Windows_NT CUP_PATH_OPS_TESTING=1 \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" --resolved-helper "$helper" protocol \
+        >"$TMP_ROOT/windows-shared-write.out" 2>&1; then
+    fail 'Windows resolved-helper fast path accepted shared write access'
+fi
+assert_contains "$(cat "$TMP_ROOT/windows-shared-write.out")" \
+    'invalid resolved filesystem helper'
+chmod 0700 "$helper"
+if PATH="$hash_bin:/usr/bin:/bin" \
+        "$PROJECT_ROOT/scripts/lib/path-ops.sh" --resolved-helper "$helper" protocol \
+        >"$TMP_ROOT/resolved-outside-cache.out" 2>&1; then
+    fail 'production resolved-helper fast path accepted a helper outside the private cache'
+fi
+assert_contains "$(cat "$TMP_ROOT/resolved-outside-cache.out")" \
+    'resolved helper is outside the private cache'
 if PATH="$hash_bin:/usr/bin:/bin" \
         "$PROJECT_ROOT/scripts/lib/path-ops.sh" --print-helper \
         >"$TMP_ROOT/broken-hash.out" 2>&1; then

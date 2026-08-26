@@ -409,13 +409,12 @@ function Test-InstallerFinalLowSpeedWindow {
     $fixture = Join-Path $testWorkRoot 'final-low-speed'
     $profile = Join-Path $fixture 'profile'
     $ready = Join-Path $fixture 'ready.txt'
-    $serverScript = Join-Path $projectRoot 'tests\support\windows\slow-http-server.ps1'
     $installer = Join-Path $fixture 'install.ps1'
     $serverProcess = $null
     $saved = @{}
 
-    if (-not (Test-Path -LiteralPath $serverScript -PathType Leaf)) {
-        throw "Low-speed HTTP fixture is missing: $serverScript"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        throw "Low-speed HTTP helper is missing: $helper"
     }
     New-Item -ItemType Directory -Path $profile -Force | Out-Null
 
@@ -436,9 +435,8 @@ function Test-InstallerFinalLowSpeedWindow {
     }
 
     try {
-        $serverArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$serverScript`" " +
-            "-ReadyPath `"$ready`""
-        $serverProcess = Start-Process -FilePath 'powershell.exe' `
+        $serverArguments = "slow-http-server --ready-file `"$ready`""
+        $serverProcess = Start-Process -FilePath $helper `
             -ArgumentList $serverArguments `
             -PassThru `
             -WindowStyle Hidden

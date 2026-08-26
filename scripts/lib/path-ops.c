@@ -121,6 +121,102 @@ static void test_pause(const char *point) {
 }
 #endif
 
+static void check_shell_absolute(const char *path) {
+    const char *component;
+    const char *cursor;
+    size_t length;
+
+    if (path == NULL || path[0] == '\0') {
+        fail_message("shell path must not be empty");
+    }
+    if (strchr(path, '\n') != NULL || strchr(path, '\r') != NULL) {
+        fail_message("shell path must not contain line breaks: %s", path);
+    }
+    if (strchr(path, '\\') != NULL) {
+        fail_message("shell path must use forward slashes: %s", path);
+    }
+    if (strcmp(path, "/") == 0) {
+        fail_message("shell path must not be a filesystem root: %s", path);
+    }
+#if defined(_WIN32)
+    if (path[0] == '/' && path[1] != '\0' && path[2] == '\0' &&
+        ((path[1] >= 'A' && path[1] <= 'Z') ||
+         (path[1] >= 'a' && path[1] <= 'z'))) {
+        fail_message("shell path must not be a filesystem root: %s", path);
+    }
+#endif
+    if (path[0] != '/') {
+        fail_message("shell path must be absolute: %s", path);
+    }
+
+    length = strlen(path);
+    if (path[length - 1] == '/') {
+        fail_message("shell path must not have a trailing slash: %s", path);
+    }
+    if (strstr(path, "//") != NULL) {
+        fail_message("shell path must not contain empty path components: %s", path);
+    }
+
+    cursor = path + 1;
+    while (*cursor != '\0') {
+        component = cursor;
+        while (*cursor != '\0' && *cursor != '/') {
+            cursor++;
+        }
+        length = (size_t)(cursor - component);
+        if ((length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) {
+            fail_message("shell path contains an unsafe path component: %s", path);
+        }
+        if (*cursor == '/') {
+            cursor++;
+        }
+    }
+}
+
+static void check_shell_relative(const char *path) {
+    const char *component;
+    const char *cursor;
+    size_t length;
+
+    if (path == NULL || path[0] == '\0') {
+        fail_message("relative shell path must not be empty");
+    }
+    if (path[0] == '/' || strchr(path, '\\') != NULL ||
+        strchr(path, '\n') != NULL || strchr(path, '\r') != NULL ||
+        path[strlen(path) - 1] == '/' || strstr(path, "//") != NULL) {
+        fail_message("path is not a clean relative shell path: %s", path);
+    }
+
+    cursor = path;
+    while (*cursor != '\0') {
+        component = cursor;
+        while (*cursor != '\0' && *cursor != '/') {
+            cursor++;
+        }
+        length = (size_t)(cursor - component);
+        if ((length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) {
+            fail_message("relative shell path contains an unsafe path component: %s", path);
+        }
+        if (*cursor == '/') {
+            cursor++;
+        }
+    }
+}
+
+static void check_shell_within(const char *parent, const char *child) {
+    size_t parent_length;
+
+    check_shell_absolute(parent);
+    check_shell_absolute(child);
+    parent_length = strlen(parent);
+    if (strlen(child) <= parent_length || child[parent_length] != '/' ||
+        memcmp(parent, child, parent_length) != 0) {
+        fail_message("path is outside its owned shell root: %s -> %s", parent, child);
+    }
+}
+
 static bool path_is_clean_absolute(const char *path) {
     const char *component;
     const char *cursor;
@@ -192,6 +288,11 @@ static void require_safe_build_root_path(const char *root) {
     CupError err;
 
     require_clean_path(root);
+#if defined(_WIN32)
+    if (strlen(root) == 3 && root[1] == ':' && root[2] == '/') {
+        fail_message("build root must not be a filesystem root: %s", root);
+    }
+#endif
     err = system_get_home_dir(home, sizeof(home));
     if (err != CUP_OK) {
         fail_system("resolve user home", root, err);
@@ -1250,39 +1351,69 @@ static wchar_t *windows_build_command_line(char *const command[]) {
 static int windows_run_command(char *const command[]) {
     STARTUPINFOW startup;
     PROCESS_INFORMATION process;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits;
+    HANDLE job = NULL;
     wchar_t *command_line;
     DWORD wait_result;
     DWORD exit_code;
 
     memset(&startup, 0, sizeof(startup));
     memset(&process, 0, sizeof(process));
+    memset(&job_limits, 0, sizeof(job_limits));
     startup.cb = sizeof(startup);
     command_line = windows_build_command_line(command);
+
+    job = CreateJobObjectW(NULL, NULL);
+    if (job == NULL) {
+        free(command_line);
+        fail_message("could not create locked command job: %s", command[0]);
+    }
+    job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job,
+                                 JobObjectExtendedLimitInformation,
+                                 &job_limits,
+                                 sizeof(job_limits))) {
+        CloseHandle(job);
+        free(command_line);
+        fail_message("could not configure locked command job: %s", command[0]);
+    }
 
     if (!CreateProcessW(NULL,
                         command_line,
                         NULL,
                         NULL,
                         TRUE,
-                        0,
+                        CREATE_SUSPENDED,
                         NULL,
                         NULL,
                         &startup,
                         &process)) {
+        CloseHandle(job);
         free(command_line);
         fail_message("could not start locked command: %s", command[0]);
     }
     free(command_line);
+
+    if (!AssignProcessToJobObject(job, process.hProcess) ||
+        ResumeThread(process.hThread) == (DWORD)-1) {
+        TerminateProcess(process.hProcess, 1);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        CloseHandle(job);
+        fail_message("could not supervise locked command: %s", command[0]);
+    }
 
     wait_result = WaitForSingleObject(process.hProcess, INFINITE);
     if (wait_result != WAIT_OBJECT_0 ||
         !GetExitCodeProcess(process.hProcess, &exit_code)) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        CloseHandle(job);
         fail_message("could not wait for locked command: %s", command[0]);
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
+    CloseHandle(job);
     return (int)exit_code;
 }
 #else
@@ -1323,10 +1454,11 @@ static int run_command(char *const command[]) {
         fail_message("locked execution requires a command");
     }
 #if defined(_WIN32)
-    /* The launcher suppresses MSYS rewriting while entering this native helper.
-     * Restore normal conversion for the actual nested MSYS command. */
-    if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0) {
-        fail_message("could not restore MSYS argument conversion for locked command");
+    /* The launcher suppresses MSYS rewriting while entering this native carrier.
+     * Restore normal conversion only for the actual nested MSYS command. */
+    if (_putenv_s("MSYS2_ARG_CONV_EXCL", "") != 0 ||
+        _putenv_s("MSYS2_ENV_CONV_EXCL", "") != 0) {
+        fail_message("could not restore MSYS conversion for locked command");
     }
     return windows_run_command(command);
 #else
@@ -1419,11 +1551,25 @@ int main(int argc, char **argv) {
     }
     command = argv[1];
 
-    /* Protocol and validation commands. */
+    /* Protocol and shell-domain lexical validation commands. */
     if (strcmp(command, "protocol") == 0 && argc == 2) {
         printf("%d\n", CUP_PATH_OPS_PROTOCOL);
         return 0;
     }
+    if (strcmp(command, "check-shell-absolute") == 0 && argc == 3) {
+        check_shell_absolute(argv[2]);
+        return 0;
+    }
+    if (strcmp(command, "check-shell-relative") == 0 && argc == 3) {
+        check_shell_relative(argv[2]);
+        return 0;
+    }
+    if (strcmp(command, "check-shell-within") == 0 && argc == 4) {
+        check_shell_within(argv[2], argv[3]);
+        return 0;
+    }
+
+    /* Native filesystem validation commands. */
     if (strcmp(command, "check-dir") == 0 && argc == 3) {
         check_directory(argv[2], 0);
         return 0;

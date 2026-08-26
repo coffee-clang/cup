@@ -222,6 +222,87 @@ function New-IsolatedTestRoot {
     return New-RealTestDirectory -Parent $base -Name $rootName
 }
 
+function Get-TestHelperPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
+        "development"
+    } else {
+        $env:CUP_TEST_CONFIGURATION
+    }
+    if ($configuration -notin @("development", "debug", "coverage", "sanitizers", "release")) {
+        Fail-Test "unsupported CUP_TEST_CONFIGURATION: $configuration"
+    }
+    if ($null -eq $Script:CupTestBuildRoot) {
+        $Script:CupTestBuildRoot = Resolve-TestBuildRoot
+    }
+    $path = Join-Path $Script:CupTestBuildRoot (
+        "windows-x64\$configuration\tests\helpers\$Name.exe")
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Fail-Test "test helper is unavailable: $path"
+    }
+    $item = Get-Item -LiteralPath $path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail-Test "test helper is a reparse point: $path"
+    }
+    return $item.FullName
+}
+
+function New-ZipPackageFixture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [string]$ExtraPath,
+
+        [AllowEmptyString()]
+        [string]$ExtraContent
+    )
+
+    $hasExtraPath = $PSBoundParameters.ContainsKey('ExtraPath')
+    $hasExtraContent = $PSBoundParameters.ContainsKey('ExtraContent')
+    if ($hasExtraPath -ne $hasExtraContent) {
+        Fail-Test 'ZIP fixture extra path and content must be provided together'
+    }
+    if ($hasExtraPath -and [string]::IsNullOrWhiteSpace($ExtraPath)) {
+        Fail-Test 'ZIP fixture extra path must not be empty'
+    }
+
+    $platform = 'windows-x64'
+    $packageName = "clang-$Version-$platform-$platform"
+    $cacheDir = Join-Path $Script:CupTestHome (
+        ".cup\cache\compiler\clang\$platform\$platform\$Version")
+    $archive = Join-Path $cacheDir "$packageName.zip"
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+
+    $arguments = @($packageName, $Version, $platform, $platform, $archive)
+    if ($hasExtraPath) {
+        $arguments += @('extra-file', $ExtraPath, $ExtraContent)
+    } else {
+        $arguments += 'valid'
+    }
+    $result = Invoke-NativeProcess `
+        -FilePath (Get-TestHelperPath -Name 'archive-fixture') `
+        -Arguments $arguments `
+        -WorkingDirectory $Script:CupTestRoot `
+        -UseTestHelperCoverage
+    if ($result.ExitCode -ne 0) {
+        Fail-Test "archive fixture failed: $($result.Output)"
+    }
+
+    $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Utf8NoBom -Path (Join-Path $cacheDir 'SHA256SUMS') -Lines @(
+        "$hash  $(Split-Path -Leaf $archive)")
+    return [pscustomobject]@{
+        PackageName = $packageName
+        Archive = $archive
+    }
+}
+
 function Resolve-CommandProcessor {
     if (-not [string]::IsNullOrWhiteSpace($env:ComSpec) -and
         (Test-Path -LiteralPath $env:ComSpec -PathType Leaf)) {
@@ -345,6 +426,8 @@ function Invoke-NativeProcess {
         [Parameter(Mandatory = $true)]
         [string]$WorkingDirectory,
 
+        [switch]$UseTestHelperCoverage,
+
         [ValidateRange(1, 86400)]
         [int]$TimeoutSeconds = 300
     )
@@ -370,6 +453,16 @@ function Invoke-NativeProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    if ($UseTestHelperCoverage -and
+        -not [string]::IsNullOrWhiteSpace($env:CUP_TEST_GCOV_HELPER_PREFIX)) {
+        if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_GCOV_HELPER_STRIP)) {
+            Fail-Test 'helper GCOV prefix is present without a strip count'
+        }
+        $startInfo.EnvironmentVariables['GCOV_PREFIX'] =
+            $env:CUP_TEST_GCOV_HELPER_PREFIX
+        $startInfo.EnvironmentVariables['GCOV_PREFIX_STRIP'] =
+            $env:CUP_TEST_GCOV_HELPER_STRIP
+    }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo

@@ -5,6 +5,10 @@
 # These in-process caches are populated only after launcher validation below.
 CUP_PATH_OPS_RESOLVED_LAUNCHER=
 CUP_PATH_OPS_RESOLVED_HELPER=
+CUP_PATH_OPS_WINDOWS=0
+case "${OS:-}:$(uname -s 2>/dev/null || true)" in
+    Windows_NT:*|*:MSYS*|*:MINGW*|*:CYGWIN*) CUP_PATH_OPS_WINDOWS=1 ;;
+esac
 
 cup_path_error() {
     printf 'Error: %s\n' "$*" >&2
@@ -80,6 +84,11 @@ cup_path_resolve_ops_helper() {
 
 cup_path_ops() {
     cup_path_resolve_ops_helper || return 1
+    if [ "$CUP_PATH_OPS_WINDOWS" -eq 1 ]; then
+        "$CUP_PATH_OPS_RESOLVED_LAUNCHER" \
+            --resolved-helper "$CUP_PATH_OPS_RESOLVED_HELPER" "$@"
+        return $?
+    fi
     case "${1:-}" in
         mkdir-unique|run-lock|run-build)
             "$CUP_PATH_OPS_RESOLVED_LAUNCHER" "$@"
@@ -93,6 +102,21 @@ cup_path_ops() {
 cup_path_resolve_host_temporary_directory() {
     _cup_temp_label=${1:-host temporary directory}
     _cup_temp_value=${TMPDIR:-/tmp}
+
+    if [ "$CUP_PATH_OPS_WINDOWS" -eq 1 ]; then
+        case "$_cup_temp_value" in
+            [A-Za-z]:[\\/]*)
+                command -v cygpath >/dev/null 2>&1 || {
+                    cup_path_error 'cygpath is required to normalize a native Windows temporary directory'
+                    return 1
+                }
+                _cup_temp_value=$(cygpath -u -- "$_cup_temp_value") || {
+                    cup_path_error "could not normalize $_cup_temp_label: ${TMPDIR:-/tmp}"
+                    return 1
+                }
+                ;;
+        esac
+    fi
 
     while [ "$_cup_temp_value" != / ]; do
         case "$_cup_temp_value" in
@@ -114,108 +138,35 @@ cup_path_resolve_host_temporary_directory() {
     printf '%s\n' "$_cup_temp_value"
 }
 
-cup_path_validate_absolute_clean() (
+cup_path_validate_absolute_clean() {
     _cup_path_value=${1:-}
     _cup_path_label=${2:-path}
-    _cup_path_cr=$(printf '\r')
-    _cup_path_lf='
-'
-
-    [ -n "$_cup_path_value" ] || {
-        cup_path_error "$_cup_path_label must not be empty"
-        exit 1
-    }
-    case "$_cup_path_value" in
-        *"$_cup_path_lf"*|*"$_cup_path_cr"*)
-            cup_path_error "$_cup_path_label must not contain line breaks: $_cup_path_value"
-            exit 1
-            ;;
-        *\\*)
-            cup_path_error "$_cup_path_label must use forward slashes: $_cup_path_value"
-            exit 1
-            ;;
-        /)
-            cup_path_error "$_cup_path_label must not be a filesystem root: $_cup_path_value"
-            exit 1
-            ;;
-        /*)
-            _cup_path_rest=${_cup_path_value#/}
-            ;;
-        *)
-            cup_path_error "$_cup_path_label must be absolute: $_cup_path_value"
-            exit 1
-            ;;
-    esac
-    case "$_cup_path_value" in
-        */)
-            cup_path_error "$_cup_path_label must not have a trailing slash: $_cup_path_value"
-            exit 1
-            ;;
-        *'//'*)
-            cup_path_error "$_cup_path_label must not contain empty path components: $_cup_path_value"
-            exit 1
-            ;;
-    esac
-
-    _cup_path_old_ifs=$IFS
-    IFS=/
-    set -f
-    set -- $_cup_path_rest
-    set +f
-    IFS=$_cup_path_old_ifs
-    [ "$#" -gt 0 ] || {
-        cup_path_error "$_cup_path_label has no owned path component: $_cup_path_value"
-        exit 1
-    }
-    for _cup_path_component in "$@"; do
-        case "$_cup_path_component" in
-            ''|.|..)
-                cup_path_error "$_cup_path_label contains an unsafe path component: $_cup_path_value"
-                exit 1
-                ;;
+    _cup_path_error=$(cup_path_ops check-shell-absolute "$_cup_path_value" 2>&1) || {
+        case "$_cup_path_error" in
+            *': '*) _cup_path_error=${_cup_path_error#*: } ;;
         esac
-    done
-)
+        cup_path_error "$_cup_path_label ${_cup_path_error#shell path }"
+        return 1
+    }
+}
 
-cup_path_validate_relative_clean() (
+cup_path_validate_relative_clean() {
     _cup_path_value=${1:-}
     _cup_path_label=${2:-path}
-    _cup_path_cr=$(printf '\r')
-    _cup_path_lf='
-'
-
-    [ -n "$_cup_path_value" ] || {
-        cup_path_error "$_cup_path_label must not be empty"
-        exit 1
-    }
-    case "$_cup_path_value" in
-        /*|*"$_cup_path_lf"*|*"$_cup_path_cr"*|*\\*|*/|*'//'*)
-            cup_path_error "$_cup_path_label is not a clean relative path: $_cup_path_value"
-            exit 1
-            ;;
-    esac
-    _cup_path_old_ifs=$IFS
-    IFS=/
-    set -f
-    set -- $_cup_path_value
-    set +f
-    IFS=$_cup_path_old_ifs
-    for _cup_path_component in "$@"; do
-        case "$_cup_path_component" in
-            ''|.|..)
-                cup_path_error "$_cup_path_label contains an unsafe path component: $_cup_path_value"
-                exit 1
-                ;;
+    _cup_path_error=$(cup_path_ops check-shell-relative "$_cup_path_value" 2>&1) || {
+        case "$_cup_path_error" in
+            *': '*) _cup_path_error=${_cup_path_error#*: } ;;
         esac
-    done
-)
+        cup_path_error "$_cup_path_label ${_cup_path_error#relative shell path }"
+        return 1
+    }
+}
 
 cup_path_check_directory_chain() {
     _cup_path_value=$1
     _cup_path_allow_missing=${2:-0}
     _cup_path_label=${3:-directory path}
 
-    cup_path_validate_absolute_clean "$_cup_path_value" "$_cup_path_label" || return 1
     if [ "$_cup_path_allow_missing" -eq 1 ]; then
         cup_path_ops check-dir "$_cup_path_value" allow-missing || {
             cup_path_error "unsafe or invalid $_cup_path_label: $_cup_path_value"
@@ -232,7 +183,6 @@ cup_path_check_directory_chain() {
 cup_path_create_directory_exclusive() {
     _cup_path_value=$1
     _cup_path_label=${2:-directory path}
-    cup_path_validate_absolute_clean "$_cup_path_value" "$_cup_path_label" || return 1
     cup_path_ops mkdir-exclusive "$_cup_path_value" || {
         cup_path_error "could not create exclusive $_cup_path_label: $_cup_path_value"
         return 1
@@ -242,7 +192,6 @@ cup_path_create_directory_exclusive() {
 cup_path_prepare_directory_chain() {
     _cup_path_value=$1
     _cup_path_label=${2:-directory path}
-    cup_path_validate_absolute_clean "$_cup_path_value" "$_cup_path_label" || return 1
     cup_path_ops ensure-dir "$_cup_path_value" || {
         cup_path_error "could not prepare $_cup_path_label: $_cup_path_value"
         return 1
@@ -269,21 +218,16 @@ cup_path_create_unique_directory() {
     printf '%s\n' "$_cup_unique_created"
 }
 
-cup_path_require_within() (
+cup_path_require_within() {
     _cup_path_parent=$1
     _cup_path_child=$2
     _cup_path_label=${3:-path}
 
-    cup_path_validate_absolute_clean "$_cup_path_parent" 'owned root' || exit 1
-    cup_path_validate_absolute_clean "$_cup_path_child" "$_cup_path_label" || exit 1
-    case "$_cup_path_child" in
-        "$_cup_path_parent"/*) ;;
-        *)
-            cup_path_error "$_cup_path_label must stay inside $_cup_path_parent: $_cup_path_child"
-            exit 1
-            ;;
-    esac
-)
+    cup_path_ops check-shell-within "$_cup_path_parent" "$_cup_path_child" >/dev/null 2>&1 || {
+        cup_path_error "$_cup_path_label must stay inside $_cup_path_parent: $_cup_path_child"
+        return 1
+    }
+}
 
 cup_path_prepare_child_directory() {
     _cup_child_root=$1
@@ -334,7 +278,6 @@ cup_path_prepare_file_target() {
 cup_path_require_regular_file() {
     _cup_path_file=$1
     _cup_path_label=${2:-file}
-    cup_path_validate_absolute_clean "$_cup_path_file" "$_cup_path_label" || return 1
     cup_path_ops check-file "$_cup_path_file" || {
         cup_path_error "$_cup_path_label is not a safe regular file: $_cup_path_file"
         return 1
@@ -344,7 +287,6 @@ cup_path_require_regular_file() {
 cup_path_require_safe_tree() {
     _cup_path_tree=$1
     _cup_path_label=${2:-directory tree}
-    cup_path_validate_absolute_clean "$_cup_path_tree" "$_cup_path_label" || return 1
     cup_path_ops check-tree "$_cup_path_tree" || {
         cup_path_error "$_cup_path_label contains a link or special entry: $_cup_path_tree"
         return 1
@@ -355,7 +297,6 @@ cup_path_write_file() {
     _cup_path_file=$1
     _cup_path_mode=${2:-0644}
     _cup_path_policy=${3:-replace}
-    cup_path_validate_absolute_clean "$_cup_path_file" 'output file' || return 1
     case "$_cup_path_policy" in
         replace) cup_path_ops write-stdin "$_cup_path_file" "$_cup_path_mode" ;;
         if-different) cup_path_ops write-stdin "$_cup_path_file" "$_cup_path_mode" if-different ;;
@@ -369,8 +310,6 @@ cup_path_copy_file() {
     _cup_path_destination=$2
     _cup_path_mode=${3:-0644}
     _cup_path_policy=${4:-replace}
-    cup_path_validate_absolute_clean "$_cup_path_source" 'copy source' || return 1
-    cup_path_validate_absolute_clean "$_cup_path_destination" 'copy destination' || return 1
     case "$_cup_path_policy" in
         replace)
             cup_path_ops copy-file \
@@ -391,15 +330,12 @@ cup_path_copy_file() {
 cup_path_copy_tree() {
     _cup_path_source=$1
     _cup_path_destination=$2
-    cup_path_validate_absolute_clean "$_cup_path_source" 'tree copy source' || return 1
-    cup_path_validate_absolute_clean "$_cup_path_destination" 'tree copy destination' || return 1
     cup_path_ops copy-tree "$_cup_path_source" "$_cup_path_destination"
 }
 
 
 cup_path_prepare_build_root() {
     _cup_path_root=$1
-    cup_path_validate_absolute_clean "$_cup_path_root" 'build root' || return 1
     cup_path_ops prepare-build-root "$_cup_path_root"
 }
 
@@ -415,7 +351,6 @@ cup_path_run_lock() {
         cup_path_error 'locked command is missing'
         return 1
     }
-    cup_path_validate_absolute_clean "$_cup_path_lock" 'lock file' || return 1
     cup_path_ops run-lock "$_cup_path_lock" -- "$@"
 }
 
@@ -431,28 +366,23 @@ cup_path_run_build() {
         cup_path_error 'locked build command is missing'
         return 1
     }
-    cup_path_validate_absolute_clean "$_cup_path_root" 'build root' || return 1
     cup_path_ops run-build "$_cup_path_root" -- "$@"
 }
 
 cup_path_clean_build_root() {
     _cup_path_root=$1
-    cup_path_validate_absolute_clean "$_cup_path_root" 'build root' || return 1
     cup_path_ops clean-build-root "$_cup_path_root"
 }
 
 cup_path_move_entry() {
     _cup_path_source=$1
     _cup_path_destination=$2
-    cup_path_validate_absolute_clean "$_cup_path_source" 'move source' || return 1
-    cup_path_validate_absolute_clean "$_cup_path_destination" 'move destination' || return 1
     cup_path_ops move "$_cup_path_source" "$_cup_path_destination"
 }
 
 cup_path_remove_empty_directory() {
     _cup_path_directory=$1
     _cup_path_label=${2:-directory}
-    cup_path_validate_absolute_clean "$_cup_path_directory" "$_cup_path_label" || return 1
     cup_path_ops rmdir "$_cup_path_directory" || {
         cup_path_error "could not remove empty $_cup_path_label: $_cup_path_directory"
         return 1
@@ -462,7 +392,6 @@ cup_path_remove_empty_directory() {
 cup_path_remove_file() {
     _cup_path_file=$1
     _cup_path_label=${2:-file}
-    cup_path_validate_absolute_clean "$_cup_path_file" "$_cup_path_label" || return 1
     cup_path_ops remove-file "$_cup_path_file" || {
         cup_path_error "could not remove $_cup_path_label: $_cup_path_file"
         return 1
@@ -471,14 +400,12 @@ cup_path_remove_file() {
 
 cup_path_require_build_root() (
     _cup_path_root=$1
-    cup_path_validate_absolute_clean "$_cup_path_root" 'build root' || exit 1
     cup_path_ops check-build-root "$_cup_path_root"
 )
 
 cup_path_remove_directory_tree() {
     _cup_path_tree=$1
     _cup_path_label=${2:-directory tree}
-    cup_path_validate_absolute_clean "$_cup_path_tree" "$_cup_path_label" || return 1
     cup_path_ops remove-tree "$_cup_path_tree" || {
         cup_path_error "could not remove $_cup_path_label: $_cup_path_tree"
         return 1

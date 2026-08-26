@@ -69,20 +69,12 @@ select_sha256_tool() {
     fail 'a working sha256sum or shasum is required for the filesystem-helper cache'
 }
 
-SHA256_TOOL=$(select_sha256_tool)
-
-file_sha256() {
-    _cup_hash_path=$1
-    _cup_hash_output=
+source_manifest() {
     case "$SHA256_TOOL" in
-        sha256sum) _cup_hash_output=$(sha256sum "$_cup_hash_path" 2>/dev/null) || _cup_hash_output= ;;
-        shasum) _cup_hash_output=$(shasum -a 256 "$_cup_hash_path" 2>/dev/null) || _cup_hash_output= ;;
+        sha256sum) sha256sum "$@" 2>/dev/null ;;
+        shasum) shasum -a 256 "$@" 2>/dev/null ;;
         *) fail 'invalid SHA-256 tool selection' ;;
     esac
-    set -- $_cup_hash_output
-    _cup_hash_value=${1:-}
-    valid_sha256 "$_cup_hash_value" || fail "could not hash helper source: $_cup_hash_path"
-    printf '%s\n' "$_cup_hash_value"
 }
 
 stream_sha256() {
@@ -99,21 +91,41 @@ stream_sha256() {
 }
 
 file_owner_and_mode() {
-    if stat -c '%u %a' "$1" >/dev/null 2>&1; then
-        stat -c '%u %a' "$1"
-    else
-        stat -f '%u %Lp' "$1"
+    _cup_stat=$(stat -c '%u %a' "$1" 2>/dev/null) && {
+        printf '%s\n' "$_cup_stat"
+        return 0
+    }
+    stat -f '%u %Lp' "$1"
+}
+
+safe_cache_mode() {
+    _cup_mode=$1
+    case "$_cup_mode" in
+        0[0-7][0-7][0-7]) _cup_mode=${_cup_mode#0} ;;
+        [0-7][0-7][0-7]) ;;
+        *) return 1 ;;
+    esac
+
+    if [ "$HOST_MODE" = posix ]; then
+        [ "$_cup_mode" = 700 ]
+        return
     fi
+
+    # MSYS2 projects Windows ACLs into POSIX mode bits and may report 0755
+    # after chmod 0700. Read/execute projection is harmless here; shared write
+    # access would allow replacement of a cache entry and remains forbidden.
+    _cup_shared_mode=${_cup_mode#?}
+    case "$_cup_shared_mode" in
+        *[2367]*) return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 owned_private_directory() {
-    [ -d "$1" ] && [ ! -L "$1" ] || return 1
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -w "$1" ] && [ -x "$1" ] || return 1
     set -- $(file_owner_and_mode "$1") || return 1
     [ "$1" = "$CURRENT_UID" ] || return 1
-    case "$2" in
-        700|0700) return 0 ;;
-        *) return 1 ;;
-    esac
+    safe_cache_mode "$2"
 }
 
 owned_private_helper() {
@@ -122,12 +134,33 @@ owned_private_helper() {
         [ -x "$_cup_helper_path" ] || return 1
     set -- $(file_owner_and_mode "$_cup_helper_path") || return 1
     [ "$1" = "$CURRENT_UID" ] || return 1
-    case "$2" in
-        700|0700) ;;
-        *) return 1 ;;
-    esac
+    safe_cache_mode "$2" || return 1
     [ "$("$_cup_helper_path" protocol 2>/dev/null || true)" = "$PROTOCOL" ]
 }
+
+RESOLVED_HELPER=
+if [ "${1:-}" = --resolved-helper ]; then
+    [ "$#" -ge 3 ] || fail '--resolved-helper requires a helper path and command'
+    RESOLVED_HELPER=$2
+    shift 2
+    case "$RESOLVED_HELPER" in
+        /*) ;;
+        *) fail "resolved helper must be absolute: $RESOLVED_HELPER" ;;
+    esac
+    CURRENT_UID=$(id -u 2>/dev/null) || fail 'could not determine the current user id'
+    if [ "${CUP_PATH_OPS_TESTING:-0}" != 1 ]; then
+        case "$RESOLVED_HELPER" in
+            /tmp/cup-path-ops-"$CURRENT_UID"/*) ;;
+            "${XDG_RUNTIME_DIR:-/nonexistent}"/cup-path-ops-"$CURRENT_UID"/*) ;;
+            *) fail "resolved helper is outside the private cache: $RESOLVED_HELPER" ;;
+        esac
+    fi
+    owned_private_helper "$RESOLVED_HELPER" ||
+        fail "invalid resolved filesystem helper: $RESOLVED_HELPER"
+    HELPER=$RESOLVED_HELPER
+fi
+
+if [ -z "$RESOLVED_HELPER" ]; then
 
 for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
         "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
@@ -139,6 +172,8 @@ if [ "$HOST_MODE" = windows-msys ]; then
     [ -f "$WINDOWS_UTF_HEADER" ] && [ ! -L "$WINDOWS_UTF_HEADER" ] ||
         fail "missing helper source: $WINDOWS_UTF_HEADER"
 fi
+
+SHA256_TOOL=$(select_sha256_tool)
 
 PRINT_HELPER=0
 if [ "${1:-}" = --print-helper ]; then
@@ -208,27 +243,32 @@ else
 fi
 
 CURRENT_UID=$(id -u 2>/dev/null) || fail 'could not determine the current user id'
-SOURCE_ID=$(
+if [ "$HOST_MODE" = windows-msys ]; then
+    SOURCE_MANIFEST=$(source_manifest \
+        "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
+        "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
+        "$PATH_HEADER" "$SYSTEM_HEADER" "$TEXT_HEADER" "$WINDOWS_UTF_HEADER") ||
+        fail 'could not hash filesystem-helper sources'
+else
+    SOURCE_MANIFEST=$(source_manifest \
+        "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
+        "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
+        "$PATH_HEADER" "$SYSTEM_HEADER" "$TEXT_HEADER") ||
+        fail 'could not hash filesystem-helper sources'
+fi
+BUILD_ID=$(
     {
-        for source_file in "$SOURCE" "$SYSTEM_SOURCE" "$SYSTEM_PLATFORM_SOURCE" \
-                "$PATH_SOURCE" "$TEXT_SOURCE" "$CONSTANTS_HEADER" "$ERROR_HEADER" \
-                "$PATH_HEADER" "$SYSTEM_HEADER" "$TEXT_HEADER"; do
-            printf '%s=%s\n' "$source_file" "$(file_sha256 "$source_file")"
-        done
-        if [ "$HOST_MODE" = windows-msys ]; then
-            printf '%s=%s\n' "$WINDOWS_UTF_HEADER" "$(file_sha256 "$WINDOWS_UTF_HEADER")"
-        fi
+        printf '%s\n' \
+            "protocol=$PROTOCOL" \
+            "host_mode=$HOST_MODE" \
+            "compiler=$COMPILER_PATH" \
+            "compiler_version=$COMPILER_VERSION" \
+            "host_flags=$HOST_FLAGS" \
+            "host_libs=$HOST_LIBS" \
+            'flags=-std=c11 -O2 -Wall -Wextra -Werror'
+        printf '%s\n' "$SOURCE_MANIFEST"
     } | stream_sha256
 )
-BUILD_ID=$(printf '%s\n' \
-    "protocol=$PROTOCOL" \
-    "host_mode=$HOST_MODE" \
-    "sources=$SOURCE_ID" \
-    "compiler=$COMPILER_PATH" \
-    "compiler_version=$COMPILER_VERSION" \
-    "host_flags=$HOST_FLAGS" \
-    "host_libs=$HOST_LIBS" \
-    'flags=-std=c11 -O2 -Wall -Wextra -Werror' | stream_sha256)
 
 HOST_ID=$(printf '%s' "$HOST_SYSTEM" | tr -cd 'A-Za-z0-9_.-' || true)
 MACHINE_ID=$(uname -m 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)
@@ -300,26 +340,120 @@ if [ "$PRINT_HELPER" -eq 1 ]; then
     printf '%s\n' "$HELPER"
     exit 0
 fi
+fi
+
 if [ "$HOST_MODE" = windows-msys ]; then
     command -v cygpath >/dev/null 2>&1 ||
         fail 'cygpath is required at the MSYS/native filesystem boundary'
 
-    if [ "${1:-}" = run-build ]; then
-        [ "$#" -ge 4 ] && [ "${3:-}" = -- ] ||
-            fail 'run-build requires a root, -- and a command'
-        NATIVE_BUILD_ROOT=$(cygpath -m "$2") ||
-            fail "could not convert build root to native Windows form: $2"
-        shift 3
-        # Preserve shell arguments while crossing the native helper boundary.
-        MSYS2_ARG_CONV_EXCL='*' exec "$HELPER" run-build "$NATIVE_BUILD_ROOT" -- "$@"
-    fi
+    shell_path_check() {
+        MSYS2_ARG_CONV_EXCL='*' "$HELPER" check-shell-absolute "$1" >/dev/null
+    }
 
-    if [ "${1:-}" = mkdir-unique ]; then
-        NATIVE_UNIQUE=$("$HELPER" "$@") || exit $?
-        cygpath -u "$NATIVE_UNIQUE" ||
-            fail "could not convert unique directory to MSYS form: $NATIVE_UNIQUE"
-        exit 0
-    fi
+    native_path() {
+        _cup_shell_path=$1
+        shell_path_check "$_cup_shell_path" ||
+            fail "path is not a clean absolute shell path: $_cup_shell_path"
+
+        # Convert only the MSYS root mapping. Converting the complete path with
+        # cygpath would resolve junctions before the native helper can enforce
+        # its component-by-component no-follow policy.
+        case "$_cup_shell_path" in
+            /[A-Za-z]/*)
+                _cup_drive=${_cup_shell_path#/}
+                _cup_drive=${_cup_drive%%/*}
+                _cup_native_root=$(cygpath -m -- "/$_cup_drive") ||
+                    fail "could not convert MSYS drive root: /$_cup_drive"
+                _cup_remainder=${_cup_shell_path#"/$_cup_drive/"}
+                ;;
+            /*)
+                _cup_native_root=$(cygpath -m -- /) ||
+                    fail 'could not convert the MSYS filesystem root'
+                _cup_remainder=${_cup_shell_path#/}
+                ;;
+        esac
+        printf '%s/%s\n' "${_cup_native_root%/}" "$_cup_remainder"
+    }
+
+    run_native_helper() {
+        # Every filesystem operand has already been converted deliberately. Keep
+        # MSYS from rewriting arguments or path-valued environment variables a
+        # second time while the native helper owns the operation.
+        MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*' "$HELPER" "$@"
+    }
+
+    exec_native_helper() {
+        MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*' exec "$HELPER" "$@"
+    }
+
+    case "${1:-}" in
+        check-shell-absolute|check-shell-relative|check-shell-within)
+            # These commands validate shell spelling itself, so preserve the
+            # original arguments byte-for-byte.
+            MSYS2_ARG_CONV_EXCL='*' exec "$HELPER" "$@"
+            ;;
+        check-dir)
+            [ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && [ "$3" = allow-missing ]; } ||
+                fail 'check-dir requires a path and optional allow-missing'
+            NATIVE_PATH=$(native_path "$2")
+            if [ "$#" -eq 3 ]; then
+                exec_native_helper check-dir "$NATIVE_PATH" allow-missing
+            fi
+            exec_native_helper check-dir "$NATIVE_PATH"
+            ;;
+        ensure-dir|mkdir-exclusive|check-file|check-tree|remove-tree|rmdir|remove-file|check-build-root|prepare-build-root|clean-build-root)
+            [ "$#" -eq 2 ] || fail "$1 requires one path"
+            NATIVE_PATH=$(native_path "$2")
+            exec_native_helper "$1" "$NATIVE_PATH"
+            ;;
+        mkdir-unique)
+            [ "$#" -eq 3 ] || fail 'mkdir-unique requires a template and mode'
+            NATIVE_PATH=$(native_path "$2")
+            NATIVE_UNIQUE=$(run_native_helper mkdir-unique "$NATIVE_PATH" "$3") || exit $?
+            cygpath -u "$NATIVE_UNIQUE" ||
+                fail "could not convert unique directory to MSYS form: $NATIVE_UNIQUE"
+            exit 0
+            ;;
+        copy-file)
+            [ "$#" -eq 4 ] || [ "$#" -eq 5 ] ||
+                fail 'copy-file requires source, destination, mode and optional policy'
+            NATIVE_SOURCE=$(native_path "$2")
+            NATIVE_DESTINATION=$(native_path "$3")
+            if [ "$#" -eq 5 ]; then
+                exec_native_helper copy-file "$NATIVE_SOURCE" "$NATIVE_DESTINATION" "$4" "$5"
+            fi
+            exec_native_helper copy-file "$NATIVE_SOURCE" "$NATIVE_DESTINATION" "$4"
+            ;;
+        copy-tree|move)
+            [ "$#" -eq 3 ] || fail "$1 requires source and destination"
+            NATIVE_SOURCE=$(native_path "$2")
+            NATIVE_DESTINATION=$(native_path "$3")
+            exec_native_helper "$1" "$NATIVE_SOURCE" "$NATIVE_DESTINATION"
+            ;;
+        write-stdin)
+            [ "$#" -eq 3 ] || [ "$#" -eq 4 ] ||
+                fail 'write-stdin requires destination, mode and optional policy'
+            NATIVE_PATH=$(native_path "$2")
+            if [ "$#" -eq 4 ]; then
+                exec_native_helper write-stdin "$NATIVE_PATH" "$3" "$4"
+            fi
+            exec_native_helper write-stdin "$NATIVE_PATH" "$3"
+            ;;
+        run-build|run-lock)
+            [ "$#" -ge 4 ] && [ "${3:-}" = -- ] ||
+                fail "$1 requires a path, -- and a command"
+            COMMAND=$1
+            NATIVE_PATH=$(native_path "$2")
+            shift 3
+            exec_native_helper "$COMMAND" "$NATIVE_PATH" -- "$@"
+            ;;
+        protocol)
+            exec "$HELPER" "$@"
+            ;;
+        *)
+            fail "unsupported Windows filesystem-helper command: ${1:-missing}"
+            ;;
+    esac
 fi
 
 exec "$HELPER" "$@"
