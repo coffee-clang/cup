@@ -162,13 +162,19 @@ case "${1:-}" in
                     cat "$MOCK_STATE/tag-sha"
                 elif [ "$ref" = "$SOURCE_SHA" ]; then
                     printf '%s\n' "$SOURCE_SHA"
-                elif [ "$ref" = "$RELEASE_TARGET" ]; then
+                elif [ "$ref" = "$RELEASE_TARGET" ] || [ "$ref" = "$PUBLIC_SHA" ]; then
                     printf '%s\n' "$PUBLIC_SHA"
+                elif [ -n "${FOREIGN_SHA:-}" ] && [ "$ref" = "$FOREIGN_SHA" ]; then
+                    printf '%s\n' "$FOREIGN_SHA"
                 else
                     exit 2
                 fi
                 ;;
-            repos/*/releases/tags/*)
+            repos/*/releases?per_page=100)
+                if [ "${RELEASE_LIST_ERROR:-0}" = 1 ]; then
+                    printf 'HTTP 500: simulated release-list failure\n' >&2
+                    exit 1
+                fi
                 count=0
                 [ ! -f "$MOCK_STATE/release-query-count" ] || count=$(cat "$MOCK_STATE/release-query-count")
                 count=$((count + 1))
@@ -178,11 +184,16 @@ case "${1:-}" in
                     copy_dist_assets
                     : > "$MOCK_STATE/release"
                     printf 'true\n' > "$MOCK_STATE/draft"
-                    printf '%s\n' "$PUBLIC_SHA" > "$MOCK_STATE/tag-sha"
+                    printf '%s\n' "$PUBLIC_SHA" > "$MOCK_STATE/draft-target"
                     record_call concurrent-draft
                 fi
+                [ ! -f "$MOCK_STATE/release" ] || printf '101\n'
+                ;;
+            repos/*/releases/101)
                 [ -f "$MOCK_STATE/release" ] || not_found
-                cat "$MOCK_STATE/draft"
+                target=
+                [ ! -f "$MOCK_STATE/draft-target" ] || target=$(cat "$MOCK_STATE/draft-target")
+                printf '%s\t%s\n' "$(cat "$MOCK_STATE/draft")" "$target"
                 ;;
             *) exit 2 ;;
         esac
@@ -225,7 +236,7 @@ case "${1:-}" in
                     previous=$argument
                 done
                 if [ -n "$target" ]; then
-                    printf '%s\n' "$target" > "$MOCK_STATE/tag-sha"
+                    printf '%s\n' "$target" > "$MOCK_STATE/draft-target"
                 else
                     [ -f "$MOCK_STATE/tag-sha" ] || exit 2
                 fi
@@ -244,6 +255,10 @@ case "${1:-}" in
                 ;;
             edit)
                 printf 'false\n' > "$MOCK_STATE/draft"
+                if [ ! -f "$MOCK_STATE/tag-sha" ]; then
+                    [ -f "$MOCK_STATE/draft-target" ] || exit 2
+                    cat "$MOCK_STATE/draft-target" > "$MOCK_STATE/tag-sha"
+                fi
                 record_call edit
                 ;;
             *) exit 2 ;;
@@ -265,13 +280,15 @@ run_publish() {
         GH_TOKEN=test GH_REPO=example/cup-public \
         MUTATE_CANDIDATE_ON_FIRST_API="${MUTATE_CANDIDATE_ON_FIRST_API:-0}" \
         CONCURRENT_ON_SECOND_RELEASE_QUERY="${CONCURRENT_ON_SECOND_RELEASE_QUERY:-0}" \
+        RELEASE_LIST_ERROR="${RELEASE_LIST_ERROR:-0}" \
+        FOREIGN_SHA="${FOREIGN_SHA:-}" \
         "$ROOT/scripts/release/publish.sh" "$DIST"
 }
 
 reset_remote() {
     rm -f -- "$MOCK_STATE/release" "$MOCK_STATE/draft" "$MOCK_STATE/assets" \
-        "$MOCK_STATE/tag-sha" "$MOCK_STATE/calls" "$MOCK_STATE/release-query-count" \
-        "$MOCK_STATE/mutated"
+        "$MOCK_STATE/tag-sha" "$MOCK_STATE/draft-target" "$MOCK_STATE/calls" \
+        "$MOCK_STATE/release-query-count" "$MOCK_STATE/mutated"
     rm -rf -- "$REMOTE_ASSETS"
     mkdir -p "$REMOTE_ASSETS"
 }
@@ -352,6 +369,15 @@ fi
 assert_contains "$(cat "$TMP_ROOT/provenance.out")" 'invalid provenance file'
 mv "$TMP_ROOT/provenance.valid" "$DIST/provenance.txt"
 
+# Release-list API failures remain fail-closed and cannot trigger creation.
+reset_remote
+if RELEASE_LIST_ERROR=1 run_publish > "$TMP_ROOT/release-list-error.out" 2>&1; then
+    fail 'release-list API failure unexpectedly triggered publication'
+fi
+assert_contains "$(cat "$TMP_ROOT/release-list-error.out")" \
+    'GitHub API request failed while resolving release'
+[ ! -f "$MOCK_STATE/calls" ] || ! grep -Eq '^(create|upload|delete:|edit)' "$MOCK_STATE/calls"
+
 # Fresh publication and an already-published exact no-op.
 reset_remote
 run_publish >/dev/null
@@ -386,7 +412,35 @@ assert_contains "$(cat "$TMP_ROOT/ambiguous.out")" 'preserving it unchanged'
 [ ! -f "$MOCK_STATE/calls" ] || ! grep -Eq '^(delete:|upload|edit)' "$MOCK_STATE/calls"
 [ -f "$REMOTE_ASSETS/unexpected.bin" ] || fail 'ambiguous draft asset was removed'
 
-# A recognizable partial draft is reconciled and published.
+# An untagged draft bound to another commit is preserved without mutation.
+reset_remote
+foreign_sha=1111111111111111111111111111111111111111
+: > "$MOCK_STATE/release"
+printf 'true\n' > "$MOCK_STATE/draft"
+printf '%s\n' "$foreign_sha" > "$MOCK_STATE/draft-target"
+printf 'provenance.txt\n' > "$MOCK_STATE/assets"
+cp "$DIST/provenance.txt" "$REMOTE_ASSETS/provenance.txt"
+if FOREIGN_SHA="$foreign_sha" run_publish > "$TMP_ROOT/draft-target.out" 2>&1; then
+    fail 'foreign untagged draft target unexpectedly passed publication'
+fi
+assert_contains "$(cat "$TMP_ROOT/draft-target.out")" \
+    "draft $TAG targets $foreign_sha, expected $PUBLIC_SHA"
+[ ! -f "$MOCK_STATE/calls" ] || ! grep -Eq '^(create|upload|delete:|edit)' "$MOCK_STATE/calls"
+
+# A recognizable untagged draft is valid before publication. GitHub creates
+# the Git ref only when the draft becomes published.
+reset_remote
+: > "$MOCK_STATE/release"
+printf 'true\n' > "$MOCK_STATE/draft"
+printf '%s\n' "$PUBLIC_SHA" > "$MOCK_STATE/draft-target"
+printf 'provenance.txt\n' > "$MOCK_STATE/assets"
+cp "$DIST/provenance.txt" "$REMOTE_ASSETS/provenance.txt"
+run_publish >/dev/null
+assert_equals "$(cat "$MOCK_STATE/tag-sha")" "$PUBLIC_SHA"
+assert_equals "$(cat "$MOCK_STATE/draft")" false
+grep -Fxq edit "$MOCK_STATE/calls"
+
+# A recognizable partial draft with an existing verified tag is reconciled and published.
 reset_remote
 : > "$MOCK_STATE/release"
 printf 'true\n' > "$MOCK_STATE/draft"

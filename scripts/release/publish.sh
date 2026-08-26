@@ -145,15 +145,56 @@ query_tag() {
 query_release() {
     RELEASE_EXISTS=0
     RELEASE_IS_DRAFT=
+    RELEASE_TARGETISH=
     release_error=$state_dir/release.error
-    if api_optional_value "repos/$GH_REPO/releases/tags/$TAG" '.draft' "$release_error"; then
-        RELEASE_EXISTS=1
-        RELEASE_IS_DRAFT=$API_OPTIONAL_VALUE
-        case "$RELEASE_IS_DRAFT" in true|false) ;; *) fail "could not determine release state for $TAG" ;; esac
-    else
-        status=$?
-        [ "$status" -eq 1 ] || fail "GitHub API request failed while resolving release $TAG"
+    if ! release_ids=$(gh api "repos/$GH_REPO/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>"$release_error"); then
+        cat "$release_error" >&2 || true
+        fail "GitHub API request failed while resolving release $TAG"
     fi
+    release_count=$(printf '%s\n' "$release_ids" | awk 'NF { count++ } END { print count + 0 }')
+    [ "$release_count" -le 1 ] || fail "multiple releases found for tag $TAG"
+    [ "$release_count" -eq 1 ] || return 0
+
+    RELEASE_EXISTS=1
+    release_id=$release_ids
+    release_detail_error=$state_dir/release-detail.error
+    if ! release_details=$(gh api "repos/$GH_REPO/releases/$release_id" \
+            --jq '[.draft, .target_commitish] | @tsv' 2>"$release_detail_error"); then
+        cat "$release_detail_error" >&2 || true
+        fail "could not read release state for $TAG"
+    fi
+    tab=$(printf '\t')
+    case "$release_details" in
+        *"$tab"*)
+            RELEASE_IS_DRAFT=${release_details%%"$tab"*}
+            RELEASE_TARGETISH=${release_details#*"$tab"}
+            ;;
+        *) fail "could not determine release state for $TAG" ;;
+    esac
+    case "$RELEASE_IS_DRAFT" in true|false) ;; *) fail "could not determine release state for $TAG" ;; esac
+}
+
+validate_release_binding() {
+    [ "$RELEASE_EXISTS" -eq 1 ] || return 0
+    if [ "$TAG_EXISTS" -eq 1 ]; then
+        return 0
+    fi
+    if [ "$RELEASE_IS_DRAFT" = false ]; then
+        query_tag
+        [ "$TAG_EXISTS" -eq 1 ] || fail "published release $TAG exists without a resolvable tag"
+        return 0
+    fi
+
+    [ -n "$RELEASE_TARGETISH" ] || fail "draft $TAG has no release target"
+    draft_target_error=$state_dir/draft-target.error
+    if ! draft_target=$(gh api "repos/$GH_REPO/commits/$RELEASE_TARGETISH" \
+            --jq '.sha' 2>"$draft_target_error"); then
+        cat "$draft_target_error" >&2 || true
+        fail "could not resolve draft target for $TAG"
+    fi
+    [ "$draft_target" = "$canonical_target" ] ||
+        fail "draft $TAG targets $draft_target, expected $canonical_target"
 }
 
 expected_assets=$(printf '%s\n' $public_assets | LC_ALL=C sort)
@@ -198,9 +239,7 @@ require_recognizable_draft() (
 
 query_tag
 query_release
-if [ "$RELEASE_EXISTS" -eq 1 ] && [ "$TAG_EXISTS" -ne 1 ]; then
-    fail "release $TAG exists without a resolvable tag"
-fi
+validate_release_binding
 if [ "$RELEASE_EXISTS" -eq 1 ] && [ "$RELEASE_IS_DRAFT" = false ]; then
     verify_remote_assets
     info "Release $TAG is already published with the verified asset set."
@@ -230,6 +269,7 @@ if [ "$RELEASE_EXISTS" -eq 0 ]; then
     fi
     query_tag
     query_release
+    validate_release_binding
 fi
 
 if [ "$RELEASE_IS_DRAFT" = false ]; then
@@ -252,10 +292,12 @@ printf '%s\n' "$current_assets" | while IFS= read -r current_asset; do
 gh release upload "$TAG" "$@" --repo "$GH_REPO" --clobber || fail "could not upload release snapshot for $TAG"
 verify_remote_assets
 
-# State and bytes are checked again immediately before publication. A
-# concurrent completion is accepted only when the published bytes are exact.
+# State, target and bytes are checked again immediately before publication.
+# A concurrent completion is accepted only when the published bytes are exact.
+query_tag
 query_release
 [ "$RELEASE_EXISTS" -eq 1 ] || fail "release $TAG disappeared before publication"
+validate_release_binding
 if [ "$RELEASE_IS_DRAFT" = false ]; then
     verify_remote_assets
     info "A concurrent publisher completed release $TAG with the verified asset set."
@@ -264,8 +306,10 @@ fi
 require_recognizable_draft
 verify_remote_assets
 gh release edit "$TAG" --repo "$GH_REPO" --draft=false --latest || fail "could not publish release $TAG"
+query_tag
 query_release
 [ "$RELEASE_EXISTS" -eq 1 ] && [ "$RELEASE_IS_DRAFT" = false ] ||
     fail "release $TAG did not become published"
+validate_release_binding
 verify_remote_assets
 info "Published release $TAG."
