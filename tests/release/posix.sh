@@ -212,7 +212,10 @@ HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 update_root="$server_root/update-fixture"
 next_version=$(sed -n '2s/^version=//p' "$update_root/release.txt")
 [ -n "$next_version" ] || fail 'update fixture did not expose a next version'
-VERSION=$next_version validate_release_file "$update_root/release.txt"
+(
+    VERSION=$next_version
+    validate_release_file "$update_root/release.txt"
+)
 version_root="$update_root/$next_version"
 test "$("$version_root/cup-$PLATFORM" --version)" = "cup $next_version"
 

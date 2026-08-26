@@ -135,7 +135,10 @@ printf 'format=1\nversion=%s\ncommit=%s\n' "$next_version" "$SHA" |
     fail 'could not create update release metadata'
 cup_path_copy_file "$candidate/SHA256SUMS.common" "$fixture_common/SHA256SUMS.common" 0644 replace ||
     fail 'could not copy update common checksums'
-VERSION=$next_version validate_release_file "$fixture_common/release.txt"
+(
+    VERSION=$next_version
+    validate_release_file "$fixture_common/release.txt"
+)
 
 set -- make -C "$ROOT" --no-print-directory release-candidate \
     "PLATFORM=$PLATFORM" "BUILD_DIR=$fixture_build_dir" \
@@ -196,7 +199,10 @@ set -- packages.cfg install.cfg install.sh install.ps1 SHA256SUMS.common \
 validate_exact_directory_files "$version_root" "$@"
 verify_checksum_file_exact "$version_root" SHA256SUMS.common \
     packages.cfg install.cfg install.sh install.ps1
-VERSION=$next_version validate_release_file "$version_root/release.txt"
+(
+    VERSION=$next_version
+    validate_release_file "$version_root/release.txt"
+)
 verify_checksum_file_exact "$version_root" "SHA256SUMS.$PLATFORM" \
     "$binary_name" release.txt SHA256SUMS.common
 
