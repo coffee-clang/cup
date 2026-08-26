@@ -149,6 +149,12 @@ case "${1:-}" in
     api)
         endpoint=${2:-}
         case "$endpoint" in
+            repos/*/git/ref/tags/*)
+                ref=${endpoint##*/}
+                [ "$ref" = "$TAG" ] || exit 2
+                [ -f "$MOCK_STATE/tag-sha" ] || not_found
+                cat "$MOCK_STATE/tag-sha"
+                ;;
             repos/*/commits/*)
                 ref=${endpoint##*/}
                 if [ "$ref" = "$TAG" ]; then

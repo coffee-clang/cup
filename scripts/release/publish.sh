@@ -126,9 +126,13 @@ api_optional_value() {
 query_tag() {
     TAG_EXISTS=0
     tag_error=$state_dir/tag.error
-    if api_optional_value "repos/$GH_REPO/commits/$TAG" '.sha' "$tag_error"; then
+    if api_optional_value "repos/$GH_REPO/git/ref/tags/$TAG" '.object.sha' "$tag_error"; then
         TAG_EXISTS=1
-        TAG_COMMIT=$API_OPTIONAL_VALUE
+        tag_commit_error=$state_dir/tag-commit.error
+        if ! TAG_COMMIT=$(gh api "repos/$GH_REPO/commits/$TAG" --jq '.sha' 2>"$tag_commit_error"); then
+            cat "$tag_commit_error" >&2 || true
+            fail "could not resolve tag $TAG to a commit"
+        fi
         printf '%s\n' "$TAG_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "could not read tag commit for $TAG"
         [ "$TAG_COMMIT" = "$canonical_target" ] ||
             fail "tag $TAG points to ${TAG_COMMIT:-an unknown commit}, expected $canonical_target"
