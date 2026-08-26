@@ -245,6 +245,15 @@ inspect_macho() {
     libraries=$(otool -L "$binary" | awk 'NR > 1 { print $1 }' | sort -u)
     [ -n "$libraries" ] || fail 'Mach-O executable has no dynamic system dependencies'
     for library in $libraries; do
+        library_name=${library##*/}
+        case "$library_name" in
+            libargtable3.*|libarchive.*|libcares.*|libcurl.*|libevent*.*|liblzma.*)
+                fail "pinned third-party library is dynamically linked: $library"
+                ;;
+            libssl.*|libcrypto.*|libz.*)
+                fail "pinned third-party library is dynamically linked: $library"
+                ;;
+        esac
         case "$library" in
             /usr/lib/*|/System/Library/Frameworks/*) ;;
             @rpath/libclang_rt.*)

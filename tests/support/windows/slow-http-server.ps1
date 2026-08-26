@@ -62,7 +62,7 @@ try {
         $tail[$index] = [byte][char]'b'
     }
     for ($index = 0; $index -lt 2; $index++) {
-        Start-Sleep -Milliseconds 400
+        Start-Sleep -Milliseconds 600
         $stream.Write($tail, 0, $tail.Length)
         $stream.Flush()
     }

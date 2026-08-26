@@ -13,44 +13,21 @@ SCRIPT_DIR=$ROOT/scripts/release
 SHA=${SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 release_dir=${1:-release}
 
+set -- packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_NOTICES.txt \
+    install.sh install.ps1 SHA256SUMS.common "SHA256SUMS.$PLATFORM" "cup-$PLATFORM"
+validate_exact_directory_files "$release_dir" "$@"
+for asset in "$@"; do require_nonempty_file "$release_dir/$asset"; done
+validate_release_asset_modes "$release_dir" "$@"
 verify_checksum_file_exact "$release_dir" SHA256SUMS.common \
     packages.cfg install.cfg install.sh install.ps1
 verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" \
     "cup-$PLATFORM" release.txt SHA256SUMS.common
-
-test "$(sed -n 's/^format=//p' "$release_dir/release.txt")" = 1
-test "$(sed -n 's/^version=//p' "$release_dir/release.txt")" = "$VERSION"
-test "$(sed -n 's/^commit=//p' "$release_dir/release.txt")" = "$SHA"
-test "$(wc -l < "$release_dir/release.txt" | tr -d '[:space:]')" = 3
-
-chmod +x "$release_dir/cup-$PLATFORM" "$release_dir/install.sh"
+validate_release_file "$release_dir/release.txt"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
-
-next_test_version() {
-    old=$1
-    old_ifs=$IFS
-    IFS=.
-    set -- $old
-    IFS=$old_ifs
-    [ "$#" -eq 3 ] || fail "invalid release version for update fixture: $old"
-    major=$1
-    minor=$2
-    patch=$3
-
-    candidate="$major.$minor.$((patch + 1))"
-    if [ "${#candidate}" -ne "${#old}" ]; then
-        candidate="$major.$((minor + 1)).0"
-    fi
-    if [ "${#candidate}" -ne "${#old}" ]; then
-        candidate="$((major + 1)).0.0"
-    fi
-    [ "${#candidate}" -eq "${#old}" ] ||
-        fail "could not create a same-length update version from $old"
-    printf '%s\n' "$candidate"
-}
 
 port=0
 test_build_root=${CUP_TEST_BUILD_ROOT:-$ROOT/build}
+server_root=${CUP_TEST_SERVER_ROOT:?CUP_TEST_SERVER_ROOT is required}
 helper="$test_build_root/$PLATFORM/${CUP_TEST_CONFIGURATION:-development}/tests/helpers/network-helper"
 temporary_parent=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 test_root=$(mktemp -d "$temporary_parent/cup-release-test.XXXXXX")
@@ -88,7 +65,7 @@ trap 'signal_handler 143' TERM
 
 [ -x "$helper" ] || fail "HTTP test helper is not built: $helper"
 rm -f "$ready"
-"$helper" http-server --root "$release_dir" --port "$port" --ready-file "$ready" \
+"$helper" http-server --root "$server_root" --port "$port" --ready-file "$ready" \
     >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -205,6 +182,7 @@ helper_hash_before_update=$(hash_file "$update_helper")
 # The installer must preserve both the journal evidence and the installed executable.
 transaction="$test_home/.cup/transaction.txt"
 printf 'invalid=1\n' > "$transaction"
+transaction_hash_before=$(hash_file "$transaction")
 if HOME="$test_home" \
 CUP_INSTALL_ALLOW_INSECURE=1 \
 CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
@@ -214,7 +192,7 @@ fi
 grep -F 'verified cup bootstrap transaction was rejected' \
     "$test_home/pending-transaction.out" >/dev/null
 test -f "$transaction"
-test "$(cat "$transaction")" = 'invalid=1'
+test "$(hash_file "$transaction")" = "$transaction_hash_before"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 rm -f "$transaction"
 
@@ -230,44 +208,14 @@ fi
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 
-# A local immutable release fixture exercises the complete detached update path. The binary
-# patcher changes only same-length embedded version strings, so the served executable remains the
-# tested candidate with a distinct observable version.
-next_version=$(next_test_version "$VERSION")
-update_root="$release_dir/update-fixture"
+# The private server fixture contains a genuine newer official build produced before this runner.
+update_root="$server_root/update-fixture"
+next_version=$(sed -n '2s/^version=//p' "$update_root/release.txt")
+[ -n "$next_version" ] || fail 'update fixture did not expose a next version'
+VERSION=$next_version validate_release_file "$update_root/release.txt"
 version_root="$update_root/$next_version"
-configuration=${CUP_TEST_CONFIGURATION:-development}
-patch_helper="$test_build_root/$PLATFORM/$configuration/tests/helpers/binary-patch"
-rm -rf "$update_root"
-mkdir -p "$version_root"
-[ -x "$patch_helper" ] || fail "binary patch helper is not built: $patch_helper"
-
-cp "$release_dir/packages.cfg" "$version_root/packages.cfg"
-cp "$release_dir/install.cfg" "$version_root/install.cfg"
-cp "$release_dir/install.sh" "$version_root/install.sh"
-cp "$release_dir/install.ps1" "$version_root/install.ps1"
-"$patch_helper" "$release_dir/cup-$PLATFORM" \
-    "$version_root/cup-$PLATFORM" "$VERSION" "$next_version" >/dev/null
-chmod +x "$version_root/cup-$PLATFORM"
-{
-    printf 'format=1\n'
-    printf 'version=%s\n' "$next_version"
-    printf 'commit=%s\n' "$SHA"
-} > "$version_root/release.txt"
-cp "$version_root/release.txt" "$update_root/release.txt"
-(
-    cd "$version_root"
-    : > SHA256SUMS.common
-    for asset in packages.cfg install.cfg install.sh install.ps1; do
-        printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> SHA256SUMS.common
-    done
-    : > "SHA256SUMS.$PLATFORM"
-    for asset in "cup-$PLATFORM" release.txt SHA256SUMS.common; do
-        printf '%s  %s\n' "$(hash_file "$version_root/$asset")" "$asset" >> "SHA256SUMS.$PLATFORM"
-    done
-)
-
 test "$("$version_root/cup-$PLATFORM" --version)" = "cup $next_version"
+
 update_output=$(
     cd "$test_home"
     HOME="$test_home" \

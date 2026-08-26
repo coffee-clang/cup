@@ -257,13 +257,21 @@ FAKE_FORMAT=macho FAKE_MAC_ARCH=arm64 inspect \
     macos-arm64 development "$binary" "$arm_report"
 assert_contains "$(cat "$arm_report")" 'architecture=arm64'
 
-if FAKE_FORMAT=macho FAKE_MAC_LIBS=/opt/homebrew/lib/libcurl.4.dylib inspect \
+if FAKE_FORMAT=macho FAKE_MAC_LIBS=/opt/homebrew/lib/libexample.dylib inspect \
         macos-x64 development "$binary" "$TMP_ROOT/homebrew.txt" \
         >"$TMP_ROOT/homebrew.out" 2>&1; then
-    fail 'Homebrew Mach-O dependency was accepted'
+    fail 'external Mach-O dependency was accepted'
 fi
 assert_contains "$(cat "$TMP_ROOT/homebrew.out")" \
-    'library is outside the macOS allowlist'
+    'library is outside the macOS allowlist: /opt/homebrew/lib/libexample.dylib'
+
+if FAKE_FORMAT=macho FAKE_MAC_LIBS=/usr/lib/libcurl.4.dylib inspect \
+        macos-x64 development "$binary" "$TMP_ROOT/system-curl.txt" \
+        >"$TMP_ROOT/system-curl.out" 2>&1; then
+    fail 'pinned libcurl was accepted from the macOS system-library namespace'
+fi
+assert_contains "$(cat "$TMP_ROOT/system-curl.out")" \
+    'pinned third-party library is dynamically linked: /usr/lib/libcurl.4.dylib'
 
 if FAKE_FORMAT=macho FAKE_MAC_ARCH=arm64 inspect macos-x64 development \
         "$binary" "$TMP_ROOT/mac-arch.txt" >"$TMP_ROOT/mac-arch.out" 2>&1; then

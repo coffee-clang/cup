@@ -81,6 +81,36 @@ write_checksums() {
 }
 write_candidate
 
+# Shared release validators must enforce the same physical documents produced for users.
+validator_fixture=$TMP_ROOT/validator-fixture
+cp -a "$DIST" "$validator_fixture"
+awk 'NR == 1 { sub(/  /, " *") } { print }' \
+    "$validator_fixture/SHA256SUMS.common" > "$validator_fixture/SHA256SUMS.common.bad"
+mv "$validator_fixture/SHA256SUMS.common.bad" "$validator_fixture/SHA256SUMS.common"
+if SCRIPT_DIR="$ROOT/scripts/release" VERSION="$VERSION" SHA="$SHA" \
+    sh -c '
+        . "$SCRIPT_DIR/common.sh"
+        verify_checksum_file_exact "$1" SHA256SUMS.common \
+            packages.cfg install.cfg install.sh install.ps1
+    ' sh "$validator_fixture" > "$TMP_ROOT/noncanonical-checksum.out" 2>&1; then
+    fail 'non-canonical checksum document unexpectedly passed exact validation'
+fi
+assert_contains "$(cat "$TMP_ROOT/noncanonical-checksum.out")" \
+    'checksum file is not the exact canonical document: SHA256SUMS.common'
+
+cp "$DIST/release.txt" "$validator_fixture/release.txt"
+{
+    sed -n '2p' "$DIST/release.txt"
+    sed -n '1p' "$DIST/release.txt"
+    sed -n '3p' "$DIST/release.txt"
+} > "$validator_fixture/release.txt"
+if SCRIPT_DIR="$ROOT/scripts/release" VERSION="$VERSION" SHA="$SHA" \
+    sh -c '. "$SCRIPT_DIR/common.sh"; validate_release_file "$1"' \
+    sh "$validator_fixture/release.txt" > "$TMP_ROOT/reordered-release.out" 2>&1; then
+    fail 'reordered release metadata unexpectedly passed exact validation'
+fi
+assert_contains "$(cat "$TMP_ROOT/reordered-release.out")" 'invalid release metadata:'
+
 cat > "$MOCK_BIN/gh" <<'EOF_GH'
 #!/usr/bin/env bash
 set -euo pipefail

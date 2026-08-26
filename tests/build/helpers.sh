@@ -179,7 +179,6 @@ event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     pkg-config --static --libs libevent_extra libevent_core)
 compile_helper all network-helper "$ROOT/tests/helpers/network-helper.c" \
     $event_libs $PLATFORM_LIBS
-compile_helper all binary-patch "$ROOT/tests/helpers/binary-patch.c"
 
 expected_list="$OUT/.expected-helpers"
 actual_list="$OUT/.actual-helpers"

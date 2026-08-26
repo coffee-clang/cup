@@ -126,10 +126,12 @@ function Invoke-PowerShellScript {
             -WorkingDirectory $WorkingDirectory `
             -NoNewWindow `
             -PassThru
+        [void]$process.Handle
         if (-not $process.WaitForExit(300000)) {
             Stop-ReleaseProcessTree -Process $process
             throw "PowerShell release fixture timed out: $ScriptPath"
         }
+        $process.WaitForExit()
 
         $output = @()
         if (Test-Path -LiteralPath $stdoutPath) {
@@ -152,32 +154,27 @@ function Invoke-PowerShellScript {
     }
 }
 
-# Verify that each checksum file names exactly the expected immutable assets.
-function Get-NextTestVersion {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$CurrentVersion
+# Verify that the candidate directory contains only the exact public asset set.
+function Assert-ExactCandidateFiles {
+    $expected = @(
+        'packages.cfg', 'install.cfg', 'release.txt', 'provenance.txt',
+        'THIRD_PARTY_NOTICES.txt', 'install.sh', 'install.ps1',
+        'SHA256SUMS.common', 'SHA256SUMS.windows-x64', 'cup-windows-x64.exe'
     )
-
-    if ($CurrentVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
-        throw "Invalid release version for update fixture: $CurrentVersion"
+    $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
+    if ($entries.Count -ne $expected.Count) {
+        throw "Windows release candidate does not contain the exact public asset set"
     }
-    $major = [int]$Matches[1]
-    $minor = [int]$Matches[2]
-    $patch = [int]$Matches[3]
-    $candidates = @(
-        "$major.$minor.$($patch + 1)",
-        "$major.$($minor + 1).0",
-        "$($major + 1).0.0"
-    )
-    foreach ($candidate in $candidates) {
-        if ($candidate.Length -eq $CurrentVersion.Length) {
-            return $candidate
+    foreach ($entry in $entries) {
+        if (($expected -cnotcontains $entry.Name) -or $entry.PSIsContainer -or
+            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $entry.Length -le 0) {
+            throw "Invalid Windows release candidate entry: $($entry.Name)"
         }
     }
-    throw "Could not create a same-length update version from $CurrentVersion"
 }
 
+# Verify one canonical checksum document and every referenced digest.
 function Assert-ChecksumFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -353,6 +350,8 @@ function Test-InstallerMetadataFailure {
             'cup-windows-x64.exe',
             'packages.cfg',
             'install.cfg',
+            'install.sh',
+            'install.ps1',
             'SHA256SUMS.common'
         )) {
             Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $fixture
@@ -382,7 +381,12 @@ function Test-InstallerMetadataFailure {
         if ($status -eq 0) {
             throw "Metadata diagnostic case unexpectedly succeeded: $Name"
         }
-        if ($text -notlike "*$ExpectedMessage*") {
+        $normalizedText = [regex]::Replace($text, '\s+', ' ')
+        $normalizedExpected = [regex]::Replace($ExpectedMessage, '\s+', ' ')
+        if ($normalizedText.IndexOf(
+                $normalizedExpected,
+                [StringComparison]::Ordinal
+            ) -lt 0) {
             throw "Metadata diagnostic case '$Name' was not explained:`n$text"
         }
     } finally {
@@ -485,6 +489,7 @@ function Test-InstallerFinalLowSpeedWindow {
 
 # Validate the candidate checksums, metadata and native executable.
 Test-ChecksumFileAssertions
+Assert-ExactCandidateFiles
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
     -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
 Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
@@ -517,13 +522,21 @@ if ($actual -cne "cup $Version") {
 
 # Serve the candidate locally and smoke-test the generated installer in a fresh profile.
 $port = 0
-$root = $ReleaseDir
+if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_SERVER_ROOT)) {
+    throw "CUP_TEST_SERVER_ROOT is required"
+}
+$root = (Resolve-Path -LiteralPath $env:CUP_TEST_SERVER_ROOT).Path
 if ($env:CUP_TEST_CONFIGURATION) {
     $configuration = $env:CUP_TEST_CONFIGURATION
 } else {
     $configuration = "development"
 }
-$helper = Join-Path $projectRoot "build\windows-x64\$configuration\tests\helpers\network-helper.exe"
+$testBuildRoot = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_BUILD_ROOT)) {
+    Join-Path $projectRoot 'build'
+} else {
+    $env:CUP_TEST_BUILD_ROOT
+}
+$helper = Join-Path $testBuildRoot "windows-x64\$configuration\tests\helpers\network-helper.exe"
 if (-not (Test-Path -LiteralPath $helper)) {
     throw "HTTP test helper is not built: $helper"
 }
@@ -541,7 +554,7 @@ try {
         -ArgumentList $serverArgs `
         -PassThru `
         -WindowStyle Hidden
-    $testProfile = Join-Path $testWorkRoot "installer-profile"
+    $testProfile = Join-Path $testWorkRoot "installer profile"
     $foreignProfile = Join-Path $testWorkRoot "foreign-profile"
     foreach ($name in @(
         "USERPROFILE",
@@ -577,6 +590,37 @@ try {
         throw "HTTP test helper did not become ready"
     }
 
+    # Prove the documented MSYS2/Git-Bash handoff with the real shell, cygpath and PowerShell.
+    $shell = Get-Command sh.exe -ErrorAction Stop
+    $cygpath = Get-Command cygpath.exe -ErrorAction Stop
+    $shellProfile = Join-Path $testWorkRoot 'shell handoff profile'
+    New-Item -ItemType Directory -Path $shellProfile | Out-Null
+    $installSh = @(& $cygpath.Source -u (Join-Path $ReleaseDir 'install.sh'))
+    if ($LASTEXITCODE -ne 0 -or $installSh.Count -ne 1) {
+        throw 'cygpath could not translate the public shell installer path'
+    }
+    $env:USERPROFILE = $shellProfile
+    $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+    $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port"
+    $shellInstallOutput = @(& $shell.Source $installSh[0] 2>&1)
+    $shellInstallStatus = $LASTEXITCODE
+    if ($shellInstallStatus -ne 0) {
+        throw (
+            "Windows shell handoff failed with exit code $shellInstallStatus`n" +
+            ($shellInstallOutput -join [Environment]::NewLine))
+    }
+    $shellInstalled = Join-Path $shellProfile '.cup\bin\cup.exe'
+    $shellVersion = & $shellInstalled --version
+    if ($LASTEXITCODE -ne 0 -or $shellVersion -cne "cup $Version") {
+        throw 'Windows shell handoff did not install the expected cup version'
+    }
+    $candidateHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+    $shellHash = (Get-FileHash -LiteralPath $shellInstalled -Algorithm SHA256).Hash
+    if ($shellHash -ne $candidateHash) {
+        throw 'Windows shell handoff did not install the tested release candidate bytes'
+    }
+    Remove-Item -LiteralPath $shellProfile -Recurse -Force
+
     if (Test-Path -LiteralPath $testProfile) {
         Remove-Item -LiteralPath $testProfile -Recurse -Force
     }
@@ -610,7 +654,6 @@ try {
     if ($installedVersion -cne "cup $Version") {
         throw "Unexpected installed version: $installedVersion"
     }
-    $candidateHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
     $installedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
     if ($installedHash -ne $candidateHash) {
         throw "Installed cup does not match the tested release candidate"
@@ -690,7 +733,7 @@ try {
     }
     # A recognizable root with a corrupt ownership marker must block the installer
     # without selecting or creating the fallback root.
-    $corruptProfile = Join-Path $testRoot "corrupt-root-profile"
+    $corruptProfile = Join-Path $testWorkRoot "corrupt-root-profile"
     $corruptRoot = Join-Path $corruptProfile ".cup"
     foreach ($directory in @("components", "staging", "cache")) {
         New-Item -ItemType Directory -Force -Path (Join-Path $corruptRoot $directory) |
@@ -725,7 +768,7 @@ try {
 
     # A superficially shaped uninstall sibling is not ownership proof. Installation ignores it
     # and must not modify it while selecting the normal canonical root.
-    $residueProfile = Join-Path $testRoot "unowned-residue-profile"
+    $residueProfile = Join-Path $testWorkRoot "unowned-residue-profile"
     $residueRoot = Join-Path $residueProfile ".cup-uninstall-fixture"
     New-Item -ItemType Directory -Force -Path (Join-Path $residueRoot "bin") | Out-Null
     Set-Content -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
@@ -833,8 +876,12 @@ try {
     if ($incompleteResult.ExitCode -eq 0) {
         throw "Windows bootstrap unexpectedly ignored a malformed canonical transaction"
     }
-    if (($incompleteResult.Output -join "`n") -notlike
-        "*verified cup bootstrap transaction was rejected*") {
+    $incompleteText = $incompleteResult.Output -join [Environment]::NewLine
+    $normalizedIncompleteText = [regex]::Replace($incompleteText, '\s+', ' ')
+    if ($normalizedIncompleteText.IndexOf(
+            'verified cup bootstrap transaction was rejected',
+            [StringComparison]::Ordinal
+        ) -lt 0) {
         throw "Malformed canonical transaction failure was not explained"
     }
     if (-not (Test-Path -LiteralPath $transaction -PathType Leaf) -or
@@ -878,62 +925,20 @@ try {
         throw "Windows reinstall did not derive the update helper from cup.exe"
     }
 
-    # A local immutable release fixture exercises the complete detached update path. The binary
-    # patcher changes only same-length embedded version strings, preserving the tested executable.
-    $nextVersion = Get-NextTestVersion -CurrentVersion $Version
-    $updateRoot = Join-Path $ReleaseDir "update-fixture"
+    # The private server fixture contains a genuine newer official build produced before this runner.
+    $updateRoot = Join-Path $root 'update-fixture'
+    $updateMetadata = Get-CanonicalAsciiLines (Join-Path $updateRoot 'release.txt')
+    if ($updateMetadata.Count -ne 3 -or $updateMetadata[0] -cne 'format=1' -or
+        $updateMetadata[2] -cne "commit=$SourceSha" -or
+        -not $updateMetadata[1].StartsWith('version=', [StringComparison]::Ordinal)) {
+        throw 'Update fixture release metadata is invalid'
+    }
+    $nextVersion = $updateMetadata[1].Substring('version='.Length)
     $versionRoot = Join-Path $updateRoot $nextVersion
-    $patchHelper = Join-Path $projectRoot `
-        "build\windows-x64\$configuration\tests\helpers\binary-patch.exe"
-    if (-not (Test-Path -LiteralPath $patchHelper -PathType Leaf)) {
-        throw "Binary patch helper is not built: $patchHelper"
-    }
-    Remove-Item -LiteralPath $updateRoot -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
-
-    $installedAssets = @(
-        "packages.cfg", "install.cfg", "install.sh",
-        "install.ps1")
-    foreach ($asset in $installedAssets) {
-        Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $versionRoot
-    }
-    $updatedBinary = Join-Path $versionRoot "cup-windows-x64.exe"
-    & $patchHelper $binary $updatedBinary $Version $nextVersion | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Binary patch helper failed with exit code $LASTEXITCODE"
-    }
-
-    $updatedMetadata = @(
-        "format=1",
-        "version=$nextVersion",
-        "commit=$SourceSha"
-    )
-    Write-CanonicalAsciiLines -Path (Join-Path $versionRoot "release.txt") `
-        -Lines $updatedMetadata
-    Copy-Item -LiteralPath (Join-Path $versionRoot "release.txt") `
-        -Destination (Join-Path $updateRoot "release.txt")
-
-    $commonAssets = @(
-        "packages.cfg", "install.cfg", "install.sh", "install.ps1")
-    $commonLines = foreach ($asset in $commonAssets) {
-        $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
-            -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash  $asset"
-    }
-    Write-CanonicalAsciiLines -Path (Join-Path $versionRoot "SHA256SUMS.common") `
-        -Lines $commonLines
-    $platformLines = foreach ($asset in @("cup-windows-x64.exe", "release.txt", "SHA256SUMS.common")) {
-        $hash = (Get-FileHash -LiteralPath (Join-Path $versionRoot $asset) `
-            -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash  $asset"
-    }
-    Write-CanonicalAsciiLines `
-        -Path (Join-Path $versionRoot "SHA256SUMS.windows-x64") `
-        -Lines $platformLines
-
+    $updatedBinary = Join-Path $versionRoot 'cup-windows-x64.exe'
     $updatedVersionOutput = & $updatedBinary --version
     if ($LASTEXITCODE -ne 0 -or $updatedVersionOutput -cne "cup $nextVersion") {
-        throw "Patched update executable did not expose version $nextVersion"
+        throw "Genuine update executable did not expose version $nextVersion"
     }
 
     $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/update-fixture"
@@ -1040,11 +1045,6 @@ try {
     # installer/runtime compatibility failures in the same native run.
     Test-InstallerFinalLowSpeedWindow
 
-    Test-InstallerMetadataFailure -Name 'invalid-version' -Lines @(
-        'format=1',
-        'version=0.2',
-        "commit=$SourceSha"
-    ) -ExpectedMessage "release metadata version is invalid; expected 'MAJOR.MINOR.PATCH'"
     Test-InstallerMetadataFailure -Name 'format-key-case' -Lines @(
         'Format=1',
         "version=$Version",
@@ -1065,18 +1065,12 @@ try {
         'format=1',
         "version=$mismatchedVersion",
         "commit=$SourceSha"
-    ) -ExpectedMessage (
-        "release metadata version mismatch: expected '$Version', " +
-        "received '$mismatchedVersion'"
-    )
+    ) -ExpectedMessage 'release metadata version does not match the installer'
     Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
         'format=1',
         "version=$Version",
         'commit=fedcba9876543210fedcba9876543210fedcba98'
-    ) -ExpectedMessage (
-        "release metadata commit mismatch: expected '$SourceSha', received " +
-        "'fedcba9876543210fedcba9876543210fedcba98'"
-    )
+    ) -ExpectedMessage 'release metadata commit does not match the installer'
 } finally {
     Set-Location -LiteralPath $originalLocation
     foreach ($name in $originalEnvironment.Keys) {

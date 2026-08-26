@@ -1249,11 +1249,18 @@ test-release: deps-check
 		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' \
 		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)'
-	@version=$$(cat VERSION); \
+	@set -e; \
+	version=$$(cat VERSION); \
 	sha=$$(git -C '$(PROJECT_ROOT)' rev-parse HEAD); \
+	server_root='$(BUILD_ROOT)/release-test-server-$(PLATFORM)'; \
+	env PLATFORM='$(PLATFORM)' VERSION="$$version" SHA="$$sha" \
+		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
+		WINDRES='$(WINDRES)' CUP_BUILD_ROOT='$(BUILD_ROOT)' CUP_BUILD_DIR='$(BUILD_DIR)' \
+		./tests/release/update-fixture.sh "$(RELEASE_DIR)" "$$server_root" >/dev/null; \
 	case '$(PLATFORM)' in \
 		windows-x64) \
 			CUP_TEST_BUILD_ROOT="$$(cygpath -w '$(BUILD_ROOT)')" \
+			CUP_TEST_SERVER_ROOT="$$(cygpath -w "$$server_root")" \
 			CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 			powershell.exe -NoProfile -ExecutionPolicy Bypass \
 				-File "$$(cygpath -w '$(PROJECT_ROOT)/tests/release/windows.ps1')" \
@@ -1267,6 +1274,7 @@ test-release: deps-check
 				VERSION="$$version" \
 				SHA="$$sha" \
 				CUP_TEST_BUILD_ROOT='$(BUILD_ROOT)' \
+				CUP_TEST_SERVER_ROOT="$$server_root" \
 				CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 				./tests/release/posix.sh "$(RELEASE_DIR)" \
 			;; \

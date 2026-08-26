@@ -147,66 +147,46 @@ prepare_installer() {
         fail "could not prepare installer: $installer_destination"
 }
 
-verify_checksums() {
-    checksum_directory=$1
-    shift
-    if command -v sha256sum >/dev/null 2>&1; then
-        (cd "$checksum_directory" && sha256sum -c "$@")
-    elif command -v shasum >/dev/null 2>&1; then
-        (cd "$checksum_directory" && shasum -a 256 -c "$@")
-    else
-        fail 'neither sha256sum nor shasum is available'
-    fi
-}
-
-verify_checksum_file_exact() {
+verify_checksum_file_exact() (
     checksum_directory=$1
     checksum_file=$2
     shift 2
     checksum_path=$checksum_directory/$checksum_file
     require_nonempty_file "$checksum_path"
 
-    entry_count=$(awk 'NF > 0 { count++ } END { print count + 0 }' "$checksum_path")
-    [ "$entry_count" -eq "$#" ] ||
-        fail "checksum file $checksum_file has $entry_count entries; expected $#"
-
+    expected_checksums=$(mktemp "${TMPDIR:-/tmp}/cup-release-checksums.XXXXXX") ||
+        fail 'could not create checksum comparison file'
+    cleanup_expected_checksums() { rm -f -- "$expected_checksums"; }
+    trap cleanup_expected_checksums EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     for expected_asset in "$@"; do
         require_nonempty_file "$checksum_directory/$expected_asset"
-        checksum_matches=$(awk -v name="$expected_asset" '
-            /^[0-9a-f]{64}[[:space:]]+\*?[^[:space:]].*$/ {
-                file=$0
-                sub(/^[0-9a-f]{64}[[:space:]]+\*?/, "", file)
-                if (file == name) count++
-            }
-            END { print count + 0 }
-        ' "$checksum_path")
-        [ "$checksum_matches" -eq 1 ] ||
-            fail "checksum entry is missing or duplicated in $checksum_file: $expected_asset"
-    done
+        printf '%s  %s\n' "$(hash_file "$checksum_directory/$expected_asset")" "$expected_asset"
+    done > "$expected_checksums"
+    cmp -s "$expected_checksums" "$checksum_path" ||
+        fail "checksum file is not the exact canonical document: $checksum_file"
+    rm -f -- "$expected_checksums"
+    trap - EXIT HUP INT TERM
+)
 
-    awk '
-        /^[[:space:]]*$/ { exit 2 }
-        !/^[0-9a-f]{64}[[:space:]]+\*?[^[:space:]].*$/ { exit 3 }
-        {
-            file=$0
-            sub(/^[0-9a-f]{64}[[:space:]]+\*?/, "", file)
-            if (file ~ /(^|\/)\.\.($|\/)/ || file ~ /^\// || file ~ /^[A-Za-z]:/ || file ~ /\\/) exit 4
-        }
-    ' "$checksum_path" || fail "checksum file contains invalid or unsafe entries: $checksum_file"
-    verify_checksums "$checksum_directory" "$checksum_file"
-}
-
-validate_release_file() {
+validate_release_file() (
     release_file=$1
     require_nonempty_file "$release_file"
-    awk -F= -v version="$VERSION" -v sha="$SHA" '
-        $1 == "format" && NF == 2 && $2 == "1" { f++; next }
-        $1 == "version" && NF == 2 && $2 == version { v++; next }
-        $1 == "commit" && NF == 2 && $2 == sha { c++; next }
-        { invalid=1 }
-        END { if (invalid || NR != 3 || f != 1 || v != 1 || c != 1) exit 1 }
-    ' "$release_file" || fail "invalid release metadata: $release_file"
-}
+    expected_release=$(mktemp "${TMPDIR:-/tmp}/cup-release-metadata.XXXXXX") ||
+        fail 'could not create release metadata comparison file'
+    cleanup_expected_release() { rm -f -- "$expected_release"; }
+    trap cleanup_expected_release EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    printf 'format=1\nversion=%s\ncommit=%s\n' "$VERSION" "$SHA" > "$expected_release"
+    cmp -s "$expected_release" "$release_file" ||
+        fail "invalid release metadata: $release_file"
+    rm -f -- "$expected_release"
+    trap - EXIT HUP INT TERM
+)
 
 release_asset_mode() {
     case "$1" in

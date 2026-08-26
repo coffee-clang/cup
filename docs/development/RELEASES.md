@@ -74,7 +74,8 @@ This file connects the public files to:
 - the Release run that built and tested the candidates.
 
 A rerun attempt is treated as a separate generation. Evidence from different
-attempts is never mixed.
+attempts is never mixed. When retrying an evidence-producing Tests or Release run, use
+**Re-run all jobs** so every attempt-bound artifact belongs to the new generation.
 
 ## Workflow responsibilities
 
@@ -243,7 +244,8 @@ SHA256SUMS.windows-x64
 
 The checksum split is intentional:
 
-- `SHA256SUMS.common` covers files shared by all platforms;
+- `SHA256SUMS.common` covers the shared installer/configuration inputs
+  (`packages.cfg`, `install.cfg`, `install.sh` and `install.ps1`);
 - each platform checksum covers its executable, `release.txt` and the exact
   common checksum file.
 
@@ -285,7 +287,10 @@ separation, and path-leak checks reject repository, dependency and staging paths
 ## Native candidate tests
 
 The release jobs download the common files and only their matching platform
-artifact. They test the assembled candidate without rebuilding it.
+artifact. They test that assembled candidate without rebuilding or rewriting its bytes.
+A private update fixture is built separately from the same checkout with a genuine
+newer official version so `cup update cup` can exercise a real version transition
+without patching or modifying the candidate under test.
 
 The native release suites check:
 

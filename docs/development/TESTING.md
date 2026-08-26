@@ -332,7 +332,9 @@ Release tests receive an already assembled candidate:
 make PLATFORM=<platform> test-release RELEASE_DIR=<candidate-directory>
 ```
 
-They do not rebuild cup. They check the bytes that would be published:
+They do not rebuild or rewrite the candidate under test. A separate private
+newer-version official build is used only as the `cup update cup` server fixture.
+The runners check the candidate bytes that would be published:
 
 - exact public file set;
 - checksum membership and digest values;
@@ -342,8 +344,10 @@ They do not rebuild cup. They check the bytes that would be published:
 - `doctor` after installation;
 - preservation and cleanup behavior needed by repair/uninstall.
 
-POSIX and Windows have native release runners. A candidate is accepted for
-publication only after all five platform jobs have checked their matching files.
+POSIX and Windows have native release runners. The Windows runner also exercises
+the real `install.sh` handoff through MSYS2 `sh`, `cygpath` and Windows PowerShell
+before the longer PowerShell lifecycle. A candidate is accepted for publication
+only after all five platform jobs have checked their matching files.
 
 ## Local full check
 
@@ -395,7 +399,9 @@ and full vendor version lines are retained for diagnostics but are not compared
 across native runners. Windows applies the same rule to the resource compiler.
 
 A rerun attempt is a different evidence generation. Files from two attempts are
-not combined.
+not combined. To create a complete new evidence generation, use **Re-run all jobs**;
+a partial job rerun intentionally fails closed instead of reusing evidence from the
+previous attempt.
 
 ## Timeouts
 

@@ -700,4 +700,16 @@ set -e
 printf '%s\n' "$oversize_output" | grep -F 'downloaded asset is too large' >/dev/null ||
     fail 'oversized text asset failure was not explained'
 
+installer_ps1_text=$(cat "$ROOT/scripts/install/install.ps1")
+printf '%s\n' "$installer_ps1_text" | grep -F 'function Get-CupCanonicalProfile' >/dev/null ||
+    fail 'PowerShell installer lost CUP path canonicalization'
+printf '%s\n' "$installer_ps1_text" | grep -F '[IO.Path]::GetFullPath' >/dev/null ||
+    fail 'PowerShell installer lost absolute path canonicalization'
+printf '%s\n' "$installer_ps1_text" | grep -F '$canonicalPrimary = "$canonicalProfile/.cup"' >/dev/null ||
+    fail 'PowerShell installer lost the canonical primary-root comparison'
+if printf '%s\n' "$installer_ps1_text" |
+    grep -F '$root.Equals($primary, [StringComparison]::OrdinalIgnoreCase)' >/dev/null; then
+    fail 'PowerShell installer returned to raw bootstrap-root comparison'
+fi
+
 printf 'Installer transport behavior checks passed.\n'

@@ -393,6 +393,51 @@ function Test-CupReady([string]$Path) {
     }
 }
 
+function Get-CupCanonicalProfile([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Fail 'USERPROFILE is not available'
+    }
+    $windowsPath = $Path.Replace('/', '\')
+    if ($windowsPath.StartsWith('\\.\', [StringComparison]::Ordinal)) {
+        Fail 'USERPROFILE contains an unsupported Windows device path'
+    }
+    $driveAbsolute = $windowsPath -match '^[A-Za-z]:\\'
+    $uncAbsolute = $windowsPath.StartsWith('\\', [StringComparison]::Ordinal)
+    if (-not $driveAbsolute -and -not $uncAbsolute) {
+        Fail 'USERPROFILE must contain an absolute path'
+    }
+    if ($windowsPath.StartsWith('\\?\', [StringComparison]::Ordinal) -and
+        -not $windowsPath.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase) -and
+        $windowsPath.Substring(4) -notmatch '^[A-Za-z]:\\') {
+        Fail 'USERPROFILE contains an unsupported Windows device path'
+    }
+    try {
+        $absolute = [IO.Path]::GetFullPath($windowsPath)
+        $volume = [IO.Path]::GetPathRoot($absolute)
+    } catch {
+        Fail 'USERPROFILE must contain a valid absolute path'
+    }
+    if ([string]::IsNullOrWhiteSpace($volume)) {
+        Fail 'USERPROFILE must contain an absolute path'
+    }
+    $trimmed = $absolute.TrimEnd([char[]]'\/')
+    $volumeTrimmed = $volume.TrimEnd([char[]]'\/')
+    if ($trimmed.Equals($volumeTrimmed, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail 'USERPROFILE must be an absolute user directory, not a volume root'
+    }
+
+    if ($absolute.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        $canonical = '//' + $absolute.Substring(8)
+    } elseif ($absolute.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        $canonical = $absolute.Substring(4)
+    } elseif ($absolute.StartsWith('\\', [StringComparison]::Ordinal)) {
+        $canonical = '//' + $absolute.Substring(2)
+    } else {
+        $canonical = $absolute
+    }
+    return $canonical.Replace('\', '/').TrimEnd('/')
+}
+
 function Get-BootstrapRoot([string[]]$Output) {
     $records = @($Output | Where-Object {
         $_.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal)
@@ -401,10 +446,17 @@ function Get-BootstrapRoot([string[]]$Output) {
         Fail 'bootstrap did not report one canonical root'
     }
     $root = $records[0].Substring('CUP_BOOTSTRAP_ROOT='.Length)
-    $primary = Join-Path $env:USERPROFILE '.cup'
-    $fallback = Join-Path $env:USERPROFILE '.coffee-cup'
-    if (-not $root.Equals($primary, [StringComparison]::OrdinalIgnoreCase) -and
-        -not $root.Equals($fallback, [StringComparison]::OrdinalIgnoreCase)) {
+    $canonicalProfile = Get-CupCanonicalProfile $env:USERPROFILE
+    $profile = $canonicalProfile.Replace('/', '\')
+    $primary = Join-Path $profile '.cup'
+    $fallback = Join-Path $profile '.coffee-cup'
+    $canonicalPrimary = "$canonicalProfile/.cup"
+    $canonicalFallback = "$canonicalProfile/.coffee-cup"
+    if ($root.Equals($canonicalPrimary, [StringComparison]::OrdinalIgnoreCase)) {
+        $selected = $primary
+    } elseif ($root.Equals($canonicalFallback, [StringComparison]::OrdinalIgnoreCase)) {
+        $selected = $fallback
+    } else {
         Fail 'bootstrap reported an unsupported canonical root'
     }
     foreach ($line in $Output) {
@@ -412,7 +464,7 @@ function Get-BootstrapRoot([string[]]$Output) {
             Write-Host $line
         }
     }
-    return $root
+    return $selected
 }
 
 function Wait-ForCommit([string]$Root) {

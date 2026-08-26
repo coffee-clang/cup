@@ -887,6 +887,14 @@ release_windows_block=$(awk '
 assert_contains "$release_windows_block" 'tests/release/windows.ps1'
 assert_contains "$release_windows_block" \
     "CUP_TEST_CONFIGURATION='\$(CUP_TEST_CONFIGURATION)'"
+release_target_block=$(awk '
+    /^test-release:/ { in_release = 1 }
+    in_release { print }
+    in_release && /^test-coverage:/ { exit }
+' "$PROJECT_ROOT/Makefile")
+assert_contains "$release_target_block" "CUP_BUILD_DIR='\$(BUILD_DIR)'"
+assert_contains "$release_target_block" 'tests/release/update-fixture.sh'
+assert_contains "$release_target_block" '@set -e;'
 
 # Every existing component of a managed build path is inspected before a
 # marker is created or a tree is removed. A symlinked ancestor must never turn
@@ -1092,7 +1100,7 @@ assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
-assert_contains "$windows_helper_list" 'binary-patch.exe'
+assert_not_contains "$windows_helper_list" 'binary-patch.exe'
 assert_contains "$windows_helper_list" 'network-helper.exe'
 assert_not_contains "$windows_helper_list" 'process-group'
 assert_not_contains "$windows_helper_list" 'archive-fixture'
@@ -1104,6 +1112,39 @@ assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
+update_fixture_builder="$PROJECT_ROOT/tests/release/update-fixture.sh"
+[ "$($update_fixture_builder --next-version 9.9.9)" = 9.9.10 ] ||
+    fail 'release update fixture still depends on same-length versions'
+[ "$($update_fixture_builder --next-version 1.2.999999)" = 1.3.0 ] ||
+    fail 'release update fixture did not carry at the patch limit'
+if "$update_fixture_builder" --next-version 999999.999999.999999 >/dev/null 2>&1; then
+    fail 'release update fixture accepted a version beyond the supported SemVer space'
+fi
+if "$update_fixture_builder" --next-version '1.*.3' >/dev/null 2>&1; then
+    fail 'release update fixture accepted a non-SemVer version'
+fi
+update_fixture_text=$(cat "$update_fixture_builder")
+assert_contains "$update_fixture_text" 'CUP_VERSION_FILE=$version_file'
+assert_contains "$update_fixture_text" 'mktemp "${TMPDIR:-/tmp}/cup-release-update-version.XXXXXX"'
+assert_not_contains "$update_fixture_text" 'version_file=$BUILD_ROOT/'
+assert_contains "$update_fixture_text" 'set -- make -C "$ROOT" --no-print-directory release-candidate'
+assert_contains "$update_fixture_text" 'RELEASE_COMMON_DIR=$fixture_common_dir'
+assert_contains "$update_fixture_text" 'CUP_BUILD_DIR'
+assert_not_contains "$update_fixture_text" 'binary-patch'
+posix_release_text=$(cat "$PROJECT_ROOT/tests/release/posix.sh")
+windows_release_text=$(cat "$PROJECT_ROOT/tests/release/windows.ps1")
+assert_not_contains "$posix_release_text" 'binary-patch'
+assert_not_contains "$windows_release_text" 'binary-patch'
+assert_contains "$posix_release_text" 'CUP_TEST_SERVER_ROOT'
+assert_contains "$posix_release_text" 'validate_release_asset_modes'
+assert_not_contains "$posix_release_text" 'chmod +x "$release_dir/'
+assert_contains "$windows_release_text" 'CUP_TEST_SERVER_ROOT'
+assert_contains "$windows_release_text" 'CUP_TEST_BUILD_ROOT'
+assert_contains "$windows_release_text" 'Assert-ExactCandidateFiles'
+assert_contains "$windows_release_text" '$process.WaitForExit()'
+assert_not_contains "$windows_release_text" '$testRoot'
+assert_contains "$windows_release_text" 'Get-Command sh.exe'
+assert_contains "$windows_release_text" 'Get-Command cygpath.exe'
 coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
 unit_runner_text=$(cat "$PROJECT_ROOT/tests/runners/unit.sh")
 windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
