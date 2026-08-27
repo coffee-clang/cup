@@ -511,13 +511,24 @@ graph_make
 [ ! -s "$graph_trace" ] || fail 'unchanged semantic graph rebuilt production objects or binary'
 
 # VERSION is a semantic input to generated version.h; all consumers must be invalidated in-place.
+graph_current_version=$(tr -d '\r\n' < "$graph_project/VERSION")
+graph_major=${graph_current_version%%.*}
+graph_rest=${graph_current_version#*.}
+graph_minor=${graph_rest%%.*}
+graph_patch=${graph_rest#*.}
+if [ "$graph_patch" -lt 999999 ]; then
+    graph_patch=$((graph_patch + 1))
+else
+    graph_patch=0
+fi
+graph_version="$graph_major.$graph_minor.$graph_patch"
 sleep 1
-printf '%s\n' 0.3.1 > "$graph_project/VERSION"
+printf '%s\n' "$graph_version" > "$graph_project/VERSION"
 : > "$graph_trace"
 graph_make
 assert_contains "$(cat "$graph_trace")" 'COMPILE '
 assert_contains "$(cat "$graph_trace")" 'LINK '
-assert_contains "$(cat "$graph_build/linux-x64/development/generated/version.h")" '0.3.1-dev+graph'
+assert_contains "$(cat "$graph_build/linux-x64/development/generated/version.h")" "$graph_version-dev+graph"
 
 # A generator change that changes ca_bundle.h must invalidate compiled consumers in the same root.
 sleep 1
