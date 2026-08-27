@@ -82,9 +82,18 @@ static CupError validate_checksum_download(const char *path, void *userdata) {
     }
     checksum_document_init(&document);
     err = checksum_document_load(&document, path);
-    if (err == CUP_OK) {
-        err = checksum_document_find_expected(
-            &document, validation->archive_name, expected, sizeof(expected));
+    if (err != CUP_OK) {
+        fprintf(stderr, "Error: downloaded SHA256SUMS metadata is invalid.\n");
+        checksum_document_free(&document);
+        return CUP_ERR_VALIDATION;
+    }
+
+    err = checksum_document_find_expected(
+        &document, validation->archive_name, expected, sizeof(expected));
+    if (err != CUP_OK) {
+        fprintf(stderr,
+                "Error: downloaded SHA256SUMS does not contain expected package archive '%s'.\n",
+                validation->archive_name);
     }
     checksum_document_free(&document);
     return err == CUP_OK ? CUP_OK : CUP_ERR_VALIDATION;

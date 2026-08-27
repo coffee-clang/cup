@@ -132,6 +132,27 @@ try {
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
 
+    $invalidChecksumVersion = '97.0.3'
+    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
+        -Field 'available_versions' -Value $invalidChecksumVersion -Mode 'Prepend'
+    $invalidChecksumPackage = Publish-NetworkPackage `
+        -Version $invalidChecksumVersion -ServerRoot $serverRoot
+    Write-Utf8NoBom -Path (Join-Path $invalidChecksumPackage.ReleaseDir 'SHA256SUMS') -Lines @(
+        ('0' * 64) + " x$($invalidChecksumPackage.PackageName).zip")
+
+    Write-Host '==> Rejecting malformed downloaded checksum metadata with a diagnostic...'
+    $invalidChecksumFailure = Assert-CupStatus `
+        -CommandArgs @('install', 'compiler', "clang@$invalidChecksumVersion") `
+        -ExpectedStatus 4 `
+        -ExpectedText 'Error: downloaded SHA256SUMS metadata is invalid.'
+    Assert-NotContains $invalidChecksumFailure 'Downloaded package archive.'
+    $invalidChecksumCache = Join-Path $Script:CupTestHome (
+        ".cup\cache\compiler\clang\windows-x64\windows-x64\$invalidChecksumVersion")
+    Assert-PathMissing (Join-Path $invalidChecksumCache 'SHA256SUMS')
+    Assert-PathMissing (Join-Path $invalidChecksumCache `
+        "$($invalidChecksumPackage.PackageName).zip")
+    Assert-CupHealthy
+
     Write-Host 'Windows network integration tests passed.'
 } finally {
     if ($null -ne $server) {

@@ -411,17 +411,23 @@ static void test_checksum_validation(void) {
     write_bytes(sums, "", 0);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, load_checksum_count(sums, &count));
 
-    /* A canonical checksum set uses lowercase digests and exactly two spaces. */
+    /* GNU checksum records use one separator space followed by a text or binary marker. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, checksum_sha256_file(asset, digest, sizeof(digest)));
     file = fopen(sums, "wb");
     TEST_ASSERT_NOT_NULL(file);
     fprintf(file, "%s  asset.bin\n", digest);
-    fprintf(file, "%s  other.bin\n", digest);
+    fprintf(file, "%s *other.bin\n", digest);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
     TEST_ASSERT_EQUAL_INT(CUP_OK, load_checksum_count(sums, &count));
     TEST_ASSERT_EQUAL_size_t(2, count);
     TEST_ASSERT_EQUAL_INT(CUP_OK, checksum_validate_assets(sums, assets, 2));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, checksum_validate_assets(sums, assets, 1));
+
+    file = fopen(sums, "wb");
+    TEST_ASSERT_NOT_NULL(file);
+    fprintf(file, "%s xasset.bin\n", digest);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, load_checksum_count(sums, &count));
 
     file = fopen(sums, "wb");
     TEST_ASSERT_NOT_NULL(file);

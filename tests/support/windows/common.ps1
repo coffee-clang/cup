@@ -295,8 +295,9 @@ function New-ZipPackageFixture {
     }
 
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    # MSYS2 GNU sha256sum marks archive records as binary with '*'.
     Write-Utf8NoBom -Path (Join-Path $cacheDir 'SHA256SUMS') -Lines @(
-        "$hash  $(Split-Path -Leaf $archive)")
+        "$hash *$(Split-Path -Leaf $archive)")
     return [pscustomobject]@{
         PackageName = $packageName
         Archive = $archive
@@ -815,8 +816,9 @@ function New-TestPackage {
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive
 
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    # MSYS2 GNU sha256sum marks archive records as binary with '*'.
     Write-Utf8NoBom -Path (Join-Path $cacheDir "SHA256SUMS") -Lines @(
-        "$hash  $(Split-Path -Leaf $archive)"
+        "$hash *$(Split-Path -Leaf $archive)"
     )
 }
 

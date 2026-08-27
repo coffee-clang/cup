@@ -181,7 +181,7 @@ static CupError parse_checksum_line(char *line, char **digest, char **name) {
     }
 
     cursor = line + SHA256_HEX_LENGTH;
-    if (cursor[0] != ' ' || cursor[1] != ' ') {
+    if (cursor[0] != ' ' || (cursor[1] != ' ' && cursor[1] != '*')) {
         return CUP_ERR_VALIDATION;
     }
     *cursor = '\0';
