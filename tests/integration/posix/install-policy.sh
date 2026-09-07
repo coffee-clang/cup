@@ -90,13 +90,29 @@ test_scoped_preferences() {
     assert_missing "$TEST_HOME/.cup/config/preferences.txt"
 }
 
-# The native GNU toolchain is complete; an already installed member is skipped.
+# GNU is complete on the native Linux scopes. On macOS, group preflight must
+# still reject the deliberately incomplete catalog before installing a member.
 test_gnu_toolchain() {
-    output=$(run_cup install TOOLCHAIN GNU)
-    assert_contains "$output" "Installing toolchain 'gnu' (3 packages)"
-    assert_contains "$output" "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
-    assert_file "$(component_root debugger gdb 17.2)/info.txt"
-    assert_file "$(component_root linker ld 2.47)/info.txt"
+    case "$TEST_PLATFORM" in
+        linux-*)
+            output=$(run_cup install TOOLCHAIN GNU)
+            assert_contains "$output" "Installing toolchain 'gnu' (3 packages)"
+            assert_contains "$output" \
+                "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
+            assert_file "$(component_root debugger gdb 17.2)/info.txt"
+            assert_file "$(component_root linker ld 2.47)/info.txt"
+            ;;
+        macos-*)
+            run_cup_expect_failure "$TMP_ROOT/gnu-toolchain.out" install TOOLCHAIN GNU
+            output=$(cat "$TMP_ROOT/gnu-toolchain.out")
+            assert_contains "$output" "Install group 'gnu' cannot be installed"
+            assert_contains "$output" 'gdb                not currently available'
+            assert_contains "$output" 'ld                 not currently available'
+            assert_contains "$output" 'No packages were installed.'
+            assert_missing "$(component_root debugger gdb 17.2)"
+            assert_missing "$(component_root linker ld 2.47)"
+            ;;
+    esac
 }
 
 test_toolchain_explicit() {

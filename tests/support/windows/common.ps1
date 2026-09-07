@@ -700,6 +700,12 @@ function New-TestPackage {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
+    if ($Tool -eq "gcc") {
+        if ($Version -notmatch "-rev([1-9][0-9]*)$") {
+            Fail-Test "invalid GCC fixture revision: $Version"
+        }
+        $info.Add("package.revision=$($Matches[1])")
+    }
     $info.Add("package.mode=self-contained")
     $info.Add("package.formats=tar.xz,tar.gz,zip")
     $info.Add("platform.host=$HostPlatform")

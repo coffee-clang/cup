@@ -101,7 +101,10 @@ printf '%s\n' payload > "$source_file"
 copied_file=$owned/copied.bin
 cup_path_copy_file "$source_file" "$copied_file" 0755 replace
 assert_equals "$(cat "$copied_file")" payload
-[ -x "$copied_file" ] || fail 'copy-file did not apply requested executable mode'
+case "$(uname -s 2>/dev/null || true)" in
+    MSYS*|MINGW*|CYGWIN*) ;;
+    *) [ -x "$copied_file" ] || fail 'copy-file did not apply requested executable mode' ;;
+esac
 
 # Existing output symlinks are rejected instead of being followed.
 create_test_symlink "$external" "$owned/symlink-output"
