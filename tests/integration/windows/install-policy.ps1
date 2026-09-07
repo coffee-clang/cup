@@ -17,21 +17,23 @@ try {
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup")
 
     Invoke-Cup -CommandArgs @("repair") | Out-Null
-    New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" `
+    New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++")
-    New-TestPackage -Component "linker" -Tool "lld" -Version "22.1.5" `
+    New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" `
         -Entries @("lld")
-    New-TestPackage -Component "compiler" -Tool "gcc" -Version "16.1.0-rev1" `
+    New-TestPackage -Component "compiler" -Tool "gcc" -Version "16.2.0-rev1" `
         -Entries @("gcc", "g++")
-    New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.1" `
+    New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.2" `
         -Entries @("gdb")
-    New-TestPackage -Component "debugger" -Tool "lldb" -Version "22.1.5" `
+    New-TestPackage -Component "linker" -Tool "ld" -Version "2.47" `
+        -Entries @("ld")
+    New-TestPackage -Component "debugger" -Tool "lldb" -Version "23.1.0" `
         -Entries @("lldb")
-    New-TestPackage -Component "formatter" -Tool "clang-format" -Version "22.1.5" `
+    New-TestPackage -Component "formatter" -Tool "clang-format" -Version "23.1.0" `
         -Entries @("clang-format")
-    New-TestPackage -Component "linter" -Tool "clang-tidy" -Version "22.1.5" `
+    New-TestPackage -Component "linter" -Tool "clang-tidy" -Version "23.1.0" `
         -Entries @("clang-tidy")
-    New-TestPackage -Component "language-server" -Tool "clangd" -Version "22.1.5" `
+    New-TestPackage -Component "language-server" -Tool "clangd" -Version "23.1.0" `
         -Entries @("clangd")
 
     $profile = Invoke-Cup -CommandArgs @("install", "PROFILE", "MINIMAL")
@@ -39,18 +41,9 @@ try {
     Assert-Contains $profile `
         "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\clang\windows-x64\windows-x64\22.1.5\info.txt")
+        ".cup\components\compiler\clang\windows-x64\windows-x64\23.1.0\info.txt")
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\linker\lld\windows-x64\windows-x64\22.1.5\info.txt")
-
-    $gnu = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "GNU") -ExpectFailure
-    Assert-Contains $gnu "Install group 'gnu' cannot be installed"
-    Assert-Contains $gnu "ld                 not currently available"
-    Assert-Contains $gnu "No packages were installed."
-    Assert-PathMissing (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\gcc\windows-x64\windows-x64\16.1.0-rev1")
-    Assert-PathMissing (Join-Path $Script:CupTestHome `
-        ".cup\components\debugger\gdb\windows-x64\windows-x64\17.1")
+        ".cup\components\linker\lld\windows-x64\windows-x64\23.1.0\info.txt")
 
     $configuredOutput = Invoke-Cup -CommandArgs @("config", "set", "compiler", "gcc")
     Assert-Contains $configuredOutput `
@@ -59,9 +52,18 @@ try {
     Assert-Contains $configured "compiler           gcc"
     Assert-Contains $configured "user preference"
     $compilerInstall = Invoke-Cup -CommandArgs @("install", "compiler")
-    Assert-Contains $compilerInstall "Installed compiler gcc@16.1.0-rev1"
+    Assert-Contains $compilerInstall "Installed compiler gcc@16.2.0-rev1"
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\gcc\windows-x64\windows-x64\16.1.0-rev1\info.txt")
+        ".cup\components\compiler\gcc\windows-x64\windows-x64\16.2.0-rev1\info.txt")
+
+    $gnu = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "GNU")
+    Assert-Contains $gnu "Installing toolchain 'gnu' (3 packages)"
+    Assert-Contains $gnu `
+        "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
+    Assert-PathExists (Join-Path $Script:CupTestHome `
+        ".cup\components\debugger\gdb\windows-x64\windows-x64\17.2\info.txt")
+    Assert-PathExists (Join-Path $Script:CupTestHome `
+        ".cup\components\linker\ld\windows-x64\windows-x64\2.47\info.txt")
 
     Invoke-Cup -CommandArgs @(
         "config", "set", "compiler", "gcc", "--target", "linux-x64") | Out-Null
@@ -91,10 +93,10 @@ try {
     Assert-Contains $llvm `
         "Install group 'llvm' completed: 4 package(s) installed, 2 skipped."
     foreach ($relative in @(
-        ".cup\components\debugger\lldb\windows-x64\windows-x64\22.1.5\info.txt",
-        ".cup\components\formatter\clang-format\windows-x64\windows-x64\22.1.5\info.txt",
-        ".cup\components\linter\clang-tidy\windows-x64\windows-x64\22.1.5\info.txt",
-        ".cup\components\language-server\clangd\windows-x64\windows-x64\22.1.5\info.txt"
+        ".cup\components\debugger\lldb\windows-x64\windows-x64\23.1.0\info.txt",
+        ".cup\components\formatter\clang-format\windows-x64\windows-x64\23.1.0\info.txt",
+        ".cup\components\linter\clang-tidy\windows-x64\windows-x64\23.1.0\info.txt",
+        ".cup\components\language-server\clangd\windows-x64\windows-x64\23.1.0\info.txt"
     )) {
         Assert-PathExists (Join-Path $Script:CupTestHome $relative)
     }

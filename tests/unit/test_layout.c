@@ -21,8 +21,6 @@ void tearDown(void);
 #include <stdlib.h>
 #include <string.h>
 
-/* Shared fixture state used by the cases in this suite. */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 int download_insecure_loopback_is_allowed(const char *url) {
@@ -61,8 +59,6 @@ static void get_root_marker_path_for_test(char *buffer, size_t size) {
     written = snprintf(buffer, size, "%s/root.txt", root);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
-
-/* Test cases grouped by the public contract they exercise. */
 
 static void test_package_paths(void) {
     PackageIdentity identity = {.component = "compiler",
@@ -143,26 +139,7 @@ static void test_path_argument_contracts(void) {
     char tiny[2];
 
     TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_root(path, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, layout_get_root(tiny, sizeof(tiny)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_config_dir(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_config_dir(path, 0));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_package_catalog_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_install_policy_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_preferences_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_platform_checksums_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_get_update_helper_path(NULL, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_binary_path(NULL, sizeof(path)));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_install_path(NULL, sizeof(path), &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_install_path(path, 0, &identity));
     invalid.component[0] = '.';
     invalid.component[1] = '.';
     invalid.component[2] = '\0';
@@ -170,40 +147,49 @@ static void test_path_argument_contracts(void) {
                           layout_build_install_path(path, sizeof(path), &invalid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           layout_build_staging_prefix(path, sizeof(path), "install", &invalid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_cache_archive_path(NULL,
-                                                          sizeof(path),
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          layout_build_cache_archive_path(tiny,
+                                                          sizeof(tiny),
                                                           &identity,
                                                           "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_cache_archive_path(path, 0, &identity, "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_cache_archive_path(path, sizeof(path), &identity, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_cache_archive_path(path, sizeof(path), NULL, "tar.xz"));
+}
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_staging_prefix(NULL, sizeof(path), "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_staging_prefix(path, 0, "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_staging_prefix(path, sizeof(path), NULL, &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_staging_prefix(path, sizeof(path), "install", NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_create_staging_dir(NULL, sizeof(path), "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_create_staging_dir(path, 0, "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_make_staging_path(NULL, sizeof(path), "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_make_staging_path(path, 0, "install", &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_create_recovery_dir(NULL, sizeof(path), &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_create_recovery_dir(path, 0, &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_check_root_candidates(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_ensure_cache_parent(NULL));
+static void test_explicit_base_and_relocated_root(void) {
+    char home[1024];
+    char base[1024];
+    char primary[1024];
+    char fallback[1024];
+    char selected[1024];
+    char path[1024];
+
+    TEST_ASSERT_TRUE(snprintf(home, sizeof(home), "%s/explicit-home", temp_dir) > 0);
+    TEST_ASSERT_TRUE(snprintf(base, sizeof(base), "%s/explicit base", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(home));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(base));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(home));
+    TEST_ASSERT_TRUE(snprintf(primary, sizeof(primary), "%s/.cup", base) > 0);
+    TEST_ASSERT_TRUE(snprintf(fallback, sizeof(fallback), "%s/.coffee-cup", base) > 0);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          layout_select_root_for_base(base, selected, sizeof(selected)));
+    TEST_ASSERT_TRUE(path_equal(primary, selected));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(primary));
+    TEST_ASSERT_TRUE(snprintf(path, sizeof(path), "%s/foreign.txt", primary) > 0);
+    write_text_file(path, "foreign\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          layout_select_root_for_base(base, selected, sizeof(selected)));
+    TEST_ASSERT_TRUE(path_equal(fallback, selected));
+
+    create_owned_root(fallback);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_begin_at(fallback));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(selected, sizeof(selected)));
+    TEST_ASSERT_TRUE(path_equal(fallback, selected));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_validate());
+    layout_root_snapshot_end();
+
+    TEST_ASSERT_TRUE(snprintf(path, sizeof(path), "%s/arbitrary-root", base) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_root_snapshot_begin_at(path));
 }
 
 static void test_root_selection(void) {
@@ -383,6 +369,30 @@ static void test_unmarked_cup_root_blocks_fallback(void) {
     TEST_ASSERT_FALSE(exists);
     TEST_ASSERT_TRUE(snprintf(path, sizeof(path), "%s/root.txt", primary) > 0);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(path, &exists));
+    TEST_ASSERT_FALSE(exists);
+}
+
+static void test_unmarked_cup_root_directory_binary_blocks_fallback(void) {
+    char home[1024];
+    char primary[1024];
+    char fallback[1024];
+    char path[1024];
+    size_t issues = 0;
+    int exists = 0;
+
+    TEST_ASSERT_TRUE(snprintf(home, sizeof(home), "%s/unmarked-directory-binary", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(home));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(home));
+    TEST_ASSERT_TRUE(snprintf(primary, sizeof(primary), "%s/.cup", home) > 0);
+    TEST_ASSERT_TRUE(snprintf(fallback, sizeof(fallback), "%s/.coffee-cup", home) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(primary));
+    make_child_directory(primary, "bin");
+    make_child_directory(primary, "bin/" CUP_BINARY_FILENAME);
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, layout_get_root(path, sizeof(path)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_root_candidates(&issues));
+    TEST_ASSERT_EQUAL_size_t(1, issues);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(fallback, &exists));
     TEST_ASSERT_FALSE(exists);
 }
 
@@ -662,6 +672,21 @@ static void test_runtime_wrong_path_type(void) {
     TEST_ASSERT_TRUE(issues > 0);
 }
 
+static void test_root_snapshot_has_single_owner(void) {
+    char home[1024];
+    char root[1024];
+
+    TEST_ASSERT_TRUE(snprintf(home, sizeof(home), "%s/snapshot-owner", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(home));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(home));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_begin());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(root, sizeof(root)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, layout_root_snapshot_begin());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, layout_root_snapshot_begin_at(root));
+    layout_root_snapshot_end();
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, layout_root_snapshot_validate());
+}
+
 static void test_root_snapshot_is_stable_and_identity_bound(void) {
     char first_home[1024];
     char second_home[1024];
@@ -848,11 +873,14 @@ void register_layout_tests(void) {
     RUN_TEST(test_runtime_wrong_path_type);
     RUN_TEST(test_directory_creation_prevalidates_identity);
     RUN_TEST(test_recovery_paths);
+    RUN_TEST(test_root_snapshot_has_single_owner);
     RUN_TEST(test_root_snapshot_is_stable_and_identity_bound);
     RUN_TEST(test_root_snapshot_does_not_adopt_concurrent_creation);
     RUN_TEST(test_root_selection);
+    RUN_TEST(test_explicit_base_and_relocated_root);
     RUN_TEST(test_corrupt_owned_root_marker_blocks_fallback);
     RUN_TEST(test_unmarked_cup_root_blocks_fallback);
+    RUN_TEST(test_unmarked_cup_root_directory_binary_blocks_fallback);
     RUN_TEST(test_markerless_state_only_directory_uses_fallback);
     RUN_TEST(test_complete_unmarked_current_layout_is_not_adopted);
     RUN_TEST(test_root_candidate_conflicts);

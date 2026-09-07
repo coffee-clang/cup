@@ -79,8 +79,20 @@ create_plain_tar_disguised_as_gzip() {
 package.component=compiler
 package.tool=clang
 package.version=$version
+package.mode=self-contained
+package.formats=tar.xz,tar.gz,zip
 platform.host=$TEST_PLATFORM
 platform.target=$TEST_PLATFORM
+platform.host_triple=${TEST_PLATFORM}-fixture
+platform.target_triple=${TEST_PLATFORM}-fixture
+platform.family=fixture
+platform.runtime=fixture
+platform.thread_model=fixture
+build.environment=test
+build.source_policy=fixture
+source.primary.name=clang
+source.primary.version=$version
+source.primary.url=https://example.invalid/clang-$version.tar.xz
 entry.clang=bin/clang
 EOF_INFO
     printf '#!/bin/sh\nexit 0\n' > "$package_root/bin/clang"
@@ -133,6 +145,14 @@ create_unsafe_archive() {
     printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")" \
         > "$cache_dir/SHA256SUMS"
 }
+
+# A producer-style POSIX command alias may be a confined relative symlink to a declared file.
+safe_symlink_version=98.2.1
+package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions     "$safe_symlink_version" prepend
+create_unsafe_archive "$safe_symlink_version" safe-symlink
+run_cup install compiler "clang@$safe_symlink_version" >/dev/null
+assert_contains "$(run_cup list compiler)" "compiler:clang@$safe_symlink_version"
+assert_cup_healthy
 
 index=1
 for case in traversal absolute symlink symlink-parent duplicate case-collision \

@@ -25,11 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static CupState scenario_state;
 static PackageCatalogEntry package_catalog_items[12];
 static size_t package_catalog_count;
@@ -56,8 +51,6 @@ static int state_save_calls;
 static int plan_apply_calls;
 static WrapperSpec plan_items[3];
 static size_t plan_count;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -193,11 +186,6 @@ static char *capture_result(CupError (*operation)(void), CupError *result) {
     TEST_ASSERT_EQUAL_INT(0, fclose(capture));
     return output;
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError registry_validate_component(const char *component) {
     if (component == NULL || strcmp(component, "bad") == 0) {
@@ -711,11 +699,6 @@ static CupError run_info_component(void) {
 static CupError run_info_target(void) {
     return command_info(NULL, "windows-x64");
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_list_empty(void) {
     CupError result;

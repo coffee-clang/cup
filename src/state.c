@@ -576,7 +576,7 @@ CupError state_save(const CupState *state,
         err = filesystem_replace_file_if_identity(
             root, "state", state_path, expected, 0, write_state_file, &context);
     }
-    if (err != CUP_OK) {
+    if (err != CUP_OK || published_identity == NULL) {
         return err;
     }
 

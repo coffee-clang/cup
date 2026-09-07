@@ -17,15 +17,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static int layout_failure;
 static CupError kind_result;
 static SystemPathKind binary_kind;
-static SystemPathKind helper_kind;
 static SystemPathKind package_catalog_kind;
 static SystemPathKind install_policy_kind;
 static SystemPathKind common_kind;
@@ -34,7 +28,6 @@ static CupError common_schema_result;
 static CupError platform_schema_result;
 static CupError executable_result;
 static int binary_executable;
-static int helper_executable;
 static CupError installed_catalog_result;
 static CupError development_catalog_result;
 static CupError installed_install_policy_result;
@@ -49,8 +42,6 @@ static char host_value[MAX_PLATFORM_LEN];
 static int common_identity_changed;
 static int platform_identity_changed;
 
-/* Fixture lifecycle and local construction helpers. */
-
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
 }
@@ -59,7 +50,6 @@ static void reset_scenario(void) {
     layout_failure = 0;
     kind_result = CUP_OK;
     binary_kind = SYSTEM_PATH_MISSING;
-    helper_kind = SYSTEM_PATH_MISSING;
     package_catalog_kind = SYSTEM_PATH_MISSING;
     install_policy_kind = SYSTEM_PATH_MISSING;
     common_kind = SYSTEM_PATH_MISSING;
@@ -68,7 +58,6 @@ static void reset_scenario(void) {
     platform_schema_result = CUP_OK;
     executable_result = CUP_OK;
     binary_executable = 1;
-    helper_executable = 1;
     installed_catalog_result = CUP_OK;
     development_catalog_result = CUP_ERR_CATALOG;
     installed_install_policy_result = CUP_OK;
@@ -79,7 +68,11 @@ static void reset_scenario(void) {
     install_policy_matches = 1;
     common_checksums_matches = 1;
     host_result = CUP_OK;
+#if defined(_WIN32)
+    strcpy(host_value, "windows-x64");
+#else
     strcpy(host_value, "linux-x64");
+#endif
     common_identity_changed = 0;
     platform_identity_changed = 0;
 }
@@ -98,17 +91,8 @@ static CupError write_layout_path(int id, char *buffer, size_t size, const char 
     return buffer_write_result(snprintf(buffer, size, "%s", value), size);
 }
 
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
 CupError layout_get_binary_path(char *buffer, size_t size) {
     return write_layout_path(1, buffer, size, "/binary");
-}
-
-CupError layout_get_update_helper_path(char *buffer, size_t size) {
-    return write_layout_path(8, buffer, size, "/helper");
 }
 
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
@@ -135,8 +119,6 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     }
     if (strcmp(path, "/binary") == 0) {
         *kind = binary_kind;
-    } else if (strcmp(path, "/helper") == 0) {
-        *kind = helper_kind;
     } else if (strcmp(path, "/catalog") == 0) {
         *kind = package_catalog_kind;
     } else if (strcmp(path, "/install-config") == 0) {
@@ -253,8 +235,6 @@ CupError system_is_executable(const char *path, int *is_executable) {
     }
     if (strcmp(path, "/binary") == 0) {
         *is_executable = binary_executable;
-    } else if (strcmp(path, "/helper") == 0) {
-        *is_executable = helper_executable;
     } else {
         TEST_FAIL_MESSAGE("unexpected executable path");
         return CUP_ERR_INVALID_INPUT;
@@ -339,29 +319,26 @@ CupError platform_get_host(char *buffer, size_t size) {
 
 static void make_assets_regular(void) {
     binary_kind = SYSTEM_PATH_REGULAR_FILE;
-    helper_kind = SYSTEM_PATH_REGULAR_FILE;
     package_catalog_kind = SYSTEM_PATH_REGULAR_FILE;
     install_policy_kind = SYSTEM_PATH_REGULAR_FILE;
     common_kind = SYSTEM_PATH_REGULAR_FILE;
     platform_kind = SYSTEM_PATH_REGULAR_FILE;
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_empty_and_complete(void) {
     AssetsInspection inspection;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, assets_inspect(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
     TEST_ASSERT_FALSE(assets_has_installed_assets(&inspection));
     TEST_ASSERT_FALSE(assets_installed_is_valid(&inspection));
     TEST_ASSERT_FALSE(assets_development_is_valid(&inspection));
-    TEST_ASSERT_FALSE(assets_has_installed_assets(NULL));
-    TEST_ASSERT_FALSE(assets_installed_is_valid(NULL));
-    TEST_ASSERT_FALSE(assets_development_is_valid(NULL));
+
+    /* A present asset without the platform trust document is present but unauthenticated. */
+    reset_scenario();
+    binary_kind = SYSTEM_PATH_REGULAR_FILE;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
+    TEST_ASSERT_TRUE(assets_has_installed_assets(&inspection));
 
     reset_scenario();
     make_assets_regular();
@@ -387,9 +364,16 @@ static void test_bad_assets(void) {
     reset_scenario();
     make_assets_regular();
     platform_schema_result = CUP_ERR_VALIDATION;
+    common_schema_result = CUP_ERR_FILESYSTEM;
+    installed_catalog_result = CUP_ERR_TEMPORARY;
+    installed_install_policy_result = CUP_ERR_TEMPORARY;
+    executable_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.platform_checksums);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.common_checksums);
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.catalog);
+    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.install_policy);
 
     reset_scenario();
     make_assets_regular();
@@ -401,31 +385,12 @@ static void test_bad_assets(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.install_policy);
     TEST_ASSERT_FALSE(assets_installed_is_valid(&inspection));
 
-    /* The canonical executable and derived update helper must be executable. */
+    /* The canonical executable must be executable. */
     reset_scenario();
     make_assets_regular();
     binary_executable = 0;
     TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
     TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.binary);
-
-    reset_scenario();
-    make_assets_regular();
-    helper_executable = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
-
-    reset_scenario();
-    make_assets_regular();
-    helper_kind = SYSTEM_PATH_DIRECTORY;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSET_INVALID, inspection.helper);
-
-    reset_scenario();
-    make_assets_regular();
-    helper_kind = SYSTEM_PATH_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_inspect(&inspection));
-    TEST_ASSERT_EQUAL_INT(CUP_ASSET_MISSING, inspection.helper);
-    TEST_ASSERT_TRUE(assets_installed_is_valid(&inspection));
 
     /* Digest and parser failures are reported on the specific installed asset. */
     reset_scenario();
@@ -477,14 +442,11 @@ static void test_inspection_errors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, assets_inspect(&inspection));
 
     reset_scenario();
-    layout_failure = 8;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, assets_inspect(&inspection));
-
-    reset_scenario();
     kind_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, assets_inspect(&inspection));
 
     reset_scenario();
+    platform_kind = SYSTEM_PATH_REGULAR_FILE;
     common_kind = SYSTEM_PATH_REGULAR_FILE;
     common_schema_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, assets_inspect(&inspection));
@@ -507,17 +469,35 @@ static void test_inspection_errors(void) {
 
 }
 
+static void test_platform_checksum_required_names(void) {
+    PlatformChecksumRequiredNames required;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_platform_checksum_required_names(&required));
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_STRING("cup-windows-x64.exe", required.names[0]);
+#else
+    TEST_ASSERT_EQUAL_STRING("cup-linux-x64", required.names[0]);
+#endif
+    TEST_ASSERT_EQUAL_STRING(CUP_RELEASE_METADATA_FILENAME, required.names[1]);
+    TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, required.names[2]);
+
+    host_result = CUP_ERR_INVALID_OS;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_OS, assets_platform_checksum_required_names(&required));
+}
+
 static void test_platform_asset_names(void) {
     char name[MAX_IDENTIFIER_LEN];
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, assets_binary_asset_name(name, sizeof(name)));
+#if defined(_WIN32)
+    TEST_ASSERT_EQUAL_STRING("cup-windows-x64.exe", name);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_platform_checksums_name(name, sizeof(name)));
+    TEST_ASSERT_EQUAL_STRING("SHA256SUMS.windows-x64", name);
+#else
     TEST_ASSERT_EQUAL_STRING("cup-linux-x64", name);
     TEST_ASSERT_EQUAL_INT(CUP_OK, assets_platform_checksums_name(name, sizeof(name)));
     TEST_ASSERT_EQUAL_STRING("SHA256SUMS.linux-x64", name);
-
-    strcpy(host_value, "windows-x64");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, assets_binary_asset_name(name, sizeof(name)));
-    TEST_ASSERT_EQUAL_STRING("cup-windows-x64.exe", name);
+#endif
 
     host_result = CUP_ERR_INVALID_OS;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_OS, assets_binary_asset_name(name, sizeof(name)));
@@ -535,6 +515,7 @@ int main(void) {
     RUN_TEST(test_empty_and_complete);
     RUN_TEST(test_bad_assets);
     RUN_TEST(test_inspection_errors);
+    RUN_TEST(test_platform_checksum_required_names);
     RUN_TEST(test_platform_asset_names);
     return UNITY_END();
 }

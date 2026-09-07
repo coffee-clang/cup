@@ -7,14 +7,18 @@ set -euo pipefail
 THEME_DIR="docs/theme"
 BASE_URL="https://raw.githubusercontent.com/coffee-clang/coffee-clang.github.io/main"
 DESTINATION="$THEME_DIR/index.hbs"
-TEMPORARY="$DESTINATION.tmp.$$"
+
+mkdir -p "$THEME_DIR"
+TEMPORARY=$(mktemp "$THEME_DIR/.index.hbs.XXXXXX")
 
 cleanup() {
     rm -f "$TEMPORARY"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-mkdir -p "$THEME_DIR"
 curl -fsSL --proto '=https' --proto-redir '=https' \
     "$BASE_URL/theme/index.hbs" -o "$TEMPORARY"
 [ -s "$TEMPORARY" ] || {

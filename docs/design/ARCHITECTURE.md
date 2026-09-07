@@ -125,18 +125,25 @@ can therefore keep more than one version and select the default separately.
 
 ## Userspace root
 
-All managed data stays below one root selected from the current user's home:
+CUP manages one canonical root at a time. The default base is `HOME` on POSIX and
+`USERPROFILE` on Windows, but installation may select another user-manageable base. The
+managed leaf is always:
 
 ```text
 .cup
 .coffee-cup   fallback when .cup is foreign
 ```
 
-The root is identified by `root.txt`. cup does not use `sudo`, administrator
-rights, `/usr`, `/opt`, `Program Files` or an environment-configurable root.
+`root.txt` authenticates ownership. An installed executable derives the current root from
+its own real `<cup-root>/bin/cup[.exe]` location, so moving the complete root preserves its
+identity when the canonical leaf name is retained. Development/bootstrap executables that
+do not live in a managed root select from an explicit installer base or the default user
+base. There is no `CUP_HOME` override or global root registry.
 
-This choice keeps state and recovery local to one user and makes uninstall
-possible without a privileged service.
+Root identity is separate from operability. CUP never invokes `sudo`, requests UAC/admin
+elevation or treats a protected location as valid merely because its marker is authentic.
+Each mutating operation succeeds only if the current ordinary user can perform the actual
+filesystem operations required by that transaction.
 
 ## Main layers
 
@@ -225,19 +232,21 @@ Repository scripts own development tasks:
 scripts/build/          build metadata, binary inspection and finalization
 scripts/dependencies/   pinned dependency prefixes
 scripts/certs/          embedded CA bundle generation and checks
-scripts/ci/             CI preparation and evidence files
+scripts/ci/             CI preparation and source-tested build identity
 scripts/install/        public transport installers
 scripts/release/        candidate assembly and publication
-scripts/lib/            safe repository-path frontend used by scripts
+scripts/lib/            small sourced helpers shared by repository scripts
 ```
 
-`scripts/lib/path-ops.c` is the native path frontend used by repository scripts.
-It links the required filesystem modules from `src/` instead of keeping another
-copy of the no-follow and identity logic. POSIX hosts use the POSIX backend;
-MSYS2 crosses explicitly to the native Windows backend. It also owns
-repository-only policy, such as build-root markers, build locks and the
-publication modes required by shell callers. Its dispatch is kept in one place
-so those operations do not become a set of unrelated helper programs.
+`scripts/lib/path-safety.sh` owns repository path safety for shell tooling. It
+normalizes managed paths, rejects evident symbolic-link parents, enforces
+containment and root markers, and provides the staging/publication and
+destructive-root guards used by build, dependency and release scripts. These are
+repository workflow checks implemented with normal host filesystem tools; they
+do not duplicate the native same-object identity model used by the cup runtime.
+The repository assumes cooperative use of one independently mutating build or
+dependency root at a time rather than maintaining a separate cross-process lock
+protocol.
 
 Dependency scripts are split by responsibility: `environment.sh` prepares the
 controlled build environment, `root-transaction.sh` owns the managed prefix
@@ -275,7 +284,8 @@ The C source files are grouped below by responsibility.
 
 | Module | Responsibility |
 |---|---|
-| `assets.c` | validate the installed asset generation |
+| `assets.c` | inspect and authenticate the installed asset generation |
+| `update_assets.c` | canonical update asset names, paths and staging destinations |
 | `self_update.c` | discover, compare, download and stage a cup release |
 | `update_helper.c` | detached replacement of installed assets |
 | `update_journal.c` | executable-update schema and recovery |
@@ -385,7 +395,7 @@ local component compilation during cup install
 a dependency solver between component packages
 a global shared sysroot
 an environment variable for the cup root
-automatic PATH modification or cleanup
+system-wide PATH modification or automatic PATH cleanup on uninstall
 automatic VERSION increments
 nightly package selectors
 ```

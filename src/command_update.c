@@ -53,9 +53,6 @@ static CupError update_plan_add(UpdatePlan *plan,
     PackageScope scope;
     CupError err;
 
-    if (package_identity_validate(installed, stderr) != CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
     if (update_plan_find(
             plan, installed->component, installed->tool, installed->target_platform) >= 0) {
         return CUP_OK;
@@ -70,9 +67,6 @@ static CupError update_plan_add(UpdatePlan *plan,
         return CUP_ERR_INCONSISTENT_STATE;
     }
     default_identity = state_get_default(&context->state, &scope);
-    if (default_identity != NULL && package_identity_validate(default_identity, stderr) != CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
     if (default_identity != NULL && strcmp(default_identity->tool, installed->tool) == 0) {
         candidate.previous_default = *default_identity;
         candidate.has_previous_default = 1;

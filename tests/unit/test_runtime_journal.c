@@ -1,6 +1,7 @@
 /* Exercises classification of the shared physical runtime journal. */
 
 #include "runtime_journal.h"
+#include "constants.h"
 #include "system.h"
 #include "unity.h"
 #include "test_platform.h"
@@ -10,11 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char journal_root[CUP_TEST_TEMP_PATH_SIZE];
 static char journal_path[CUP_TEST_TEMP_PATH_SIZE];
 static CupError path_result;
@@ -22,8 +18,6 @@ static CupError remove_identity_result;
 static CupError sync_result;
 static CupError publish_result;
 static SystemCommitState publish_state;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -48,11 +42,6 @@ void tearDown(void) {
     journal_root[0] = '\0';
     journal_path[0] = '\0';
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError layout_get_root(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "%s", journal_root), size);
@@ -196,11 +185,6 @@ static CupError write_test_journal(FILE *file, const void *value) {
                ? CUP_OK
                : CUP_ERR_TRANSACTION;
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_detects_owners(void) {
     RuntimeJournalKind kind;
@@ -472,8 +456,25 @@ static void test_first_publish_preserves_existing_journal(void) {
 }
 
 
+static void test_transaction_token_grammar(void) {
+    char token[MAX_TRANSACTION_TOKEN_LEN + 1u];
+
+    TEST_ASSERT_TRUE(runtime_journal_token_is_valid("abcXYZ-123_.tmp"));
+    TEST_ASSERT_FALSE(runtime_journal_token_is_valid(""));
+    TEST_ASSERT_FALSE(runtime_journal_token_is_valid("bad token"));
+    TEST_ASSERT_FALSE(runtime_journal_token_is_valid("bad/token"));
+
+    memset(token, 'a', MAX_TRANSACTION_TOKEN_LEN - 1u);
+    token[MAX_TRANSACTION_TOKEN_LEN - 1u] = '\0';
+    TEST_ASSERT_TRUE(runtime_journal_token_is_valid(token));
+    memset(token, 'a', MAX_TRANSACTION_TOKEN_LEN);
+    token[MAX_TRANSACTION_TOKEN_LEN] = '\0';
+    TEST_ASSERT_FALSE(runtime_journal_token_is_valid(token));
+}
+
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_transaction_token_grammar);
     RUN_TEST(test_detects_owners);
     RUN_TEST(test_rejects_invalid);
     RUN_TEST(test_storage_failures);

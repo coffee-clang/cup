@@ -25,6 +25,7 @@ typedef struct {
 
 /* Basic non-owning string inspection and in-place trimming. */
 int text_is_empty(const char *value);
+int text_equal_ascii_ignore_case(const char *left, const char *right);
 char *text_trim(char *value);
 
 /* Bounded copy and printf-style formatting. */

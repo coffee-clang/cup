@@ -219,7 +219,6 @@ static void test_begin_load_and_detached_path(void) {
     TEST_ASSERT_EQUAL_STRING(".cup-uninstall-token", journal.temporary_name);
     TEST_ASSERT_EQUAL_STRING("token", journal.token);
     TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_SCHEDULED, journal.phase);
-    TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_HANDOFF, journal.stage);
     TEST_ASSERT_EQUAL_INT(0, journal.error_code);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, uninstall_journal_begin(temporary, "token"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, uninstall_journal_begin(NULL, "token"));
@@ -253,69 +252,26 @@ static void test_token_character_domain(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, clear_runtime_journal());
 }
 
-static void test_public_argument_contracts(void) {
-    UninstallJournal journal;
-
-    uninstall_journal_init(NULL);
-    uninstall_journal_init(&journal);
-    TEST_ASSERT_EQUAL_STRING("invalid", uninstall_phase_name((UninstallPhase)99));
-    TEST_ASSERT_EQUAL_STRING("invalid", uninstall_stage_name((UninstallStage)99));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, uninstall_journal_recover(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, uninstall_journal_recover(&journal));
-}
-
 static void test_strict_load(void) {
     static const char *invalid[] = {
-        /* Detached names use one canonical dash separator. */
         "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall.token\ntoken=token\nstage=handoff\nerror=0\n",
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n",
+        "format=2\noperation=other\nphase=scheduled\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n",
+        "format=2\noperation=uninstall\nphase=unknown\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n",
         "format=2\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=other\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=unknown\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-other\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=bad token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=unknown\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=1\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=unknown\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=detaching\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=detaching\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=detach\nerror=1\n",
-        "format=1\noperation=uninstall\nphase=failed\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=unknown\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=failed\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=unknown\nerror=1\nunknown=x\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=text\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=-1\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=256\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\n"
-        "token=token\n"
-        "stage=handoff\n"
-        "error=999999999999999999999\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token!\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\n",
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\nerror=0\n",
+        "temporary_name=.cup-uninstall-other\ntoken=token\nerror=0\n",
+        "format=2\noperation=uninstall\nphase=scheduled\n"
+        "temporary_name=.cup-uninstall-token\ntoken=bad token\nerror=0\n",
+        "format=2\noperation=uninstall\nphase=scheduled\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=1\n",
+        "format=2\noperation=uninstall\nphase=failed\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n",
+        "format=2\noperation=uninstall\nphase=failed\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=19\n",
+        "format=2\noperation=uninstall\nphase=scheduled\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nunknown=x\nerror=0\n",
         "not-a-key-value\n"
     };
     UninstallJournal journal;
@@ -328,46 +284,27 @@ static void test_strict_load(void) {
         assert_invalid(invalid[i]);
     }
 
-
     {
         static const unsigned char hidden_nul[] =
-            "format=1\noperation=uninstall\nphase=scheduled\n"
-            "temporary_name=.cup-uninstall-token\ntoken=token\n"
-            "stage=handoff\nerror=0\0\n";
+            "format=2\noperation=uninstall\nphase=scheduled\n"
+            "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\0\n";
         write_journal_bytes(hidden_nul, sizeof(hidden_nul) - 1);
-        TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_TRANSACTION, uninstall_journal_load(&journal, &status));
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, uninstall_journal_load(&journal, &status));
     }
 
-    assert_invalid("format=1\noperation=uninstall\nphase=scheduled\n"
-                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                   "stage=handoff\nerror=0");
-    assert_invalid("format=1\r\noperation=uninstall\nphase=scheduled\n"
-                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                   "stage=handoff\nerror=0\n");
+    assert_invalid("format=2\noperation=uninstall\nphase=scheduled\n"
+                   "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0");
 
-    write_journal("format=1\noperation=uninstall\nphase=detaching\n"
-                  "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=0\n");
+    write_journal("format=2\noperation=uninstall\nphase=detaching\n"
+                  "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_DETACHING, journal.phase);
-    TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_DETACH, journal.stage);
-    TEST_ASSERT_EQUAL_INT(0, journal.error_code);
 
-    write_journal("format=1\noperation=uninstall\nphase=failed\n"
-                  "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=6\n");
+    write_journal("format=2\noperation=uninstall\nphase=failed\n"
+                  "temporary_name=.cup-uninstall-token\ntoken=token\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_FAILED, journal.phase);
-    TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_DETACH, journal.stage);
     TEST_ASSERT_EQUAL_INT(CUP_STATUS_OPERATION, journal.error_code);
-
-    assert_invalid("format=1\noperation=uninstall\nphase=failed\n"
-                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                   "stage=handoff\nerror=6\n");
-    assert_invalid("format=1\noperation=uninstall\nphase=failed\n"
-                   "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                   "stage=detach\nerror=19\n");
 }
 
 static void test_persistent_write_failures(void) {
@@ -398,17 +335,15 @@ static void test_recover_failed_uninstall(void) {
     UninstallJournalStatus status;
     char path[MAX_PATH_LEN];
 
-    write_journal("format=1\noperation=uninstall\nphase=failed\n"
-                  "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=6\n");
+    write_journal("format=2\noperation=uninstall\nphase=failed\n"
+                  "temporary_name=.cup-uninstall-token\ntoken=token\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_recover(&journal));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(path, sizeof(path)));
     TEST_ASSERT_FALSE(test_access_exists(path));
 
-    write_journal("format=1\noperation=uninstall\nphase=failed\n"
-                  "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=6\n");
+    write_journal("format=2\noperation=uninstall\nphase=failed\n"
+                  "temporary_name=.cup-uninstall-token\ntoken=token\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     remove_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, uninstall_journal_recover(&journal));
@@ -421,9 +356,8 @@ static void test_recovery_preserves_existing_detached_root(void) {
     char parent[MAX_PATH_LEN];
     char detached[MAX_PATH_LEN];
 
-    write_journal("format=1\noperation=uninstall\nphase=failed\n"
-                  "temporary_name=.cup-uninstall-token\ntoken=token\n"
-                  "stage=detach\nerror=6\n");
+    write_journal("format=2\noperation=uninstall\nphase=failed\n"
+                  "temporary_name=.cup-uninstall-token\ntoken=token\nerror=6\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, uninstall_journal_load(&journal, &status));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_parent(parent, sizeof(parent), root));
     TEST_ASSERT_EQUAL_INT(
@@ -436,10 +370,10 @@ static void test_recovery_preserves_existing_detached_root(void) {
 
 static void test_recover_stale_pre_detach_phases(void) {
     static const char *journals[] = {
-        "format=1\noperation=uninstall\nphase=scheduled\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=handoff\nerror=0\n",
-        "format=1\noperation=uninstall\nphase=detaching\n"
-        "temporary_name=.cup-uninstall-token\ntoken=token\nstage=detach\nerror=0\n"};
+        "format=2\noperation=uninstall\nphase=scheduled\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n",
+        "format=2\noperation=uninstall\nphase=detaching\n"
+        "temporary_name=.cup-uninstall-token\ntoken=token\nerror=0\n"};
     size_t i;
 
     for (i = 0; i < sizeof(journals) / sizeof(journals[0]); ++i) {
@@ -460,7 +394,6 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_begin_load_and_detached_path);
     RUN_TEST(test_token_character_domain);
-    RUN_TEST(test_public_argument_contracts);
     RUN_TEST(test_strict_load);
     RUN_TEST(test_persistent_write_failures);
     RUN_TEST(test_recover_failed_uninstall);

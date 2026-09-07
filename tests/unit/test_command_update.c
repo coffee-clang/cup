@@ -23,11 +23,6 @@ typedef struct {
     char expected_default[MAX_SELECTOR_LEN];
 } ScopeCall;
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static CupState scenario_state;
 static CupError begin_result;
 static CupError load_result;
@@ -39,8 +34,6 @@ static size_t scope_call_count;
 static int context_end_calls;
 static CupError self_update_result;
 static int self_update_calls;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static void reset_scenario(void) {
     size_t i;
@@ -104,11 +97,6 @@ void setUp(void) {
 void tearDown(void) {
 }
 
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -132,8 +120,23 @@ void command_context_end(CommandContext *context) {
 }
 
 CupError command_context_load_state(CommandContext *context) {
+    size_t i;
+
     TEST_ASSERT_NOT_NULL(context);
-    return load_result;
+    if (load_result != CUP_OK) {
+        return load_result;
+    }
+    for (i = 0; i < context->state.installed_count; ++i) {
+        if (package_identity_validate(&context->state.installed[i], NULL) != CUP_OK) {
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
+    for (i = 0; i < context->state.default_count; ++i) {
+        if (package_identity_validate(&context->state.defaults[i], NULL) != CUP_OK) {
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
+    return CUP_OK;
 }
 
 CupError command_context_load_catalog(CommandContext *context) {
@@ -277,11 +280,6 @@ static void assert_scope(size_t index,
     TEST_ASSERT_EQUAL_STRING(target, scope_calls[index].target);
     TEST_ASSERT_EQUAL_STRING(expected_default, scope_calls[index].expected_default);
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_global_selector(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(NULL));

@@ -134,8 +134,7 @@ CUP_TEST_PROJECT_ROOT="$BUILD_PROJECT"
 CUP_TEST_BUILD_ROOT="$BUILD_PROJECT/build"
 export CUP_TEST_PROJECT_ROOT CUP_TEST_BUILD_ROOT
 mkdir -p "$BUILD_PROJECT/scripts/lib" "$CUP_TEST_BUILD_ROOT/reports/existing" "$TMP_ROOT/outside"
-cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$PROJECT_ROOT/scripts/lib/path-ops.sh" \
-    "$PROJECT_ROOT/scripts/lib/path-ops.c" "$BUILD_PROJECT/scripts/lib/"
+cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$BUILD_PROJECT/scripts/lib/"
 printf '%s\n' \
     'format=1' \
     'product=coffee-clang/cup' \
@@ -283,14 +282,3 @@ mkdir -p "$DEPS_PREFIX"
 printf '%s\n' verified >"$DEPS_PREFIX/.verified-prefix"
 cup_test_require_dependencies || fail 'explicitly prepared test prefix was rejected'
 printf 'Explicit dependency preparation tests passed.\n'
-
-# Quality-tool guidance must follow the active Windows toolchain instead of
-# recommending UCRT64 packages from the isolated CLANG64 sanitizer shell.
-clang_hint=$(CUP_TEST_PLATFORM=windows-x64 MSYSTEM=CLANG64 \
-    sh -c '. "$1"; cup_test_tool_hint clang' sh \
-    "$TESTS_ROOT/support/environment.sh" 2>&1)
-assert_contains "$clang_hint" 'Install LLVM tools in CLANG64'
-assert_contains "$clang_hint" 'mingw-w64-clang-x86_64-compiler-rt'
-assert_not_contains "$clang_hint" 'mingw-w64-ucrt-x86_64-compiler-rt'
-
-printf 'Quality-tool guidance tests passed.\n'

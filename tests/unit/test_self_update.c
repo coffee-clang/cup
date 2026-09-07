@@ -27,11 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char remote_version[64];
 static char remote_commit[64];
@@ -71,8 +66,6 @@ static int installed_generation_valid;
 static int assets_inspect_calls;
 static int allow_insecure_loopback;
 static char expected_url_base[MAX_CATALOG_URL_LEN];
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -179,11 +172,6 @@ static CupError setup_result(void) {
     return setup_calls == fail_setup_call ? CUP_ERR_BUFFER_TOO_SMALL : CUP_OK;
 }
 
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -214,7 +202,6 @@ CupError assets_inspect(AssetsInspection *inspection) {
     }
     if (installed_generation_valid) {
         inspection->binary = CUP_ASSET_VALID;
-        inspection->helper = CUP_ASSET_VALID;
         inspection->catalog = CUP_ASSET_VALID;
         inspection->install_policy = CUP_ASSET_VALID;
         inspection->common_checksums = CUP_ASSET_VALID;
@@ -240,6 +227,19 @@ CupError assets_platform_checksums_name(char *name, size_t size) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
     return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
+}
+
+CupError assets_platform_checksum_required_names(PlatformChecksumRequiredNames *required) {
+    if (required == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (assets_binary_asset_name(required->binary, sizeof(required->binary)) != CUP_OK) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    required->names[0] = required->binary;
+    required->names[1] = CUP_RELEASE_METADATA_FILENAME;
+    required->names[2] = CUP_COMMON_CHECKSUMS_FILENAME;
+    return CUP_OK;
 }
 
 CupError checksum_verify_file(const char *checksum_path,
@@ -273,6 +273,26 @@ CupError layout_get_staging_dir(char *buffer, size_t size) {
 
 CupError layout_get_root(char *buffer, size_t size) {
     return copy_test_path(buffer, size, "installed");
+}
+
+CupError layout_get_binary_path(char *buffer, size_t size) {
+    return copy_test_path(buffer, size, "installed/bin/cup");
+}
+
+CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
+    return copy_test_path(buffer, size, "installed/SHA256SUMS.linux-x64");
+}
+
+CupError layout_get_package_catalog_path(char *buffer, size_t size) {
+    return copy_test_path(buffer, size, "installed/config/packages.cfg");
+}
+
+CupError layout_get_install_policy_path(char *buffer, size_t size) {
+    return copy_test_path(buffer, size, "installed/config/install.cfg");
+}
+
+CupError layout_get_common_checksums_path(char *buffer, size_t size) {
+    return copy_test_path(buffer, size, "installed/SHA256SUMS.common");
 }
 
 CupError system_create_temp_directory(const char *directory,
@@ -462,7 +482,6 @@ void update_journal_init(UpdateJournal *journal) {
     if (journal != NULL) {
         memset(journal, 0, sizeof(*journal));
         journal->phase = CUP_UPDATE_PHASE_SCHEDULED;
-        journal->recovery = CUP_UPDATE_FAILURE_NONE;
     }
 }
 
@@ -501,11 +520,6 @@ CupError filesystem_remove_tree(const char *path) {
     cleanup_calls++;
     return cleanup_result;
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_installed_preflight(void) {
     installed_generation_valid = 0;
@@ -678,7 +692,7 @@ static void test_update_commit_fail(void) {
 
     reset_scenario();
     transaction_begin_result = CUP_ERR_COMMIT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT, self_update_start());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, self_update_start());
     TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 

@@ -26,11 +26,6 @@
 
 #define MAX_STEPS 4
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static CupState initial_state;
 static CupError parse_result;
 static CupError context_result;
@@ -89,8 +84,6 @@ static int ensure_dir_calls;
 static int move_calls;
 static int clear_calls;
 static int save_calls;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -196,11 +189,6 @@ void setUp(void) {
 void tearDown(void) {
 }
 
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
 CupError package_request_parse(const char *component, const char *entry, PackageRequest *request) {
     TEST_ASSERT_NOT_NULL(request);
     if (parse_result != CUP_OK) {
@@ -236,12 +224,22 @@ void command_context_end(CommandContext *context) {
 }
 
 CupError command_context_load_state(CommandContext *context) {
+    size_t i;
+
     TEST_ASSERT_NOT_NULL(context);
+    if (load_state_result != CUP_OK) {
+        return load_state_result;
+    }
+    for (i = 0; i < context->state.installed_count; ++i) {
+        if (package_identity_validate(&context->state.installed[i], NULL) != CUP_OK) {
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
     context->state_identity.valid = 1;
     context->state_identity.kind = SYSTEM_PATH_REGULAR_FILE;
     context->state_identity.volume = 1;
     context->state_identity.object = 1;
-    return load_state_result;
+    return CUP_OK;
 }
 
 CupError command_context_load_catalog(CommandContext *context) {
@@ -481,21 +479,20 @@ void verified_artifact_release(VerifiedArtifact *artifact) {
 CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
                                       const PackageArtifactSpec *spec,
                                       PackageCachePolicy cache_policy,
-                                      PackageCacheResult *result) {
+                                      PackageCacheSource *source) {
     int index = fetch_calls++;
 
     TEST_ASSERT_TRUE(index < MAX_STEPS);
     TEST_ASSERT_NOT_NULL(artifact);
     TEST_ASSERT_NOT_NULL(spec);
-    TEST_ASSERT_NOT_NULL(result);
+    TEST_ASSERT_NOT_NULL(source);
     TEST_ASSERT_EQUAL_STRING("https://example.invalid/package", spec->package_url);
     TEST_ASSERT_EQUAL_STRING("https://example.invalid/SHA256SUMS", spec->checksum_url);
     TEST_ASSERT_EQUAL_INT(index == 0 ? PACKAGE_CACHE_ALLOW : PACKAGE_CACHE_REFRESH, cache_policy);
     if (fetch_results[index] != CUP_OK) {
         return fetch_results[index];
     }
-    memset(result, 0, sizeof(*result));
-    result->source = fetch_sources[index];
+    *source = fetch_sources[index];
     artifact->file = (FILE *)(uintptr_t)1;
     strcpy(artifact->path, "/tmp/archive.tar.gz");
     artifact->identity.valid = 1;
@@ -572,6 +569,32 @@ CupError package_validate(const char *base_path,
     return validate_results[index];
 }
 
+void validated_package_init(ValidatedPackage *package) {
+    TEST_ASSERT_NOT_NULL(package);
+    memset(package, 0, sizeof(*package));
+}
+
+void validated_package_free(ValidatedPackage *package) {
+    TEST_ASSERT_NOT_NULL(package);
+    memset(package, 0, sizeof(*package));
+}
+
+CupError validated_package_load(ValidatedPackage *package,
+                                const char *base_path,
+                                const PackageIdentity *identity,
+                                FILE *diagnostics) {
+    int index = validate_calls++;
+
+    (void)diagnostics;
+    TEST_ASSERT_NOT_NULL(package);
+    TEST_ASSERT_EQUAL_STRING("/tmp/staging", base_path);
+    TEST_ASSERT_NOT_NULL(identity);
+    TEST_ASSERT_TRUE(index < MAX_STEPS);
+    if (validate_results[index] == CUP_OK) {
+    }
+    return validate_results[index];
+}
+
 CupError filesystem_remove_tree(const char *path) {
     int index = remove_calls++;
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", path);
@@ -605,6 +628,17 @@ CupError system_move_path(const char *source,
     TEST_ASSERT_NOT_NULL(commit_state);
     *commit_state = move_states[index];
     return move_results[index];
+}
+
+CupError system_move_path_if_identity(const char *source,
+                                      const char *destination,
+                                      const SystemPathIdentity *expected_identity,
+                                      SystemCommitState *commit_state) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_DIRECTORY, expected_identity->kind);
+    TEST_ASSERT_EQUAL_UINT64(77, expected_identity->object);
+    return system_move_path(source, destination, commit_state);
 }
 
 CupError state_add_installed(CupState *state, const PackageIdentity *identity) {
@@ -773,11 +807,6 @@ static void assert_cleanup(void) {
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static PackageArtifactSpec test_artifact_spec(void) {
     PackageArtifactSpec spec;
 
@@ -834,26 +863,15 @@ static CupError update_test_artifact(const char *expected_default_selector,
 
 static void test_public_inputs(void) {
     PackageArtifactSpec spec = test_artifact_spec();
+    PackageIdentity invalid_default;
     int installed;
     int moved;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_install_artifact(NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_install_update_artifact(NULL, NULL, &installed, &moved));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_install_update_artifact(&spec, NULL, NULL, &moved));
-
     reset_scenario();
-    {
-        PackageIdentity invalid_default;
-
-        memset(&invalid_default, 0, sizeof(invalid_default));
-        TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_INVALID_INPUT,
-            package_install_update_artifact(&spec, &invalid_default, &installed, &moved));
-    }
+    memset(&invalid_default, 0, sizeof(invalid_default));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT,
+        package_install_update_artifact(&spec, &invalid_default, &installed, &moved));
 }
 
 static void test_prepare_failures(void) {

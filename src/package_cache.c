@@ -215,7 +215,7 @@ static CupError refresh_expected_and_reverify(VerifiedArtifact *artifact,
 CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
                                       const PackageArtifactSpec *spec,
                                       PackageCachePolicy policy,
-                                      PackageCacheResult *result) {
+                                      PackageCacheSource *source) {
     ArtifactVerificationStatus artifact_status;
     CupError err;
     char archive_path[MAX_PATH_LEN];
@@ -225,10 +225,10 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
     const char *format_name;
     int checksum_refreshed = 0;
 
-    if (result != NULL) {
-        memset(result, 0, sizeof(*result));
+    if (source != NULL) {
+        *source = PACKAGE_CACHE_SOURCE_NONE;
     }
-    if (artifact == NULL || spec == NULL || result == NULL ||
+    if (artifact == NULL || spec == NULL || source == NULL ||
         (policy != PACKAGE_CACHE_ALLOW && policy != PACKAGE_CACHE_REFRESH)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -266,7 +266,7 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
             return err;
         }
         if (artifact_status == ARTIFACT_VERIFY_VALID) {
-            result->source = PACKAGE_CACHE_SOURCE_CACHE;
+            *source = PACKAGE_CACHE_SOURCE_CACHE;
             return CUP_OK;
         }
 
@@ -283,7 +283,7 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
                 return discard_artifact_rejection(artifact, archive_path, err);
             }
             if (artifact_status == ARTIFACT_VERIFY_VALID) {
-                result->source = PACKAGE_CACHE_SOURCE_CACHE;
+                *source = PACKAGE_CACHE_SOURCE_CACHE;
                 return CUP_OK;
             }
         }
@@ -328,6 +328,6 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
         return discard_artifact_rejection(artifact, archive_path, CUP_ERR_VALIDATION);
     }
 
-    result->source = PACKAGE_CACHE_SOURCE_NETWORK;
+    *source = PACKAGE_CACHE_SOURCE_NETWORK;
     return CUP_OK;
 }

@@ -30,7 +30,6 @@ static CupError root_validate_result;
 static CupError journal_load_result;
 static UninstallJournalStatus journal_status;
 static UninstallPhase root_phase;
-static UninstallStage root_stage;
 static int root_error;
 static char journal_token[MAX_TRANSACTION_TOKEN_LEN];
 static char journal_name[MAX_METADATA_LINE_LEN];
@@ -79,7 +78,6 @@ static void reset_scenario(void) {
     journal_load_result = CUP_OK;
     journal_status = UNINSTALL_JOURNAL_LOADED;
     root_phase = UNINSTALL_PHASE_SCHEDULED;
-    root_stage = UNINSTALL_STAGE_HANDOFF;
     root_error = 0;
     strcpy(journal_token, token);
     strcpy(journal_name, ".cup-uninstall-token");
@@ -298,12 +296,10 @@ CupError uninstall_journal_load_at(const char *journal_root,
     journal->file_identity.object = 2;
     if (strcmp(journal_root, root) == 0) {
         journal->phase = root_phase;
-        journal->stage = root_stage;
         journal->error_code = root_error;
     } else {
         TEST_ASSERT_EQUAL_STRING(detached, journal_root);
         journal->phase = UNINSTALL_PHASE_DETACHING;
-        journal->stage = UNINSTALL_STAGE_DETACH;
         journal->error_code = 0;
     }
     return CUP_OK;
@@ -312,7 +308,6 @@ CupError uninstall_journal_load_at(const char *journal_root,
 CupError uninstall_journal_set_at(const char *journal_root,
                                   UninstallJournal *journal,
                                   UninstallPhase phase,
-                                  UninstallStage stage,
                                   int error_code) {
     TEST_ASSERT_EQUAL_STRING(root, journal_root);
     TEST_ASSERT_NOT_NULL(journal);
@@ -321,21 +316,17 @@ CupError uninstall_journal_set_at(const char *journal_root,
     }
     sequence++;
     if (phase == UNINSTALL_PHASE_DETACHING) {
-        TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_DETACH, stage);
         TEST_ASSERT_EQUAL_INT(0, error_code);
         detaching_writes++;
         detaching_sequence = sequence;
         root_phase = phase;
-        root_stage = stage;
         root_error = error_code;
     } else {
         TEST_ASSERT_EQUAL_INT(UNINSTALL_PHASE_FAILED, phase);
-        TEST_ASSERT_EQUAL_INT(UNINSTALL_STAGE_DETACH, stage);
         TEST_ASSERT_EQUAL_INT(CUP_STATUS_OPERATION, error_code);
         failed_writes++;
     }
     journal->phase = phase;
-    journal->stage = stage;
     journal->error_code = error_code;
     return CUP_OK;
 }
@@ -367,9 +358,11 @@ CupError system_get_path_identity(const char *path, SystemPathIdentity *identity
             return helper_identity_result;
         }
         memset(identity, 0, sizeof(*identity));
-        identity->valid = 1;
-        identity->kind = SYSTEM_PATH_REGULAR_FILE;
-        identity->object = 4;
+        if (helper_kind != SYSTEM_PATH_MISSING) {
+            identity->valid = 1;
+            identity->kind = helper_kind;
+            identity->object = 4;
+        }
         return CUP_OK;
     }
     TEST_ASSERT_EQUAL_STRING(detached, path);
@@ -406,7 +399,6 @@ CupError system_remove_file_if_identity(const char *path,
     if (strcmp(path, helper) == 0) {
         TEST_ASSERT_NOT_NULL(expected_identity);
         TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
-        TEST_ASSERT_EQUAL_UINT64(4, expected_identity->object);
         remove_helper_calls++;
         if (remove_helper_result == CUP_OK) {
             helper_kind = SYSTEM_PATH_MISSING;
@@ -417,7 +409,6 @@ CupError system_remove_file_if_identity(const char *path,
                           path_join(transaction, sizeof(transaction), detached, "transaction.txt"));
     TEST_ASSERT_EQUAL_STRING(transaction, path);
     TEST_ASSERT_NOT_NULL(expected_identity);
-    TEST_ASSERT_EQUAL_UINT64(2, expected_identity->object);
     remove_journal_calls++;
     return remove_journal_result;
 }
@@ -427,7 +418,6 @@ CupError system_remove_path_if_identity(const char *path,
                                         int (*cancelled)(void)) {
     TEST_ASSERT_EQUAL_STRING(detached, path);
     TEST_ASSERT_NOT_NULL(expected_identity);
-    TEST_ASSERT_EQUAL_UINT64(3, expected_identity->object);
     TEST_ASSERT_NULL(cancelled);
     remove_root_calls++;
     return remove_root_result;

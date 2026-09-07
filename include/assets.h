@@ -3,7 +3,7 @@
 
 /*
  * Inspection and checksum verification for the canonical executable, catalog, install policy
- * and checksum files. The native update helper is reported separately as derived data.
+ * and checksum files.
  */
 
 #include <stddef.h>
@@ -18,10 +18,9 @@ typedef enum {
     CUP_ASSET_INVALID
 } AssetStatus;
 
-/* Complete read-only inspection of canonical assets, derived helper and development data. */
+/* Complete read-only inspection of canonical and development assets. */
 typedef struct {
     AssetStatus binary;
-    AssetStatus helper;
     AssetStatus catalog;
     AssetStatus install_policy;
     AssetStatus common_checksums;
@@ -41,5 +40,12 @@ int assets_development_is_valid(const AssetsInspection *inspection);
 /* Build platform-dependent names used by checksum files and installers. */
 CupError assets_binary_asset_name(char *name, size_t size);
 CupError assets_platform_checksums_name(char *name, size_t size);
+
+/* Ordered membership of SHA256SUMS.<host>; binary storage backs names[0]. */
+typedef struct {
+    char binary[MAX_PATH_SEGMENT_LEN];
+    const char *names[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
+} PlatformChecksumRequiredNames;
+CupError assets_platform_checksum_required_names(PlatformChecksumRequiredNames *required);
 
 #endif /* CUP_ASSETS_H */

@@ -33,9 +33,7 @@ typedef struct {
     int package_moved;
     int journal_started;
     SystemPathIdentity journal_identity;
-    int removed_default;
     WrapperPlan wrappers;
-    int wrappers_ready;
 } RemoveOperation;
 
 static CupError parse_remove_selection(const char *component,
@@ -293,6 +291,8 @@ static CupError commit_removal(RemoveOperation *operation) {
     CupError err;
     PackageScope scope;
     const PackageIdentity *default_identity;
+    int removed_default;
+    int wrappers_ready = 0;
     int cleanup_failed = 0;
 
     err = package_identity_get_scope(&operation->package, &scope);
@@ -300,7 +300,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         return err;
     }
     default_identity = state_get_default(&operation->context.state, &scope);
-    operation->removed_default =
+    removed_default =
         default_identity != NULL && package_identity_equals(default_identity, &operation->package);
 
     err = state_clear_matching_default(&operation->context.state, &operation->package);
@@ -313,12 +313,12 @@ static CupError commit_removal(RemoveOperation *operation) {
         return err;
     }
 
-    if (operation->removed_default) {
+    if (removed_default) {
         err = wrapper_plan_build(&operation->wrappers, &operation->context.state);
         if (err != CUP_OK) {
             return err;
         }
-        operation->wrappers_ready = 1;
+        wrappers_ready = 1;
     }
 
     err = state_save(&operation->context.state,
@@ -350,7 +350,7 @@ static CupError commit_removal(RemoveOperation *operation) {
         operation->journal_started = 0;
     }
 
-    if (operation->wrappers_ready && wrapper_plan_apply(&operation->wrappers) != CUP_OK) {
+    if (wrappers_ready && wrapper_plan_apply(&operation->wrappers) != CUP_OK) {
         fprintf(stderr,
                 "Error: removal was saved, but managed wrappers could not "
                 "be rebuilt. Run 'cup repair'.\n");

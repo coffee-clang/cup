@@ -16,11 +16,7 @@ void tearDown(void);
 #include <stdlib.h>
 #include <string.h>
 
-/* Shared fixture state used by the cases in this suite. */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
-
-/* Fixture lifecycle and local construction helpers. */
 
 static void build_path(char *out, size_t size, const char *name) {
     int written = snprintf(out, size, "%s/%s", temp_dir, name);
@@ -77,8 +73,6 @@ static void change_path_separators(char *path) {
     }
 }
 #endif
-
-/* Test cases grouped by the public contract they exercise. */
 
 
 static void test_persistent_snapshot(void) {

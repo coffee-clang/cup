@@ -82,7 +82,21 @@ SCRIPT_DIR="$ROOT/scripts/release"
 # shellcheck source=scripts/release/common.sh
 . "$SCRIPT_DIR/common.sh"
 prepare_installer "$ROOT/scripts/install/install.sh" "$WORK/install.sh" 0755
-chmod 0755 "$WORK/install.sh"
+[ -x "$WORK/install.sh" ] || fail 'prepared POSIX installer is not executable'
+
+# POSIX PATH cannot represent a directory containing ':' as one entry. The root remains valid;
+# only the optional PATH convenience is skipped.
+path_functions=$WORK/install-path-functions.sh
+awk '/^validate_identity$/ { exit } { print }' "$WORK/install.sh" > "$path_functions"
+colon_home=$WORK/path-colon-home
+colon_root=$WORK/'path:colon'/.cup
+mkdir -p "$colon_home" "$colon_root/bin"
+colon_output=$(HOME="$colon_home" SHELL=/bin/sh PATH="$PATH" \
+    sh -eu -c '. "$1"; SELECTED_ROOT=$2; export SELECTED_ROOT; offer_path_integration' \
+    sh "$path_functions" "$colon_root" 2>&1)
+printf '%s\n' "$colon_output" | grep -F 'Automatic user PATH integration is unavailable' >/dev/null ||
+    fail 'POSIX installer did not explain an unrepresentable PATH entry'
+[ ! -e "$colon_home/.profile" ] || fail 'POSIX installer wrote an unrepresentable PATH entry'
 
 mkdir -p "$WORK/mock-bin"
 cat > "$WORK/mock-bin/curl" <<'MOCK_CURL'
@@ -162,22 +176,57 @@ prepare_fixture() {
     cat > "$fixture/cup-linux-x64" <<'FAKE_CUP'
 #!/usr/bin/env sh
 set -eu
+select_root() {
+    base=$1
+    primary=$base/.cup
+    fallback=$base/.coffee-cup
+    if [ ! -e "$primary" ] && [ ! -L "$primary" ]; then
+        printf '%s\n' "$primary"; return 0
+    fi
+    if [ -f "$primary/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$primary/root.txt" >/dev/null 2>&1; then
+        printf '%s\n' "$primary"; return 0
+    fi
+    if [ ! -e "$fallback" ] && [ ! -L "$fallback" ]; then
+        printf '%s\n' "$fallback"; return 0
+    fi
+    if [ -f "$fallback/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$fallback/root.txt" >/dev/null 2>&1; then
+        printf '%s\n' "$fallback"; return 0
+    fi
+    return 1
+}
 if [ "${1:-}" = --version ]; then
-    printf 'cup %s\n' "${CUP_TEST_RELEASE_VERSION:?}"
+    version=${CUP_TEST_RELEASE_VERSION:?}
+    self_dir=${0%/*}
+    [ ! -f "$self_dir/../mock-version" ] || version=$(cat "$self_dir/../mock-version")
+    printf 'cup %s\n' "$version"
+    exit 0
+fi
+if [ "${1:-}" = --internal-select-root ]; then
+    [ "$#" -eq 2 ] || exit 79
+    select_root "$2"
+    exit $?
+fi
+if [ "${1:-}" = --internal-root-probe ]; then
+    [ "$#" -eq 2 ] || exit 79
+    root=$2
+    [ -f "$root/root.txt" ] && [ ! -L "$root/root.txt" ] || exit 1
+    grep -Fx 'product=coffee-clang/cup' "$root/root.txt" >/dev/null || exit 1
+    [ -f "$root/bin/cup" ] && [ ! -L "$root/bin/cup" ] || exit 1
+    cmp -s "$0" "$root/bin/cup" || exit 1
     exit 0
 fi
 if [ "${1:-}" = --internal-runtime-ready ]; then
-    if [ -n "${CUP_TEST_RUNTIME_READY_RETRY_FILE:-}" ] &&
-        [ ! -e "$CUP_TEST_RUNTIME_READY_RETRY_FILE" ]; then
+    if [ -n "${CUP_TEST_RUNTIME_READY_RETRY_FILE:-}" ] && [ ! -e "$CUP_TEST_RUNTIME_READY_RETRY_FILE" ]; then
         : > "$CUP_TEST_RUNTIME_READY_RETRY_FILE"
         exit 1
     fi
     printf 'Doctor found no issues.\n'
     exit 0
 fi
-[ "$#" -eq 2 ] && [ "$1" = --internal-bootstrap ]
+[ "$#" -eq 3 ] && [ "$1" = --internal-bootstrap ]
 source_directory=$2
-case "$source_directory" in /*) ;; *) exit 81 ;; esac
+base=$3
+case "$source_directory:$base" in /*:/*) ;; *) exit 81 ;; esac
 [ -d "$source_directory" ] && [ ! -L "$source_directory" ]
 count=0
 for entry in "$source_directory"/*; do
@@ -186,15 +235,7 @@ for entry in "$source_directory"/*; do
 done
 [ "$count" -eq 8 ] || exit 83
 printf '%s\n' "$source_directory" > "$CUP_BOOTSTRAP_TRACE"
-primary=$HOME/.cup
-fallback=$HOME/.coffee-cup
-if [ ! -e "$primary" ] && [ ! -L "$primary" ]; then
-    root=$primary
-elif [ ! -e "$fallback" ] && [ ! -L "$fallback" ]; then
-    root=$fallback
-else
-    exit 84
-fi
+root=$(select_root "$base") || exit 84
 "$CUP_TEST_MKDIR" -p "$root/bin" "$root/staging"
 printf 'format=1\nproduct=coffee-clang/cup\nlayout=1\n' > "$root/root.txt"
 "$CUP_TEST_CP" "$0" "$root/bin/cup"
@@ -272,6 +313,76 @@ run_success sh sh
 if command -v dash >/dev/null 2>&1; then run_success dash dash; fi
 if command -v busybox >/dev/null 2>&1; then run_success busybox busybox sh; fi
 
+# A custom base keeps the canonical leaf, supports spaces, and remains the target on reinstall.
+custom_fixture=$WORK/fixture-custom-base
+custom_home=$WORK/home-custom-base
+custom_base=$WORK/'custom base'
+custom_trace=$WORK/bootstrap-custom-base.trace
+custom_downloads=$WORK/downloads-custom-base.trace
+prepare_fixture "$custom_fixture"
+mkdir -m 0700 "$custom_home" "$custom_base"
+: > "$custom_downloads"
+custom_output=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
+    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
+    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
+printf '%s\n' "$custom_output" | grep -F "Binary: $custom_base/.cup/bin/cup" >/dev/null || {
+    printf '%s\n' "$custom_output" >&2
+    fail 'custom base installation did not use the canonical .cup leaf'
+}
+[ -x "$custom_base/.cup/bin/cup" ] || fail 'custom base binary is missing'
+
+: > "$custom_downloads"
+custom_reinstall=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
+    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
+    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
+printf '%s\n' "$custom_reinstall" | grep -F "cup $VERSION installed successfully." >/dev/null ||
+    fail 'same-version reinstall failed for a custom base containing spaces'
+
+# A valid newer installation is never silently downgraded in place.
+printf '9.9.9\n' > "$custom_base/.cup/mock-version"
+rm -f "$custom_trace"
+set +e
+newer_output=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
+    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
+    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
+newer_status=$?
+set -e
+[ "$newer_status" -ne 0 ] || fail 'installer silently downgraded a newer CUP'
+printf '%s\n' "$newer_output" | grep -F 'refusing to replace newer CUP 9.9.9' >/dev/null ||
+    fail 'newer CUP downgrade refusal was not explained'
+[ ! -e "$custom_trace" ] || fail 'downgrade refusal reached bootstrap'
+rm -f "$custom_base/.cup/mock-version"
+
+# A changed installed executable is never executed before the new verified generation repairs it.
+tamper_execution=$WORK/tampered-installed-executed
+cat > "$custom_base/.cup/bin/cup" <<EOF_TAMPER
+#!/usr/bin/env sh
+printf 'executed\n' > '$tamper_execution'
+exit 0
+EOF_TAMPER
+chmod 0700 "$custom_base/.cup/bin/cup"
+: > "$custom_downloads"
+custom_repair=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
+    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
+    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
+[ ! -e "$tamper_execution" ] || fail 'installer executed an unverified installed CUP binary'
+printf '%s\n' "$custom_repair" | grep -F "cup $VERSION installed successfully." >/dev/null ||
+    fail 'verified installer did not repair the changed installed executable'
+cmp -s "$custom_fixture/cup-linux-x64" "$custom_base/.cup/bin/cup" ||
+    fail 'verified reinstall did not restore the installed executable'
+
 # A normal POSIX installation must not depend on undeclared host utilities.
 # The fixture itself uses absolute test-only helpers, while PATH exposes only
 # the shell plus the commands require_commands() deliberately accepts.
@@ -281,7 +392,7 @@ portable_home=$WORK/home-portable-path
 portable_trace=$WORK/bootstrap-portable-path.trace
 portable_downloads=$WORK/downloads-portable-path.trace
 mkdir -p "$portable_bin"
-for tool in chmod cmp mktemp rm sha256sum sh sleep uname wc; do
+for tool in basename chmod cmp dirname mkdir mktemp readlink rm sha256sum sh sleep uname wc; do
     tool_path=$(command -v "$tool") || fail "test prerequisite is unavailable: $tool"
     ln -s "$tool_path" "$portable_bin/$tool"
 done
@@ -656,7 +767,7 @@ set -e
 # The public installer requires curl so every transport uses one bounded policy.
 curl_required_bin=$WORK/curl-required-bin
 mkdir -p "$curl_required_bin"
-for tool in chmod cmp mkdir mktemp rm sha256sum sh sleep uname wc; do
+for tool in basename chmod cmp dirname mkdir mktemp readlink rm sha256sum sh sleep uname wc; do
     tool_path=$(command -v "$tool") || fail "test prerequisite is unavailable: $tool"
     ln -s "$tool_path" "$curl_required_bin/$tool"
 done
@@ -701,15 +812,21 @@ printf '%s\n' "$oversize_output" | grep -F 'downloaded asset is too large' >/dev
     fail 'oversized text asset failure was not explained'
 
 installer_ps1_text=$(cat "$ROOT/scripts/install/install.ps1")
-printf '%s\n' "$installer_ps1_text" | grep -F 'function Get-CupCanonicalProfile' >/dev/null ||
-    fail 'PowerShell installer lost CUP path canonicalization'
+printf '%s\n' "$installer_ps1_text" | grep -F 'function Get-CupCanonicalBase' >/dev/null ||
+    fail 'PowerShell installer lost base-directory canonicalization'
 printf '%s\n' "$installer_ps1_text" | grep -F '[IO.Path]::GetFullPath' >/dev/null ||
     fail 'PowerShell installer lost absolute path canonicalization'
-printf '%s\n' "$installer_ps1_text" | grep -F '$canonicalPrimary = "$canonicalProfile/.cup"' >/dev/null ||
-    fail 'PowerShell installer lost the canonical primary-root comparison'
-if printf '%s\n' "$installer_ps1_text" |
-    grep -F '$root.Equals($primary, [StringComparison]::OrdinalIgnoreCase)' >/dev/null; then
-    fail 'PowerShell installer returned to raw bootstrap-root comparison'
-fi
+printf '%s\n' "$installer_ps1_text" | grep -F -- '--internal-select-root' >/dev/null ||
+    fail 'PowerShell installer lost native canonical root selection'
+printf '%s\n' "$installer_ps1_text" | grep -F -- '--internal-root-probe' >/dev/null ||
+    fail 'PowerShell installer lost native installed-root authentication'
+! printf '%s\n' "$installer_ps1_text" | grep -F '[EnvironmentVariableTarget]::Machine' >/dev/null ||
+    fail 'PowerShell installer must not modify Machine PATH'
+printf '%s\n' "$installer_ps1_text" | grep -F "\$bin.Contains(';')" >/dev/null ||
+    fail 'PowerShell installer lost the semicolon PATH-representability guard'
+printf '%s\n' "$installer_ps1_text" | grep -F 'Automatic User PATH integration is unavailable' >/dev/null ||
+    fail 'PowerShell installer no longer explains unrepresentable PATH integration'
+printf '%s\n' "$installer_ps1_text" | grep -F 'CUP remains installed at $bin' >/dev/null ||
+    fail 'PowerShell installer can again report PATH mutation failure as installation failure'
 
 printf 'Installer transport behavior checks passed.\n'

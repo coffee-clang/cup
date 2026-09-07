@@ -7,6 +7,11 @@ LC_ALL=C
 LANG=C
 export LC_ALL LANG
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
+# shellcheck source=../lib/platform-domain.sh
+. "$PROJECT_ROOT/scripts/lib/platform-domain.sh"
+
 profile=${1:?CI profile is required}
 family=${FAMILY:?FAMILY is required}
 platform=${PLATFORM:?PLATFORM is required}
@@ -32,12 +37,13 @@ require_one_of() {
 validate_native_platform() {
     host_system=$(uname -s)
     host_machine=$(uname -m)
-    case "$family:$platform:$host_system:$host_machine" in
-        linux:linux-x64:Linux:x86_64|linux:linux-x64:Linux:amd64) ;;
-        linux:linux-arm64:Linux:aarch64|linux:linux-arm64:Linux:arm64) ;;
-        macos:macos-x64:Darwin:x86_64|macos:macos-x64:Darwin:amd64) ;;
-        macos:macos-arm64:Darwin:arm64|macos:macos-arm64:Darwin:aarch64) ;;
-        *) fail "PLATFORM '$platform' and FAMILY '$family' do not match host $host_system/$host_machine" ;;
+    native_platform=$(cup_platform_from_uname "$host_system" "$host_machine") ||
+        fail "unsupported native host $host_system/$host_machine"
+    [ "$platform" = "$native_platform" ] ||
+        fail "PLATFORM '$platform' does not match host $host_system/$host_machine"
+    case "$family:$platform" in
+        linux:linux-x64|linux:linux-arm64|macos:macos-x64|macos:macos-arm64) ;;
+        *) fail "PLATFORM '$platform' and FAMILY '$family' do not match" ;;
     esac
 }
 
@@ -183,7 +189,6 @@ case "$family" in
         sudo apt-get install -y --no-install-recommends $packages
         ;;
     macos)
-        brew untap aws/tap >/dev/null 2>&1 || true
         case "$profile" in
             source|sanitizers|release) packages='coreutils perl pkg-config xz' ;;
             coverage) packages='coreutils gcovr perl pkg-config xz' ;;

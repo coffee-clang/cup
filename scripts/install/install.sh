@@ -162,7 +162,7 @@ select_hash_command() {
 }
 
 require_commands() {
-    for command_name in chmod cmp curl mktemp rm sleep uname wc; do
+    for command_name in basename chmod cmp curl dirname mkdir mktemp readlink rm sleep uname wc; do
         command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
     done
     select_hash_command
@@ -335,6 +335,166 @@ validate_release_metadata() {
         fail 'release metadata commit does not match the installer'
 }
 
+canonical_directory() {
+    directory=$1
+    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+    (CDPATH= cd -- "$directory" && pwd -P)
+}
+
+path_entry_normalize() {
+    value=$1
+    while [ "$value" != / ] && [ "${value%/}" != "$value" ]; do
+        value=${value%/}
+    done
+    printf '%s\n' "$value"
+}
+
+path_contains_directory() {
+    wanted=$(path_entry_normalize "$1")
+    old_ifs=$IFS
+    IFS=:
+    for entry in ${PATH:-}; do
+        [ -n "$entry" ] || entry=.
+        entry=$(path_entry_normalize "$entry")
+        [ "$entry" = "$wanted" ] && { IFS=$old_ifs; return 0; }
+    done
+    IFS=$old_ifs
+    return 1
+}
+
+resolve_command_path() {
+    path=$1
+    case "$path" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    hops=0
+    while [ -L "$path" ]; do
+        [ "$hops" -lt 32 ] || return 1
+        target=$(readlink "$path") || return 1
+        case "$target" in
+            /*) path=$target ;;
+            *) path=$(dirname -- "$path")/$target ;;
+        esac
+        hops=$((hops + 1))
+    done
+    [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || return 1
+    directory=$(canonical_directory "$(dirname -- "$path")") || return 1
+    printf '%s/%s\n' "$directory" "$(basename -- "$path")"
+}
+
+native_root_probe() {
+    "$WORK/$BINARY_ASSET" --internal-root-probe "$1" >/dev/null 2>&1
+}
+
+installed_version() {
+    output=$("$1" --version 2>/dev/null) || return 1
+    case "$output" in
+        'cup '*) printf '%s\n' "${output#cup }" ;;
+        *) return 1 ;;
+    esac
+}
+
+version_compare() {
+    # Prints -1, 0 or 1 for semantic X.Y.Z versions already validated by CUP release policy.
+    left=$1
+    right=$2
+    old_ifs=$IFS
+    IFS=.
+    set -- $left
+    l1=$1 l2=$2 l3=$3
+    set -- $right
+    r1=$1 r2=$2 r3=$3
+    IFS=$old_ifs
+    for pair in "$l1:$r1" "$l2:$r2" "$l3:$r3"; do
+        l=${pair%%:*}; r=${pair#*:}
+        if [ "$l" -lt "$r" ]; then printf '%s\n' -1; return 0; fi
+        if [ "$l" -gt "$r" ]; then printf '%s\n' 1; return 0; fi
+    done
+    printf '%s\n' 0
+}
+
+find_path_installation() {
+    PATH_ROOT=
+    PATH_BINARY=
+    command_path=$(command -v cup 2>/dev/null || true)
+    [ -n "$command_path" ] || return 1
+    command_path=$(resolve_command_path "$command_path") || return 1
+    [ "$(basename -- "$command_path")" = cup ] || return 1
+    bin_dir=$(canonical_directory "$(dirname -- "$command_path")") || return 1
+    [ "$(basename -- "$bin_dir")" = bin ] || return 1
+    root=$(canonical_directory "$(dirname -- "$bin_dir")") || return 1
+    case "$(basename -- "$root")" in .cup|.coffee-cup) ;; *) return 1 ;; esac
+    native_root_probe "$root" || return 1
+    PATH_ROOT=$root
+    PATH_BINARY=$command_path
+    export PATH_ROOT PATH_BINARY
+    return 0
+}
+
+select_root_for_base() {
+    base=$1
+    selected=$($WORK/$BINARY_ASSET --internal-select-root "$base") ||
+        fail "could not select a canonical CUP root below $base"
+    case "$selected" in
+        "$base/.cup"|"$base/.coffee-cup") ;;
+        *) fail 'native root selection returned an unexpected path' ;;
+    esac
+    SELECTED_ROOT=$selected
+    SELECTED_BASE=$base
+    export SELECTED_ROOT SELECTED_BASE
+}
+
+choose_installation() {
+    selected_from_path=0
+    if [ -n "${CUP_INSTALL_BASE_DIR:-}" ]; then
+        base=$(canonical_directory "$CUP_INSTALL_BASE_DIR") ||
+            fail 'CUP_INSTALL_BASE_DIR must name an existing real directory'
+        select_root_for_base "$base"
+        return 0
+    fi
+
+    if find_path_installation; then
+        use_path=0
+        if [ -t 0 ]; then
+            current_version=$(installed_version "$PATH_BINARY") ||
+                fail 'authenticated PATH installation has an invalid version response'
+            printf 'Found CUP %s at %s. Use this installation? [Y/n] ' "$current_version" "$PATH_ROOT"
+            IFS= read -r answer || answer=
+            case "$answer" in ''|y|Y|yes|YES|Yes) use_path=1 ;; esac
+        fi
+        if [ "$use_path" -eq 1 ]; then
+            SELECTED_ROOT=$PATH_ROOT
+            SELECTED_BASE=$(canonical_directory "$(dirname -- "$PATH_ROOT")") ||
+                fail 'could not resolve the PATH installation base'
+            export SELECTED_ROOT SELECTED_BASE
+            return 0
+        fi
+    fi
+
+    base=$HOME
+    if [ -t 0 ]; then
+        printf 'Choose the parent/base directory for CUP [%s]: ' "$HOME"
+        IFS= read -r answer || answer=
+        [ -z "$answer" ] || base=$answer
+    fi
+    base=$(canonical_directory "$base") || fail 'selected CUP base must be an existing real directory'
+    select_root_for_base "$base"
+}
+
+check_target_version() {
+    candidate=$SELECTED_ROOT/bin/cup
+    if native_root_probe "$SELECTED_ROOT"; then
+        [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ] ||
+            fail 'authenticated CUP root has no executable cup binary'
+        existing=$(installed_version "$candidate") || fail 'existing CUP version is invalid'
+        relation=$(version_compare "$existing" "$CUP_RELEASE_VERSION")
+        if [ "$relation" -gt 0 ]; then
+            fail "refusing to replace newer CUP $existing at $SELECTED_ROOT with older $CUP_RELEASE_VERSION; choose another base directory"
+        fi
+    fi
+}
+
 root_marker_is_valid() {
     root=$1
     marker=$root/root.txt
@@ -372,19 +532,15 @@ parse_bootstrap_root() {
                 bootstrap_root=${line#CUP_BOOTSTRAP_ROOT=}
                 root_records=$((root_records + 1))
                 ;;
-            *)
-                printf '%s\n' "$line"
-                ;;
+            *) printf '%s\n' "$line" ;;
         esac
     done <<EOF_BOOTSTRAP
 $output
 EOF_BOOTSTRAP
 
     [ "$root_records" -eq 1 ] || fail 'bootstrap did not report one canonical root'
-    case "$bootstrap_root" in
-        "$HOME/.cup"|"$HOME/.coffee-cup") ;;
-        *) fail 'bootstrap reported an unsupported canonical root' ;;
-    esac
+    [ "$bootstrap_root" = "$SELECTED_ROOT" ] ||
+        fail 'bootstrap changed the selected canonical root'
     BOOTSTRAP_ROOT=$bootstrap_root
     export BOOTSTRAP_ROOT
 }
@@ -412,6 +568,58 @@ wait_for_commit() {
     fail 'timed out while waiting for the installed cup to become ready'
 }
 
+profile_contains_cup_bin() {
+    profile=$1
+    [ -f "$profile" ] || return 1
+    grep -F -- "$SELECTED_ROOT/bin" "$profile" >/dev/null 2>&1
+}
+
+add_posix_path() {
+    bin=$SELECTED_ROOT/bin
+    if path_contains_directory "$bin"; then
+        return 0
+    fi
+    case "$bin" in
+        *"'"*|*"\n"*|*"\r"*)
+            printf 'PATH integration skipped because the CUP path requires manual shell quoting.\n' >&2
+            return 0
+            ;;
+    esac
+    shell_name=${SHELL##*/}
+    if [ "$shell_name" = fish ]; then
+        profile=$HOME/.config/fish/conf.d/cup.fish
+        mkdir -p -- "$HOME/.config/fish/conf.d" || fail 'could not create fish configuration directory'
+        profile_contains_cup_bin "$profile" ||
+            printf 'fish_add_path --path %s\n' "'$bin'" >> "$profile" || fail 'could not update fish PATH configuration'
+    else
+        case "$shell_name" in zsh) profile=$HOME/.zprofile ;; *) profile=$HOME/.profile ;; esac
+        profile_contains_cup_bin "$profile" || {
+            printf '\n# Added by CUP installer\n' >> "$profile" || fail 'could not update shell profile'
+            printf 'case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac\n' "'$bin'" "'$bin'" >> "$profile" ||
+                fail 'could not update shell profile'
+        }
+    fi
+    printf 'Added %s to your user shell PATH configuration. Open a new shell to use it.\n' "$bin"
+}
+
+offer_path_integration() {
+    bin=$SELECTED_ROOT/bin
+    case "$bin" in
+        *:*)
+            printf "Automatic user PATH integration is unavailable for %s because the path contains ':'. Configure PATH manually or use the full path to cup.\n" "$bin" >&2
+            return 0
+            ;;
+    esac
+    if path_contains_directory "$bin"; then
+        return 0
+    fi
+    [ "${CUP_INSTALL_NO_PATH_PROMPT:-0}" != 1 ] || return 0
+    [ -t 0 ] || return 0
+    printf 'Add %s to your user PATH? [Y/n] ' "$bin"
+    IFS= read -r answer || answer=
+    case "$answer" in ''|y|Y|yes|YES|Yes) add_posix_path ;; esac
+}
+
 validate_identity
 validate_base_url
 validate_wait_attempts
@@ -431,11 +639,14 @@ verify_checksum_document "$WORK/$PLATFORM_SUMS" \
 validate_release_metadata
 chmod 0700 "$WORK/$BINARY_ASSET" || fail 'could not make the verified bootstrap executable'
 
-bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK") ||
+choose_installation
+check_target_version
+printf 'CUP will be installed in %s\n' "$SELECTED_ROOT"
+bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK" "$SELECTED_BASE") ||
     fail 'the verified cup bootstrap transaction was rejected'
 parse_bootstrap_root "$bootstrap_output"
 wait_for_commit "$BOOTSTRAP_ROOT"
 
 printf 'cup %s installed successfully.\n' "$CUP_RELEASE_VERSION"
 printf 'Binary: %s\n' "$INSTALLED_BINARY"
-printf 'Add %s to PATH if it is not already available.\n' "${INSTALLED_BINARY%/*}"
+offer_path_integration

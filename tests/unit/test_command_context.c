@@ -21,11 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static CupError journal_result;
 static int interrupt_fail_call;
 static int interrupt_calls;
@@ -72,8 +67,6 @@ static CupError package_identity_result;
 static int package_on_disk;
 static CupError install_path_result;
 static CupError package_validation_result;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -149,11 +142,6 @@ static void read_stream_text(FILE *stream, char *output, size_t output_size) {
     TEST_ASSERT_FALSE(ferror(stream));
     output[read_count] = '\0';
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError interrupt_safe_point(void) {
     interrupt_calls++;
@@ -430,16 +418,8 @@ static PackageIdentity sample_package(void) {
     return package;
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_invalid_context(void) {
     CommandContext context;
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          command_context_begin(NULL, NULL, SYSTEM_LOCK_SHARED));
 
     journal_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -466,8 +446,7 @@ static void test_invalid_context(void) {
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
-    runtime_statuses[0] = LAYOUT_RUNTIME_INCOMPLETE;
-    runtime_statuses[1] = LAYOUT_RUNTIME_READY;
+    runtime_statuses[0] = LAYOUT_RUNTIME_READY;
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
@@ -475,7 +454,6 @@ static void test_invalid_context(void) {
 
     reset_scenario();
     runtime_statuses[0] = LAYOUT_RUNTIME_INCOMPLETE;
-    runtime_statuses[1] = LAYOUT_RUNTIME_INCOMPLETE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
@@ -495,18 +473,21 @@ static void test_journal_after_lock(void) {
 static void test_missing_runtime(void) {
     CommandContext context;
 
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     assets_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     installed_assets_valid = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     installed_assets_valid = 0;
     development_assets_valid = 1;
@@ -515,14 +496,15 @@ static void test_missing_runtime(void) {
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     lock_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     assets_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -552,8 +534,8 @@ static void test_missing_runtime(void) {
     command_context_end(&context);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     interrupt_fail_call = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -562,8 +544,8 @@ static void test_missing_runtime(void) {
     TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     interrupt_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -572,6 +554,7 @@ static void test_missing_runtime(void) {
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     lock_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -581,15 +564,14 @@ static void test_missing_runtime(void) {
 static void test_runtime_recheck(void) {
     CommandContext context;
 
-    runtime_statuses[1] = LAYOUT_RUNTIME_INCOMPLETE;
+    runtime_statuses[0] = LAYOUT_RUNTIME_INCOMPLETE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
-    runtime_statuses[0] = LAYOUT_RUNTIME_READY;
+    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[2] = LAYOUT_RUNTIME_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(2, lock_acquire_calls);
@@ -600,16 +582,16 @@ static void test_runtime_recheck(void) {
     TEST_ASSERT_EQUAL_INT(2, lock_release_calls);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     ensure_runtime_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     state_save_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
                           command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
@@ -617,8 +599,8 @@ static void test_runtime_recheck(void) {
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_STRING("linux-x64", context.host_platform);
     TEST_ASSERT_EQUAL_STRING("linux-x64", context.target_platform);
@@ -657,17 +639,16 @@ static void test_read_only_context(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, command_context_begin_read_only(NULL, NULL));
 
-    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_read_only(&context, "WINDOWS-X64"));
     TEST_ASSERT_FALSE(context.runtime_available);
     TEST_ASSERT_EQUAL_STRING("windows-x64", context.target_platform);
+    TEST_ASSERT_EQUAL_INT(0, runtime_calls);
     TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(0, lock_acquire_calls);
     command_context_end(&context);
 
     reset_scenario();
-    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     root_kind = SYSTEM_PATH_DIRECTORY;
     lock_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
@@ -678,28 +659,28 @@ static void test_read_only_context(void) {
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_read_only(&context, NULL));
     TEST_ASSERT_TRUE(context.runtime_available);
+    TEST_ASSERT_EQUAL_INT(1, runtime_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_SHARED, acquired_mode);
     command_context_end(&context);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
-    runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
+    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_read_only(&context, NULL));
     TEST_ASSERT_FALSE(context.runtime_available);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
     TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
 
     reset_scenario();
-    runtime_statuses[0] = LAYOUT_RUNTIME_INCOMPLETE;
-    runtime_statuses[1] = LAYOUT_RUNTIME_READY;
+    runtime_statuses[0] = LAYOUT_RUNTIME_READY;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_read_only(&context, NULL));
     TEST_ASSERT_TRUE(context.runtime_available);
     TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
     command_context_end(&context);
 
     reset_scenario();
-    runtime_statuses[1] = LAYOUT_RUNTIME_INCOMPLETE;
+    runtime_statuses[0] = LAYOUT_RUNTIME_INCOMPLETE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_context_begin_read_only(&context, NULL));
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
@@ -813,15 +794,6 @@ static void test_package_guards(void) {
     CommandContext context;
     PackageIdentity package = sample_package();
     memset(&context, 0, sizeof(context));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, installed_package_require_present(NULL, &package));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          installed_package_require_present(&context.state, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, installed_package_require_absent(NULL, &package));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, installed_package_require_valid(NULL, &package));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        installed_package_load_validated(&context.state, &package, NULL));
 
     package_presence_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,

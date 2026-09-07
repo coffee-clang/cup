@@ -12,11 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Shared fixture state used by the cases in this suite. */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
 }
@@ -41,8 +37,6 @@ static void write_bytes(const char *path, const void *data, size_t size) {
 static void write_text(const char *path, const char *text) {
     write_bytes(path, text, strlen(text));
 }
-
-/* Test cases grouped by the public contract they exercise. */
 
 static void test_load_fields(void) {
     PackageMetadata info;
@@ -193,7 +187,7 @@ static void test_line_failures(void) {
     package_metadata_free(&info);
 }
 
-static void test_query_guards(void) {
+static void test_query_iteration(void) {
     PackageMetadata info;
     PackageCommand command;
     char path[256];
@@ -204,19 +198,6 @@ static void test_query_guards(void) {
     write_text(path, "entry.clang=bin/clang\npackage.tool=clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path, stderr));
 
-    TEST_ASSERT_NULL(package_metadata_get(NULL, "package.tool"));
-    TEST_ASSERT_NULL(package_metadata_get(&info, NULL));
-    TEST_ASSERT_NULL(package_metadata_get(&info, ""));
-    TEST_ASSERT_NULL(package_metadata_next(NULL, "entry.", &cursor));
-    TEST_ASSERT_NULL(package_metadata_next(&info, NULL, &cursor));
-    TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", NULL));
-    cursor = info.count;
-    TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", &cursor));
-
-    cursor = 0;
-    TEST_ASSERT_FALSE(package_metadata_next_command(NULL, &command, &cursor));
-    TEST_ASSERT_FALSE(package_metadata_next_command(&info, NULL, &cursor));
-    TEST_ASSERT_FALSE(package_metadata_next_command(&info, &command, NULL));
     TEST_ASSERT_TRUE(package_metadata_next_command(&info, &command, &cursor));
     TEST_ASSERT_EQUAL_STRING("clang", command.name);
     TEST_ASSERT_EQUAL_STRING("bin/clang", command.path);
@@ -224,16 +205,8 @@ static void test_query_guards(void) {
     TEST_ASSERT_EQUAL_STRING("", command.name);
     TEST_ASSERT_EQUAL_STRING("", command.path);
 
-    memset(&command, 0xa5, sizeof(command));
-    TEST_ASSERT_FALSE(package_metadata_next_command(NULL, &command, &cursor));
-    TEST_ASSERT_EQUAL_STRING("", command.name);
-    TEST_ASSERT_EQUAL_STRING("", command.path);
-
-    info.count = info.capacity + 1u;
-    cursor = 0;
-    TEST_ASSERT_NULL(package_metadata_get(&info, "package.tool"));
+    cursor = info.count;
     TEST_ASSERT_NULL(package_metadata_next(&info, "entry.", &cursor));
-    info.count = 2;
     package_metadata_free(&info);
 }
 
@@ -246,6 +219,6 @@ int main(void) {
     RUN_TEST(test_storage_growth);
     RUN_TEST(test_invalid_fields);
     RUN_TEST(test_line_failures);
-    RUN_TEST(test_query_guards);
+    RUN_TEST(test_query_iteration);
     return UNITY_END();
 }

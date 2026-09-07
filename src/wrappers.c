@@ -29,13 +29,6 @@ typedef struct {
     int *unexpected_found;
 } ScanContext;
 
-typedef enum {
-    WRAPPER_DESTINATION_MISSING,
-    WRAPPER_DESTINATION_VALID,
-    WRAPPER_DESTINATION_STALE_CONTENT,
-    WRAPPER_DESTINATION_WRONG_KIND,
-    WRAPPER_DESTINATION_WRONG_MODE
-} WrapperDestinationState;
 
 /* Wrapper-plan ownership. Plans are derived data and can be discarded or rebuilt without changing
  * authoritative state. */
@@ -541,9 +534,7 @@ static CupError scan_bin_entry(const char *path,
     return CUP_OK;
 }
 
-static CupError classify_wrapper(const char *bin_dir,
-                                 const WrapperSpec *wrapper,
-                                 WrapperDestinationState *state) {
+static CupError compare_wrapper(const char *bin_dir, const WrapperSpec *wrapper, int *matches) {
     CupError err;
     SystemPathKind kind;
     PersistentFileSnapshot snapshot;
@@ -552,23 +543,19 @@ static CupError classify_wrapper(const char *bin_dir,
     size_t expected_size = 0;
     int missing;
 
-    if (text_is_empty(bin_dir) || wrapper == NULL || state == NULL) {
+    if (text_is_empty(bin_dir) || wrapper == NULL || matches == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    *state = WRAPPER_DESTINATION_MISSING;
+    *matches = 0;
 
     if (path_join(path, sizeof(path), bin_dir, wrapper->name) != CUP_OK) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
     err = system_get_path_kind(path, &kind);
-    if (err != CUP_OK) {
+    if (err != CUP_OK || kind == SYSTEM_PATH_MISSING) {
         return err;
     }
-    if (kind == SYSTEM_PATH_MISSING) {
-        return CUP_OK;
-    }
     if (kind != SYSTEM_PATH_REGULAR_FILE) {
-        *state = WRAPPER_DESTINATION_WRONG_KIND;
         return CUP_OK;
     }
 
@@ -577,12 +564,8 @@ static CupError classify_wrapper(const char *bin_dir,
         int executable;
 
         err = system_is_executable(path, &executable);
-        if (err != CUP_OK) {
+        if (err != CUP_OK || !executable) {
             return err;
-        }
-        if (!executable) {
-            *state = WRAPPER_DESTINATION_WRONG_MODE;
-            return CUP_OK;
         }
     }
 #endif
@@ -597,7 +580,6 @@ static CupError classify_wrapper(const char *bin_dir,
     err = filesystem_snapshot_read(path, expected_size + 1u, &snapshot, &missing);
     if (err == CUP_ERR_BUFFER_TOO_SMALL) {
         free(expected);
-        *state = WRAPPER_DESTINATION_STALE_CONTENT;
         return CUP_OK;
     }
     if (err != CUP_OK || missing) {
@@ -605,28 +587,11 @@ static CupError classify_wrapper(const char *bin_dir,
         return err != CUP_OK ? err : CUP_ERR_FILESYSTEM;
     }
 
-    *state = snapshot.size == expected_size &&
-                     memcmp(snapshot.data, expected, expected_size) == 0
-                 ? WRAPPER_DESTINATION_VALID
-                 : WRAPPER_DESTINATION_STALE_CONTENT;
+    *matches = snapshot.size == expected_size &&
+               memcmp(snapshot.data, expected, expected_size) == 0;
     filesystem_snapshot_release(&snapshot);
     free(expected);
     return CUP_OK;
-}
-
-static CupError compare_wrapper(const char *bin_dir, const WrapperSpec *wrapper, int *matches) {
-    WrapperDestinationState state;
-    CupError err;
-
-    if (matches == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *matches = 0;
-    err = classify_wrapper(bin_dir, wrapper, &state);
-    if (err == CUP_OK) {
-        *matches = state == WRAPPER_DESTINATION_VALID;
-    }
-    return err;
 }
 
 static CupError remove_wrong_kind_destination(const char *bin_dir, const WrapperSpec *wrapper) {

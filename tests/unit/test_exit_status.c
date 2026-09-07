@@ -4,15 +4,11 @@
 #include "exit_status.h"
 #include "unity.h"
 
-/* Fixture lifecycle and local construction helpers. */
-
 void setUp(void) {
 }
 
 void tearDown(void) {
 }
-
-/* Test cases grouped by the public contract they exercise. */
 
 static void test_success(void) {
     TEST_ASSERT_EQUAL_INT(CUP_STATUS_SUCCESS, exit_status_from_error(CUP_OK));

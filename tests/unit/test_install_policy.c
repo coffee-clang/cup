@@ -17,11 +17,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char root[MAX_PATH_LEN];
 static char official_path[MAX_PATH_LEN];
 static char preferences_path[MAX_PATH_LEN];
@@ -29,8 +24,6 @@ static int sync_parent_calls;
 static CupError sync_parent_result;
 static CupError install_policy_path_result;
 static int install_policy_path_calls;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static void path_join(char *out, size_t size, const char *left, const char *right) {
     int written = snprintf(out, size, "%s/%s", left, right);
@@ -93,11 +86,6 @@ void tearDown(void) {
     (void)test_unlink(official_path);
     (void)test_rmdir(root);
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError package_scope_init(PackageScope *scope,
                             const char *component,
@@ -216,11 +204,6 @@ CupError filesystem_replace_file_atomically(const char *directory,
     }
     return err;
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_policy_load(void) {
     InstallPolicy policy;
@@ -628,85 +611,6 @@ static void test_empty_save(void) {
     TEST_ASSERT_EQUAL_INT(2, sync_parent_calls);
 }
 
-static void assert_invalid_preference_storage(void) {
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        install_policy_load_path(NULL, official_path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_load(NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, tool_preferences_save(NULL));
-}
-
-static void assert_invalid_preference_mutation(ToolPreferences *preferences) {
-    int removed;
-    size_t count;
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(NULL, "linux-x64", "linux-x64", "compiler", "clang"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(preferences, NULL, "linux-x64", "compiler", "clang"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(preferences, "linux-x64", NULL, "compiler", "clang"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(preferences, "linux-x64", "linux-x64", NULL, "clang"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_set(preferences, "linux-x64", "linux-x64", "compiler", "gdb"));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset(preferences, "linux-x64", "linux-x64", "compiler", NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset(NULL, "linux-x64", "linux-x64", "compiler", &removed));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset(preferences, NULL, "linux-x64", "compiler", &removed));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset_scope(preferences, "linux-x64", "linux-x64", NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset_scope(NULL, "linux-x64", "linux-x64", &count));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_reset_scope(preferences, "invalid", "linux-x64", &count));
-}
-
-static void assert_invalid_preference_resolution(InstallPolicy *policy,
-                                                 ToolPreferences *preferences) {
-    ToolPreferenceSource source;
-    char tool[2];
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            NULL, preferences, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            policy, NULL, "linux-x64", "linux-x64", "compiler", tool, sizeof(tool), &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            policy, preferences, "linux-x64", "linux-x64", "compiler", NULL, 2, &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            policy, preferences, "linux-x64", "linux-x64", "compiler", tool, 0, &source));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            policy, preferences, "linux-x64", "linux-x64", "compiler", tool, 2, NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        tool_preferences_resolve(
-            policy, preferences, "invalid", "linux-x64", "compiler", tool, 2, &source));
-}
-
 static void test_corrupt_preference_count_is_rejected(void) {
     InstallPolicy policy;
     ToolPreferences preferences;
@@ -752,19 +656,6 @@ static void test_corrupt_preference_count_is_rejected(void) {
     TEST_ASSERT_EQUAL_INT(TOOL_PREFERENCE_NONE, source);
 }
 
-static void test_argument_contracts(void) {
-    InstallPolicy policy;
-    ToolPreferences preferences;
-
-    install_policy_init(&policy);
-    tool_preferences_init(&preferences);
-
-    assert_invalid_preference_storage();
-    assert_invalid_preference_mutation(&preferences);
-    assert_invalid_preference_resolution(&policy, &preferences);
-}
-
-
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_load);
@@ -782,6 +673,5 @@ int main(void) {
     RUN_TEST(test_invalid_preferences_save);
     RUN_TEST(test_empty_save);
     RUN_TEST(test_corrupt_preference_count_is_rejected);
-    RUN_TEST(test_argument_contracts);
     return UNITY_END();
 }

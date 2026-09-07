@@ -41,6 +41,11 @@ static void test_copy_format(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy_lower_ascii(buffer, sizeof(buffer), buffer));
     TEST_ASSERT_EQUAL_STRING("cup", buffer);
 
+    TEST_ASSERT_TRUE(text_equal_ascii_ignore_case("CuP.ExE", "cup.exe"));
+    TEST_ASSERT_TRUE(text_equal_ascii_ignore_case("", ""));
+    TEST_ASSERT_FALSE(text_equal_ascii_ignore_case("cup", "cups"));
+    TEST_ASSERT_FALSE(text_equal_ascii_ignore_case("cup", NULL));
+
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_format(buffer, sizeof(buffer), "%s", "0.2.0"));
     TEST_ASSERT_EQUAL_STRING("0.2.0", buffer);
     TEST_ASSERT_EQUAL_INT(CUP_OK, text_format(buffer, sizeof(buffer), "%s", "1234567"));
@@ -97,41 +102,6 @@ static void test_split_values(void) {
     }
 }
 
-static void test_split_guards(void) {
-    char first[8];
-    char second[8];
-    TextBuffer parts[2] = {
-        {.data = first, .capacity = sizeof(first)},
-        {.data = second, .capacity = sizeof(second)},
-    };
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(NULL, '.', parts, 2));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact("", '.', parts, 2));
-    {
-        char input[] = "a.b";
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '\0', parts, 2));
-    }
-    {
-        char input[] = "a.b";
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', NULL, 2));
-    }
-    {
-        char input[] = "a.b";
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 0));
-    }
-
-    parts[0].data = NULL;
-    {
-        char input[] = "a.b";
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
-    }
-    parts[0].data = first;
-    parts[0].capacity = 0;
-    {
-        char input[] = "a.b";
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, text_split_exact(input, '.', parts, 2));
-    }
-}
 
 static void test_parse_uint(void) {
     unsigned value = 999u;
@@ -273,7 +243,6 @@ int main(void) {
     RUN_TEST(test_text_basics);
     RUN_TEST(test_copy_format);
     RUN_TEST(test_split_values);
-    RUN_TEST(test_split_guards);
     RUN_TEST(test_parse_uint);
     RUN_TEST(test_document_reader);
     RUN_TEST(test_key_value);

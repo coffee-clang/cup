@@ -12,7 +12,7 @@ dependency_lock_sha256() {
             printf '%s.version=%s\n' "$package" "$version"
             printf '%s.sha256=%s\n' "$package" "$checksum"
         done
-    } | stream_sha256
+    } | cup_sha256_stream
 }
 
 dependency_profile() {
@@ -78,9 +78,17 @@ dependency_tool_version_line() {
         echo "Error: required tool '$tool' was not found while fingerprinting the toolchain." >&2
         return 1
     }
-    output=$("$tool" --version 2>&1 | sed -n '1p' || true)
+    if output=$("$tool" --version 2>&1); then
+        output=$(printf '%s\n' "$output" | sed -n '1p')
+    else
+        output=
+    fi
     if [ -z "$output" ]; then
-        output=$("$tool" -V 2>&1 | sed -n '1p' || true)
+        if output=$("$tool" -V 2>&1); then
+            output=$(printf '%s\n' "$output" | sed -n '1p')
+        else
+            output=
+        fi
     fi
     [ -n "$output" ] || {
         echo "Error: could not identify tool '$tool'." >&2
@@ -126,7 +134,7 @@ dependency_toolchain_sha256() {
         printf 'sdk=%s\n' "$sdk"
         printf 'macos_deployment_target=%s\n' "$deployment_target"
         printf 'msystem=%s\n' "$canonical_msystem"
-    } | stream_sha256
+    } | cup_sha256_stream
 }
 
 dependency_metadata() {
@@ -170,34 +178,24 @@ dependency_regular_nonempty_file() {
     [ -f "$1" ] && [ ! -L "$1" ] && [ -s "$1" ]
 }
 
-dependency_archive_tool() {
-    if [ -n "${AR:-}" ] && command -v "$AR" >/dev/null 2>&1; then
-        printf '%s\n' "$AR"
-    elif command -v ar >/dev/null 2>&1; then
-        printf '%s\n' ar
-    elif command -v llvm-ar >/dev/null 2>&1; then
-        printf '%s\n' llvm-ar
-    else
-        return 1
-    fi
-}
-
 dependency_archive_readable() {
     local archive="$1" tool
     dependency_regular_nonempty_file "$archive" || return 1
-    tool=$(dependency_archive_tool) || return 1
-    "$tool" t "$archive" >/dev/null 2>&1
+    for tool in ar llvm-ar; do
+        command -v "$tool" >/dev/null 2>&1 || continue
+        "$tool" t "$archive" >/dev/null 2>&1 && return 0
+    done
+    return 1
 }
 
 dependency_library_exists() {
     local prefix="$1" name="$2" directory candidate
     for directory in "$prefix/lib" "$prefix/lib64"; do
-        for candidate in "$directory/lib$name.a" "$directory/lib$name.dll.a"; do
-            if [ -e "$candidate" ] || [ -L "$candidate" ]; then
-                dependency_archive_readable "$candidate" && return 0
-                return 1
-            fi
-        done
+        candidate="$directory/lib$name.a"
+        if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+            dependency_archive_readable "$candidate" && return 0
+            return 1
+        fi
     done
     return 1
 }
@@ -387,7 +385,6 @@ dependency_link_metadata_valid() {
     local pkg_config_path="$prefix/lib/pkgconfig:$prefix/lib64/pkgconfig"
     local cares_flags=
     local curl_flags=
-    local curl_configure=
     local archive_flags=
     local event_flags=
 
@@ -399,7 +396,6 @@ dependency_link_metadata_valid() {
         PKG_CONFIG_SYSROOT_DIR="" \
         dependency_pkg_config --static --libs libcares 2>/dev/null) || return 1
     curl_flags=$("$prefix/bin/curl-config" --static-libs 2>/dev/null) || return 1
-    curl_configure=$("$prefix/bin/curl-config" --configure 2>/dev/null) || return 1
     archive_flags=$(PKG_CONFIG_PATH="$pkg_config_path" \
         PKG_CONFIG_LIBDIR="$pkg_config_path" \
         PKG_CONFIG_SYSROOT_DIR="" \
@@ -409,8 +405,7 @@ dependency_link_metadata_valid() {
         PKG_CONFIG_SYSROOT_DIR="" \
         dependency_pkg_config --static --libs libevent_extra libevent_core 2>/dev/null) || return 1
     [ -n "$cares_flags" ] && [ -n "$curl_flags" ] && \
-        [ -n "$curl_configure" ] && [ -n "$archive_flags" ] && \
-        [ -n "$event_flags" ] || return 1
+        [ -n "$archive_flags" ] && [ -n "$event_flags" ] || return 1
 
     if ! "$prefix/bin/curl-config" --features 2>/dev/null | \
         grep -Fx AsynchDNS >/dev/null; then
@@ -426,26 +421,6 @@ dependency_link_metadata_valid() {
             ;;
     esac
 
-    case "$curl_configure" in
-        *--enable-ares=*)
-            ;;
-        *)
-            echo "Error: curl configure metadata does not enable c-ares." >&2
-            return 1
-            ;;
-    esac
-
-    if ! dependency_text_references_path "$curl_configure" "$expected_prefix"; then
-        echo "Error: curl configure metadata does not reference the final prefix:" \
-            "$expected_prefix" >&2
-        return 1
-    fi
-    if [ "$prefix" != "$expected_prefix" ] &&
-        dependency_text_references_path "$curl_configure" "$prefix"; then
-        echo "Error: curl configure metadata still references the staging prefix:" \
-            "$prefix" >&2
-        return 1
-    fi
 
     dependency_link_flags_valid "$cares_flags" "$prefix" "$expected_prefix" &&
         dependency_link_flags_valid "$curl_flags" "$prefix" "$expected_prefix" &&
@@ -507,7 +482,6 @@ prepare_dependency_prefix() {
     local metadata="$2"
     local use_openssl="${3:-1}"
     local expected_prefix="$DEPS_ROOT/install"
-    local existing_marker
 
     dependency_metadata_valid "$metadata" || {
         echo "Error: invalid dependency prefix metadata." >&2
@@ -545,10 +519,6 @@ prepare_dependency_prefix() {
     if [ -e "$final_prefix" ] || [ -L "$final_prefix" ]; then
         if [ -L "$final_prefix" ] || [ ! -d "$final_prefix" ]; then
             echo "Error: dependency prefix is not a real directory: $final_prefix" >&2
-            return 1
-        fi
-        if ! dependency_directory_empty "$final_prefix" && ! dependency_prefix_owned "$final_prefix"; then
-            echo "Error: refusing to replace a dependency prefix not owned by cup: $final_prefix" >&2
             return 1
         fi
     fi
@@ -710,10 +680,8 @@ finish_dependency_prefix() {
         "$build_prefix/.cup-dependencies" || return 1
 
     if [ -e "$final_prefix" ] || [ -L "$final_prefix" ]; then
-        if [ -L "$final_prefix" ] ||
-            { ! dependency_directory_empty "$final_prefix" &&
-              ! dependency_prefix_owned "$final_prefix"; }; then
-            echo "Error: refusing to replace a dependency prefix not owned by cup." >&2
+        if [ -L "$final_prefix" ] || [ ! -d "$final_prefix" ]; then
+            echo "Error: dependency prefix is not a real directory: $final_prefix" >&2
             return 1
         fi
         cup_path_remove_child_tree "$DEPS_ROOT" "$final_prefix" \

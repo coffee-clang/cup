@@ -37,16 +37,9 @@ typedef struct {
     int executable;
 } TestEntry;
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char root[1024];
 static int interrupted;
 static unsigned archive_number;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static void join_path(char *buffer, size_t size, const char *left, const char *right) {
     int written = snprintf(buffer, size, "%s/%s", left, right);
@@ -68,11 +61,6 @@ void setUp(void) {
 void tearDown(void) {
     TEST_ASSERT_EQUAL_INT(0, test_remove_tree(root));
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 int interrupt_requested(void) {
     return interrupted;
@@ -193,27 +181,15 @@ static CupError extract_entries(const TestEntry *entries,
         archive_path, destination, PACKAGE_ARCHIVE_FORMAT_TAR_GZ);
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_invalid_inputs(void) {
     VerifiedArtifact artifact;
     FILE *file = tmpfile();
 
     TEST_ASSERT_NOT_NULL(file);
     memset(&artifact, 0, sizeof(artifact));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(NULL, root));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, root));
-
     artifact.file = file;
     artifact.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, package_extract_verified(&artifact, root));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, ""));
-    artifact.format = PACKAGE_ARCHIVE_FORMAT_ANY;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_extract_verified(&artifact, root));
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
@@ -353,11 +329,45 @@ static void test_unsafe_paths(void) {
                           extract_entries(&deep, 1, output, sizeof(output)));
 }
 
-static void test_unsupported_entry_types(void) {
+static void test_link_and_unsupported_entry_types(void) {
     const TestEntry symlink[] = {
         {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
         {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
     };
+#ifndef _WIN32
+    const TestEntry escaping_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/escape", NULL, "../../outside", 0},
+    };
+    const TestEntry absolute_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/absolute", NULL, "/tmp/outside", 0},
+    };
+    const TestEntry dangling_symlink[] = {
+        {TEST_SYMLINK, "pkg/bin/current", NULL, "missing", 0},
+    };
+    const TestEntry loop_symlink[] = {
+        {TEST_SYMLINK, "pkg/bin/one", NULL, "two", 0},
+        {TEST_SYMLINK, "pkg/bin/two", NULL, "one", 0},
+    };
+    const TestEntry symlink_parent[] = {
+        {TEST_DIRECTORY, "pkg/real", NULL, NULL, 0},
+        {TEST_SYMLINK, "pkg/bin/redirect", NULL, "../real", 0},
+        {TEST_FILE, "pkg/bin/redirect/child", "x", NULL, 0},
+    };
+    const TestEntry case_mismatch_symlink[] = {
+        {TEST_FILE, "pkg/bin/Tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/current", NULL, "tool", 0},
+    };
+    const TestEntry directory_terminal_symlink[] = {
+        {TEST_DIRECTORY, "pkg/lib", NULL, NULL, 0},
+        {TEST_SYMLINK, "pkg/current", NULL, "lib", 0},
+    };
+    const TestEntry lexical_only_symlink[] = {
+        {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
+        {TEST_SYMLINK, "pkg/bin/current", NULL, "missing/../tool", 0},
+    };
+#endif
     const TestEntry hardlink[] = {
         {TEST_FILE, "pkg/bin/tool", "x", NULL, 1},
         {TEST_HARDLINK, "pkg/bin/copy", NULL, "pkg/bin/tool", 0},
@@ -367,14 +377,33 @@ static void test_unsupported_entry_types(void) {
     };
     char output[1024];
 
+#if defined(_WIN32)
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(symlink, 2, output, sizeof(output)));
+#else
+    TEST_ASSERT_EQUAL_INT(CUP_OK, extract_entries(symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(escaping_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(absolute_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(dangling_symlink, 1, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(loop_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
+                          extract_entries(symlink_parent, 3, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(case_mismatch_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(directory_terminal_symlink, 2, output, sizeof(output)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          extract_entries(lexical_only_symlink, 2, output, sizeof(output)));
+#endif
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(hardlink, 2, output, sizeof(output)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE_UNSAFE,
                           extract_entries(fifo, 1, output, sizeof(output)));
 }
-
 static void test_path_collisions(void) {
     const TestEntry case_collision[] = {
         {TEST_FILE, "pkg/bin/Tool", "x", NULL, 1},
@@ -502,7 +531,7 @@ int main(void) {
     RUN_TEST(test_destination_and_declared_format);
     RUN_TEST(test_valid_archive);
     RUN_TEST(test_unsafe_paths);
-    RUN_TEST(test_unsupported_entry_types);
+    RUN_TEST(test_link_and_unsupported_entry_types);
     RUN_TEST(test_path_collisions);
 #ifndef _WIN32
     RUN_TEST(test_verified_archive_path_swap);

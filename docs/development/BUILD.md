@@ -71,15 +71,16 @@ Before writing anything, the build checks that:
 - the value can be passed safely through Make and the supported shells.
 
 A build root belongs to this repository only when it contains the expected
-`.cup-build-root` marker. The first creation is handled by one native
-`prepare-build-root` operation. It stages a new private directory, writes and
-synchronizes the marker, then publishes the directory atomically. An existing
-unmarked directory is rejected even when it is empty, so the build never adopts
-an unrelated path by accident.
+`.cup-build-root` marker. For a new root, the shell path-safety owner validates
+and prepares the parent chain, creates the root, and writes the marker before the
+root is used. If marker creation fails, that newly created root is removed. An
+existing root must already carry the exact marker; an unmarked existing
+directory is not adopted, even when empty.
 
-Build and clean operations lock the marker before changing the root. A second
-operation on the same root fails instead of racing with the first one. `clean`
-removes managed entries, then the marker and finally the empty root.
+The repository assumes one independent mutation of a build root at a time.
+Parallel work inside one `make` invocation is coordinated by Make itself; cup
+does not add separate cross-process locking. `clean` first
+requires the exact marker and then removes that managed build root.
 
 ## Build identity
 
@@ -112,6 +113,13 @@ human-readable as `dev+archive`. The generated `release.txt` uses the reserved
 all-zero 40-character commit sentinel so that archive builds retain the same
 strict metadata schema. Official builds are accepted only from a Git checkout
 and record the real source commit.
+
+Version outputs are generated as one complete set in a private directory. The
+Make graph verifies every expected regular output before copying any of them into
+the canonical generated directory and only then refreshes the generation stamp.
+The CA source/header pair uses the same staged-set rule. A generator that returns
+success without producing its complete output set therefore cannot make stale
+canonical files appear freshly generated.
 
 `scripts/version.sh` reads the manually maintained `VERSION` file and Git state.
 Development builds include the tag distance, short commit and dirty state.
@@ -188,7 +196,10 @@ The source build uses these libraries:
 
 - **Argtable3** parses command-specific arguments.
 - **uthash** stores normalized archive paths while duplicates are checked.
-- **libcurl** performs bounded HTTP and HTTPS downloads.
+- **libcurl** performs bounded HTTP and HTTPS downloads. CUP requires libcurl
+  8.20.0 or newer because the download-size limit must also apply after HTTP
+  content decoding; the dependency lock currently pins a newer compatible
+  release.
 - **libarchive** validates and extracts package archives.
 - **zlib** and **XZ/liblzma** are part of the archive stack.
 - **c-ares** is libcurl's resolver on the supported builds.
@@ -215,10 +226,14 @@ download URLs.
 The remaining shared code is split by responsibility:
 
 - `environment.sh` prepares deterministic tools and flags;
-- `root-transaction.sh` owns prefix locking, staging, commit and cleanup;
+- `root-transaction.sh` owns dependency-root validation, staging recovery and cleanup;
 - `prefix-metadata.sh` reads, validates and writes prefix metadata;
 - `source-build.sh` owns common download, extraction and build operations;
-- `common.sh` loads those four modules and defines their shared constants.
+- `common.sh` loads those modules and defines their shared constants.
+
+`build-posix.sh` and `build-windows.sh` are the native prefix producers;
+`verify.sh` is the standalone compatibility/cache-key/cleanup entry point used by
+Make and CI. All three load the same shared dependency model through `common.sh`.
 
 `scripts/dependencies/THIRD_PARTY_NOTICES.txt` contains the corresponding
 license notices and is included in releases. It is documentation, not a second
@@ -272,17 +287,17 @@ make PLATFORM=<platform> deps-clean
 validates and never repairs it. `deps-force` performs a new transactional build.
 `deps-clean` removes only a marked dependency root.
 
-Mutating operations on one dependency root are serialized by an adjacent managed
-lock file. `path-ops` holds the platform-native process lock while the builder or
-cleaner runs: `flock` owns the open file on POSIX and `LockFileEx` owns the handle
-on Windows. The metadata file remains in place between operations, while the OS
-releases the active lock automatically when its owner exits. This avoids PID-based
-stale-lock reclamation and keeps one lock identity across rebuilds and cleanup.
+A dependency root is owned by its exact `.cup-dependencies-root` marker. A new
+root is marked before use; an existing empty unmarked directory may be adopted,
+while a non-empty unmarked root is preserved and rejected. As with build roots,
+the repository assumes one independent mutation of a dependency root at a time
+rather than maintaining a separate cross-process lock state machine.
 
-Source archives are downloaded to a managed cache, checked against the lock and
-extracted into private staging directories. Libraries are built into a staged
-prefix. The complete result is verified before it replaces the final prefix, so
-a failed build does not leave a half-updated installation.
+Source archives are downloaded to a managed cache, checked against the source
+lock and extracted into private staging directories. Libraries are built into a
+staged prefix. Startup removes an interrupted canonical staging directory below
+an already owned root, and the complete prefix is verified before it replaces
+the final prefix. A failed build therefore does not expose a half-updated prefix.
 
 An offline cache is a dependency root containing the canonical
 `.cup-dependencies-root` marker and a `src/` directory with the archives named by
@@ -291,10 +306,13 @@ creates those transactionally. Extra or stale archives should not be shipped in
 the cache even though the builder ignores names that are not present in the
 lock.
 
-The dependency scripts intentionally install only the files needed by cup and
-its tests. For example, XZ contributes `liblzma` rather than all command-line
-programs, and OpenSSL contributes static libraries, headers and metadata rather
-than the `openssl` executable, engines or modules.
+The dependency prefix is an internal build cache, not a cup release package.
+Compatibility is defined by the pinned headers, static archives and metadata
+that cup and its tests consume. Some upstream `make install` steps may also
+leave support programs that cup never executes; the repository does not add a
+second pruning layer merely to minimize this private cache. Features that would
+change the dependency graph, such as shared libraries or runtime OpenSSL
+modules, remain disabled by the build recipes and verifier.
 
 ## Linking policy
 
@@ -319,34 +337,20 @@ The release policy depends on the platform:
 - Windows links third-party and compiler runtimes statically and imports only
   the approved Windows system DLLs.
 
-## Safe helper used by repository scripts
+## Repository path safety
 
-Build, dependency and release scripts sometimes need filesystem operations that
-cannot be made race-safe with shell commands alone. `scripts/lib/path-ops.c`
-provides a small command-line frontend for those operations.
+Repository tooling uses `scripts/lib/path-safety.sh` as the shared shell owner
+for managed build, dependency and release paths. It validates canonical absolute
+paths, rejects evident symbolic-link components, checks containment and exact
+ownership markers, and provides the staging/publication and destructive cleanup
+operations used by the scripts.
 
-It is compiled on demand with the platform filesystem backend used by cup:
-`system_posix.c` on POSIX hosts and `system_windows.c` through a native Windows
-helper under MSYS2.
-
-The helper is cached in a private per-user runtime directory. Its cache identity
-includes the source digests, helper protocol, host, compiler and flags. It is not
-installed with cup and is not persistent cup state.
-
-The division of responsibility is:
-
-- `system` owns native no-follow traversal, object identity, move, copy, remove
-  and locking primitives;
-- `filesystem` owns composite snapshot and atomic-publication operations used by
-  the program;
-- `path-ops` parses script commands and applies repository-specific policies,
-  such as the build-root marker.
-
-Existing-tree traversal is anchored to directory descriptors and carries the
-observed identity into later copy or removal operations. New temporary files or
-private directories begin from a validated parent path and are then published
-with the native atomic operation. A platform without the required no-replace
-primitive fails instead of falling back to check-then-move.
+These checks protect normal repository workflows from path mistakes and from
+cleaning or publishing through an obviously replaced path. They are deliberately
+not a second implementation of the cup runtime's descriptor/handle identity
+model, nor a promise to defeat a process with full control of the same developer
+account. Product mutations that require same-object identity continue to use the
+native C `system`/`filesystem` layers at their actual mutation authority.
 
 ## Embedded certificate authority (CA) bundle
 
@@ -369,9 +373,13 @@ make check-ca-bundle
 make update-ca-bundle
 ```
 
-The first command works offline. The second downloads a candidate, checks its
-identity and contents, compiles the generated source and replaces the PEM and
-metadata only after the candidate passes.
+The first command works offline. The second acquires a candidate over HTTPS,
+validates its X.509 structure, source date, certificate count and freshness,
+computes the SHA-256 of the accepted bytes and records that digest in the new metadata. It
+then compiles the generated source and replaces the PEM and metadata only after
+the complete candidate passes. The new download is not compared with a
+pre-existing upstream digest; the recorded digest becomes the tracked byte
+authority for later builds and offline checks.
 
 ## Public Make targets
 

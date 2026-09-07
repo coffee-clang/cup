@@ -70,6 +70,17 @@ static CupError show_configuration(const InstallPolicy *policy,
     return CUP_OK;
 }
 
+static CupError save_preferences(ToolPreferences *preferences) {
+    CupError err = tool_preferences_save(preferences);
+
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+                "Error: preferences may already be updated, but their durability could not be "
+                "confirmed. Run 'cup config' before retrying.\n");
+    }
+    return err;
+}
+
 static CupError set_preference(ToolPreferences *preferences,
                                const CommandContext *context,
                                const char *component,
@@ -85,7 +96,7 @@ static CupError set_preference(ToolPreferences *preferences,
         err = interrupt_safe_point();
     }
     if (err == CUP_OK) {
-        err = tool_preferences_save(preferences);
+        err = save_preferences(preferences);
     }
     if (err == CUP_OK) {
         printf("Preferred tool for '%s' on target '%s' set to '%s'.\n",
@@ -109,7 +120,7 @@ static CupError reset_scope_preferences(ToolPreferences *preferences,
         err = interrupt_safe_point();
     }
     if (err == CUP_OK && removed_count > 0) {
-        err = tool_preferences_save(preferences);
+        err = save_preferences(preferences);
     }
     if (err == CUP_OK) {
         printf("Reset %zu preference(s) for target '%s'.\n",
@@ -134,7 +145,7 @@ static CupError reset_component_preference(ToolPreferences *preferences,
         err = interrupt_safe_point();
     }
     if (err == CUP_OK && removed) {
-        err = tool_preferences_save(preferences);
+        err = save_preferences(preferences);
     }
     if (err == CUP_OK) {
         printf(removed ? "Preference for '%s' on target '%s' was reset.\n"

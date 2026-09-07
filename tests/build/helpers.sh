@@ -20,37 +20,6 @@ helper_scope_applies() {
     esac
 }
 
-list_registered_helpers() {
-    local platform=$1
-    local scope
-    local name
-
-    awk '/^[[:space:]]*compile_helper[[:space:]]+(all|posix)[[:space:]]+[A-Za-z0-9_-]+/ { print $2, $3 }' "$0" |
-        while read -r scope name; do
-            if helper_scope_applies "$scope" "$platform"; then
-                case "$platform" in
-                    windows-x64) printf '%s.exe\n' "$name" ;;
-                    *) printf '%s\n' "$name" ;;
-                esac
-            else
-                status=$?
-                [ "$status" -eq 1 ] || exit "$status"
-            fi
-        done
-}
-
-if [ "${1:-}" = --list ]; then
-    list_platform=${2:-${CUP_TEST_PLATFORM:-}}
-    case "$list_platform" in
-        linux-x64|linux-arm64|macos-x64|macos-arm64|windows-x64) ;;
-        *)
-            printf 'Usage: %s --list <platform>\n' "$0" >&2
-            exit 2
-            ;;
-    esac
-    list_registered_helpers "$list_platform"
-    exit 0
-fi
 
 . "$ROOT/tests/support/environment.sh"
 cup_test_prepare_environment
@@ -139,6 +108,10 @@ compile_helper() {
         "$ROOT"/*) source=${source#"$ROOT"/} ;;
     esac
     output="$OUT/$name$EXE_SUFFIX"
+    [ ! -e "$output" ] || {
+        printf 'Duplicate test-helper output: %s\n' "$name" >&2
+        exit 1
+    }
     output_arg=$output
     [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name$EXE_SUFFIX"
     printf '==> Compiling test helper: %s\n' "$name"
@@ -170,35 +143,17 @@ archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
 compile_helper all archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
     $archive_libs
-compile_helper posix process-group "$ROOT/tests/helpers/process-group.c"
 
 event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libevent_extra libevent_core)
-compile_helper all network-helper "$ROOT/tests/helpers/network-helper.c" \
-    $event_libs $PLATFORM_LIBS
-
-expected_list="$OUT/.expected-helpers"
-actual_list="$OUT/.actual-helpers"
-list_registered_helpers "$PLATFORM" | LC_ALL=C sort > "$expected_list"
-: > "$actual_list"
-for helper_binary in "$OUT"/*; do
-    [ -f "$helper_binary" ] || continue
-    case "$helper_binary" in
-        *.gcda|*.gcno|"$expected_list"|"$actual_list") continue ;;
-    esac
-    [ -x "$helper_binary" ] || continue
-    basename "$helper_binary" >> "$actual_list"
-done
-LC_ALL=C sort -o "$actual_list" "$actual_list"
-if [ "$(cat "$expected_list")" != "$(cat "$actual_list")" ]; then
-    printf 'Expected test helpers:\n' >&2
-    cat "$expected_list" >&2
-    printf 'Compiled test helpers:\n' >&2
-    cat "$actual_list" >&2
+# zlib is a leaf archive in the dependency prefix; no pkg-config metadata is required.
+zlib_lib=$(cup_test_find_static_library z) || {
+    printf 'zlib static library was not found in %s.\n' "$DEPS_PREFIX" >&2
     exit 1
-fi
-rm -f -- "$expected_list" "$actual_list"
+}
+compile_helper all network-helper "$ROOT/tests/helpers/network-helper.c" \
+    $event_libs "$zlib_lib" $PLATFORM_LIBS
 
 if [ -e "$OUT_FINAL" ] || [ -L "$OUT_FINAL" ]; then
     cup_path_check_directory_chain "$OUT_FINAL" 0 \

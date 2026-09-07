@@ -4,19 +4,20 @@ on:
   workflow_call:
     inputs:
       target:
-        description: Dependency platform/profile target, or all
+        description: Dependency platform/profile target, primary, or all
         required: false
         default: all
         type: string
   workflow_dispatch:
     inputs:
       target:
-        description: Dependency platform/profile target
+        description: Dependency platform/profile target, primary, or all
         required: true
         default: all
         type: choice
         options:
           - all
+          - primary
           - linux-x64-gcc
           - linux-arm64-gcc
           - macos-x64-apple-clang
@@ -50,6 +51,10 @@ jobs:
             all)
               targets='["linux-x64-gcc","linux-arm64-gcc","macos-x64-apple-clang",'
               targets=$targets'"macos-arm64-apple-clang","windows-x64-ucrt64","windows-x64-clang64"]'
+              ;;
+            primary)
+              targets='["linux-x64-gcc","linux-arm64-gcc","macos-x64-apple-clang",'
+              targets=$targets'"macos-arm64-apple-clang","windows-x64-ucrt64"]'
               ;;
             linux-x64-gcc|linux-arm64-gcc|macos-x64-apple-clang|\
               macos-arm64-apple-clang|windows-x64-ucrt64|windows-x64-clang64)
@@ -249,45 +254,3 @@ jobs:
             make PLATFORM=windows-x64 DEPS_ROOT='${{ steps.windows-target.outputs.root }}' \
               DEPS_PREFIX='${{ steps.windows-target.outputs.prefix }}' deps-check
           fi
-
-      - name: Write POSIX dependency evidence
-        if: ${{ !startsWith(matrix.target, 'windows-') }}
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          PLATFORM: ${{ steps.posix-target.outputs.platform }}
-          PROFILE: ${{ steps.posix-target.outputs.profile }}
-          PREFIX: ${{ steps.posix-target.outputs.prefix }}
-          CACHE_KEY: ${{ steps.posix-cache.outputs.key }}
-          ARTIFACT_NAME: cup-dependency-evidence-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          scripts/ci/write-dependency-evidence.sh \
-            "$RUNNER_TEMP/cup-dependency-evidence/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
-            "$PREFIX" "$CACHE_KEY" '${{ github.repository }}' '${{ github.sha }}' \
-            '${{ github.run_id }}' '${{ github.run_attempt }}' "$ARTIFACT_NAME"
-
-      - name: Write Windows dependency evidence
-        if: ${{ startsWith(matrix.target, 'windows-') }}
-        shell: msys2 {0}
-        env:
-          TARGET: ${{ matrix.target }}
-          PLATFORM: windows-x64
-          PROFILE: ${{ steps.windows-target.outputs.profile }}
-          PREFIX: ${{ steps.windows-target.outputs.prefix }}
-          CACHE_KEY: ${{ steps.windows-cache.outputs.key }}
-          ARTIFACT_NAME: cup-dependency-evidence-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
-          scripts/ci/write-dependency-evidence.sh \
-            "$evidence_root/$TARGET" "$TARGET" "$PLATFORM" "$PROFILE" \
-            "$PREFIX" "$CACHE_KEY" '${{ github.repository }}' '${{ github.sha }}' \
-            '${{ github.run_id }}' '${{ github.run_attempt }}' "$ARTIFACT_NAME"
-
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: cup-dependency-evidence-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.target }}/evidence.txt
-          if-no-files-found: error
-          retention-days: 14

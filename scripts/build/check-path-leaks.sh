@@ -31,9 +31,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 strings -a "$binary" >"$strings_file"
 
-if grep -E -q \
-    '/\.[^/]*install\.staging\.|[A-Za-z]:[\\/].*[\\/]\.[^\\/]*install\.staging\.' \
-    "$strings_file"; then
+if grep -E -q '[\\/]\.install\.staging([\\/]|$)' "$strings_file"; then
     echo "Error: release binary contains a transactional dependency path." >&2
     exit 1
 fi

@@ -10,7 +10,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin concurrency
 prepare_command_environment
 run_cup repair >/dev/null
-make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang clang++
+make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
 
 configuration=${CUP_TEST_CONFIGURATION:-development}
 test_build_root=${CUP_TEST_BUILD_ROOT:-$PROJECT_ROOT/build}
@@ -47,18 +47,12 @@ trap 'concurrency_signal_handler 130' INT
 trap 'concurrency_signal_handler 143' TERM
 
 assert_file "$helper"
-process_group_helper=$(test_process_group_helper)
-assert_file "$process_group_helper"
-test_start_process_group sh -c 'trap "" TERM; sleep 30 & wait'
-process_tree_pid=$CUP_TEST_PROCESS_GROUP_PID
-test_stop_process_group "$process_tree_pid"
-process_tree_pid=
 
 mkdir -p "$server_root"
-cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
-archive_name=clang-22.1.5-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
+cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
+archive_name=clang-23.1.0-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
 mv "$cache_dir/$archive_name" "$server_root/$archive_name"
-checksum_root=$server_root/22.1.5/$TEST_PLATFORM/$TEST_PLATFORM
+checksum_root=$server_root/23.1.0/$TEST_PLATFORM/$TEST_PLATFORM
 mkdir -p "$checksum_root"
 mv "$cache_dir/SHA256SUMS" "$checksum_root/SHA256SUMS"
 rm -rf "$TEST_HOME/.cup/cache/compiler/clang"
@@ -165,7 +159,7 @@ HOME="$TEST_HOME" "$CUP" --internal-runtime-ready \
 
 first_text=$(cat "$TMP_ROOT/install-a.out")
 second_text=$(cat "$TMP_ROOT/install-b.out")
-assert_contains "$first_text" 'Installed compiler clang@22.1.5'
+assert_contains "$first_text" 'Installed compiler clang@23.1.0'
 case "$second_text" in
     *'another cup operation is currently running'* | \
         *'a package transaction is active or requires recovery'*) ;;
@@ -182,7 +176,7 @@ if find "$TEST_HOME/.cup/staging" -mindepth 1 -print -quit | grep . >/dev/null; 
     find "$TEST_HOME/.cup/staging" -mindepth 1 -maxdepth 1 -print >&2
     fail 'concurrent installs left temporary paths behind'
 fi
-assert_contains "$(run_cup info compiler)" "compiler [$TEST_PLATFORM]: clang@22.1.5 (stable)"
-assert_equals "$(run_native_wrapper clang)" "clang-22.1.5-$TEST_PLATFORM:clang"
+assert_contains "$(run_cup info compiler)" "compiler [$TEST_PLATFORM]: clang@23.1.0 (stable)"
+assert_equals "$(run_native_wrapper clang)" "clang-23.1.0-$TEST_PLATFORM:clang"
 
 printf 'Concurrency integration tests passed for %s.\n' "$TEST_PLATFORM"

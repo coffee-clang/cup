@@ -10,6 +10,7 @@
 #include "layout.h"
 #include "path.h"
 #include "system.h"
+#include "text.h"
 #include "unity.h"
 #include "test_platform.h"
 
@@ -18,6 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+CupError assets_binary_asset_name(char *name, size_t size) {
+    return text_copy(name, size, "cup-linux-x64");
+}
+
+CupError assets_platform_checksums_name(char *name, size_t size) {
+    return text_copy(name, size, "SHA256SUMS.linux-x64");
+}
 
 static char root[MAX_PATH_LEN];
 static char staging[MAX_PATH_LEN];
@@ -28,11 +37,12 @@ static int lock_released;
 static int replace_calls;
 static int copy_calls;
 static int copy_fail_call;
+static int copy_commit_call;
 static int copy_corrupt;
 static int replace_fail_call;
 static int recovery_calls;
 static UpdateRecoveryMode recovery_mode;
-static UpdateRecoveryResult recovery_result;
+static int recovery_finalized;
 static int executable_calls;
 static int read_only_calls;
 static int writable_calls;
@@ -153,11 +163,12 @@ static void reset_scenario(void) {
     replace_calls = 0;
     copy_calls = 0;
     copy_fail_call = 0;
+    copy_commit_call = 0;
     copy_corrupt = 0;
     replace_fail_call = 0;
     recovery_calls = 0;
     recovery_mode = CUP_UPDATE_RECOVER_PRESERVE_BINARY;
-    recovery_result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
+    recovery_finalized = 0;
     executable_calls = 0;
     read_only_calls = 0;
     writable_calls = 0;
@@ -253,8 +264,8 @@ CupError layout_build_lock_path(char *buffer, size_t size, const char *selected_
     return path_join(buffer, size, selected_root, "cup.lock");
 }
 
-CupError layout_root_snapshot_begin(void) {
-    return CUP_OK;
+CupError layout_root_snapshot_begin_at(const char *selected_root) {
+    return selected_root != NULL && strcmp(selected_root, root) == 0 ? CUP_OK : CUP_ERR_INVALID_INPUT;
 }
 
 void layout_root_snapshot_end(void) {
@@ -290,7 +301,7 @@ CupError system_copy_file(const char *source, const char *destination) {
     }
     read_file(source, data, sizeof(data));
     write_file(destination, copy_corrupt ? "corrupt" : data);
-    return CUP_OK;
+    return copy_commit_call != 0 && copy_calls == copy_commit_call ? CUP_ERR_COMMIT : CUP_OK;
 }
 
 CupError system_is_regular_file(const char *path, int *is_regular) {
@@ -605,12 +616,12 @@ CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_id
 
 CupError update_journal_recover(const UpdateJournal *journal,
                                     UpdateRecoveryMode mode,
-                                    UpdateRecoveryResult *result) {
+                                    int *finalized) {
     TEST_ASSERT_NOT_NULL(journal);
     recovery_calls++;
     recovery_mode = mode;
-    if (result != NULL) {
-        *result = recovery_result;
+    if (finalized != NULL) {
+        *finalized = recovery_finalized;
     }
     return recovery_error;
 }
@@ -619,7 +630,6 @@ CupError assets_inspect(AssetsInspection *inspection) {
     TEST_ASSERT_NOT_NULL(inspection);
     memset(inspection, 0, sizeof(*inspection));
     inspection->binary = CUP_ASSET_VALID;
-    inspection->helper = CUP_ASSET_MISSING;
     inspection->catalog = CUP_ASSET_VALID;
     inspection->install_policy = CUP_ASSET_VALID;
     inspection->common_checksums = CUP_ASSET_VALID;
@@ -927,7 +937,7 @@ static void test_recovery_finalizes_committed_generation(void) {
 
     journal_clear_failures_remaining = 1;
     expected_failure_error = CUP_ERR_FILESYSTEM;
-    recovery_result = CUP_UPDATE_RECOVERY_FINALIZED;
+    recovery_finalized = 1;
     make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
 
     TEST_ASSERT_EQUAL_INT(
@@ -970,6 +980,20 @@ static void test_prepare_rejects_mismatched_copy(void) {
     copy_corrupt = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, update_helper_prepare());
     TEST_ASSERT_EQUAL_INT(1, copy_calls);
+}
+
+static void test_prepare_accepts_visible_commit_ambiguity(void) {
+    char helper[MAX_PATH_LEN];
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
+    if (test_access_exists(helper)) {
+        TEST_ASSERT_EQUAL_INT(0, test_unlink(helper));
+    }
+    copy_commit_call = 1;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare());
+    TEST_ASSERT_EQUAL_INT(1, copy_calls);
+    TEST_ASSERT_TRUE(test_access_exists(helper));
 }
 
 static void test_prepare_rejects_non_regular_helper(void) {
@@ -1080,6 +1104,7 @@ int main(void) {
     RUN_TEST(test_prepare_reuses_matching_helper);
     RUN_TEST(test_prepare_reports_path_and_hash_failures);
     RUN_TEST(test_prepare_replaces_missing_or_stale_helper);
+    RUN_TEST(test_prepare_accepts_visible_commit_ambiguity);
     RUN_TEST(test_prepare_rejects_mismatched_copy);
     RUN_TEST(test_prepare_rejects_non_regular_helper);
     RUN_TEST(test_prepare_reports_copy_and_permission_failures);

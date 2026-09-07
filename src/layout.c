@@ -1,7 +1,7 @@
 /*
- * Selects an owned per-user cup root and constructs every managed path below it. The primary
- * .cup name is preserved, while an unrelated pre-existing .cup directory causes deterministic
- * selection of .coffee-cup.
+ * Selects an authenticated CUP root and constructs every managed path below it. A caller may
+ * choose the parent directory, but the managed leaf is always .cup or the deterministic
+ * .coffee-cup fallback. Installed executables bind runtime operations to their own root.
  */
 
 #include "layout.h"
@@ -38,7 +38,7 @@ static const char *const BOOTSTRAP_DIRS[] = {BIN_DIRECTORY, CONFIG_DIRECTORY, HE
 typedef struct {
     char path[MAX_PATH_LEN];
     SystemPathIdentity identity;
-    unsigned int depth;
+    int active;
 } RootSnapshot;
 
 static RootSnapshot root_snapshot;
@@ -67,10 +67,14 @@ typedef enum {
 /* A detached helper may temporarily carry exclusive authority outside the canonical root. Root
  * admission checks that handoff before touching managed paths so a new process cannot enter while
  * authority is moving between processes. */
-static CupError reject_active_handoff(void) {
+static CupError reject_active_handoff(const char *root) {
     int active = 0;
-    CupError err = system_handoff_active(&active);
+    CupError err;
 
+    if (text_is_empty(root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_handoff_active(root, &active);
     if (err != CUP_OK) {
         return err;
     }
@@ -148,9 +152,9 @@ static CupError candidate_path_kind(const char *root,
 }
 
 /*
- * Markerless roots are never adopted automatically. A canonical cup executable
- * is enough to treat the directory as cup-like and preserve it for explicit
- * diagnosis; weaker traces must not claim an unrelated directory named .cup.
+ * Markerless roots are never adopted automatically. Any object at the canonical bin/cup path is
+ * only a conservative preservation signal for a possible old or corrupted CUP installation; it is
+ * not root authentication. Authentication remains root.txt plus the retained root identity.
  */
 static CupError candidate_has_cup_binary(const char *root, int *has_binary) {
     char path[MAX_PATH_LEN];
@@ -232,7 +236,8 @@ static int root_candidate_is_recognized(RootCandidateStatus status) {
     return status == ROOT_CANDIDATE_OWNED;
 }
 
-static CupError inspect_root_candidates(char *primary,
+static CupError inspect_root_candidates(const char *base,
+                                        char *primary,
                                         size_t primary_size,
                                         RootCandidateStatus *primary_status,
                                         SystemPathIdentity *primary_identity,
@@ -241,24 +246,24 @@ static CupError inspect_root_candidates(char *primary,
                                         RootCandidateStatus *fallback_status,
                                         SystemPathIdentity *fallback_identity) {
     CupError err;
-    char home[MAX_PATH_LEN];
 
-    if (primary == NULL || primary_size == 0 || primary_status == NULL ||
+    if (text_is_empty(base) || primary == NULL || primary_size == 0 || primary_status == NULL ||
         primary_identity == NULL || fallback == NULL || fallback_size == 0 ||
         fallback_status == NULL || fallback_identity == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = reject_active_handoff();
+    err = path_join(primary, primary_size, base, CUP_PRIMARY_ROOT_DIRECTORY);
     if (err == CUP_OK) {
-        err = system_get_home_dir(home, sizeof(home));
+        err = path_join(fallback, fallback_size, base, CUP_FALLBACK_ROOT_DIRECTORY);
+    }
+    /* Either canonical slot may be in the detach window. Check both before inspection so root
+     * selection cannot race a helper by switching to the other leaf in the same base. */
+    if (err == CUP_OK) {
+        err = reject_active_handoff(primary);
     }
     if (err == CUP_OK) {
-        err = path_join(primary, primary_size, home, CUP_PRIMARY_ROOT_DIRECTORY);
-    }
-    if (err == CUP_OK) {
-        err = path_join(
-            fallback, fallback_size, home, CUP_FALLBACK_ROOT_DIRECTORY);
+        err = reject_active_handoff(fallback);
     }
     if (err == CUP_OK) {
         err = classify_root_candidate(primary, primary_status, primary_identity);
@@ -382,8 +387,8 @@ CupError layout_get_config_dir(char *buffer, size_t size) {
     return build_root_path(buffer, size, CONFIG_DIRECTORY);
 }
 
-/* Select one stable root without creating, adopting, or modifying either candidate. */
-static CupError select_root(char *buffer, size_t size, SystemPathIdentity *selected_identity) {
+/* Select one stable root below base without creating, adopting, or modifying either candidate. */
+static CupError select_root_for_base(const char *base, char *buffer, size_t size, SystemPathIdentity *selected_identity) {
     CupError err;
     char primary[MAX_PATH_LEN];
     char fallback[MAX_PATH_LEN];
@@ -392,11 +397,11 @@ static CupError select_root(char *buffer, size_t size, SystemPathIdentity *selec
     SystemPathIdentity primary_identity;
     SystemPathIdentity fallback_identity;
 
-    if (buffer == NULL || size == 0) {
+    if (text_is_empty(base) || buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = inspect_root_candidates(primary,
+    err = inspect_root_candidates(base, primary,
                                   sizeof(primary),
                                   &primary_status,
                                   &primary_identity,
@@ -483,22 +488,112 @@ static CupError select_root(char *buffer, size_t size, SystemPathIdentity *selec
     return CUP_ERR_FILESYSTEM;
 }
 
-CupError layout_root_snapshot_begin(void) {
-    CupError err;
-    SystemPathIdentity identity;
+static int canonical_root_leaf(const char *path) {
+    const char *leaf = path_last_segment(path);
 
-    if (root_snapshot.depth != 0) {
-        root_snapshot.depth++;
-        return CUP_OK;
+    return leaf != NULL &&
+           (strcmp(leaf, CUP_PRIMARY_ROOT_DIRECTORY) == 0 ||
+            strcmp(leaf, CUP_FALLBACK_ROOT_DIRECTORY) == 0);
+}
+
+static CupError executable_managed_root(char *buffer, size_t size, int *managed) {
+    char executable[MAX_PATH_LEN];
+    char bin[MAX_PATH_LEN];
+    char root[MAX_PATH_LEN];
+    RootCandidateStatus status;
+    SystemPathIdentity identity;
+    CupError err;
+
+    if (buffer == NULL || size == 0 || managed == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *managed = 0;
+    err = system_get_executable_path(executable, sizeof(executable));
+    if (err != CUP_OK || path_parent(bin, sizeof(bin), executable) != CUP_OK ||
+        strcmp(path_last_segment(bin), BIN_DIRECTORY) != 0 ||
+        path_parent(root, sizeof(root), bin) != CUP_OK || !canonical_root_leaf(root)) {
+        return err == CUP_OK ? CUP_OK : err;
+    }
+    /* A canonical-looking installed executable is authoritative only after the root marker and
+     * directory identity are proven. Never fall back to HOME when that proof fails. */
+    err = reject_active_handoff(root);
+    if (err == CUP_OK) {
+        err = classify_root_candidate(root, &status, &identity);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (status != ROOT_CANDIDATE_OWNED) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    *managed = 1;
+    return text_copy(buffer, size, root);
+}
+
+CupError layout_select_root_for_base(const char *base, char *buffer, size_t size) {
+    return select_root_for_base(base, buffer, size, NULL);
+}
+
+CupError layout_root_snapshot_begin_at(const char *root) {
+    RootCandidateStatus status;
+    SystemPathIdentity identity;
+    CupError err;
+
+    if (text_is_empty(root) || !canonical_root_leaf(root)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (root_snapshot.active) {
+        return CUP_ERR_TRANSACTION;
     }
     memset(&root_snapshot, 0, sizeof(root_snapshot));
     memset(&identity, 0, sizeof(identity));
-    err = select_root(root_snapshot.path, sizeof(root_snapshot.path), &identity);
+    err = reject_active_handoff(root);
+    if (err == CUP_OK) {
+        err = classify_root_candidate(root, &status, &identity);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (status != ROOT_CANDIDATE_MISSING && status != ROOT_CANDIDATE_OWNED) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    err = text_copy(root_snapshot.path, sizeof(root_snapshot.path), root);
     if (err != CUP_OK) {
         return err;
     }
     root_snapshot.identity = identity;
-    root_snapshot.depth = 1;
+    root_snapshot.active = 1;
+    return CUP_OK;
+}
+
+CupError layout_root_snapshot_begin(void) {
+    CupError err;
+    SystemPathIdentity identity;
+    char home[MAX_PATH_LEN];
+    char root[MAX_PATH_LEN];
+    int managed = 0;
+
+    if (root_snapshot.active) {
+        return CUP_ERR_TRANSACTION;
+    }
+    err = executable_managed_root(root, sizeof(root), &managed);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (managed) {
+        return layout_root_snapshot_begin_at(root);
+    }
+    memset(&root_snapshot, 0, sizeof(root_snapshot));
+    memset(&identity, 0, sizeof(identity));
+    err = system_get_home_dir(home, sizeof(home));
+    if (err == CUP_OK) {
+        err = select_root_for_base(home, root_snapshot.path, sizeof(root_snapshot.path), &identity);
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    root_snapshot.identity = identity;
+    root_snapshot.active = 1;
     return CUP_OK;
 }
 
@@ -506,13 +601,13 @@ CupError layout_root_snapshot_validate(void) {
     SystemPathIdentity current;
     CupError err;
 
-    if (root_snapshot.depth == 0) {
-        return CUP_OK;
+    if (!root_snapshot.active) {
+        return CUP_ERR_TRANSACTION;
     }
     /* Recheck after the final canonical lock acquisition and before touching the root again. A
      * process that passed the pre-root barrier before another process published handoff
      * authority is rejected here before it can become an authoritative mutator. */
-    err = reject_active_handoff();
+    err = reject_active_handoff(root_snapshot.path);
     if (err != CUP_OK) {
         return err;
     }
@@ -532,23 +627,32 @@ CupError layout_root_snapshot_validate(void) {
 }
 
 void layout_root_snapshot_end(void) {
-    if (root_snapshot.depth == 0) {
-        return;
-    }
-    root_snapshot.depth--;
-    if (root_snapshot.depth == 0) {
+    if (root_snapshot.active) {
         memset(&root_snapshot, 0, sizeof(root_snapshot));
     }
 }
 
 CupError layout_get_root(char *buffer, size_t size) {
+    char home[MAX_PATH_LEN];
+    char managed_root[MAX_PATH_LEN];
+    int managed = 0;
+    CupError err;
+
     if (buffer == NULL || size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (root_snapshot.depth != 0) {
+    if (root_snapshot.active) {
         return text_copy(buffer, size, root_snapshot.path);
     }
-    return select_root(buffer, size, NULL);
+    err = executable_managed_root(managed_root, sizeof(managed_root), &managed);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (managed) {
+        return text_copy(buffer, size, managed_root);
+    }
+    err = system_get_home_dir(home, sizeof(home));
+    return err == CUP_OK ? select_root_for_base(home, buffer, size, NULL) : err;
 }
 
 CupError layout_check_root_candidates(size_t *issue_count) {
@@ -566,15 +670,27 @@ CupError layout_check_root_candidates(size_t *issue_count) {
     {
         SystemPathIdentity primary_identity;
         SystemPathIdentity fallback_identity;
+        char base[MAX_PATH_LEN];
+        char managed_root[MAX_PATH_LEN];
+        int managed = 0;
 
-        err = inspect_root_candidates(primary,
-                                      sizeof(primary),
-                                      &primary_status,
-                                      &primary_identity,
-                                      fallback,
-                                      sizeof(fallback),
-                                      &fallback_status,
-                                      &fallback_identity);
+        err = executable_managed_root(managed_root, sizeof(managed_root), &managed);
+        if (err == CUP_OK && managed) {
+            err = path_parent(base, sizeof(base), managed_root);
+        } else if (err == CUP_OK) {
+            err = system_get_home_dir(base, sizeof(base));
+        }
+        if (err == CUP_OK) {
+            err = inspect_root_candidates(base,
+                                          primary,
+                                          sizeof(primary),
+                                          &primary_status,
+                                          &primary_identity,
+                                          fallback,
+                                          sizeof(fallback),
+                                          &fallback_status,
+                                          &fallback_identity);
+        }
     }
     if (err != CUP_OK) {
         return err;
@@ -662,28 +778,14 @@ CupError layout_build_transaction_path(char *buffer, size_t size, const char *ro
 }
 
 CupError layout_validate_root_at(const char *root, SystemPathIdentity *identity) {
-    char home[MAX_PATH_LEN];
-    char primary[MAX_PATH_LEN];
-    char fallback[MAX_PATH_LEN];
     RootCandidateStatus status;
     SystemPathIdentity observed;
     CupError err;
 
-    if (text_is_empty(root) || identity == NULL) {
+    if (text_is_empty(root) || identity == NULL || !canonical_root_leaf(root)) {
         return CUP_ERR_INVALID_INPUT;
     }
     memset(identity, 0, sizeof(*identity));
-    err = system_get_home_dir(home, sizeof(home));
-    if (err == CUP_OK) {
-        err = path_join(primary, sizeof(primary), home, CUP_PRIMARY_ROOT_DIRECTORY);
-    }
-    if (err == CUP_OK) {
-        err = path_join(fallback, sizeof(fallback), home, CUP_FALLBACK_ROOT_DIRECTORY);
-    }
-    if (err != CUP_OK || (strcmp(root, primary) != 0 && strcmp(root, fallback) != 0)) {
-        return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
-    }
-
     err = classify_root_candidate(root, &status, &observed);
     if (err != CUP_OK || status != ROOT_CANDIDATE_OWNED) {
         return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
@@ -751,7 +853,7 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
     if (err != CUP_OK) {
         return err;
     }
-    err = text_format(filename, sizeof(filename), "SHA256SUMS.%s", host);
+    err = text_format(filename, sizeof(filename), CUP_PLATFORM_CHECKSUMS_FILENAME_TEMPLATE, host);
     if (err != CUP_OK) {
         return err;
     }
@@ -953,6 +1055,7 @@ CupError layout_check_runtime(size_t *missing_count) {
     CupError err;
     char root[MAX_PATH_LEN];
     char path[MAX_PATH_LEN];
+    SystemPathKind root_kind;
     size_t i;
 
     if (missing_count == NULL) {
@@ -964,51 +1067,39 @@ CupError layout_check_runtime(size_t *missing_count) {
     if (err != CUP_OK) {
         return err;
     }
-
-    err = check_layout_directory(root, "cup root", missing_count);
+    err = system_get_path_kind(root, &root_kind);
     if (err != CUP_OK) {
         return err;
     }
-    {
-        SystemPathKind kind;
+    if (root_kind == SYSTEM_PATH_MISSING) {
+        fprintf(stderr, "Issue: missing cup root directory '%s'.\n", root);
+        (*missing_count)++;
+    } else if (root_kind != SYSTEM_PATH_DIRECTORY) {
+        fprintf(stderr, "Issue: cup root path '%s' is not a directory.\n", root);
+        (*missing_count)++;
+    } else {
+        RootMarkerStatus marker_status = ROOT_MARKER_MISSING;
         int is_private = 0;
 
-        err = system_get_path_kind(root, &kind);
+        err = system_directory_is_private(root, &is_private);
         if (err != CUP_OK) {
             return err;
         }
-        if (kind == SYSTEM_PATH_DIRECTORY) {
-            err = system_directory_is_private(root, &is_private);
-            if (err != CUP_OK) {
-                return err;
-            }
-            if (!is_private) {
-                fprintf(stderr, "Issue: cup root is not private to the current user.\n");
-                (*missing_count)++;
-            }
+        if (!is_private) {
+            fprintf(stderr, "Issue: cup root is not private to the current user.\n");
+            (*missing_count)++;
         }
-    }
 
-    {
-        SystemPathKind root_kind;
-        RootMarkerStatus marker_status = ROOT_MARKER_MISSING;
-
-        err = system_get_path_kind(root, &root_kind);
+        err = build_root_path(path, sizeof(path), CUP_ROOT_MARKER_FILENAME);
+        if (err == CUP_OK) {
+            err = inspect_root_marker(root, &marker_status);
+        }
         if (err != CUP_OK) {
             return err;
         }
-        if (root_kind == SYSTEM_PATH_DIRECTORY) {
-            err = build_root_path(path, sizeof(path), CUP_ROOT_MARKER_FILENAME);
-            if (err == CUP_OK) {
-                err = inspect_root_marker(root, &marker_status);
-            }
-            if (err != CUP_OK) {
-                return err;
-            }
-            if (marker_status != ROOT_MARKER_VALID) {
-                fprintf(stderr, "Issue: cup root marker is missing or invalid: '%s'.\n", path);
-                (*missing_count)++;
-            }
+        if (marker_status != ROOT_MARKER_VALID) {
+            fprintf(stderr, "Issue: cup root marker is missing or invalid: '%s'.\n", path);
+            (*missing_count)++;
         }
     }
 
@@ -1072,7 +1163,7 @@ CupError layout_ensure_root(void) {
     int root_created = 0;
 
     /* Root creation must always be tied to one selected path and its missing/existing identity. */
-    if (root_snapshot.depth == 0) {
+    if (!root_snapshot.active) {
         err = layout_root_snapshot_begin();
         if (err != CUP_OK) {
             return err;
@@ -1088,7 +1179,7 @@ CupError layout_ensure_root(void) {
     /* A snapshot may predate handoff publication. Recheck immediately before root creation,
      * permission repair or marker publication instead of treating the old snapshot as mutation
      * authority. */
-    err = reject_active_handoff();
+    err = reject_active_handoff(root);
     if (err != CUP_OK) {
         goto done;
     }

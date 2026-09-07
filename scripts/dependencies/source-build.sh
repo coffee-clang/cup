@@ -5,7 +5,6 @@ download_source() {
     local package="$1"
     local output="$2"
     local url
-    local min_bytes
     local size=
     local max_bytes=268435456
     local tmp_output
@@ -13,20 +12,18 @@ download_source() {
     local temp_base
 
     url="$(source_url_for_package "$package")"
-    min_bytes="$(minimum_bytes_for_package "$package")"
 
     if [ -e "$output" ] || [ -L "$output" ]; then
         if ! cup_path_require_regular_file "$output" 'cached dependency archive'; then
             echo "Error: cached dependency archive is not a safe regular file: $output" >&2
             return 1
         fi
-        size="$(wc -c < "$output" | tr -d '[:space:]')"
-        if [ "$size" -ge "$min_bytes" ] &&
-            verify_source_checksum "$package" "$output"; then
+        if verify_source_checksum "$package" "$output"; then
             echo "==> Using cached $(basename "$output")"
             return 0
         fi
 
+        size="$(wc -c < "$output" | tr -d '[:space:]')"
         echo "==> Removing suspicious cached $(basename "$output") (${size} bytes)"
         cup_path_remove_file "$output" 'suspicious dependency archive' || return 1
     fi
@@ -56,20 +53,6 @@ download_source() {
         cup_path_remove_directory_tree "$tmp_dir" 'dependency download directory' >/dev/null 2>&1 || true
         return 1
     fi
-    if [ "$size" -lt "$min_bytes" ]; then
-        echo "Error: downloaded $package archive is unexpectedly small: ${size} bytes." >&2
-        echo "URL: $url" >&2
-        echo "File: $tmp_output" >&2
-        if command -v file >/dev/null 2>&1; then
-            file "$tmp_output" >&2 || true
-        fi
-        echo "First bytes:" >&2
-        head -c 300 "$tmp_output" >&2 || true
-        echo >&2
-        cup_path_remove_directory_tree "$tmp_dir" 'dependency download directory' >/dev/null 2>&1 || true
-        return 1
-    fi
-
     if ! verify_source_checksum "$package" "$tmp_output"; then
         cup_path_remove_directory_tree "$tmp_dir" 'dependency download directory' >/dev/null 2>&1 || true
         return 1

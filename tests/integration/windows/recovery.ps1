@@ -8,14 +8,6 @@ param(
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 
-function Get-Sha256Lower {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
 function Install-AssetsFixture {
     param(
         [Parameter(Mandatory = $true)]
@@ -125,6 +117,40 @@ function Write-UpdateJournal {
     )
 }
 
+function Write-PackageJournal {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'remove')]
+        [string]$Operation,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Component,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TemporaryName
+    )
+
+    Write-Utf8NoBom -Path $Path -Lines @(
+        'format=1',
+        "operation=$Operation",
+        "component=$Component",
+        "tool=$Tool",
+        'host_platform=windows-x64',
+        'target_platform=windows-x64',
+        "package_version=$Version",
+        "temporary_name=$TemporaryName"
+    )
+}
+
 try {
     Initialize-TestEnvironment -Name "recovery" -ExecutablePath $CupExecutablePath
     Invoke-Cup -CommandArgs @("repair") | Out-Null
@@ -132,7 +158,7 @@ try {
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $statePath = Join-Path $cupRoot "state.txt"
     $transactionPath = Join-Path $cupRoot "transaction.txt"
-    $stagingName = "install-compiler-clang-windows-x64-windows-x64-22.1.5-recovery"
+    $stagingName = "install-compiler-clang-windows-x64-windows-x64-23.1.0-recovery"
     $stagingPath = Join-Path (Join-Path $cupRoot "staging") $stagingName
     $validState = Get-Content -LiteralPath $statePath
 
@@ -144,7 +170,7 @@ try {
         "tool=clang",
         "host_platform=windows-x64",
         "target_platform=windows-x64",
-        "package_version=22.1.5",
+        "package_version=23.1.0",
         "temporary_name=$stagingName"
     )
 
@@ -165,6 +191,72 @@ try {
     Write-Utf8NoBom -Path $statePath -Lines $validState
     Remove-Item -LiteralPath $transactionPath -Force
     Remove-Item -LiteralPath $stagingPath -Recurse -Force
+
+    # If state already committed an installation, repair completes the native
+    # Windows move from staging into the canonical package path.
+    New-TestPackage -Component 'compiler' -Tool 'clang' -Version '23.1.0' `
+        -Entries @('clang')
+    Invoke-Cup -CommandArgs @('install', 'compiler', 'clang@stable') | Out-Null
+    $installPath = Join-Path $cupRoot (
+        'components\compiler\clang\windows-x64\windows-x64\23.1.0')
+    $installStagingName =
+        'install-compiler-clang-windows-x64-windows-x64-23.1.0-recovery'
+    $installStaging = Join-Path (Join-Path $cupRoot 'staging') $installStagingName
+    Move-Item -LiteralPath $installPath -Destination $installStaging
+    Write-PackageJournal -Path $transactionPath -Operation install `
+        -Component compiler -Tool clang -Version '23.1.0' `
+        -TemporaryName $installStagingName
+
+    $installRepair = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $installRepair 'Recovered interrupted install transaction for clang@23.1.0.'
+    Assert-PathExists (Join-Path $installPath 'info.txt')
+    Assert-PathMissing $installStaging
+    Assert-PathMissing $transactionPath
+    Assert-CupHealthy
+
+    # If remove only staged a package while state still references it, repair
+    # rolls that native Windows move back into the installed location.
+    New-TestPackage -Component 'debugger' -Tool 'lldb' -Version '23.1.0' `
+        -Entries @('lldb')
+    Invoke-Cup -CommandArgs @('install', 'debugger', 'lldb@stable') | Out-Null
+    $removePath = Join-Path $cupRoot (
+        'components\debugger\lldb\windows-x64\windows-x64\23.1.0')
+    $removeStagingName =
+        'remove-debugger-lldb-windows-x64-windows-x64-23.1.0-recovery'
+    $removeStaging = Join-Path (Join-Path $cupRoot 'staging') $removeStagingName
+    Move-Item -LiteralPath $removePath -Destination $removeStaging
+    Write-PackageJournal -Path $transactionPath -Operation remove `
+        -Component debugger -Tool lldb -Version '23.1.0' `
+        -TemporaryName $removeStagingName
+
+    $removeRepair = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $removeRepair 'Recovered interrupted remove transaction for lldb@23.1.0.'
+    Assert-PathExists (Join-Path $removePath 'info.txt')
+    Assert-PathMissing $removeStaging
+    Assert-PathMissing $transactionPath
+    Assert-CupHealthy
+
+    # If a corrupt canonical directory races with the staged valid package,
+    # preserve the invalid evidence before restoring the state-owned package.
+    $conflictStagingName =
+        'remove-debugger-lldb-windows-x64-windows-x64-23.1.0-conflict'
+    $conflictStaging = Join-Path (Join-Path $cupRoot 'staging') $conflictStagingName
+    Move-Item -LiteralPath $removePath -Destination $conflictStaging
+    New-Item -ItemType Directory -Force -Path $removePath | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $removePath 'info.txt') -Lines @('corrupted package')
+    Write-PackageJournal -Path $transactionPath -Operation remove `
+        -Component debugger -Tool lldb -Version '23.1.0' `
+        -TemporaryName $conflictStagingName
+
+    $conflictRepair = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $conflictRepair 'Preserved invalid package path as'
+    Assert-Contains $conflictRepair 'Recovered interrupted remove transaction for lldb@23.1.0.'
+    Assert-Contains (
+        (Get-Content -LiteralPath (Join-Path $removePath 'info.txt') -Raw)
+    ) 'package.component=debugger'
+    Assert-PathMissing $conflictStaging
+    Assert-PathMissing $transactionPath
+    Assert-CupHealthy
 
     Write-Utf8NoBom -Path $transactionPath -Lines @("not-a-valid-journal")
     $before = (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash

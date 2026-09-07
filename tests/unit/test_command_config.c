@@ -12,11 +12,6 @@
 
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static ToolPreferences loaded;
 static ToolPreferences saved;
 static InstallDefault official;
@@ -34,8 +29,6 @@ static CupError load_result;
 static CupError save_result;
 static CupError resolve_result;
 static CupError safe_point_result;
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
     memset(&loaded, 0, sizeof(loaded));
@@ -65,11 +58,6 @@ static CupError begin_common(CommandContext *context, const char *target) {
                                                 target == NULL ? "linux-x64" : target));
     return begin_result;
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError command_context_begin(CommandContext *context, const char *target, SystemLockMode mode) {
     (void)mode;
@@ -218,11 +206,6 @@ static void seed_preference(const char *target, const char *component, const cha
     strcpy(loaded.items[0].scope.component, component);
     strcpy(loaded.items[0].tool, tool);
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_view_is_read_only(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_config(NULL, NULL, NULL, NULL));

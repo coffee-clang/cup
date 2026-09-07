@@ -144,12 +144,26 @@ static size_t build_metadata(const FixtureOptions *options, char *info, size_t i
                            "package.component=compiler\n"
                            "package.tool=clang\n"
                            "package.version=%s\n"
+                           "package.mode=self-contained\n"
+                           "package.formats=tar.xz,tar.gz,zip\n"
                            "platform.host=%s\n"
                            "platform.target=%s\n"
+                           "platform.host_triple=fixture-host-triple\n"
+                           "platform.target_triple=fixture-target-triple\n"
+                           "platform.family=fixture\n"
+                           "platform.runtime=fixture\n"
+                           "platform.thread_model=fixture\n"
+                           "build.environment=test\n"
+                           "build.source_policy=fixture\n"
+                           "source.primary.name=clang\n"
+                           "source.primary.version=%s\n"
+                           "source.primary.url=https://example.invalid/clang-%s.tar.xz\n"
                            "entry.clang=%s\n",
                            options->version,
                            options->host,
                            options->target,
+                           options->version,
+                           options->version,
                            strcmp(options->target, "windows-x64") == 0
                                ? "bin/clang.cmd"
                                : "bin/clang");
@@ -226,6 +240,13 @@ static void add_common_package(struct archive *archive,
             exit(2);
         }
         add_file(archive, path, windows_script, (size_t)written, 0644);
+    } else if (strcmp(options->mode, "safe-symlink") == 0) {
+        char target[1024];
+
+        join_path(target, sizeof(target), options->package_root, "bin/clang-22");
+        add_file(archive, target, posix_script, sizeof(posix_script) - 1, 0755);
+        join_path(path, sizeof(path), options->package_root, "bin/clang");
+        add_link(archive, path, "clang-22", 0);
     } else {
         join_path(path, sizeof(path), options->package_root, "bin/clang");
         add_file(archive, path, posix_script, sizeof(posix_script) - 1, 0755);
@@ -236,7 +257,8 @@ static void add_common_package(struct archive *archive,
 static int add_mode_entries(struct archive *archive, const FixtureOptions *options) {
     char path[1024];
 
-    if (strcmp(options->mode, "valid") == 0) {
+    if (strcmp(options->mode, "valid") == 0 ||
+        strcmp(options->mode, "safe-symlink") == 0) {
         return 1;
     }
     if (strcmp(options->mode, "extra-file") == 0) {

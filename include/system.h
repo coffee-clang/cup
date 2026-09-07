@@ -67,8 +67,9 @@ typedef struct {
 } SystemLock;
 
 /* Temporary exclusive authority used while one process hands an operation to another.
- * POSIX carries the original lock open-file description across exec. Windows uses a named
- * per-user kernel object because LockFileEx ownership cannot be transferred between processes. */
+ * POSIX carries the original lock open-file description across exec. Windows uses a named kernel
+ * object keyed by root-parent identity and canonical root slot because LockFileEx ownership cannot
+ * be transferred between processes. */
 typedef struct {
     intptr_t handle;
     int active;
@@ -116,7 +117,7 @@ void system_handoff_release(SystemHandoff *handoff);
 /* Report whether the backend needs root admission to stop for an in-flight handoff. POSIX
  * carries authority in cup.lock itself and reports inactive; Windows reports its external
  * authority. */
-CupError system_handoff_active(int *active);
+CupError system_handoff_active(const char *root, int *active);
 
 /* Resolve the running executable. POSIX temporary helpers can also unlink the exact running
  * pathname while the process continues; Windows uninstall instead uses deferred DELETE_ON_CLOSE
@@ -128,9 +129,6 @@ CupError system_unlink_running_executable(const char *path);
 
 /* Single-path filesystem operations. */
 CupError system_make_directory(const char *path);
-/* Validate or create every directory component without following links. */
-CupError system_check_directory_chain(const char *path, int allow_missing);
-CupError system_make_directory_chain(const char *path);
 /* Create exactly one final directory and report its durability boundary. */
 CupError system_create_directory_exclusive(const char *path,
                                            unsigned int mode,
@@ -206,12 +204,22 @@ CupError system_make_unique_temp_path(const char *directory,
                                       char *path,
                                       size_t path_size);
 
-/* Open one regular file without following links. Missing is reported separately. */
+/* Open one regular file without following links. Missing is reported separately. On
+ * CUP_OK with missing == 0, file is non-NULL and identity is a valid regular-file identity. */
 CupError system_open_regular_file(const char *path,
                                   FILE **file,
                                   SystemPathIdentity *identity,
                                   uint64_t *file_size,
                                   int *missing);
+/* Open a regular file reached through a safe relative path below a package root. POSIX may
+ * resolve package-owned symlinks, but the resolved object must remain physically beneath root;
+ * Windows retains the no-reparse traversal policy. */
+CupError system_open_regular_file_beneath(const char *root,
+                                          const char *relative_path,
+                                          FILE **file,
+                                          SystemPathIdentity *identity,
+                                          uint64_t *file_size,
+                                          int *missing);
 
 /* Path inspection and permissions. Inspection does not follow a final link; mutations that
  * require trusted traversal additionally reject link/reparse-point parent components. */
@@ -228,22 +236,13 @@ CupError system_is_executable(const char *path, int *is_executable);
 CupError system_set_read_only(const char *path, int read_only);
 CupError system_set_executable(const char *path, int executable);
 
-/* List direct children or recursively walk a tree without following links. */
+/* List direct children without following links. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata);
-CupError system_walk_directory(const char *path, SystemDirectoryCallback callback, void *userdata);
 
 /* Acquire and release a nonblocking advisory lock owned by the SystemLock handle. Exclusive
  * acquisition may create the lock file; shared acquisition is read-only and requires the file to
  * exist. */
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode);
-CupError system_lock_acquire_existing(SystemLock *lock,
-                                      const char *path,
-                                      SystemLockMode mode);
-CupError system_lock_get_identity(const SystemLock *lock, SystemPathIdentity *identity);
-CupError system_lock_read(const SystemLock *lock,
-                          void *buffer,
-                          size_t capacity,
-                          size_t *size);
 void system_lock_release(SystemLock *lock);
 
 #endif /* CUP_SYSTEM_H */

@@ -97,7 +97,7 @@ int registry_is_component(const char *component) {
 int registry_is_tool(const char *component, const char *tool) {
     size_t i;
 
-    if (text_is_empty(component) || text_is_empty(tool) || find_component_index(component) < 0) {
+    if (text_is_empty(component) || text_is_empty(tool)) {
         return 0;
     }
     for (i = 0; i < CUP_TOOL_COUNT; ++i) {

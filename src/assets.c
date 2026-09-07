@@ -37,6 +37,17 @@ static CupError inspect_regular_file(const char *path, AssetStatus *status) {
     return CUP_OK;
 }
 
+/* Classify an asset that exists below a missing/invalid trust prerequisite. A regular file is
+ * present but cannot be authenticated, while an absent file must remain distinguishable as missing. */
+static CupError inspect_untrusted_file(const char *path, AssetStatus *status) {
+    CupError err = inspect_regular_file(path, status);
+
+    if (err == CUP_OK && *status == CUP_ASSET_VALID) {
+        *status = CUP_ASSET_INVALID;
+    }
+    return err;
+}
+
 static CupError inspect_checksum_document(const char *path,
                                           const char *const *asset_names,
                                           size_t asset_count,
@@ -68,7 +79,6 @@ static CupError inspect_checksum_document(const char *path,
  * repair can report the exact failure. */
 typedef struct {
     char binary[MAX_PATH_LEN];
-    char helper[MAX_PATH_LEN];
     char package_catalog[MAX_PATH_LEN];
     char install_policy[MAX_PATH_LEN];
     char common_checksums[MAX_PATH_LEN];
@@ -80,9 +90,6 @@ static CupError resolve_installed_asset_paths(InstalledAssetPaths *paths) {
     CupError err;
 
     err = layout_get_binary_path(paths->binary, sizeof(paths->binary));
-    if (err == CUP_OK) {
-        err = layout_get_update_helper_path(paths->helper, sizeof(paths->helper));
-    }
     if (err == CUP_OK) {
         err = layout_get_package_catalog_path(paths->package_catalog,
                                               sizeof(paths->package_catalog));
@@ -132,29 +139,6 @@ static CupError inspect_binary_asset(const InstalledAssetPaths *paths,
         inspection->binary = CUP_ASSET_INVALID;
     }
     return err;
-}
-
-static CupError inspect_update_helper_asset(const InstalledAssetPaths *paths,
-                                            AssetsInspection *inspection) {
-    CupError err;
-    int executable;
-
-    /* The update helper is derived from the canonical executable immediately before use. A stale
-     * but executable regular copy is therefore harmless and must not invalidate the installed
-     * generation after a successful cup update. */
-    err = inspect_regular_file(paths->helper, &inspection->helper);
-    if (err != CUP_OK || inspection->helper != CUP_ASSET_VALID) {
-        return err;
-    }
-
-    err = system_is_executable(paths->helper, &executable);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (!executable) {
-        inspection->helper = CUP_ASSET_INVALID;
-    }
-    return CUP_OK;
 }
 
 static CupError inspect_catalog_asset(const InstalledAssetPaths *paths,
@@ -225,7 +209,7 @@ static CupError inspect_installed_assets(AssetsInspection *inspection) {
     ChecksumDocument common_document;
     ChecksumDocument platform_document;
     CupError err;
-    const char *platform_assets[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
+    PlatformChecksumRequiredNames platform_required;
 
     checksum_document_init(&common_document);
     checksum_document_init(&platform_document);
@@ -236,29 +220,46 @@ static CupError inspect_installed_assets(AssetsInspection *inspection) {
         goto done;
     }
 
-    platform_assets[0] = paths.binary_asset;
-    platform_assets[1] = CUP_RELEASE_METADATA_FILENAME;
-    platform_assets[2] = CUP_COMMON_CHECKSUMS_FILENAME;
+    err = assets_platform_checksum_required_names(&platform_required);
+    if (err != CUP_OK || strcmp(platform_required.binary, paths.binary_asset) != 0) {
+        err = err != CUP_OK ? err : CUP_ERR_VALIDATION;
+        goto done;
+    }
+
+    /* The platform checksum document is the trust prerequisite for the common generation. */
+    err = inspect_checksum_document(paths.platform_checksums,
+                                    platform_required.names,
+                                    CUP_PLATFORM_CHECKSUM_ASSET_COUNT,
+                                    &inspection->platform_checksums,
+                                    &platform_document);
+    if (err != CUP_OK) {
+        goto done;
+    }
+    if (inspection->platform_checksums != CUP_ASSET_VALID) {
+        err = inspect_untrusted_file(paths.common_checksums, &inspection->common_checksums);
+        if (err == CUP_OK) {
+            err = inspect_untrusted_file(paths.binary, &inspection->binary);
+        }
+        if (err == CUP_OK) {
+            err = inspect_untrusted_file(paths.package_catalog, &inspection->catalog);
+        }
+        if (err == CUP_OK) {
+            err = inspect_untrusted_file(paths.install_policy, &inspection->install_policy);
+        }
+        goto done;
+    }
 
     err = inspect_checksum_document(paths.common_checksums,
                                     CUP_COMMON_CHECKSUM_ASSETS,
                                     CUP_COMMON_CHECKSUM_ASSET_COUNT,
                                     &inspection->common_checksums,
                                     &common_document);
-    if (err == CUP_OK) {
-        err = inspect_checksum_document(paths.platform_checksums,
-                                        platform_assets,
-                                        sizeof(platform_assets) / sizeof(platform_assets[0]),
-                                        &inspection->platform_checksums,
-                                        &platform_document);
-    }
     if (err != CUP_OK) {
         goto done;
     }
 
-    /* The platform document authenticates the exact common document used below. */
-    if (inspection->common_checksums == CUP_ASSET_VALID &&
-        inspection->platform_checksums == CUP_ASSET_VALID) {
+    /* The valid platform document authenticates the exact common document used downstream. */
+    if (inspection->common_checksums == CUP_ASSET_VALID) {
         int valid;
 
         err = checksum_document_verify_file(&platform_document,
@@ -267,22 +268,21 @@ static CupError inspect_installed_assets(AssetsInspection *inspection) {
                                             &valid);
         if (err == CUP_OK && !valid) {
             inspection->common_checksums = CUP_ASSET_INVALID;
-            inspection->catalog = CUP_ASSET_INVALID;
-            inspection->install_policy = CUP_ASSET_INVALID;
         }
     }
     if (err != CUP_OK) {
         goto done;
     }
+    if (inspection->common_checksums != CUP_ASSET_VALID) {
+        inspection->catalog = CUP_ASSET_INVALID;
+        inspection->install_policy = CUP_ASSET_INVALID;
+    }
 
     err = inspect_binary_asset(&paths, &platform_document, inspection);
-    if (err == CUP_OK) {
-        err = inspect_update_helper_asset(&paths, inspection);
-    }
-    if (err == CUP_OK) {
+    if (err == CUP_OK && inspection->common_checksums == CUP_ASSET_VALID) {
         err = inspect_catalog_asset(&paths, &common_document, inspection);
     }
-    if (err == CUP_OK) {
+    if (err == CUP_OK && inspection->common_checksums == CUP_ASSET_VALID) {
         err = inspect_install_policy_asset(&paths, &common_document, inspection);
     }
 
@@ -395,10 +395,29 @@ CupError assets_binary_asset_name(char *name, size_t size) {
     if (err != CUP_OK) {
         return err;
     }
-    if (strcmp(host, "windows-x64") == 0) {
-        return text_format(name, size, "cup-%s.exe", host);
-    }
+#if defined(_WIN32)
+    return text_format(name, size, "cup-%s.exe", host);
+#else
     return text_format(name, size, "cup-%s", host);
+#endif
+}
+
+
+CupError assets_platform_checksum_required_names(PlatformChecksumRequiredNames *required) {
+    CupError err;
+
+    if (required == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    memset(required, 0, sizeof(*required));
+    err = assets_binary_asset_name(required->binary, sizeof(required->binary));
+    if (err != CUP_OK) {
+        return err;
+    }
+    required->names[0] = required->binary;
+    required->names[1] = CUP_RELEASE_METADATA_FILENAME;
+    required->names[2] = CUP_COMMON_CHECKSUMS_FILENAME;
+    return CUP_OK;
 }
 
 CupError assets_platform_checksums_name(char *name, size_t size) {
@@ -408,5 +427,5 @@ CupError assets_platform_checksums_name(char *name, size_t size) {
     if (err != CUP_OK) {
         return err;
     }
-    return text_format(name, size, "SHA256SUMS.%s", host);
+    return text_format(name, size, CUP_PLATFORM_CHECKSUMS_FILENAME_TEMPLATE, host);
 }

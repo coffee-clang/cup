@@ -16,11 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char installed_path[MAX_PATH_LEN];
 static CupError layout_error;
@@ -29,8 +24,6 @@ static int installed_exists;
 static int development_exists;
 static int exists_calls;
 static int exists_error_call;
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
     layout_error = CUP_OK;
@@ -44,11 +37,6 @@ void setUp(void) {
 
 void tearDown(void) {
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 int download_insecure_loopback_is_allowed(const char *url) {
     (void)url;
@@ -221,11 +209,6 @@ static void assert_rejected(const char *name, const char *body) {
     TEST_ASSERT_TRUE(snprintf(catalog, sizeof(catalog), "format=1\n%s", body) > 0);
     assert_rejected_raw(name, catalog);
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_load_queries(void) {
     PackageCatalog catalog;

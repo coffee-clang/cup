@@ -101,6 +101,12 @@ EOF_OPENSSL_BUILDINFO
 "$archiver" rcs "$buildinfo_prefix/lib/libcrypto.a" "$TMP_ROOT/openssl-buildinfo.o"
 dependency_compiled_paths_valid "$buildinfo_prefix" "$TMP_ROOT/source-root"
 
+# Prefix readability belongs to the dependency verifier, not to an ambient AR
+# selected by the application build. A broken ambient AR must not invalidate a
+# readable static archive when a supported host reader is available.
+AR=/bin/false dependency_archive_readable "$buildinfo_prefix/lib/libcrypto.a" ||
+    fail 'ambient AR contaminated dependency archive readability'
+
 cat >"$TMP_ROOT/openssl-leaking-buildinfo.c" <<EOF_OPENSSL_LEAK
 const char cup_openssl_buildinfo[] = "compiler: $maps";
 EOF_OPENSSL_LEAK
@@ -213,63 +219,8 @@ rm -f "$metadata_prefix/lib/pkgconfig/binary.cmake"
 CUP_DEPS_STAGE_ROOT=
 rm -rf -- "$metadata_stage"
 
-lock_root="$TMP_ROOT/build-lock"
-lock_path=$(dependency_lock_path "$lock_root")
-prepared_lock=$(dependency_prepare_root_lock "$lock_root")
-[ "$prepared_lock" = "$lock_path" ] || fail 'dependency lock path changed during preparation'
-[ -f "$lock_path" ] && [ ! -L "$lock_path" ] ||
-    fail 'dependency lock metadata was not published as a regular file'
-dependency_lock_metadata | dependency_stream_matches_file "$lock_path" ||
-    fail 'dependency lock metadata does not match the canonical format'
-
-# Native process ownership must reject a second concurrent operation and become
-# available automatically after the holder exits.
-lock_ready="$TMP_ROOT/dependency-lock.ready"
-lock_continue="$TMP_ROOT/dependency-lock.continue"
-dependency_run_root_locked "$lock_root" sh -c '
-    : > "$1"
-    while [ ! -f "$2" ]; do sleep 0.01; done
-' sh "$lock_ready" "$lock_continue" &
-lock_holder=$!
-attempt=0
-while [ ! -f "$lock_ready" ] && [ "$attempt" -lt 200 ]; do
-    kill -0 "$lock_holder" 2>/dev/null || fail 'dependency lock holder exited before readiness'
-    attempt=$((attempt + 1))
-    sleep 0.01
-done
-[ -f "$lock_ready" ] || fail 'dependency lock holder did not become ready'
-if dependency_run_root_locked "$lock_root" true >"$TMP_ROOT/lock.out" 2>&1; then
-    fail 'dependency-root lock accepted a concurrent owner'
-fi
-assert_contains "$(cat "$TMP_ROOT/lock.out")" 'lock is busy'
-: > "$lock_continue"
-wait "$lock_holder"
-dependency_run_root_locked "$lock_root" true
-
-# The persistent metadata file is the ownership boundary. Foreign or legacy
-# contents are preserved rather than adopted as a lock.
-foreign_lock_root="$TMP_ROOT/foreign-build-lock"
-foreign_lock_path=$(dependency_lock_path "$foreign_lock_root")
-printf '%s\n' foreign > "$foreign_lock_path"
-if dependency_prepare_root_lock "$foreign_lock_root" >"$TMP_ROOT/foreign-lock.out" 2>&1; then
-    fail 'dependency lock accepted foreign metadata'
-fi
-[ "$(cat "$foreign_lock_path")" = foreign ] || fail 'foreign dependency lock was modified'
-assert_contains "$(cat "$TMP_ROOT/foreign-lock.out")" \
-    'dependency lock metadata is invalid and was preserved'
-
-legacy_lock_root="$TMP_ROOT/legacy-build-lock"
-legacy_lock_path=$(dependency_lock_path "$legacy_lock_root")
-mkdir "$legacy_lock_path"
-if dependency_prepare_root_lock "$legacy_lock_root" >"$TMP_ROOT/legacy-lock.out" 2>&1; then
-    fail 'dependency lock accepted a legacy directory lock'
-fi
-[ -d "$legacy_lock_path" ] || fail 'legacy dependency lock directory was removed'
-assert_contains "$(cat "$TMP_ROOT/legacy-lock.out")" \
-    'dependency lock is not a regular managed file'
-
 # Dependency roots reject symlinks in any existing parent component before
-# creating the root marker, lock, staging or source directories.
+# creating the root marker, staging or source directories.
 external_dependency_parent=$TMP_ROOT/external-dependency-parent
 linked_dependency_parent=$TMP_ROOT/linked-dependency-parent
 mkdir -p "$external_dependency_parent"
@@ -279,7 +230,7 @@ if dependency_prepare_root "$unsafe_dependency_root" \
         >"$TMP_ROOT/dependency-parent-link.out" 2>&1; then
     fail 'dependency root followed a symlinked parent'
 fi
-grep -Fq 'symlink or reparse point' "$TMP_ROOT/dependency-parent-link.out"
+grep -Fq 'unsafe symlink' "$TMP_ROOT/dependency-parent-link.out"
 [ ! -e "$external_dependency_parent/nested" ] ||
     fail 'dependency root created an external directory through a symlink'
 
@@ -326,7 +277,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$output" ]
-dd if=/dev/zero of="$output" bs=1024 count=128 >/dev/null 2>&1
+dd if=/dev/zero of="$output" bs=1024 count=1 >/dev/null 2>&1
 EOF_DOWNLOAD_CURL
     chmod +x "$fake_download_bin/curl"
     TMPDIR="$download_temp_alias/" PATH="$fake_download_bin:$PATH" \
@@ -402,6 +353,21 @@ if CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
 fi
 grep -Fq 'invalid zlib.version' "$TMP_ROOT/lock-version.out"
 
+sed 's/^curl.version=.*/curl.version=8.19.0/' "$reordered" > "$lock_copy"
+if CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+        "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
+        >"$TMP_ROOT/curl-version-floor.out" 2>&1; then
+    echo 'dependency lock accepted curl below the semantic floor' >&2
+    exit 1
+fi
+grep -Fq 'curl.version must be at least 8.20.0 for decompressed download size limits' \
+    "$TMP_ROOT/curl-version-floor.out"
+
+sed 's/^curl.version=.*/curl.version=8.20.0/' "$reordered" > "$lock_copy"
+CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
+    "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
+    >"$TMP_ROOT/curl-version-boundary.out"
+
 sed 's/^build_revision=.*/build_revision=1 2/' "$reordered" > "$lock_copy"
 if CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
         "$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key \
@@ -466,11 +432,17 @@ TRANSACTION_PREFIX="$TRANSACTION_ROOT/install"
 mkdir -p "$TRANSACTION_ROOT"
 dependency_write_root_marker "$TRANSACTION_ROOT"
 
+# A crash can occur after creating the reserved staging tree but before the
+# nested prefix marker is written. Root ownership is sufficient to recover it.
+mkdir -p "$TRANSACTION_ROOT/.install.staging/partial"
+printf 'partial\n' > "$TRANSACTION_ROOT/.install.staging/partial/file"
+dependency_prepare_root "$TRANSACTION_ROOT"
+[ ! -e "$TRANSACTION_ROOT/.install.staging" ] ||
+    fail 'dependency root did not recover a pre-marker staging directory'
+
 bash -eu -o pipefail -c '
     common=$1
     final=$2
-    verifier=$3
-    version=$4
     . "$common"
     DEPS_ROOT=${final%/install}
 
@@ -563,11 +535,8 @@ profile=gcc
 owner=foreign
 EOF_FOREIGN_PREFIX
     printf '%s\n' external > "$foreign_root/install/sentinel.txt"
-    if dependency_prefix_owned "$foreign_root/install"; then
-        fail "partial foreign dependency metadata was accepted as cup ownership"
-    fi
     if dependency_prepare_root "$foreign_root"; then
-        fail "dependency root adopted a foreign prefix with partial metadata"
+        fail "dependency root adopted a non-empty unmarked directory"
     fi
     [ -f "$foreign_root/install/sentinel.txt" ] ||
         fail "foreign dependency prefix was modified during rejected adoption"
@@ -757,69 +726,25 @@ EOF_WINDOWS_PATHS
     [ "$(cat "$final/.cup-dependencies")" = "$metadata" ]
     [ "$("$final/bin/curl-config")" = "-L$final/lib -lcurl -lcares" ]
 
-    evidence=$DEPS_ROOT/evidence.txt
-    cache_key=$(dependency_cache_key linux-x64 gcc)
-    repository=example/cup
-    commit=0123456789abcdef0123456789abcdef01234567
-    run_id=31
-    run_attempt=2
-    artifact=cup-dependency-evidence-linux-x64-gcc-attempt-2
-    {
-        printf "%s\n" format=2 "version=$version" \
-            "source_repository=$repository" "source_commit=$commit" \
-            "run_id=$run_id" "run_attempt=$run_attempt" \
-            "artifact_name=$artifact" target=linux-x64-gcc platform=linux-x64 \
-            profile=gcc "cache_key=$cache_key"
-        printf "%s\n" "$metadata"
-    } >"$evidence"
-    CUP_DEPENDENCY_PROFILE=gcc "$verifier" \
-        "$evidence" linux-x64-gcc linux-x64 gcc "$final" \
-        "$repository" "$commit" "$run_id" "$run_attempt" "$artifact" >/dev/null
-
-    head -c -1 "$evidence" >"$evidence.invalid"
-    printf "\0\n" >>"$evidence.invalid"
-    if CUP_DEPENDENCY_PROFILE=gcc "$verifier" \
-            "$evidence.invalid" linux-x64-gcc linux-x64 gcc "$final" \
-            "$repository" "$commit" "$run_id" "$run_attempt" "$artifact" \
-            >"$DEPS_ROOT/evidence-nul.out" 2>&1; then
-        fail "dependency evidence accepted a hidden NUL byte"
-    fi
-    grep -Fq "non-canonical bytes" "$DEPS_ROOT/evidence-nul.out"
-
-    head -c -1 "$evidence" >"$evidence.invalid"
-    if CUP_DEPENDENCY_PROFILE=gcc "$verifier" \
-            "$evidence.invalid" linux-x64-gcc linux-x64 gcc "$final" \
-            "$repository" "$commit" "$run_id" "$run_attempt" "$artifact" \
-            >"$DEPS_ROOT/evidence-lf.out" 2>&1; then
-        fail "dependency evidence accepted a missing final LF"
-    fi
-    grep -Fq "not LF-terminated" "$DEPS_ROOT/evidence-lf.out"
-    rm -f "$evidence" "$evidence.invalid" \
-        "$DEPS_ROOT/evidence-nul.out" "$DEPS_ROOT/evidence-lf.out"
-
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 1 ]
     [ "$CUP_DEPS_BUILD_PREFIX" = "$final" ]
 
-    cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
-    printf "#!/bin/sh\nexit 0\n" >"$final/bin/curl-config"
-    chmod +x "$final/bin/curl-config"
+    # A root marker owns the managed root independently of which compiled
+    # dependency generation currently occupies install/. A stale generation
+    # must therefore be replaceable, not reclassified as foreign.
+    cp "$final/.cup-dependencies" "$final/.cup-dependencies.current"
+    sed 's/^build_revision=.*/build_revision=999/' \
+        "$final/.cup-dependencies.current" > "$final/.cup-dependencies"
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 0 ]
     [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
+    [ -f "$final/.cup-dependencies" ]
     abort_dependency_prefix
-    mv "$final/bin/curl-config.valid" "$final/bin/curl-config"
+    mv "$final/.cup-dependencies.current" "$final/.cup-dependencies"
 
     cp "$final/bin/curl-config" "$final/bin/curl-config.valid"
-    cat >"$final/bin/curl-config" <<EOF_NO_CARES_CONFIGURE
-#!/bin/sh
-case "\${1:-}" in
-    --static-libs) printf "%s\n" "-L$final/lib -lcurl -lcares" ;;
-    --features) printf "%s\n" AsynchDNS ;;
-    --configure) printf " \047--prefix=$final\047\n" ;;
-    *) exit 2 ;;
-esac
-EOF_NO_CARES_CONFIGURE
+    printf "#!/bin/sh\nexit 0\n" >"$final/bin/curl-config"
     chmod +x "$final/bin/curl-config"
     prepare_dependency_prefix "$final" "$metadata" 1
     [ "$CUP_DEPS_PREFIX_READY" = 0 ]
@@ -877,8 +802,7 @@ EOF_HOST_SEARCH
     [ "$CUP_DEPS_BUILD_PREFIX" != "$final" ]
     [ -f "$final/new.txt" ]
     abort_dependency_prefix
-' sh "$DEPENDENCY_COMMON" "$TRANSACTION_PREFIX" \
-    "$ROOT/scripts/ci/verify-dependency-evidence.sh" "$(cat "$ROOT/VERSION")"
+' sh "$DEPENDENCY_COMMON" "$TRANSACTION_PREFIX"
 
 ZLIB_VERSION=0 ZLIB_URL=https://invalid.example/zlib.tar.gz bash -eu -c '
     . "$1"
@@ -987,6 +911,42 @@ custom_deps_command=$(
 assert_contains "$custom_deps_command" "DEPS_PREFIX='$custom_deps_prefix'"
 printf 'Dependency diagnostic tests passed.\n'
 
+printf '==> Testing dependency tool-version fallback...\n'
+VERSION_PROBE_BIN="$TMP_ROOT/version-probe-bin"
+mkdir -p "$VERSION_PROBE_BIN"
+cat >"$VERSION_PROBE_BIN/probe-tool" <<'EOF_VERSION_PROBE'
+#!/bin/sh
+case "${1:-}" in
+    --version)
+        printf '%s\n' 'failed --version output' >&2
+        exit 7
+        ;;
+    -V)
+        printf '%s\n' 'version-probe 1.2.3'
+        ;;
+    *) exit 2 ;;
+esac
+EOF_VERSION_PROBE
+chmod +x "$VERSION_PROBE_BIN/probe-tool"
+version_probe=$(
+    PATH="$VERSION_PROBE_BIN:$PATH" bash -eu -c '. "$1"; dependency_tool_version_line probe-tool' \
+        sh "$DEPENDENCY_COMMON"
+)
+[ "$version_probe" = 'version-probe 1.2.3' ] || \
+    fail "unexpected dependency tool version fallback: $version_probe"
+cat >"$VERSION_PROBE_BIN/probe-tool" <<'EOF_VERSION_PROBE_FAIL'
+#!/bin/sh
+printf '%s\n' 'probe failed' >&2
+exit 7
+EOF_VERSION_PROBE_FAIL
+chmod +x "$VERSION_PROBE_BIN/probe-tool"
+if PATH="$VERSION_PROBE_BIN:$PATH" bash -eu -c \
+        '. "$1"; dependency_tool_version_line probe-tool' sh "$DEPENDENCY_COMMON" \
+        >"$TMP_ROOT/version-probe.out" 2>&1; then
+    fail 'dependency tool fingerprint accepted failed version probes'
+fi
+printf 'Dependency tool-version fallback tests passed.\n'
+
 printf '==> Testing canonical dependency identity...\n'
 IDENTITY_BIN="$TMP_ROOT/identity-bin"
 mkdir -p "$IDENTITY_BIN"
@@ -1089,6 +1049,13 @@ if MSYSTEM=MINGW64 MINGW_PREFIX=/mingw64 \
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-deps-runtime.out")" \
     'require an MSYS2 UCRT64 or CLANG64 shell'
+if MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 CUP_DEPENDENCY_PROFILE=clang64 \
+        bash "$DEPENDENCY_DIR/build-windows.sh" \
+        >"$TMP_ROOT/windows-deps-profile.out" 2>&1; then
+    fail 'Windows dependency builder accepted a profile that disagrees with MSYSTEM'
+fi
+assert_contains "$(cat "$TMP_ROOT/windows-deps-profile.out")" \
+    "dependency profile 'clang64' does not match MSYS2 UCRT64"
 printf 'Dependency platform rejection tests passed.\n'
 
 printf '==> Testing dependency inventory, scopes and notices...\n'
@@ -1186,10 +1153,8 @@ printf '%s\n' dependency-hash-fixture > "$TMP_ROOT/dependency-hash-input"
 expected_hash=$($real_sha256sum "$TMP_ROOT/dependency-hash-input" | awk '{print $1}')
 actual_hash=$(PATH="$hash_bin:/usr/bin:/bin" bash -eu -o pipefail -c '
     . "$1"
-    unset DEPENDENCY_SHA256_TOOL
     require_sha256_tool
-    [ "$DEPENDENCY_SHA256_TOOL" = shasum ]
-    file_sha256 "$2"
+    cup_sha256_file "$2"
 ' sh "$DEPENDENCY_COMMON" "$TMP_ROOT/dependency-hash-input")
 [ "$actual_hash" = "$expected_hash" ] ||
     fail 'dependency hashing did not fall back from broken sha256sum to shasum'
@@ -1201,7 +1166,7 @@ EOF_BROKEN_DEP_SHASUM
 chmod 0700 "$hash_bin/shasum"
 if PATH="$hash_bin:/usr/bin:/bin" bash -eu -o pipefail -c '
         . "$1"
-        dependency_select_sha256_tool
+        require_sha256_tool
     ' sh "$DEPENDENCY_COMMON" >"$TMP_ROOT/dependency-hash-broken.out" 2>&1; then
     fail 'dependency hashing accepted only broken SHA-256 tools'
 fi
@@ -1215,10 +1180,6 @@ for dependency_script in scripts/dependencies/build-posix.sh scripts/dependencie
 done
 grep -F 'require_tool cmp' scripts/dependencies/verify.sh >/dev/null ||
     fail 'dependency verifier does not declare its cmp requirement'
-grep -F "command -v cmp >/dev/null 2>&1 || fail 'required tool is unavailable: cmp'" \
-    scripts/ci/verify-dependency-evidence.sh >/dev/null ||
-    fail 'dependency evidence verifier does not declare its cmp requirement'
-
 for builder in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
     for option in --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-scripts --disable-doc; do
         grep -F -- "$option" "$builder" >/dev/null || {

@@ -197,14 +197,14 @@ The public POSIX and PowerShell installers only transport and verify release
 files. They download one release generation to a private directory and call:
 
 ```text
-cup --internal-bootstrap <verified-source-directory>
+cup --internal-bootstrap <verified-source-directory> <selected-base>
 ```
 
 The hidden command:
 
 1. verifies that the running executable belongs to the downloaded generation;
 2. validates the catalog, installation policy and checksums;
-3. selects the cup root;
+3. selects `.cup` or `.coffee-cup` below the supplied base and freezes that root;
 4. acquires the normal exclusive lock;
 5. refuses an existing transaction file;
 6. prepares the runtime directories;
@@ -291,7 +291,7 @@ The handoff is implemented differently only where the operating system requires 
 
 ```text
 POSIX    parent and child retain references to the same flock open-file description
-Windows  parent and child retain a named per-user kernel authority outside <cup-root>
+Windows  parent and child retain a named authority keyed by the root parent identity and canonical `.cup`/`.coffee-cup` slot
 ```
 
 The child waits for the inherited parent-lifetime object to close rather than
@@ -442,12 +442,12 @@ removes only the exact token-bound helper regular file by filesystem identity.
 Failure to prove or remove that file keeps the journal as a blocker.
 
 ```text
-<cup-root> -> <home>/.cup-uninstall-<token>
+<cup-root> -> <root-parent>/.cup-uninstall-<token>
 ```
 
 On POSIX the inherited authority is the original flock open-file description.
-On Windows it is a named per-user kernel object outside the root; normal root
-admission checks that authority before inspecting a candidate root and again
+On Windows it is a named kernel object keyed by the native identity of the root parent and
+the canonical `.cup`/`.coffee-cup` slot; normal root admission checks that authority before inspecting a candidate root and again
 after acquiring `cup.lock`. The Windows move retries only bounded transient
 sharing failures. All detach and cleanup filesystem work is native C on both
 platforms.

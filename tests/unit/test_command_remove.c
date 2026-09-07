@@ -25,11 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static CupError parse_result;
 static CupError context_result;
 static int context_begin_calls;
@@ -63,8 +58,6 @@ static int plan_build_calls;
 static int plan_apply_calls;
 static int interrupt_calls;
 static size_t installed_match_count;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -113,11 +106,6 @@ void setUp(void) {
 
 void tearDown(void) {
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError package_request_parse(const char *component, const char *entry, PackageRequest *request) {
     TEST_ASSERT_NOT_NULL(component);
@@ -513,11 +501,6 @@ static char *capture_ambiguous_remove(CupError *result) {
     TEST_ASSERT_EQUAL_INT(0, fclose(capture));
     return output;
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_remove_prepare_fail(void) {
     parse_result = CUP_ERR_INVALID_INPUT;

@@ -61,9 +61,13 @@ consume the same open file that passed size, digest and archive checks. Journal
 tests keep physical file handling in `runtime_journal` and test the separate
 schema/recovery rules in their own modules.
 
-Unit binaries are declared in `tests/build/unit.sh`. The runner compares the
-built directory against that declaration before execution, so stale or missing
-binaries cannot be silently ignored.
+Unit binaries are registered explicitly in `tests/build/unit.sh`. The builder
+compiles them into a fresh staging directory, rejects duplicate output names and
+publishes the directory only after every applicable suite has compiled. The
+runner then executes every `test_*` executable in that published directory and
+rejects an empty or non-executable set. The repository structure test separately
+checks that every unit-test source is registered by the builder, so completeness
+does not depend on parsing the build script at runtime.
 
 Build and run them with:
 
@@ -100,7 +104,9 @@ uninstall
 wrappers
 ```
 
-POSIX also has the initial bootstrap scenario. Windows has additional native
+POSIX and Windows bootstrap coverage includes canonical base selection, complete-root
+relocation and reinstall at the relocated base. Installer/release tests also cover PATH as
+convenience rather than root authority. Windows has additional native
 filesystem/reparse-point coverage. These differences are intentional because
 shell modes, signals, process handling and reparse points do not have one common
 implementation.
@@ -174,12 +180,12 @@ one. Its checks cover:
 
 - repository structure and unsupported tooling;
 - controlled test environments;
-- safe build/dependency path handling and deterministic race fixtures;
-- dependency source lock, native dependency-root locking, build recipes and prefix compatibility;
+- build/dependency path safety, ownership markers and publication boundaries;
+- dependency source lock, transactions, build recipes and prefix compatibility;
 - CA-bundle metadata and generation;
 - Make targets and build configuration;
 - readable numeric GitHub Action version refs and workflow permissions;
-- dependency, source and evidence-index formats;
+- dependency metadata and source/release build-identity matching;
 - native binary inspection rules;
 - version generation and official-version policy;
 - installer behavior and supported shell syntax;
@@ -209,7 +215,9 @@ It also runs the generated installer while optional text-processing utilities
 are blocked. The scenarios check:
 
 - canonical release versions and checksum text;
-- curl transport policy, prerequisites and post-download size rejection;
+- curl transport policy, prerequisites and post-download size rejection,
+  including a real gzip response whose decoded body exceeds the configured
+  limit;
 - signal exit status;
 - the exact root and version reported after bootstrap;
 - permissions, ownership marker and cleanup results.
@@ -232,18 +240,16 @@ probe records both the CUP error and the native Windows error without changing
 the production timeout or handoff policy.
 
 The Windows uninstall integration suite keeps detached managed roots and
-temporary helper files as separate object classes. Its deliberate post-detach
-cleanup failure uses a shallow ordinary tree with a pathname beyond CUP's
-internal path bound, avoiding ACL, open-handle, reparse-point, timing and deep
-recursion dependencies. The expected result is retained detached payload plus
-its token-bound transaction evidence, while temporary-helper cleanup still
-completes. Timeout diagnostics distinguish a lingering exact helper process from
-the handle-only cleanup carrier.
+temporary helper files as separate object classes. It exercises successful
+handoff, detached cleanup and helper lifetime on the native platform. Filesystem
+failure ordering and preservation of transaction data are tested at the unit
+boundary where those failure conditions can be produced deterministically,
+rather than by constructing an artificial over-limit directory tree in an
+end-to-end test.
 
 Linux sanitizer unit and integration tests enable LeakSanitizer together with
-AddressSanitizer and UndefinedBehaviorSanitizer. Process-heavy fixtures that may
-spawn descendants use a test-only process-group boundary so timeout cleanup
-terminates the whole fixture tree rather than weakening leak coverage.
+AddressSanitizer and UndefinedBehaviorSanitizer. Long-running fixtures rely on
+the normal bounded waits and cleanup paths provided by their test owners.
 
 ## Coverage
 
@@ -367,11 +373,11 @@ other operating systems.
 
 The workflows have separate responsibilities:
 
-- `dependencies.yml` prepares or restores each native dependency prefix;
-- `tests.yml` runs repository checks, source tests, evidence indexing, coverage
-  and sanitizers;
-- `release.yml` accepts evidence from one successful Tests run, builds official
-  candidates, tests those candidates natively and publishes them;
+- `dependencies.yml` prepares or restores native dependency prefixes;
+- `tests.yml` runs repository checks, source tests, coverage and sanitizers and
+  publishes the source-tested build identity for each release platform;
+- `release.yml` selects one successful Tests run, builds official candidates,
+  checks their build identity, tests those candidates natively and publishes them;
 - `debug.yml` creates diagnostic artifacts;
 - `static.yml` belongs to the protected website/Pages surface and is not part of
   cup source or release validation.
@@ -379,29 +385,29 @@ The workflows have separate responsibilities:
 The Tests workflow runs on pushes to `main`, pull requests and manual dispatch.
 The final gate checks the result of every required job directly.
 
-### Evidence used by releases
+### Build identity used by releases
 
-A successful Tests run produces dependency evidence for the six dependency
-profiles and source evidence for the five supported platform identifiers. The
-single inventory in `scripts/ci/tests-evidence-artifacts.sh` defines the
-release-authorizing artifact set.
+Each source job in a successful Tests run publishes the canonical
+`build-config.txt` that was exercised for one of the five release platforms. The
+artifact name contains the Tests run attempt. POSIX source jobs copy the primary
+build config out of the build tree before any optional secondary compiler build,
+so the uploaded file continues to describe the build that authorizes Release.
 
-After those jobs succeed, the evidence-index job records the GitHub artifact ID,
-name and SHA-256 digest for the current run attempt. Release later selects one
-successful Tests run for the exact commit and downloads the listed artifacts by
-ID. Repository, commit, run ID, run attempt, artifact name and local file schema
-are checked before any official candidate is built.
+Release selects one successful Tests run for the exact source commit, fixes its
+run ID and attempt, and downloads the corresponding attempt-bound build config
+for each platform. `scripts/ci/verify-source-build-config.sh` validates the
+source-development and candidate-release schemas and roles, then requires the
+same dependency prefix format/profile/build revision/source-lock/toolchain
+identity and the same compiler command, normalized target and numeric version.
+Windows also requires the same resource-compiler command, normalized target and
+numeric version. Paths, full version strings and flags remain useful diagnostic
+fields but are not cross-runner equality keys.
 
-When Release supplies its candidate build config, the verifier also requires
-the tested compiler command, normalized target and numeric version, plus the
-dependency source lock and toolchain fingerprint. Raw targets, executable paths
-and full vendor version lines are retained for diagnostics but are not compared
-across native runners. Windows applies the same rule to the resource compiler.
-
-A rerun attempt is a different evidence generation. Files from two attempts are
-not combined. To create a complete new evidence generation, use **Re-run all jobs**;
-a partial job rerun intentionally fails closed instead of reusing evidence from the
-previous attempt.
+Dependency prefixes are not cross-workflow authorization artifacts. Every
+consumer validates its restored prefix with the canonical dependency verifier.
+A partial rerun of Tests that does not rerun a source job produces no
+source-build-config artifact for the new attempt, so Release fails closed. Use a
+full Tests rerun when a new attempt must authorize a release.
 
 ## Timeouts
 

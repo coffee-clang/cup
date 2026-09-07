@@ -12,6 +12,10 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 PROJECT_ROOT=$ROOT
 # shellcheck source=../lib/path-safety.sh
 . "$ROOT/scripts/lib/path-safety.sh"
+# shellcheck source=../lib/text-file.sh
+. "$ROOT/scripts/lib/text-file.sh"
+# shellcheck source=../lib/sha256.sh
+. "$ROOT/scripts/lib/sha256.sh"
 PEM=${CUP_CA_CERT_FILE:-$ROOT/certs/cacert.pem}
 META=${CUP_CA_META_FILE:-$ROOT/certs/cacert.meta}
 NOW_EPOCH=${CUP_CA_CURRENT_EPOCH:-$(date +%s)}
@@ -35,14 +39,6 @@ fail() {
     exit 1
 }
 
-reject_nul_or_cr() {
-    file=$1
-    label=$2
-    if od -An -v -t x1 "$file" | awk '{ for (i = 1; i <= NF; ++i) if ($i == "00" || $i == "0d") exit 1 }'; then
-        return 0
-    fi
-    fail "$label contains a NUL or carriage-return byte"
-}
 
 case "$PEM" in /*|[A-Za-z]:/*) ;; *) PEM=$(pwd -P)/$PEM ;; esac
 case "$META" in /*|[A-Za-z]:/*) ;; *) META=$(pwd -P)/$META ;; esac
@@ -50,8 +46,8 @@ cup_path_require_regular_file "$PEM" 'CA bundle' || exit 1
 cup_path_require_regular_file "$META" 'CA metadata' || exit 1
 [ -s "$PEM" ] || fail "bundle is empty: $PEM"
 [ -s "$META" ] || fail "metadata is empty: $META"
-reject_nul_or_cr "$PEM" 'CA bundle'
-reject_nul_or_cr "$META" 'CA metadata'
+cup_text_file_is_nul_cr_free "$PEM" || fail 'CA bundle contains a NUL or carriage-return byte'
+cup_text_file_is_nul_cr_free "$META" || fail 'CA metadata contains a NUL or carriage-return byte'
 TEMP_BASE=$(cup_path_resolve_host_temporary_directory \
     'CA validation temporary parent') || exit 1
 command -v perl >/dev/null 2>&1 || fail 'Perl is required for date validation'
@@ -97,18 +93,8 @@ case "$source_url" in
 esac
 
 expected_sha=$(metadata_value sha256)
-case "$expected_sha" in
-    *[!0-9a-f]*|'') fail 'metadata SHA-256 is not lowercase hexadecimal' ;;
-esac
-[ "${#expected_sha}" -eq 64 ] || fail 'metadata SHA-256 must contain 64 characters'
-
-if command -v sha256sum >/dev/null 2>&1; then
-    actual_sha=$(sha256sum "$PEM" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-    actual_sha=$(shasum -a 256 "$PEM" | awk '{print $1}')
-else
-    fail 'neither sha256sum nor shasum is available'
-fi
+cup_sha256_valid "$expected_sha" || fail 'metadata SHA-256 is not lowercase hexadecimal'
+actual_sha=$(cup_sha256_file "$PEM") || fail 'neither sha256sum nor shasum produced a valid SHA-256 digest'
 [ "$actual_sha" = "$expected_sha" ] || fail 'SHA-256 does not match metadata'
 
 begin_count=$(grep -c '^-----BEGIN CERTIFICATE-----$' "$PEM" || true)

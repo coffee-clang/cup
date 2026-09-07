@@ -10,8 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Shared fixture state used by the cases in this suite. */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static int interrupt_after_calls;
 static int interrupt_calls;
@@ -22,8 +20,6 @@ int interrupt_requested(void) {
     }
     return interrupt_calls++ >= interrupt_after_calls;
 }
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
     interrupt_after_calls = -1;
@@ -45,8 +41,6 @@ static void write_bytes(const char *path, const void *data, size_t size) {
     TEST_ASSERT_EQUAL_size_t(size, fwrite(data, 1, size, file));
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
-
-/* Test cases grouped by the public contract they exercise. */
 
 static void test_digest_format(void) {
     const char *valid =

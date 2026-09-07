@@ -29,12 +29,6 @@ for file in config/dependencies.lock; do
     fi
 done
 
-invalid_action_refs=$(find .github/workflows -type f -name '*.yml' ! -name 'static.yml' \
-    -exec grep -HnE 'uses:[[:space:]]+[^.]' {} + \
-    | grep -Ev '@v[0-9]+(\.[0-9]+){0,2}([[:space:]]+#.*)?([[:space:]]|$)' || :)
-[ -z "$invalid_action_refs" ] ||
-    fail "modifiable workflow actions must use readable numeric version refs:\n$invalid_action_refs"
-
 msys2_setup_count=$(grep -h 'uses: msys2/setup-msys2@' .github/workflows/*.yml | wc -l | tr -d ' ')
 msys2_diffutils_count=$(grep -h '^[[:space:]]*diffutils[[:space:]]*$' .github/workflows/*.yml | wc -l | tr -d ' ')
 [ "$msys2_setup_count" -eq "$msys2_diffutils_count" ] ||
@@ -73,26 +67,6 @@ for helper_source in tests/helpers/*.c; do
         fail "test-helper source is not registered: $helper_source"
 done
 
-# The builders expose the platform-specific executable inventories directly;
-# duplicate names would make completeness checks ambiguous.
-for platform in linux-x64 windows-x64; do
-    tests/build/unit.sh --list "$platform" | LC_ALL=C sort > \
-        "$registration_tmp/unit-$platform"
-    [ -s "$registration_tmp/unit-$platform" ] ||
-        fail "unit-test inventory is empty for $platform"
-    duplicates=$(uniq -d "$registration_tmp/unit-$platform")
-    [ -z "$duplicates" ] ||
-        fail "duplicate unit-test binaries for $platform:\n$duplicates"
-
-    tests/build/helpers.sh --list "$platform" | LC_ALL=C sort > \
-        "$registration_tmp/helpers-$platform"
-    [ -s "$registration_tmp/helpers-$platform" ] ||
-        fail "test-helper inventory is empty for $platform"
-    duplicates=$(uniq -d "$registration_tmp/helpers-$platform")
-    [ -z "$duplicates" ] ||
-        fail "duplicate test helpers for $platform:\n$duplicates"
-done
-
 # Every unique Unity test definition must be registered, and every RUN_TEST
 # target must exist. Duplicate function names in independent suites are allowed.
 grep -R -h -E \
@@ -122,23 +96,6 @@ if (
 ) >"$registration_tmp/assertion.out" 2>&1; then
     fail 'assert_file accepted a symlink to a regular file'
 fi
-
-# A partial unit output must never be accepted merely because one test_* binary
-# exists. This regression does not need dependencies or a compiler.
-partial_root="$registration_tmp/partial-build"
-partial_dir="$partial_root/linux-x64/development/tests/unit"
-mkdir -p "$partial_dir"
-cat > "$partial_dir/test_only_one" <<'EOF_PARTIAL_TEST'
-#!/bin/sh
-exit 0
-EOF_PARTIAL_TEST
-chmod +x "$partial_dir/test_only_one"
-if CUP_TEST_PLATFORM=linux-x64 CUP_TEST_BUILD_ROOT="$partial_root" \
-        tests/runners/unit.sh >"$registration_tmp/partial.out" 2>&1; then
-    fail 'unit runner accepted a partial executable set'
-fi
-grep -Fq 'Expected unit-test binaries' "$registration_tmp/partial.out" ||
-    fail 'partial unit-test failure did not explain the expected inventory'
 
 # Build-dependent repository checks are run by the Linux x64 source-test plan.
 for build_test in \

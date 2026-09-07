@@ -16,19 +16,6 @@
 #include <string.h>
 
 #define JOURNAL_FORMAT "1"
-#define FIELD_FORMAT (1u << 0)
-#define FIELD_OPERATION (1u << 1)
-#define FIELD_COMPONENT (1u << 2)
-#define FIELD_TOOL (1u << 3)
-#define FIELD_HOST (1u << 4)
-#define FIELD_TARGET (1u << 5)
-#define FIELD_PACKAGE_VERSION (1u << 6)
-#define FIELD_TEMPORARY_NAME (1u << 7)
-#define COMMON_FIELDS (FIELD_FORMAT | FIELD_OPERATION | FIELD_TEMPORARY_NAME)
-#define PACKAGE_FIELDS \
-    (COMMON_FIELDS | FIELD_COMPONENT | FIELD_TOOL | FIELD_HOST | FIELD_TARGET | \
-     FIELD_PACKAGE_VERSION)
-
 /* Package journal schema and operation names. state.txt remains the commit point for
  * package install, update and remove operations. */
 void package_transaction_init(PackageTransaction *transaction) {
@@ -54,6 +41,10 @@ static int package_operation_is_valid(PackageOperation operation) {
     return operation == PACKAGE_OPERATION_INSTALL || operation == PACKAGE_OPERATION_REMOVE ||
            operation == PACKAGE_OPERATION_UPDATE;
 }
+
+static CupError package_transaction_get_staging_path(const PackageTransaction *transaction,
+                                                     char *buffer,
+                                                     size_t size);
 
 static int transaction_temporary_name_is_valid(const PackageTransaction *transaction) {
     char prefix[MAX_PATH_LEN];
@@ -129,6 +120,7 @@ CupError package_transaction_begin(PackageOperation operation,
                                    PackageTransaction *created) {
     PackageTransaction transaction;
     CupError err;
+    char canonical_path[MAX_PATH_LEN];
     const char *name;
 
     if (created == NULL) {
@@ -151,6 +143,10 @@ CupError package_transaction_begin(PackageOperation operation,
         !transaction_temporary_name_is_valid(&transaction)) {
         return CUP_ERR_TRANSACTION;
     }
+    err = package_transaction_get_staging_path(&transaction, canonical_path, sizeof(canonical_path));
+    if (err != CUP_OK || !path_equal(temporary_path, canonical_path)) {
+        return CUP_ERR_TRANSACTION;
+    }
     err = save_package_journal(&transaction);
     if ((err == CUP_OK || err == CUP_ERR_COMMIT) && transaction.file_identity.valid) {
         *created = transaction;
@@ -160,19 +156,15 @@ CupError package_transaction_begin(PackageOperation operation,
 
 static CupError set_package_transaction_field(PackageTransaction *transaction,
                                               const char *key,
-                                              const char *value,
-                                              unsigned *seen) {
-    unsigned bit;
+                                              const char *value) {
     char *destination = NULL;
     size_t destination_size = 0;
 
     if (strcmp(key, "format") == 0) {
-        bit = FIELD_FORMAT;
         if (strcmp(value, JOURNAL_FORMAT) != 0) {
             return CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "operation") == 0) {
-        bit = FIELD_OPERATION;
         if (strcmp(value, "install") == 0) {
             transaction->operation = PACKAGE_OPERATION_INSTALL;
         } else if (strcmp(value, "remove") == 0) {
@@ -183,37 +175,26 @@ static CupError set_package_transaction_field(PackageTransaction *transaction,
             return CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "component") == 0) {
-        bit = FIELD_COMPONENT;
         destination = transaction->package.component;
         destination_size = sizeof(transaction->package.component);
     } else if (strcmp(key, "tool") == 0) {
-        bit = FIELD_TOOL;
         destination = transaction->package.tool;
         destination_size = sizeof(transaction->package.tool);
     } else if (strcmp(key, "host_platform") == 0) {
-        bit = FIELD_HOST;
         destination = transaction->package.host_platform;
         destination_size = sizeof(transaction->package.host_platform);
     } else if (strcmp(key, "target_platform") == 0) {
-        bit = FIELD_TARGET;
         destination = transaction->package.target_platform;
         destination_size = sizeof(transaction->package.target_platform);
     } else if (strcmp(key, "package_version") == 0) {
-        bit = FIELD_PACKAGE_VERSION;
         destination = transaction->package.version;
         destination_size = sizeof(transaction->package.version);
     } else if (strcmp(key, "temporary_name") == 0) {
-        bit = FIELD_TEMPORARY_NAME;
         destination = transaction->temporary_name;
         destination_size = sizeof(transaction->temporary_name);
     } else {
         return CUP_ERR_TRANSACTION;
     }
-
-    if ((*seen & bit) != 0) {
-        return CUP_ERR_TRANSACTION;
-    }
-    *seen |= bit;
 
     if (destination != NULL && text_copy(destination, destination_size, value) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
@@ -225,30 +206,22 @@ static const char *const package_journal_keys[] = {
     "format", "operation", "component", "tool",
     "host_platform", "target_platform", "package_version", "temporary_name"};
 
-typedef struct {
-    PackageTransaction *candidate;
-    unsigned seen;
-} PackageJournalParser;
-
 static CupError parse_package_journal_field(const char *key,
                                             const char *value,
                                             void *userdata) {
-    PackageJournalParser *parser = userdata;
+    PackageTransaction *candidate = userdata;
 
-    if (parser == NULL) {
+    if (candidate == NULL) {
         return CUP_ERR_TRANSACTION;
     }
-    return set_package_transaction_field(
-        parser->candidate, key, value, &parser->seen);
+    return set_package_transaction_field(candidate, key, value);
 }
 
 CupError package_transaction_load(PackageTransaction *transaction,
                                   PackageTransactionStatus *status) {
     PackageTransaction candidate;
-    PackageJournalParser parser;
     SystemPathIdentity file_identity;
     PackageIdentity validated;
-    unsigned expected = PACKAGE_FIELDS;
     CupError err;
     int missing;
 
@@ -258,23 +231,20 @@ CupError package_transaction_load(PackageTransaction *transaction,
 
     package_transaction_init(transaction);
     package_transaction_init(&candidate);
-    memset(&parser, 0, sizeof(parser));
     memset(&file_identity, 0, sizeof(file_identity));
-    parser.candidate = &candidate;
     *status = PACKAGE_TRANSACTION_MISSING;
 
     err = runtime_journal_parse(package_journal_keys,
                                 sizeof(package_journal_keys) /
                                     sizeof(package_journal_keys[0]),
                                 parse_package_journal_field,
-                                &parser,
+                                &candidate,
                                 &file_identity,
                                 &missing);
     if (err != CUP_OK || missing) {
         return err;
     }
-    if (!package_operation_is_valid(candidate.operation) ||
-        parser.seen != expected) {
+    if (!package_operation_is_valid(candidate.operation)) {
         return CUP_ERR_TRANSACTION;
     }
 

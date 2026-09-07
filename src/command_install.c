@@ -39,7 +39,7 @@ typedef struct {
     InstallPlanItem items[MAX_INSTALL_LIST_ITEMS];
     size_t count;
     InstallPlanKind kind;
-    char description[MAX_IDENTIFIER_LEN];
+    char description[MAX_SELECTOR_LEN];
 } InstallPlan;
 
 static CupError install_plan_add(InstallPlan *plan, const char *component, const char *selector) {
@@ -214,27 +214,13 @@ static CupError install_plan_build(InstallPlan *plan,
 
 /* Full preflight. Every catalog selection and installed-package condition is validated before the
  * first side effect. */
-static CupError install_plan_resolve_format(InstallPlanItem *item,
+static CupError install_plan_resolve_format(const InstallPlanItem *item,
                                             const PackageRequest *request,
                                             const CommandContext *context,
                                             const char *format_override,
                                             char *format,
-                                            size_t format_size,
-                                            int *available) {
-    CupError err;
-
-    *available = 1;
+                                            size_t format_size) {
     if (!text_is_empty(format_override)) {
-        err = package_catalog_has_format(&context->catalog,
-                                         item->component,
-                                         request->selector.tool,
-                                         context->host_platform,
-                                         context->target_platform,
-                                         format_override,
-                                         available);
-        if (err != CUP_OK || !*available) {
-            return err;
-        }
         return text_copy(format, format_size, format_override);
     }
 
@@ -279,8 +265,6 @@ static CupError install_plan_validate_item(InstallPlanItem *item,
     CupError err;
     char format[MAX_IDENTIFIER_LEN];
     int package_available;
-    int version_available;
-    int format_available;
 
     *unavailable = 0;
     err = package_request_parse(item->component, item->selector, &request);
@@ -314,36 +298,10 @@ static CupError install_plan_validate_item(InstallPlanItem *item,
     if (err != CUP_OK) {
         return err;
     }
-    err = package_catalog_has_version(&context->catalog,
-                                      item->component,
-                                      request.selector.tool,
-                                      context->host_platform,
-                                      context->target_platform,
-                                      request.resolved_release,
-                                      &version_available);
+    err = install_plan_resolve_format(
+        item, &request, context, format_override, format, sizeof(format));
     if (err != CUP_OK) {
         return err;
-    }
-    if (!version_available) {
-        item->available = 0;
-        *unavailable = 1;
-        return CUP_OK;
-    }
-
-    err = install_plan_resolve_format(item,
-                                      &request,
-                                      context,
-                                      format_override,
-                                      format,
-                                      sizeof(format),
-                                      &format_available);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (!format_available) {
-        item->available = 0;
-        *unavailable = 1;
-        return CUP_OK;
     }
 
     item->available = 1;
@@ -359,6 +317,11 @@ static CupError install_plan_validate_item(InstallPlanItem *item,
         if (err == CUP_OK) {
             err = package_artifact_spec_build(
                 &item->artifact_spec, &context->catalog, &identity, format);
+        }
+        if (err == CUP_ERR_NOT_AVAILABLE) {
+            item->available = 0;
+            *unavailable = 1;
+            return CUP_OK;
         }
         if (err != CUP_OK) {
             return err;

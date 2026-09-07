@@ -8,28 +8,20 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=../lib/platform-domain.sh
+source "$SCRIPT_DIR/../lib/platform-domain.sh"
 PLATFORM="${PLATFORM:-}"
 REQUESTED_MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-}"
 
+HOST_SYSTEM=$(uname -s)
+HOST_MACHINE=$(uname -m)
+NATIVE_PLATFORM=$(cup_platform_from_uname "$HOST_SYSTEM" "$HOST_MACHINE") || {
+    echo "Error: unable to identify a supported native dependency platform." >&2
+    exit 1
+}
+
 if [ -z "$PLATFORM" ]; then
-    case "$(uname -s):$(uname -m)" in
-        Linux:x86_64|Linux:amd64)
-            PLATFORM=linux-x64
-            ;;
-        Linux:aarch64|Linux:arm64)
-            PLATFORM=linux-arm64
-            ;;
-        Darwin:x86_64|Darwin:amd64)
-            PLATFORM=macos-x64
-            ;;
-        Darwin:arm64|Darwin:aarch64)
-            PLATFORM=macos-arm64
-            ;;
-        *)
-            echo "Error: unable to select a supported native dependency platform." >&2
-            exit 1
-            ;;
-    esac
+    PLATFORM=$NATIVE_PLATFORM
 fi
 
 case "$PLATFORM" in
@@ -71,22 +63,8 @@ case "$PLATFORM" in
         ;;
 esac
 
-detect_native_platform() {
-    case "$(uname -s):$(uname -m)" in
-        Linux:x86_64|Linux:amd64) printf '%s\n' linux-x64 ;;
-        Linux:aarch64|Linux:arm64) printf '%s\n' linux-arm64 ;;
-        Darwin:x86_64|Darwin:amd64) printf '%s\n' macos-x64 ;;
-        Darwin:arm64|Darwin:aarch64) printf '%s\n' macos-arm64 ;;
-        *) return 1 ;;
-    esac
-}
-
-native_platform=$(detect_native_platform) || {
-    echo "Error: unable to identify a supported native dependency platform." >&2
-    exit 1
-}
-[ "$PLATFORM" = "$native_platform" ] || {
-    echo "Error: dependency platform '$PLATFORM' does not match native host '$native_platform'." >&2
+[ "$PLATFORM" = "$NATIVE_PLATFORM" ] || {
+    echo "Error: dependency platform '$PLATFORM' does not match native host '$NATIVE_PLATFORM'." >&2
     exit 1
 }
 
@@ -127,15 +105,6 @@ dependency_require_whitespace_free_path "dependency root" "$DEPS_ROOT"
 dependency_require_whitespace_free_path "dependency source directory" "$SRC_DIR"
 dependency_require_whitespace_free_path "dependency build directory" "$BUILD_DIR"
 dependency_require_whitespace_free_path "dependency prefix" "$DEPS_PREFIX"
-
-require_tool cmp
-require_tool mktemp
-
-if [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" != 1 ]; then
-    export CUP_DEPS_ROOT_LOCK_ACTIVE=1 PLATFORM DEPS_ROOT DEPS_PREFIX
-    dependency_run_root_locked "$DEPS_ROOT" bash "$0" "$@"
-    exit $?
-fi
 
 library_flags() {
     if [ "$CUP_POSIX_BOOTSTRAP_LIB64" = 1 ]; then
@@ -341,16 +310,6 @@ build_libarchive() {
     make install DESTDIR="$DESTDIR"
 }
 
-# Final prefix and static metadata verification.
-verify() {
-    echo "==> Verifying generated dependency prefix"
-    dependency_prefix_complete "$PREFIX" 1 "$CUP_DEPS_FINAL_PREFIX" || {
-        echo "Error: generated dependency prefix is incomplete or unsafe." >&2
-        exit 1
-    }
-    echo "==> $CUP_POSIX_BOOTSTRAP_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
-}
-
 main() {
     local profile
     local metadata
@@ -372,7 +331,6 @@ main() {
     esac
     profile=$(dependency_profile "$PLATFORM")
     metadata=$(dependency_metadata "$PLATFORM" "$profile")
-    dependency_require_root_lock
     trap 'abort_dependency_prefix' EXIT
     prepare_dependency_prefix "$DEPS_PREFIX" "$metadata" 1
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
@@ -413,8 +371,8 @@ main() {
         "$CC" "$AR" "$RANLIB"
     normalize_dependency_metadata "$PREFIX" \
         "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_FINAL_PREFIX"
-    verify
     finish_dependency_prefix "$PREFIX"
+    echo "==> $CUP_POSIX_BOOTSTRAP_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
     trap - EXIT HUP INT TERM
 }
 

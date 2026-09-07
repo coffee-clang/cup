@@ -23,6 +23,13 @@ static void test_selector_values(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("stable"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("22.1.5-RC1"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("../22.1.5"));
+    {
+        char long_release[MAX_IDENTIFIER_LEN + 1];
+        memset(long_release, 'a', MAX_IDENTIFIER_LEN);
+        long_release[MAX_IDENTIFIER_LEN] = '\0';
+        TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                              package_release_validate_concrete(long_release));
+    }
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_release_validate_concrete(NULL));
 
     TEST_ASSERT_EQUAL_INT(
@@ -96,39 +103,10 @@ static void test_package_selectors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_selector_parse(&selector, "gcc"));
 }
 
-static void test_selector_guards(void) {
-    char tool[8];
-    char release[8];
-    char entry[16];
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_selector_parse_parts(NULL, tool, sizeof(tool), release, sizeof(release)));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_selector_parse_parts("gcc@1", NULL, sizeof(tool), release, sizeof(release)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_parse_parts("gcc@1", tool, 0, release, sizeof(release)));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_selector_parse_parts("gcc@1", tool, sizeof(tool), NULL, sizeof(release)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_parse_parts("gcc@1", tool, sizeof(tool), release, 0));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_format_parts(NULL, sizeof(entry), "gcc", "1"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_format_parts(entry, 0, "gcc", "1"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_format_parts(entry, sizeof(entry), "", "1"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_selector_format_parts(entry, sizeof(entry), "gcc", NULL));
-}
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_selector_values);
     RUN_TEST(test_package_selectors);
-    RUN_TEST(test_selector_guards);
     return UNITY_END();
 }

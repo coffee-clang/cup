@@ -6,6 +6,8 @@
 if [ -z "${CUP_DEPENDENCIES_DIR:-}" ]; then
     CUP_DEPENDENCIES_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 fi
+# shellcheck source=../lib/sha256.sh
+. "$CUP_DEPENDENCIES_DIR/../lib/sha256.sh"
 DEPENDENCY_LOCK_DEFAULT=$CUP_DEPENDENCIES_DIR/../../config/dependencies.lock
 DEPENDENCY_LOCK_FILE=${CUP_DEPENDENCY_LOCK_FILE:-$DEPENDENCY_LOCK_DEFAULT}
 
@@ -20,16 +22,43 @@ validate_dependency_lock_pair() {
             return 1
             ;;
     esac
-    case "$checksum" in
-        *[!0-9a-f]*|'')
-            echo "Error: invalid ${package}.sha256 in dependency lock." >&2
+    cup_sha256_valid "$checksum" || {
+        echo "Error: invalid ${package}.sha256 in dependency lock." >&2
+        return 1
+    }
+}
+
+validate_curl_semantic_floor() {
+    local version="$1"
+    local major minor patch old_ifs
+
+    case "$version" in
+        ''|.*|*.|*..*|*[!0-9.]*)
+            echo "Error: curl.version must contain exactly three numeric components." >&2
             return 1
             ;;
     esac
-    [ "${#checksum}" -eq 64 ] || {
-        echo "Error: invalid ${package}.sha256 length in dependency lock." >&2
+    old_ifs=$IFS
+    IFS=.
+    set -- $version
+    IFS=$old_ifs
+    [ "$#" -eq 3 ] || {
+        echo "Error: curl.version must contain exactly three numeric components." >&2
         return 1
     }
+    major=$1
+    minor=$2
+    patch=$3
+    case "$major$minor$patch" in
+        *[!0-9]*)
+            echo "Error: curl.version must contain exactly three numeric components." >&2
+            return 1
+            ;;
+    esac
+    if [ "$major" -lt 8 ] || { [ "$major" -eq 8 ] && [ "$minor" -lt 20 ]; }; then
+        echo "Error: curl.version must be at least 8.20.0 for decompressed download size limits." >&2
+        return 1
+    fi
 }
 
 load_dependency_lock() {
@@ -125,6 +154,7 @@ load_dependency_lock() {
     validate_dependency_lock_pair openssl "$lock_openssl_version" "$lock_openssl_sha256" || return 1
     validate_dependency_lock_pair cares "$lock_cares_version" "$lock_cares_sha256" || return 1
     validate_dependency_lock_pair curl "$lock_curl_version" "$lock_curl_sha256" || return 1
+    validate_curl_semantic_floor "$lock_curl_version" || return 1
     validate_dependency_lock_pair libarchive "$lock_libarchive_version" "$lock_libarchive_sha256" || return 1
     validate_dependency_lock_pair argtable3 "$lock_argtable3_version" "$lock_argtable3_sha256" || return 1
     validate_dependency_lock_pair uthash "$lock_uthash_version" "$lock_uthash_sha256" || return 1
@@ -132,7 +162,6 @@ load_dependency_lock() {
     validate_dependency_lock_pair libevent "$lock_libevent_version" "$lock_libevent_sha256" || return 1
 
     # Commit the parsed state only after the complete file has been validated.
-    DEPENDENCY_LOCK_FORMAT=$lock_format
     DEPENDENCY_BUILD_REVISION=$lock_build_revision
     ZLIB_VERSION=$lock_zlib_version
     ZLIB_SHA256=$lock_zlib_sha256
@@ -178,16 +207,6 @@ LIBEVENT_URL="https://github.com/libevent/libevent/releases/download"
 LIBEVENT_URL="${LIBEVENT_URL}/release-${LIBEVENT_VERSION}"
 LIBEVENT_URL="${LIBEVENT_URL}/libevent-${LIBEVENT_VERSION}.tar.gz"
 
-ZLIB_MIN_BYTES=100000
-XZ_MIN_BYTES=500000
-OPENSSL_MIN_BYTES=1000000
-CARES_MIN_BYTES=500000
-CURL_MIN_BYTES=1000000
-LIBEVENT_MIN_BYTES=1000000
-LIBARCHIVE_MIN_BYTES=1000000
-ARGTABLE3_MIN_BYTES=100000
-UTHASH_MIN_BYTES=100000
-UNITY_MIN_BYTES=100000
 
 all_source_packages() {
     printf '%s\n' zlib xz openssl cares curl libarchive argtable3 uthash unity libevent
@@ -209,21 +228,6 @@ source_url_for_package() {
     esac
 }
 
-minimum_bytes_for_package() {
-    case "$1" in
-        zlib) printf '%s\n' "$ZLIB_MIN_BYTES" ;;
-        xz) printf '%s\n' "$XZ_MIN_BYTES" ;;
-        openssl) printf '%s\n' "$OPENSSL_MIN_BYTES" ;;
-        cares) printf '%s\n' "$CARES_MIN_BYTES" ;;
-        curl) printf '%s\n' "$CURL_MIN_BYTES" ;;
-        libevent) printf '%s\n' "$LIBEVENT_MIN_BYTES" ;;
-        libarchive) printf '%s\n' "$LIBARCHIVE_MIN_BYTES" ;;
-        argtable3) printf '%s\n' "$ARGTABLE3_MIN_BYTES" ;;
-        uthash) printf '%s\n' "$UTHASH_MIN_BYTES" ;;
-        unity) printf '%s\n' "$UNITY_MIN_BYTES" ;;
-        *) echo "Error: unknown source package '$1'." >&2; return 1 ;;
-    esac
-}
 
 version_for_package() {
     case "$1" in

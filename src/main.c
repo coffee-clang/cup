@@ -6,12 +6,14 @@
 #include "commands.h"
 #include "command_context.h"
 
+#include "constants.h"
 #include "error.h"
 #include "exit_status.h"
 #include "interrupt.h"
 #include "layout.h"
 #include "update_helper.h"
 #include "bootstrap.h"
+#include "assets.h"
 #include "uninstall_helper.h"
 #include "system.h"
 #include "package_selector.h"
@@ -97,8 +99,8 @@ static const CommandHelp COMMAND_HELP[] = {
      "Defaults:\n  Uses the current host and target.\n"
      "  Without a release, removes the package only when exactly one installed version matches.\n"
      "  Otherwise, lists the installed releases and requires one explicitly.\n"
-     "Examples:\n  cup remove clang\n  cup remove clang@22.1.5\n"
-     "  cup remove compiler clang@22.1.5\n"
+     "Examples:\n  cup remove clang\n  cup remove clang@23.1.0\n"
+     "  cup remove compiler clang@23.1.0\n"
      "Effects:\n  Removes the selected package and updates defaults and provided commands."},
     {"update",
      "update [cup|<tool>|<component>]",
@@ -134,7 +136,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup default compiler clang@stable\n"
-     "  cup default compiler clang@22.1.5\n"
+     "  cup default compiler clang@23.1.0\n"
      "Effects:\n  Resolves an installed package, then updates the default and provided commands.\n"
      "  It never installs a missing package."},
     {"info",
@@ -158,7 +160,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "help.\n"
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup inspect compiler clang@stable\n"
-     "  cup inspect compiler clang@22.1.5\n"
+     "  cup inspect compiler clang@23.1.0\n"
      "Effects:\n  Read-only; never installs a missing package or initializes the local cup "
      "installation."},
     {"doctor",
@@ -179,13 +181,14 @@ static const CommandHelp COMMAND_HELP[] = {
      "Effects:\n  May repair configuration, state, packages and commands provided by defaults."},
     {"uninstall",
      "uninstall [--yes]",
-     "Remove cup and all managed data.",
-     "Description:\n  Remove the selected cup installation without changing PATH.\n"
+     "Hand cup removal to the detached cleanup helper.",
+     "Description:\n  Schedule removal of the selected cup installation without changing PATH.\n"
      "Arguments:\n  None.\nOptions:\n  --yes  Skip the confirmation prompt.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Prompts before removal.\n"
      "Examples:\n  cup uninstall\n  cup uninstall --yes\n"
-     "Effects:\n  Removes cup and every cup-managed package; PATH is unchanged."}};
+     "Effects:\n  Success means the detached helper accepted the handoff. Cleanup continues in "
+     "the background, and cup prints the recovery path; PATH is unchanged."}};
 
 static CupError normalize_selector(const char *input, char *output, size_t output_size) {
     char tool[MAX_IDENTIFIER_LEN];
@@ -309,11 +312,13 @@ static int print_detailed_help(const char *command) {
     return 1;
 }
 
-static int argtable_is_complete(void *const *table, size_t count) {
+static int argtable_require_complete(void **table, size_t count) {
     size_t i;
 
     for (i = 0; i < count; ++i) {
         if (table[i] == NULL) {
+            fprintf(stderr, "Error: not enough memory to parse arguments.\n");
+            arg_freetable(table, count);
             return 0;
         }
     }
@@ -523,7 +528,8 @@ static CupError normalize_install_arguments(char *selector,
             return CUP_ERR_INVALID_INPUT;
         }
         err = text_copy_lower_ascii(value, value_size, value);
-        if (err == CUP_OK && !path_is_safe_identifier(value)) {
+        if (err == CUP_OK &&
+            path_validate_canonical_identifier(value, MAX_IDENTIFIER_LEN) != CUP_OK) {
             err = CUP_ERR_INVALID_INPUT;
         }
         if (err == CUP_OK) {
@@ -557,9 +563,7 @@ static CupError parse_optional_component(const char *command,
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -609,9 +613,7 @@ static CupError parse_component_entry(const char *command,
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -674,9 +676,7 @@ static CupError parse_install(int argc, char **argv, ParsedCommand *parsed) {
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -744,9 +744,7 @@ static CupError parse_remove(int argc, char **argv, ParsedCommand *parsed) {
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -806,9 +804,7 @@ static CupError parse_update(int argc, char **argv, ParsedCommand *parsed) {
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -919,9 +915,7 @@ static CupError parse_config(int argc, char **argv, ParsedCommand *parsed) {
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -955,9 +949,7 @@ static CupError parse_no_arguments(const char *command,
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -977,9 +969,7 @@ static CupError parse_uninstall(int argc, char **argv, ParsedCommand *parsed) {
     int errors;
     CupError result;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -1001,9 +991,7 @@ static CupError parse_help(int argc, char **argv) {
     int errors;
     CupError result = CUP_OK;
 
-    if (!argtable_is_complete(table, sizeof(table) / sizeof(table[0]))) {
-        fprintf(stderr, "Error: not enough memory to parse arguments.\n");
-        arg_freetable(table, sizeof(table) / sizeof(table[0]));
+    if (!argtable_require_complete(table, sizeof(table) / sizeof(table[0]))) {
         return CUP_ERR_TEMPORARY;
     }
 
@@ -1168,25 +1156,57 @@ int main(int argc, char *argv[]) {
     const CommandHelp *help;
     ParsedCommand parsed;
     CupError result;
-    int interrupt_active = 0;
 
     /* Keep newline-terminated progress ahead of stderr diagnostics in redirected logs. */
     (void)setvbuf(stdout, NULL, _IOLBF, 0);
     system_set_restrictive_umask();
 
-    /* Internal bootstrap validates a complete transport directory before entering the canonical
-     * root lock, journal, staging and detached-helper protocol. */
-    if (argc == 3 && strcmp(argv[1], "--internal-bootstrap") == 0) {
+    /* Installer-only root operations are owned by the verified native binary. The script may
+     * discover a candidate or collect a base path, but it cannot authenticate or appropriate a
+     * managed root by itself. */
+    if (argc == 3 && strcmp(argv[1], "--internal-select-root") == 0) {
+        char selected[MAX_PATH_LEN];
+
+        result = layout_select_root_for_base(argv[2], selected, sizeof(selected));
+        if (result == CUP_OK) {
+            printf("%s\n", selected);
+        }
+        return exit_status_from_error(result);
+    }
+    if (argc == 3 && strcmp(argv[1], "--internal-root-probe") == 0) {
+        AssetsInspection inspection;
+        SystemPathIdentity identity;
+
+        result = layout_validate_root_at(argv[2], &identity);
+        if (result == CUP_OK) {
+            result = layout_root_snapshot_begin_at(argv[2]);
+        }
+        if (result == CUP_OK) {
+            result = assets_inspect(&inspection);
+        }
+        if (result == CUP_OK && !assets_installed_is_valid(&inspection)) {
+            result = CUP_ERR_VALIDATION;
+        }
+        layout_root_snapshot_end();
+        return exit_status_from_error(result);
+    }
+
+    /* Internal bootstrap validates a complete transport directory before entering the selected
+     * canonical root lock, journal, staging and detached-helper protocol. */
+    if (argc == 4 && strcmp(argv[1], "--internal-bootstrap") == 0) {
+        char selected[MAX_PATH_LEN];
         int status;
 
-        result = layout_root_snapshot_begin();
+        result = layout_select_root_for_base(argv[3], selected, sizeof(selected));
+        if (result == CUP_OK) {
+            result = layout_root_snapshot_begin_at(selected);
+        }
         if (result == CUP_OK) {
             result = interrupt_enable();
         }
         if (result == CUP_OK) {
             result = bootstrap_start(argv[2], argv[0]);
         }
-        interrupt_disable();
         status = exit_status_from_error(result);
         layout_root_snapshot_end();
         return status;
@@ -1220,17 +1240,17 @@ int main(int argc, char *argv[]) {
      * carries exclusive authority before either helper mutates managed state. Windows uninstall
      * also receives the parent's deferred-cleanup handle so the temporary helper can disappear
      * after its executable image is no longer mapped. */
-    if (argc == 6 && strcmp(argv[1], "--internal-update-helper") == 0) {
+    if (argc == 6 && strcmp(argv[1], CUP_INTERNAL_UPDATE_HELPER_ARGUMENT) == 0) {
         result = update_helper_run(argv[2], argv[3], argv[4], argv[5]);
         return exit_status_from_error(result);
     }
 #if defined(_WIN32)
-    if (argc == 8 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
+    if (argc == 8 && strcmp(argv[1], CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT) == 0) {
         result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
         return exit_status_from_error(result);
     }
 #else
-    if (argc == 7 && strcmp(argv[1], "--internal-uninstall-helper") == 0) {
+    if (argc == 7 && strcmp(argv[1], CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT) == 0) {
         result = uninstall_helper_run(argv[2], argv[3], argv[4], argv[5], argv[6], NULL);
         return exit_status_from_error(result);
     }
@@ -1285,14 +1305,10 @@ int main(int argc, char *argv[]) {
             layout_root_snapshot_end();
             return exit_status_from_error(result);
         }
-        interrupt_active = 1;
     }
 
     result = execute_public_command(&parsed);
 
-    if (interrupt_active) {
-        interrupt_disable();
-    }
     layout_root_snapshot_end();
     return exit_status_from_error(result);
 }

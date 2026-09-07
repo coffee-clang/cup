@@ -9,6 +9,7 @@
 #include "checksum.h"
 #include "assets.h"
 #include "update_journal.h"
+#include "update_assets.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
@@ -20,65 +21,29 @@
 #include <string.h>
 
 typedef struct {
-    const char *new_name;
-    const char *old_name;
-    const char *absent_name;
+    UpdateAssetSpec spec;
     char destination[MAX_PATH_LEN];
-    int executable;
-    int read_only;
 } HelperAsset;
 
-/* Fixed generation asset table. The helper replaces only the official cup assets described here. */
-static CupError initialize_assets(HelperAsset *assets, size_t count) {
-    if (assets == NULL || count != 5) {
+static CupError initialize_assets(HelperAsset assets[CUP_UPDATE_ASSET_COUNT]) {
+    size_t i;
+    CupError err;
+
+    if (assets == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-
-    memset(assets, 0, sizeof(*assets) * count);
-    assets[0].new_name = CUP_UPDATE_BINARY_NEW;
-    assets[0].old_name = CUP_UPDATE_BINARY_OLD;
-    assets[0].absent_name = CUP_UPDATE_BINARY_ABSENT;
-    assets[0].executable = 1;
-    if (layout_get_binary_path(assets[0].destination, sizeof(assets[0].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
+    memset(assets, 0, sizeof(*assets) * CUP_UPDATE_ASSET_COUNT);
+    for (i = 0; i < CUP_UPDATE_ASSET_COUNT; ++i) {
+        err = update_asset_spec((UpdateAssetId)i, &assets[i].spec);
+        if (err == CUP_OK) {
+            err = update_asset_destination((UpdateAssetId)i,
+                                           assets[i].destination,
+                                           sizeof(assets[i].destination));
+        }
+        if (err != CUP_OK) {
+            return err;
+        }
     }
-
-    assets[1].new_name = CUP_UPDATE_PLATFORM_CHECKSUMS_NEW;
-    assets[1].old_name = CUP_UPDATE_PLATFORM_CHECKSUMS_OLD;
-    assets[1].absent_name = CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT;
-    assets[1].read_only = 1;
-    if (layout_get_platform_checksums_path(assets[1].destination,
-                                           sizeof(assets[1].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
-    assets[2].new_name = CUP_UPDATE_PACKAGES_NEW;
-    assets[2].old_name = CUP_UPDATE_PACKAGES_OLD;
-    assets[2].absent_name = CUP_UPDATE_PACKAGES_ABSENT;
-    assets[2].read_only = 1;
-    if (layout_get_package_catalog_path(assets[2].destination,
-                                        sizeof(assets[2].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
-    assets[3].new_name = CUP_UPDATE_INSTALL_POLICY_NEW;
-    assets[3].old_name = CUP_UPDATE_INSTALL_POLICY_OLD;
-    assets[3].absent_name = CUP_UPDATE_INSTALL_POLICY_ABSENT;
-    assets[3].read_only = 1;
-    if (layout_get_install_policy_path(assets[3].destination,
-                                       sizeof(assets[3].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
-    assets[4].new_name = CUP_UPDATE_COMMON_CHECKSUMS_NEW;
-    assets[4].old_name = CUP_UPDATE_COMMON_CHECKSUMS_OLD;
-    assets[4].absent_name = CUP_UPDATE_COMMON_CHECKSUMS_ABSENT;
-    assets[4].read_only = 1;
-    if (layout_get_common_checksums_path(assets[4].destination,
-                                         sizeof(assets[4].destination)) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-
     return CUP_OK;
 }
 
@@ -91,7 +56,7 @@ static CupError validate_staged_assets(const char *staging,
         char source[MAX_PATH_LEN];
         SystemPathKind kind;
 
-        if (path_join(source, sizeof(source), staging, assets[i].new_name) != CUP_OK ||
+        if (path_join(source, sizeof(source), staging, assets[i].spec.new_name) != CUP_OK ||
             system_get_path_kind(source, &kind) != CUP_OK || kind != SYSTEM_PATH_REGULAR_FILE) {
             return CUP_ERR_VALIDATION;
         }
@@ -132,8 +97,8 @@ static CupError backup_destinations(const char *staging, const HelperAsset *asse
         SystemPathKind absent_kind;
         CupError err;
 
-        if (path_join(backup, sizeof(backup), staging, assets[i].old_name) != CUP_OK ||
-            path_join(absent, sizeof(absent), staging, assets[i].absent_name) != CUP_OK ||
+        if (path_join(backup, sizeof(backup), staging, assets[i].spec.old_name) != CUP_OK ||
+            path_join(absent, sizeof(absent), staging, assets[i].spec.absent_name) != CUP_OK ||
             system_get_path_kind(assets[i].destination, &destination_kind) != CUP_OK ||
             system_get_path_kind(backup, &backup_kind) != CUP_OK ||
             system_get_path_kind(absent, &absent_kind) != CUP_OK) {
@@ -162,7 +127,7 @@ static CupError install_staged_asset(const char *staging, const HelperAsset *ass
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     CupError err;
 
-    if (path_join(source, sizeof(source), staging, asset->new_name) != CUP_OK ||
+    if (path_join(source, sizeof(source), staging, asset->spec.new_name) != CUP_OK ||
         system_get_path_kind(asset->destination, &destination_kind) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
@@ -179,7 +144,7 @@ static CupError install_staged_asset(const char *staging, const HelperAsset *ass
         return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
     }
     err = filesystem_apply_required_permissions(
-        asset->destination, asset->executable, asset->read_only);
+        asset->destination, asset->spec.executable, asset->spec.read_only);
     if (err != CUP_OK) {
         fprintf(stderr,
                 "Error: could not apply permissions to update asset '%s'.\n",
@@ -205,11 +170,11 @@ static CupError install_supporting_assets(const char *staging,
 }
 
 static CupError commit_update(UpdateJournal *journal, const char *staging) {
-    HelperAsset assets[5];
+    HelperAsset assets[CUP_UPDATE_ASSET_COUNT];
     char staged_binary[MAX_PATH_LEN];
     CupError err;
 
-    err = initialize_assets(assets, sizeof(assets) / sizeof(assets[0]));
+    err = initialize_assets(assets);
     if (err == CUP_OK) {
         err = validate_staged_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
     }
@@ -227,7 +192,7 @@ static CupError commit_update(UpdateJournal *journal, const char *staging) {
     }
     if (err == CUP_OK) {
         err = path_join(
-            staged_binary, sizeof(staged_binary), staging, CUP_UPDATE_BINARY_NEW);
+            staged_binary, sizeof(staged_binary), staging, assets[CUP_UPDATE_ASSET_BINARY].spec.new_name);
     }
     if (err == CUP_OK) {
         err = update_write_generation_marker(staging, journal->version, staged_binary);
@@ -264,7 +229,7 @@ static CupError record_helper_failure(UpdateJournal *journal,
                                       CupError error,
                                       int recover) {
     CupError err;
-    UpdateRecoveryResult recovery_result = CUP_UPDATE_RECOVERY_NONE;
+    int finalized = 0;
 
     if (journal == NULL || error == CUP_OK) {
         return error;
@@ -282,11 +247,11 @@ static CupError record_helper_failure(UpdateJournal *journal,
     }
 
     err = update_journal_recover(
-        journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &recovery_result);
+        journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &finalized);
     if (err != CUP_OK) {
         return error;
     }
-    return recovery_result == CUP_UPDATE_RECOVERY_FINALIZED ? CUP_OK : error;
+    return finalized ? CUP_OK : error;
 }
 
 /* Parent-side handoff. Ensure the canonical helper matches the running cup binary before the
@@ -339,6 +304,11 @@ CupError update_helper_prepare_from(const char *source_binary) {
     }
     if (err == CUP_OK && !matches) {
         err = system_copy_file(source_binary, helper);
+        if (err == CUP_ERR_COMMIT) {
+            /* The helper is disposable. Visibility plus byte-for-byte validation is sufficient;
+             * its publication is not a canonical managed-root commit boundary. */
+            err = CUP_OK;
+        }
     }
     if (err == CUP_OK) {
         err = system_set_executable(helper, 1);
@@ -402,7 +372,7 @@ CupError update_helper_run(const char *root,
         return err;
     }
 
-    err = layout_root_snapshot_begin();
+    err = layout_root_snapshot_begin_at(root);
     if (err == CUP_OK) {
         err = layout_get_root(selected_root, sizeof(selected_root));
     }

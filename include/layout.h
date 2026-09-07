@@ -21,15 +21,20 @@ typedef enum {
 } LayoutRuntimeStatus;
 
 /*
- * Freeze the selected root for one public command. Nested users share the same snapshot;
- * the final end releases it. Existing roots are identity-bound immediately. A selected missing
- * root may only be created exclusively; successful creation pins its new identity.
+ * Freeze the selected root for one command. Only one snapshot may be active at a time. Existing
+ * roots are identity-bound immediately. A selected missing root may only be created exclusively;
+ * successful creation pins its new identity.
  */
 CupError layout_root_snapshot_begin(void);
+/* Freeze one explicit canonical root. A missing root is permitted so bootstrap can create it
+ * exclusively; an existing root must already be an authenticated CUP root. */
+CupError layout_root_snapshot_begin_at(const char *root);
+/* Select .cup/.coffee-cup below one caller-selected base, without creating either root. */
+CupError layout_select_root_for_base(const char *base, char *buffer, size_t size);
 CupError layout_root_snapshot_validate(void);
 void layout_root_snapshot_end(void);
 
-/* Canonical paths inside the selected current-user cup root. */
+/* Canonical paths inside the selected CUP root. */
 CupError layout_get_root(char *buffer, size_t size);
 CupError layout_get_bin_dir(char *buffer, size_t size);
 CupError layout_get_components_dir(char *buffer, size_t size);
@@ -44,7 +49,7 @@ CupError layout_get_platform_checksums_path(char *buffer, size_t size);
 CupError layout_get_lock_path(char *buffer, size_t size);
 CupError layout_build_lock_path(char *buffer, size_t size, const char *root);
 CupError layout_build_transaction_path(char *buffer, size_t size, const char *root);
-/* Validate one explicit current-user managed root without normal handoff admission. Internal
+/* Validate one explicit canonical managed root without normal handoff admission. Internal
  * helpers use this only after accepting inherited exclusive authority. */
 CupError layout_validate_root_at(const char *root, SystemPathIdentity *identity);
 CupError layout_get_transaction_path(char *buffer, size_t size);

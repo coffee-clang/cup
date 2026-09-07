@@ -425,11 +425,13 @@ static void test_open_reports_size_and_digest_decisions(void) {
     TEST_ASSERT_EQUAL(CUP_OK,
                       verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_REJECTED, status);
+    TEST_ASSERT_NOT_NULL(artifact.file);
 
     open_size = MAX_PACKAGE_DOWNLOAD_BYTES + 1;
     TEST_ASSERT_EQUAL(CUP_OK,
                       verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_REJECTED, status);
+    TEST_ASSERT_NOT_NULL(artifact.file);
 
     open_size = 4;
     calculated_digest = DIGEST_B;

@@ -2,11 +2,12 @@ cup third-party notices
 =======================
 
 This file preserves license texts, copyright notices and redistribution
-information for third-party code distributed with cup. The source lock is
-authoritative for pinned archive versions and SHA-256 digests; sources.sh is
-authoritative for download locations, dependency scopes and usage
-classifications. Runtime dependencies may contribute code to the cup executable;
-test dependencies are linked only into test binaries and helpers.
+information for third-party code used by cup or repository test artifacts. The
+source lock is authoritative for pinned archive versions and SHA-256 digests;
+sources.sh is authoritative for download locations. The Scope and Usage labels
+below describe how the repository consumes each dependency. Runtime dependencies
+may contribute code to the cup executable; test dependencies are linked only into
+test binaries and helpers.
 
 Brad Conte crypto-algorithms SHA-256 (adapted in tree)
 ------------------------------------------------------

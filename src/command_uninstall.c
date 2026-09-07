@@ -6,6 +6,7 @@
 
 #include "commands.h"
 
+#include "constants.h"
 #include "interrupt.h"
 #include "layout.h"
 #include "path.h"
@@ -61,16 +62,16 @@ static CupError prepare_uninstall_identity(const char *root,
     err = path_parent(parent, sizeof(parent), root);
     if (err == CUP_OK) {
         err = system_make_unique_temp_path(
-            parent, ".cup-uninstall", temporary_path, temporary_size);
+            parent, CUP_UNINSTALL_TEMP_PREFIX, temporary_path, temporary_size);
     }
     if (err != CUP_OK) {
         return err;
     }
-    name = path_last_segment(temporary_path);
-    if (strncmp(name, ".cup-uninstall-", 15) != 0 || name[15] == '\0') {
+    name = path_generated_temp_suffix(path_last_segment(temporary_path), CUP_UNINSTALL_TEMP_PREFIX);
+    if (name == NULL) {
         return CUP_ERR_TEMPORARY;
     }
-    return text_copy(token, token_size, name + 15);
+    return text_copy(token, token_size, name);
 }
 
 static int uninstall_journal_is_initial(const UninstallJournal *journal,
@@ -78,7 +79,7 @@ static int uninstall_journal_is_initial(const UninstallJournal *journal,
                                         const char *token) {
     return journal != NULL && temporary_path != NULL && token != NULL &&
            journal->phase == UNINSTALL_PHASE_SCHEDULED &&
-           journal->stage == UNINSTALL_STAGE_HANDOFF && journal->error_code == 0 &&
+           journal->error_code == 0 &&
            strcmp(journal->temporary_name, path_last_segment(temporary_path)) == 0 &&
            strcmp(journal->token, token) == 0;
 }
@@ -209,8 +210,10 @@ CupError command_uninstall(int assume_yes) {
      * a separately armed carrier owns the helper's deferred DELETE_ON_CLOSE lifetime. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
-        printf("Uninstall started; cleanup continues in the background. "
-               "You can close this terminal. The PATH entry was not removed.\n");
+        printf("Uninstall handoff accepted; cleanup continues in the background. "
+               "You can close this terminal. The PATH entry was not removed.\n"
+               "Recovery path if cleanup fails: %s\n",
+               temporary_path);
         journal_created = 0;
     }
 

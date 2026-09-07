@@ -13,16 +13,23 @@ macos-arm64
 windows-x64
 ```
 
-The normal installation root is:
+The default installation base is the current user's home/profile directory:
 
 ```text
-Linux/macOS ~/.cup
-Windows %USERPROFILE%\.cup
+Linux/macOS $HOME
+Windows %USERPROFILE%
 ```
 
-If `.cup` already belongs to another application, `cup` leaves it unchanged and
-uses `.coffee-cup` in the same home directory. The selected root is reused by
-later commands and is not configurable through an environment variable.
+CUP creates `<base>/.cup`. If that leaf already belongs to another application, it
+leaves it unchanged and uses `<base>/.coffee-cup`. The root leaf itself is never an
+arbitrary user-selected name. Interactive installers can select another existing base
+directory; non-interactive automation can provide the same choice through the
+installer-only `CUP_INSTALL_BASE_DIR` input. CUP has no persistent `CUP_HOME` root override.
+
+An installed CUP derives its current root from its own real executable and authenticates
+that canonical `.cup`/`.coffee-cup` root before using it. The complete root can therefore be
+moved to another user-manageable base while preserving its canonical leaf name. Relocation
+does not imply privilege elevation or an automatic PATH rewrite.
 
 ## Linux and macOS
 
@@ -91,17 +98,20 @@ cup doctor
 
 ## PATH
 
-`cup` does **not** edit the system or user PATH automatically.
+PATH is a convenience, not installation authority. After a successful install, reinstall
+or update, an interactive installer may offer to add the selected `<cup-root>/bin` directory
+to the current user's shell PATH configuration. Windows modifies only the User PATH, never
+the System/Machine PATH. Non-interactive installation does not depend on stdin or require a
+PATH change.
 
-To run the command without its full path, add the selected directory manually:
+Normal CUP commands do not warn merely because the current root is absent from PATH.
+`cup doctor` diagnoses that condition. Moving a root does not automatically rewrite PATH,
+and `cup uninstall` deliberately leaves existing PATH configuration unchanged.
 
-```text
-Linux/macOS <cup-root>/bin
-Windows <cup-root>\bin
-```
-
-Open a new shell after changing PATH. `cup uninstall` leaves that PATH entry in
-place, so remove it manually when it is no longer needed.
+A valid CUP root is not rejected merely because its `bin` path contains the PATH
+entry separator (`:` on POSIX or `;` on Windows). Such a path cannot be represented
+as one PATH entry, so the installer keeps the installation and skips only the
+automatic PATH convenience, explaining that PATH must be handled manually.
 
 ## Existing and unrecognized directories
 
@@ -117,7 +127,9 @@ files into the new installation, and do not create `root.txt` manually.
 
 Running the official installer again replaces the `cup` program files only
 after the new release has been verified. Installed component packages,
-preferences and state remain in the selected root.
+preferences and state remain in the selected root. The installer updates an older CUP and
+may reinstall the same version, but it does not silently replace a newer CUP with an older
+release; use a different base directory for that side-by-side older installation.
 
 Reinstallation is also the supported recovery method when `cup` or `cup.exe` is
 missing or has been changed. `repair` intentionally does not recreate the main
@@ -157,15 +169,18 @@ holds exclusive authority. The helper waits for the original `cup` process to
 exit before it takes over, validates the same transaction, detaches the managed
 root from `.cup` or `.coffee-cup`, and cleans the detached tree.
 
-The command returns after that handoff has been established, so final cleanup may
-continue briefly in the background. Once `cup` reports that uninstall has
-started, the terminal does not need to remain open. PATH is not changed.
+The command returns after that handoff has been established, so status 0 means
+that uninstall authority was transferred successfully, not that the detached
+tree has already disappeared. cup prints the exact `.cup-uninstall-*` recovery
+path before returning; final cleanup continues in the background and the
+terminal does not need to remain open. PATH is not changed.
 
-If cleanup fails after the detach, cup leaves the detached directory and its
-recovery information in place instead of guessing what is safe to delete. A
-later installation does not automatically adopt or remove that residue. The
-temporary helper executable has a separate cleanup lifecycle, so a failure while
-removing the detached root does not intentionally leave that helper behind.
+If cleanup fails after the detach, cup leaves that printed detached directory
+and its recovery information in place instead of guessing what is safe to
+delete. A later installation does not automatically adopt or remove that
+residue. The temporary helper executable has a separate cleanup lifecycle, so a
+failure while removing the detached root does not intentionally leave that
+helper behind.
 
 ## Troubleshooting
 

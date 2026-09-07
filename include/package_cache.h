@@ -21,10 +21,6 @@ typedef enum {
     PACKAGE_CACHE_SOURCE_NETWORK
 } PackageCacheSource;
 
-typedef struct {
-    PackageCacheSource source;
-} PackageCacheResult;
-
 /*
  * Return one opened, authenticated artifact whose stream is ready for extraction. A writable
  * result is cleared on every call; valid fetch attempts replace any artifact already owned by
@@ -34,6 +30,6 @@ typedef struct {
 CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
                                       const PackageArtifactSpec *spec,
                                       PackageCachePolicy policy,
-                                      PackageCacheResult *result);
+                                      PackageCacheSource *source);
 
 #endif /* CUP_PACKAGE_CACHE_H */

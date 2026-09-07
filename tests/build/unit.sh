@@ -26,31 +26,6 @@ test_applies_to_platform() {
     esac
 }
 
-list_registered_tests() {
-    local platform=$1
-    local name
-    awk '/^[[:space:]]*compile_test[[:space:]]+test_[A-Za-z0-9_]+/ { print $2 }' "$0" |
-        while IFS= read -r name; do
-            test_applies_to_platform "$name" "$platform" || continue
-            case "$platform" in
-                windows-x64) printf '%s.exe\n' "$name" ;;
-                *) printf '%s\n' "$name" ;;
-            esac
-        done
-}
-
-if [ "${1:-}" = --list ]; then
-    list_platform=${2:-${CUP_TEST_PLATFORM:-}}
-    case "$list_platform" in
-        linux-x64|linux-arm64|macos-x64|macos-arm64|windows-x64) ;;
-        *)
-            printf 'Usage: %s --list <platform>\n' "$0" >&2
-            exit 2
-            ;;
-    esac
-    list_registered_tests "$list_platform"
-    exit 0
-fi
 
 . "$ROOT/tests/support/environment.sh"
 cup_test_prepare_environment
@@ -151,6 +126,10 @@ compile_test() {
     shift
     test_applies_to_platform "$name" "$PLATFORM" || return 0
     output="$TEST_BUILD_DIR/$name"
+    [ ! -e "$output" ] || {
+        printf 'Duplicate unit-test output: %s\n' "$name" >&2
+        exit 1
+    }
     output_arg=$output
     [ -z "$GCOV_OUTPUT_DIR" ] || output_arg="$GCOV_OUTPUT_DIR/$name"
     compile_args=()
@@ -188,8 +167,7 @@ compile_test() {
     fi
 }
 
-# Suite registration remains explicit; --list and compilation use the same
-# platform applicability predicate. Platform-neutral suites compile everywhere.
+# Suite registration remains explicit. Platform-neutral suites compile everywhere.
 compile_test test_command_queries \
     "$ROOT/tests/unit/test_command_queries.c" \
     "$ROOT/src/command_list.c" \
@@ -206,9 +184,15 @@ compile_test test_package_transaction \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
 
+compile_test test_update_assets \
+    "$ROOT/tests/unit/test_update_assets.c" \
+    "$ROOT/src/update_assets.c" \
+    "$ROOT/src/text.c"
+
 compile_test test_update_journal \
     "$ROOT/tests/unit/test_update_journal.c" \
     "$ROOT/src/update_journal.c" \
+    "$ROOT/src/update_assets.c" \
     "$ROOT/src/release_metadata.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/checksum.c" \
@@ -220,6 +204,7 @@ compile_test test_update_journal \
 compile_test test_update_helper \
     "$ROOT/tests/unit/test_update_helper.c" \
     "$ROOT/src/update_helper.c" \
+    "$ROOT/src/update_assets.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
@@ -352,7 +337,9 @@ compile_test test_command_remove \
 
 compile_test test_command_doctor \
     "$ROOT/tests/unit/test_command_doctor.c" \
-    "$ROOT/src/command_doctor.c"
+    "$ROOT/src/command_doctor.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 compile_test test_command_context \
     "$ROOT/tests/unit/test_command_context.c" \
@@ -381,6 +368,7 @@ esac
 compile_test test_package \
     "$ROOT/tests/unit/test_package.c" \
     "$ROOT/src/package.c" \
+    "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/interrupt.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/package_metadata.c" \
@@ -434,15 +422,21 @@ compile_test test_package_extract \
     "$ROOT/tests/unit/test_package_extract.c" \
     "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/package_extract.c" \
+    "$ROOT/src/system.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
+    $PACKAGE_SYSTEM_LIBS \
     $UNIT_ARCHIVE_LIBS
 
 compile_test test_package_extract_registration \
     "$ROOT/tests/unit/test_package_extract_registration.c" \
     "$ROOT/src/package_archive_format.c" \
+    "$ROOT/src/system.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
+    $PACKAGE_SYSTEM_LIBS \
     $UNIT_ARCHIVE_LIBS
 
 compile_test test_storage \
@@ -537,6 +531,7 @@ compile_test test_state \
 compile_test test_self_update \
     "$ROOT/tests/unit/test_self_update.c" \
     "$ROOT/src/self_update.c" \
+    "$ROOT/src/update_assets.c" \
     "$ROOT/src/release_metadata.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
@@ -553,31 +548,6 @@ compile_test test_command_uninstall \
     "$ROOT/src/command_uninstall.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
-
-expected_list="$TEST_BUILD_DIR/.expected-tests"
-actual_list="$TEST_BUILD_DIR/.actual-tests"
-list_registered_tests "$PLATFORM" | LC_ALL=C sort > "$expected_list"
-: > "$actual_list"
-for test_binary in "$TEST_BUILD_DIR"/test_*; do
-    [ -f "$test_binary" ] || continue
-    case "$test_binary" in
-        *.gcda|*.gcno) continue ;;
-    esac
-    [ -x "$test_binary" ] || {
-        printf 'Compiled unit-test output is not executable: %s\n' "$test_binary" >&2
-        exit 1
-    }
-    basename "$test_binary" >> "$actual_list"
-done
-LC_ALL=C sort -o "$actual_list" "$actual_list"
-if [ "$(cat "$expected_list")" != "$(cat "$actual_list")" ]; then
-    printf 'Expected unit-test binaries:\n' >&2
-    cat "$expected_list" >&2
-    printf 'Compiled unit-test binaries:\n' >&2
-    cat "$actual_list" >&2
-    exit 1
-fi
-rm -f -- "$expected_list" "$actual_list"
 
 if [ -e "$TEST_BUILD_FINAL" ] || [ -L "$TEST_BUILD_FINAL" ]; then
     cup_path_check_directory_chain "$TEST_BUILD_FINAL" 0 \

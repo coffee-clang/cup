@@ -17,9 +17,9 @@ try {
     Invoke-Cup -CommandArgs @("repair") | Out-Null
 
     New-TestPackage -Component "compiler" -Tool "clang" -Version "21.1.5" -Entries @("clang")
-    New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" -Entries @("clang")
-    New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.1" -Entries @("gdb")
-    New-TestPackage -Component "linker" -Tool "lld" -Version "22.1.5" -Entries @("lld")
+    New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" -Entries @("clang")
+    New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.2" -Entries @("gdb")
+    New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" -Entries @("lld")
 
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@21.1.5") | Out-Null
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
@@ -36,12 +36,12 @@ try {
 
     $stateText = $state -join "`n"
     Assert-Contains $stateText "installed.compiler.windows-x64.windows-x64=clang@21.1.5"
-    Assert-Contains $stateText "installed.compiler.windows-x64.windows-x64=clang@22.1.5"
-    Assert-Contains $stateText "installed.debugger.windows-x64.windows-x64=gdb@17.1"
-    Assert-Contains $stateText "installed.linker.windows-x64.windows-x64=lld@22.1.5"
+    Assert-Contains $stateText "installed.compiler.windows-x64.windows-x64=clang@23.1.0"
+    Assert-Contains $stateText "installed.debugger.windows-x64.windows-x64=gdb@17.2"
+    Assert-Contains $stateText "installed.linker.windows-x64.windows-x64=lld@23.1.0"
     Assert-Contains $stateText "default.compiler.windows-x64.windows-x64=clang@21.1.5"
-    Assert-Contains $stateText "default.debugger.windows-x64.windows-x64=gdb@17.1"
-    Assert-Contains $stateText "default.linker.windows-x64.windows-x64=lld@22.1.5"
+    Assert-Contains $stateText "default.debugger.windows-x64.windows-x64=gdb@17.2"
+    Assert-Contains $stateText "default.linker.windows-x64.windows-x64=lld@23.1.0"
 
     Copy-Item $statePath "$statePath.valid"
 

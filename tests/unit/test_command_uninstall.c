@@ -72,7 +72,6 @@ static void reset_scenario(void) {
     journal_load_status = UNINSTALL_JOURNAL_LOADED;
     memset(&loaded_journal, 0, sizeof(loaded_journal));
     loaded_journal.phase = UNINSTALL_PHASE_SCHEDULED;
-    loaded_journal.stage = UNINSTALL_STAGE_HANDOFF;
     loaded_journal.file_identity.valid = 1;
     loaded_journal.file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
     strcpy(loaded_journal.temporary_name, ".cup-uninstall-123-456-0.tmp");
@@ -400,7 +399,6 @@ static void test_journal_and_handoff_failures(void) {
     provide_input("y\n");
     helper_result = CUP_ERR_FILESYSTEM;
     loaded_journal.phase = UNINSTALL_PHASE_FAILED;
-    loaded_journal.stage = UNINSTALL_STAGE_DETACH;
     loaded_journal.error_code = CUP_STATUS_OPERATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_uninstall(0));
     TEST_ASSERT_EQUAL_INT(0, helper_cleanup_calls);

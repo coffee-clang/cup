@@ -23,11 +23,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char root[MAX_PATH_LEN];
 static CupError layout_result;
 static CupError validate_result;
@@ -56,8 +51,6 @@ static int namespace_case_sensitive;
 #define TEST_WRAPPER_SUFFIX ""
 #define TEST_BINARY_NAME "cup"
 #endif
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -148,11 +141,6 @@ void setUp(void) {
 void tearDown(void) {
     remove_tree_real(root);
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError platform_get_host(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "%s", TEST_HOST), size);
@@ -592,11 +580,6 @@ static WrapperPlan simple_plan(void) {
     strcpy(plan.items[0].target, "../components/compiler/clang/bin/cla'ng");
     return plan;
 }
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_plan_lifetime(void) {
     WrapperPlan plan;

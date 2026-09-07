@@ -98,7 +98,7 @@ test "$(hash_file "$installed_cup")" = \
     "$(hash_file "$release_dir/cup-$PLATFORM")"
 doctor_output=$(
     cd "$test_home"
-    HOME="$test_home" "$installed_cup" doctor 2>&1
+    HOME="$test_home" PATH="$test_home/.cup/bin:$PATH" "$installed_cup" doctor 2>&1
 )
 printf '%s\n' "$doctor_output"
 case "$doctor_output" in
@@ -124,12 +124,49 @@ test "$(sed -n '2p' "$foreign_home/.coffee-cup/root.txt")" = \
     'product=coffee-clang/cup'
 test "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" = 'layout=1'
 HOME="$foreign_home" "$foreign_cup" --version | grep -Fx "cup $VERSION"
-foreign_doctor=$(HOME="$foreign_home" "$foreign_cup" doctor 2>&1)
+foreign_doctor=$(HOME="$foreign_home" PATH="$foreign_home/.coffee-cup/bin:$PATH" \
+    "$foreign_cup" doctor 2>&1)
 printf '%s\n' "$foreign_doctor" | grep -F 'Doctor found no issues.' >/dev/null
 HOME="$foreign_home" "$foreign_cup" uninstall --yes >/dev/null
 cup_test_wait_for_uninstall "$foreign_home/.coffee-cup" "$foreign_home" ||
     fail 'fallback-root uninstall did not complete cleanly'
 test -f "$foreign_home/.cup/foreign.txt"
+
+# A release installation may select another user-manageable base. Moving the complete canonical
+# root to another base preserves identity; reinstall must reuse that relocated root rather than
+# recreating the default HOME root.
+custom_base="$test_root/custom base"
+custom_relocated_base="$test_root/relocated base"
+mkdir -p "$custom_base" "$custom_relocated_base"
+HOME="$test_home" \
+CUP_INSTALL_BASE_DIR="$custom_base" \
+CUP_INSTALL_NO_PATH_PROMPT=1 \
+CUP_INSTALL_ALLOW_INSECURE=1 \
+CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+    sh "$release_dir/install.sh"
+custom_root="$custom_base/.cup"
+custom_cup="$custom_root/bin/cup"
+test -x "$custom_cup"
+HOME="$test_home" PATH="$custom_root/bin:$PATH" "$custom_cup" doctor 2>&1 |
+    grep -F 'Doctor found no issues.' >/dev/null
+mv "$custom_root" "$custom_relocated_base/.cup"
+relocated_root="$custom_relocated_base/.cup"
+relocated_cup="$relocated_root/bin/cup"
+HOME="$test_home" "$relocated_cup" --version | grep -Fx "cup $VERSION"
+test ! -e "$custom_root"
+HOME="$test_home" \
+CUP_INSTALL_BASE_DIR="$custom_relocated_base" \
+CUP_INSTALL_NO_PATH_PROMPT=1 \
+CUP_INSTALL_ALLOW_INSECURE=1 \
+CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
+    sh "$release_dir/install.sh"
+test ! -e "$custom_root"
+HOME="$test_home" PATH="$relocated_root/bin:$PATH" "$relocated_cup" doctor 2>&1 |
+    grep -F 'Doctor found no issues.' >/dev/null
+custom_uninstall=$(HOME="$test_home" "$relocated_cup" uninstall --yes 2>&1)
+printf '%s\n' "$custom_uninstall" | grep -F "$custom_relocated_base/.cup-uninstall-" >/dev/null
+cup_test_wait_for_uninstall "$relocated_root" "$custom_relocated_base" ||
+    fail 'relocated custom-root uninstall did not complete cleanly'
 
 # Repair may recreate mutable runtime paths, but it must never replace or remove the
 # currently installed executable on either POSIX or Windows.
@@ -153,30 +190,7 @@ test -d "$test_home/.cup/staging"
 test "$(hash_file "$installed_cup")" = "$binary_hash_before"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 
-# The update helper is derived from the installed executable, not a release asset. Repair
-# regenerates a missing copy without changing the running executable.
 update_helper="$test_home/.cup/helpers/update-helper"
-rm -f "$update_helper"
-if helper_repair_output=$(
-    cd "$test_home"
-    HOME="$test_home" \
-    CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
-        "$installed_cup" repair 2>&1
-); then
-    :
-else
-    repair_status=$?
-    printf '%s\n' "$helper_repair_output" >&2
-    fail "installed cup helper repair failed with exit code $repair_status"
-fi
-printf '%s\n' "$helper_repair_output"
-printf '%s\n' "$helper_repair_output" | \
-    grep -F 'Regenerated native update helper from the installed executable.' >/dev/null
-test -x "$update_helper"
-test "$(hash_file "$update_helper")" = "$binary_hash_before"
-test "$(hash_file "$installed_cup")" = "$binary_hash_before"
-helper_hash_before_update=$(hash_file "$update_helper")
 
 # A pending or malformed canonical journal blocks bootstrap before any managed mutation.
 # The installer must preserve both the journal evidence and the installed executable.
@@ -236,7 +250,7 @@ while [ "$attempt" -lt 200 ]; do
     if [ ! -e "$test_home/.cup/transaction.txt" ] &&
         HOME="$test_home" "$installed_cup" --version 2>/dev/null |
             grep -Fx "cup $next_version" >/dev/null &&
-        HOME="$test_home" "$installed_cup" doctor >/dev/null 2>&1; then
+        HOME="$test_home" PATH="$test_home/.cup/bin:$PATH" "$installed_cup" doctor >/dev/null 2>&1; then
         break
     fi
     attempt=$((attempt + 1))
@@ -245,10 +259,11 @@ done
 [ "$attempt" -lt 200 ] || fail 'cup update helper did not complete the verified update'
 test ! -e "$test_home/.cup/transaction.txt"
 test "$(hash_file "$installed_cup")" = "$(hash_file "$version_root/cup-$PLATFORM")"
-test "$(hash_file "$update_helper")" = "$helper_hash_before_update"
+test "$(hash_file "$update_helper")" = "$binary_hash_before"
 test "$(hash_file "$update_helper")" != "$(hash_file "$installed_cup")"
 HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $next_version"
-updated_doctor=$(HOME="$test_home" "$installed_cup" doctor 2>&1)
+updated_doctor=$(HOME="$test_home" PATH="$test_home/.cup/bin:$PATH" \
+    "$installed_cup" doctor 2>&1)
 printf '%s\n' "$updated_doctor"
 printf '%s\n' "$updated_doctor" | grep -F 'Doctor found no issues.' >/dev/null
 if find "$test_home/.cup/staging" -mindepth 1 -name 'cup-update-*' -print -quit |
@@ -257,12 +272,14 @@ if find "$test_home/.cup/staging" -mindepth 1 -name 'cup-update-*' -print -quit 
 fi
 
 # The assembled release performs its detached uninstall smoke test.
-uninstall_started_message='Uninstall started; cleanup continues in the background. '
-uninstall_started_message="${uninstall_started_message}You can close this terminal. "
-uninstall_started_message="${uninstall_started_message}The PATH entry was not removed."
+uninstall_handoff_message='Uninstall handoff accepted; cleanup continues in the background. '
+uninstall_handoff_message="${uninstall_handoff_message}You can close this terminal. "
+uninstall_handoff_message="${uninstall_handoff_message}The PATH entry was not removed."
 uninstall_output=$(HOME="$test_home" "$installed_cup" uninstall --yes 2>&1)
 printf '%s\n' "$uninstall_output"
-printf '%s\n' "$uninstall_output" | grep -F "$uninstall_started_message" >/dev/null
+printf '%s\n' "$uninstall_output" | grep -F "$uninstall_handoff_message" >/dev/null
+printf '%s\n' "$uninstall_output" | grep -F 'Recovery path if cleanup fails: ' >/dev/null
+printf '%s\n' "$uninstall_output" | grep -F "$test_home/.cup-uninstall-" >/dev/null
 if ! cup_test_wait_for_uninstall "$test_home/.cup" "$test_home"; then
     residue=$(cup_test_uninstall_residue "$test_home")
     [ ! -e "$test_home/.cup" ] && [ ! -L "$test_home/.cup" ] ||

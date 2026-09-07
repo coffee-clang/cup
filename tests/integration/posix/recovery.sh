@@ -102,13 +102,13 @@ JOURNAL
 
 # If state already committed an installation, repair must complete the package
 # move rather than discarding the valid staged directory.
-make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang
+make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang
 run_cup install compiler clang@stable >/dev/null
-install_path=$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
-install_staging_name=install-compiler-clang-$TEST_PLATFORM-$TEST_PLATFORM-22.1.5-recovery
+install_path=$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
+install_staging_name=install-compiler-clang-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-recovery
 install_staging=$TEST_HOME/.cup/staging/$install_staging_name
 mv "$install_path" "$install_staging"
-write_package_journal install compiler clang 22.1.5 "$install_staging_name"
+write_package_journal install compiler clang 23.1.0 "$install_staging_name"
 run_cup help >/dev/null
 run_cup --version >/dev/null
 run_cup_expect_failure "$TMP_ROOT/pending-package-list.out" list
@@ -118,7 +118,7 @@ run_cup_expect_failure "$TMP_ROOT/pending-package-doctor.out" doctor
 assert_contains "$(cat "$TMP_ROOT/pending-package-doctor.out")" \
     'interrupted install transaction detected'
 output=$(run_cup repair)
-assert_contains "$output" 'Recovered interrupted install transaction for clang@22.1.5.'
+assert_contains "$output" 'Recovered interrupted install transaction for clang@23.1.0.'
 assert_file "$install_path/info.txt"
 assert_missing "$install_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
@@ -126,15 +126,15 @@ assert_cup_healthy
 
 # If removal had only staged the package and state still references it, repair
 # must roll the package back into its installed location.
-make_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
+make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
 run_cup install debugger lldb@stable >/dev/null
-remove_path=$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
-remove_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-22.1.5-recovery
+remove_path=$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
+remove_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-recovery
 remove_staging=$TEST_HOME/.cup/staging/$remove_staging_name
 mv "$remove_path" "$remove_staging"
-write_package_journal remove debugger lldb 22.1.5 "$remove_staging_name"
+write_package_journal remove debugger lldb 23.1.0 "$remove_staging_name"
 output=$(run_cup repair)
-assert_contains "$output" 'Recovered interrupted remove transaction for lldb@22.1.5.'
+assert_contains "$output" 'Recovered interrupted remove transaction for lldb@23.1.0.'
 assert_file "$remove_path/info.txt"
 assert_missing "$remove_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
@@ -143,15 +143,15 @@ assert_cup_healthy
 # If the canonical path is present but corrupted while staging still contains
 # the valid package referenced by state, repair must preserve the bad path and
 # restore the valid copy instead of discarding it.
-conflict_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-22.1.5-conflict
+conflict_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-conflict
 conflict_staging=$TEST_HOME/.cup/staging/$conflict_staging_name
 mv "$remove_path" "$conflict_staging"
 mkdir -p "$remove_path"
 printf 'corrupted package\n' > "$remove_path/info.txt"
-write_package_journal remove debugger lldb 22.1.5 "$conflict_staging_name"
+write_package_journal remove debugger lldb 23.1.0 "$conflict_staging_name"
 output=$(run_cup repair)
 assert_contains "$output" 'Preserved invalid package path as'
-assert_contains "$output" 'Recovered interrupted remove transaction for lldb@22.1.5.'
+assert_contains "$output" 'Recovered interrupted remove transaction for lldb@23.1.0.'
 assert_file "$remove_path/info.txt"
 assert_contains "$(cat "$remove_path/info.txt")" 'package.component=debugger'
 assert_missing "$conflict_staging"

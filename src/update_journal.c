@@ -4,6 +4,7 @@
  */
 
 #include "update_journal.h"
+#include "update_assets.h"
 
 #include "assets.h"
 #include "checksum.h"
@@ -19,24 +20,9 @@
 #include <string.h>
 
 #define CUP_UPDATE_JOURNAL_FORMAT "1"
-#define FIELD_FORMAT (1u << 0)
-#define FIELD_OPERATION (1u << 1)
-#define FIELD_PHASE (1u << 2)
-#define FIELD_TEMPORARY_NAME (1u << 3)
-#define FIELD_TOKEN (1u << 4)
-#define FIELD_VERSION (1u << 5)
-#define FIELD_ERROR (1u << 6)
-#define FIELD_RECOVERY (1u << 7)
-#define JOURNAL_FIELDS \
-    (FIELD_FORMAT | FIELD_OPERATION | FIELD_PHASE | FIELD_TEMPORARY_NAME | FIELD_TOKEN | \
-     FIELD_VERSION | FIELD_ERROR | FIELD_RECOVERY)
-
 typedef struct {
-    const char *backup_name;
-    const char *absent_name;
-    const char *destination;
-    int executable;
-    int read_only;
+    UpdateAssetSpec spec;
+    char destination[MAX_PATH_LEN];
 } UpdateAsset;
 
 /* Journal lifecycle and phase model. Scheduled, committing and failed states remain distinct across
@@ -102,32 +88,15 @@ static int parse_failure_recovery(const char *value, UpdateFailureRecovery *reco
 }
 
 static int temporary_name_is_valid(const char *name) {
-    return path_is_safe_segment(name) && strlen(name) < MAX_METADATA_VALUE_LEN &&
-           strncmp(name, "cup-update-", 11) == 0 && name[11] != '\0';
-}
-
-static int token_is_valid(const char *token) {
-    size_t i;
-
-    if (text_is_empty(token) || strlen(token) >= sizeof(((UpdateJournal *)0)->token)) {
-        return 0;
-    }
-    /* Tokens embed the generated staging name; Windows temporary directories use a .tmp suffix. */
-    for (i = 0; token[i] != '\0'; ++i) {
-        char c = token[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '-' || c == '_' || c == '.')) {
-            return 0;
-        }
-    }
-    return 1;
+    return name != NULL && strlen(name) < MAX_METADATA_VALUE_LEN &&
+           path_generated_temp_suffix(name, CUP_UPDATE_TEMP_PREFIX) != NULL;
 }
 
 static int token_matches_temporary_name(const char *token, const char *temporary_name) {
     size_t token_length;
     size_t name_length;
 
-    if (!token_is_valid(token) || !temporary_name_is_valid(temporary_name)) {
+    if (!runtime_journal_token_is_valid(token) || !temporary_name_is_valid(temporary_name)) {
         return 0;
     }
     token_length = strlen(token);
@@ -161,7 +130,7 @@ static CupError write_journal(FILE *file, const void *value) {
 
     if (journal == NULL ||
         fprintf(file, "format=%s\n", CUP_UPDATE_JOURNAL_FORMAT) < 0 ||
-        fprintf(file, "operation=cup-update\n") < 0 ||
+        fprintf(file, "operation=%s\n", CUP_UPDATE_JOURNAL_OPERATION) < 0 ||
         fprintf(file, "phase=%s\n", update_phase_name(journal->phase)) < 0 ||
         fprintf(file, "temporary_name=%s\n", journal->temporary_name) < 0 ||
         fprintf(file, "token=%s\n", journal->token) < 0 ||
@@ -207,7 +176,7 @@ CupError update_journal_begin(const char *temporary_path,
     CupError err;
     const char *name;
 
-    if (created == NULL || text_is_empty(temporary_path) || !token_is_valid(token) ||
+    if (created == NULL || text_is_empty(temporary_path) || !runtime_journal_token_is_valid(token) ||
         release_version_parse(version, NULL) != CUP_OK || strlen(version) >= MAX_IDENTIFIER_LEN) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -278,39 +247,31 @@ static CupError set_failure_recovery(UpdateJournal *journal,
 /* Strict journal decoding. Unknown, duplicate or inconsistent fields preserve the journal as a
  * blocker. */
 static CupError set_field(UpdateJournal *journal,
-                                     const char *key,
-                                     const char *value,
-                                     unsigned *seen) {
-    unsigned bit;
+                          const char *key,
+                          const char *value) {
     CupError err = CUP_OK;
 
     if (strcmp(key, "format") == 0) {
-        bit = FIELD_FORMAT;
         if (strcmp(value, CUP_UPDATE_JOURNAL_FORMAT) != 0) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "operation") == 0) {
-        bit = FIELD_OPERATION;
-        if (strcmp(value, "cup-update") != 0) {
+        if (strcmp(value, CUP_UPDATE_JOURNAL_OPERATION) != 0) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "phase") == 0) {
-        bit = FIELD_PHASE;
         if (!parse_phase(value, &journal->phase)) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "temporary_name") == 0) {
-        bit = FIELD_TEMPORARY_NAME;
         if (text_copy(journal->temporary_name, sizeof(journal->temporary_name), value) != CUP_OK) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "token") == 0) {
-        bit = FIELD_TOKEN;
         if (text_copy(journal->token, sizeof(journal->token), value) != CUP_OK) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "version") == 0) {
-        bit = FIELD_VERSION;
         if (text_copy(journal->version, sizeof(journal->version), value) != CUP_OK ||
             text_is_empty(value)) {
             err = CUP_ERR_TRANSACTION;
@@ -318,14 +279,12 @@ static CupError set_field(UpdateJournal *journal,
     } else if (strcmp(key, "error") == 0) {
         unsigned parsed;
 
-        bit = FIELD_ERROR;
         if (!text_parse_uint(value, 255u, &parsed)) {
             err = CUP_ERR_TRANSACTION;
         } else {
             journal->error_code = (int)parsed;
         }
     } else if (strcmp(key, "recovery") == 0) {
-        bit = FIELD_RECOVERY;
         if (!parse_failure_recovery(value, &journal->recovery)) {
             err = CUP_ERR_TRANSACTION;
         }
@@ -333,36 +292,26 @@ static CupError set_field(UpdateJournal *journal,
         return CUP_ERR_TRANSACTION;
     }
 
-    if (err != CUP_OK || (*seen & bit) != 0) {
-        return CUP_ERR_TRANSACTION;
-    }
-    *seen |= bit;
-    return CUP_OK;
+    return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
 }
 
 static const char *const journal_keys[] = {
     "format", "operation", "phase", "temporary_name",
     "token", "version", "error", "recovery"};
 
-typedef struct {
-    UpdateJournal *candidate;
-    unsigned seen;
-} UpdateJournalParser;
-
 static CupError parse_field(const char *key,
-                                               const char *value,
-                                               void *userdata) {
-    UpdateJournalParser *parser = userdata;
+                            const char *value,
+                            void *userdata) {
+    UpdateJournal *candidate = userdata;
 
-    if (parser == NULL) {
+    if (candidate == NULL) {
         return CUP_ERR_TRANSACTION;
     }
-    return set_field(parser->candidate, key, value, &parser->seen);
+    return set_field(candidate, key, value);
 }
 
 CupError update_journal_load(UpdateJournal *journal, UpdateJournalStatus *status) {
     UpdateJournal candidate;
-    UpdateJournalParser parser;
     SystemPathIdentity file_identity;
     CupError err;
     int missing;
@@ -373,23 +322,20 @@ CupError update_journal_load(UpdateJournal *journal, UpdateJournalStatus *status
 
     update_journal_init(journal);
     update_journal_init(&candidate);
-    memset(&parser, 0, sizeof(parser));
     memset(&file_identity, 0, sizeof(file_identity));
-    parser.candidate = &candidate;
     *status = CUP_UPDATE_JOURNAL_MISSING;
 
     err = runtime_journal_parse(journal_keys,
                                 sizeof(journal_keys) /
                                     sizeof(journal_keys[0]),
                                 parse_field,
-                                &parser,
+                                &candidate,
                                 &file_identity,
                                 &missing);
     if (err != CUP_OK || missing) {
         return err;
     }
-    if (parser.seen != JOURNAL_FIELDS ||
-        !journal_fields_are_coherent(&candidate)) {
+    if (!journal_fields_are_coherent(&candidate)) {
         return CUP_ERR_TRANSACTION;
     }
     candidate.file_identity = file_identity;
@@ -419,55 +365,30 @@ CupError update_journal_get_staging_path(const UpdateJournal *journal,
 
 typedef struct {
     char version[MAX_IDENTIFIER_LEN];
-    char binary[CHECKSUM_SHA256_HEX_LENGTH + 1];
-    char platform_checksums[CHECKSUM_SHA256_HEX_LENGTH + 1];
-    char packages[CHECKSUM_SHA256_HEX_LENGTH + 1];
-    char install_policy[CHECKSUM_SHA256_HEX_LENGTH + 1];
-    char common_checksums[CHECKSUM_SHA256_HEX_LENGTH + 1];
+    char digests[CUP_UPDATE_ASSET_COUNT][CHECKSUM_SHA256_HEX_LENGTH + 1];
     SystemPathIdentity file_identity;
 } UpdateGeneration;
 
-static CupError resolve_generation_paths(char paths[5][MAX_PATH_LEN]) {
-    CupError err = layout_get_binary_path(paths[0], MAX_PATH_LEN);
+static CupError hash_generation_assets(const char *staged_binary,
+                                       UpdateGeneration *generation) {
+    size_t i;
+    CupError err = CUP_OK;
 
-    if (err == CUP_OK) {
-        err = layout_get_platform_checksums_path(paths[1], MAX_PATH_LEN);
-    }
-    if (err == CUP_OK) {
-        err = layout_get_package_catalog_path(paths[2], MAX_PATH_LEN);
-    }
-    if (err == CUP_OK) {
-        err = layout_get_install_policy_path(paths[3], MAX_PATH_LEN);
-    }
-    if (err == CUP_OK) {
-        err = layout_get_common_checksums_path(paths[4], MAX_PATH_LEN);
-    }
-    return err;
-}
-
-static CupError hash_generation_paths(const char *binary,
-                                      char paths[5][MAX_PATH_LEN],
-                                      UpdateGeneration *generation) {
-    CupError err;
-
-    if (text_is_empty(binary) || generation == NULL) {
+    if (text_is_empty(staged_binary) || generation == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = checksum_sha256_file(binary, generation->binary, sizeof(generation->binary));
-    if (err == CUP_OK) {
-        err = checksum_sha256_file(paths[1], generation->platform_checksums,
-                                   sizeof(generation->platform_checksums));
-    }
-    if (err == CUP_OK) {
-        err = checksum_sha256_file(paths[2], generation->packages, sizeof(generation->packages));
-    }
-    if (err == CUP_OK) {
-        err = checksum_sha256_file(paths[3], generation->install_policy,
-                                   sizeof(generation->install_policy));
-    }
-    if (err == CUP_OK) {
-        err = checksum_sha256_file(paths[4], generation->common_checksums,
-                                   sizeof(generation->common_checksums));
+    for (i = 0; i < CUP_UPDATE_ASSET_COUNT && err == CUP_OK; ++i) {
+        char path[MAX_PATH_LEN];
+        const char *source = staged_binary;
+
+        if (i != CUP_UPDATE_ASSET_BINARY) {
+            err = update_asset_destination((UpdateAssetId)i, path, sizeof(path));
+            source = path;
+        }
+        if (err == CUP_OK) {
+            err = checksum_sha256_file(
+                source, generation->digests[i], sizeof(generation->digests[i]));
+        }
     }
     return err;
 }
@@ -476,7 +397,7 @@ CupError update_write_generation_marker(const char *staging,
                                             const char *version,
                                             const char *staged_binary) {
     UpdateGeneration generation;
-    char paths[5][MAX_PATH_LEN];
+    UpdateAssetSpec assets[CUP_UPDATE_ASSET_COUNT];
     char marker[MAX_PATH_LEN];
     FILE *file = NULL;
     CupError err;
@@ -489,10 +410,10 @@ CupError update_write_generation_marker(const char *staging,
     memset(&generation, 0, sizeof(generation));
     err = text_copy(generation.version, sizeof(generation.version), version);
     if (err == CUP_OK) {
-        err = resolve_generation_paths(paths);
+        err = update_asset_specs(assets);
     }
     if (err == CUP_OK) {
-        err = hash_generation_paths(staged_binary, paths, &generation);
+        err = hash_generation_assets(staged_binary, &generation);
     }
     if (err == CUP_OK) {
         err = path_join(marker, sizeof(marker), staging, CUP_UPDATE_COMMITTED);
@@ -505,13 +426,20 @@ CupError update_write_generation_marker(const char *staging,
     }
 
     if (fprintf(file, "format=%s\n", CUP_UPDATE_GENERATION_FORMAT) < 0 ||
-        fprintf(file, "version=%s\n", generation.version) < 0 ||
-        fprintf(file, "binary_sha256=%s\n", generation.binary) < 0 ||
-        fprintf(file, "platform_checksums_sha256=%s\n", generation.platform_checksums) < 0 ||
-        fprintf(file, "packages_sha256=%s\n", generation.packages) < 0 ||
-        fprintf(file, "install_policy_sha256=%s\n", generation.install_policy) < 0 ||
-        fprintf(file, "common_checksums_sha256=%s\n", generation.common_checksums) < 0 ||
-        system_sync_file(file) != CUP_OK) {
+        fprintf(file, "version=%s\n", generation.version) < 0) {
+        failed = 1;
+    }
+    if (!failed) {
+        size_t i;
+
+        for (i = 0; i < CUP_UPDATE_ASSET_COUNT; ++i) {
+            if (fprintf(file, "%s=%s\n", assets[i].generation_key, generation.digests[i]) < 0) {
+                failed = 1;
+                break;
+            }
+        }
+    }
+    if (!failed && system_sync_file(file) != CUP_OK) {
         failed = 1;
     }
     if (fclose(file) != 0) {
@@ -526,9 +454,7 @@ CupError update_write_generation_marker(const char *staging,
 }
 
 static CupError load_generation_marker(const char *path, UpdateGeneration *generation) {
-    static const char *const keys[CUP_UPDATE_GENERATION_LINES] = {
-        "format", "version", "binary_sha256", "platform_checksums_sha256",
-        "packages_sha256", "install_policy_sha256", "common_checksums_sha256"};
+    UpdateAssetSpec assets[CUP_UPDATE_ASSET_COUNT];
     PersistentFileSnapshot snapshot;
     TextDocumentReader reader;
     char line[256];
@@ -540,6 +466,10 @@ static CupError load_generation_marker(const char *path, UpdateGeneration *gener
         return CUP_ERR_INVALID_INPUT;
     }
     memset(generation, 0, sizeof(*generation));
+    err = update_asset_specs(assets);
+    if (err != CUP_OK) {
+        return CUP_ERR_TRANSACTION;
+    }
     filesystem_snapshot_init(&snapshot);
     err = filesystem_snapshot_read(path, 4096u, &snapshot, &missing);
     if (err != CUP_OK || missing) {
@@ -549,15 +479,21 @@ static CupError load_generation_marker(const char *path, UpdateGeneration *gener
     while (err == CUP_OK) {
         char key[64];
         char value[128];
+        const char *expected_key;
         int has_line;
 
         err = text_document_read_line(&reader, line, sizeof(line), &has_line);
         if (err != CUP_OK || !has_line) {
             break;
         }
-        if (index >= CUP_UPDATE_GENERATION_LINES ||
-            text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK ||
-            strcmp(key, keys[index]) != 0) {
+        if (index >= CUP_UPDATE_GENERATION_LINES) {
+            err = CUP_ERR_TRANSACTION;
+            break;
+        }
+        expected_key = index == 0 ? "format" :
+                       index == 1 ? "version" : assets[index - 2].generation_key;
+        if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK ||
+            strcmp(key, expected_key) != 0) {
             err = CUP_ERR_TRANSACTION;
             break;
         }
@@ -570,16 +506,11 @@ static CupError load_generation_marker(const char *path, UpdateGeneration *gener
                 text_copy(generation->version, sizeof(generation->version), value) != CUP_OK) {
                 err = CUP_ERR_TRANSACTION;
             }
-        } else {
-            char *destination[] = {generation->binary, generation->platform_checksums,
-                                   generation->packages, generation->install_policy,
-                                   generation->common_checksums};
-            if (!checksum_digest_is_canonical(value) ||
-                text_copy(destination[index - 2],
-                          CHECKSUM_SHA256_HEX_LENGTH + 1,
-                          value) != CUP_OK) {
-                err = CUP_ERR_TRANSACTION;
-            }
+        } else if (!checksum_digest_is_canonical(value) ||
+                   text_copy(generation->digests[index - 2],
+                             sizeof(generation->digests[index - 2]),
+                             value) != CUP_OK) {
+            err = CUP_ERR_TRANSACTION;
         }
         index++;
     }
@@ -595,30 +526,31 @@ static CupError load_generation_marker(const char *path, UpdateGeneration *gener
 
 static CupError installed_generation_matches(const UpdateGeneration *expected, int *matches) {
     UpdateGeneration current;
-    char paths[5][MAX_PATH_LEN];
+    char binary[MAX_PATH_LEN];
     CupError err;
+    size_t i;
 
     if (expected == NULL || matches == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *matches = 0;
     memset(&current, 0, sizeof(current));
-    err = resolve_generation_paths(paths);
+    err = update_asset_destination(CUP_UPDATE_ASSET_BINARY, binary, sizeof(binary));
     if (err == CUP_OK) {
-        err = hash_generation_paths(paths[0], paths, &current);
+        err = hash_generation_assets(binary, &current);
     }
     if (err == CUP_OK) {
-        *matches = strcmp(current.binary, expected->binary) == 0 &&
-                   strcmp(current.platform_checksums, expected->platform_checksums) == 0 &&
-                   strcmp(current.packages, expected->packages) == 0 &&
-                   strcmp(current.install_policy, expected->install_policy) == 0 &&
-                   strcmp(current.common_checksums, expected->common_checksums) == 0;
+        *matches = 1;
+        for (i = 0; i < CUP_UPDATE_ASSET_COUNT; ++i) {
+            if (strcmp(current.digests[i], expected->digests[i]) != 0) {
+                *matches = 0;
+                break;
+            }
+        }
     }
     return err;
 }
 
-
-/* cup update recovery. */
 static CupError files_are_equal(const char *left, const char *right, int *equal) {
     char left_hash[CHECKSUM_SHA256_HEX_LENGTH + 1];
     char right_hash[CHECKSUM_SHA256_HEX_LENGTH + 1];
@@ -646,10 +578,10 @@ static CupError asset_evidence_kinds(const char *staging,
                                      char *absent,
                                      size_t absent_size,
                                      SystemPathKind *absent_kind) {
-    CupError err = path_join(backup, backup_size, staging, asset->backup_name);
+    CupError err = path_join(backup, backup_size, staging, asset->spec.old_name);
 
     if (err == CUP_OK) {
-        err = path_join(absent, absent_size, staging, asset->absent_name);
+        err = path_join(absent, absent_size, staging, asset->spec.absent_name);
     }
     if (err == CUP_OK) {
         err = system_get_path_kind(backup, backup_kind);
@@ -709,7 +641,7 @@ static CupError remove_bootstrap_destination(const UpdateAsset *asset,
         return CUP_ERR_TRANSACTION;
     }
     err = system_get_path_identity(asset->destination, &identity);
-    if (err == CUP_OK && asset->read_only) {
+    if (err == CUP_OK && asset->spec.read_only) {
         err = system_set_read_only(asset->destination, 0);
     }
     if (err == CUP_OK) {
@@ -761,7 +693,7 @@ static CupError restore_asset(const char *staging,
             return CUP_ERR_TRANSACTION;
         }
         err = filesystem_apply_required_permissions(
-            asset->destination, asset->executable, asset->read_only);
+            asset->destination, asset->spec.executable, asset->spec.read_only);
         return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
     }
     if (destination_kind == SYSTEM_PATH_REGULAR_FILE &&
@@ -777,7 +709,7 @@ static CupError restore_asset(const char *staging,
         return err == CUP_ERR_COMMIT ? CUP_ERR_COMMIT : CUP_ERR_ROLLBACK;
     }
     err = filesystem_apply_required_permissions(
-        asset->destination, asset->executable, asset->read_only);
+        asset->destination, asset->spec.executable, asset->spec.read_only);
     if (err != CUP_OK) {
         fprintf(stderr,
                 "Error: could not restore permissions for update asset '%s'.\n",
@@ -797,7 +729,7 @@ static CupError all_assets_were_absent(const char *staging,
     for (i = 0; i < count; ++i) {
         char path[MAX_PATH_LEN];
         SystemPathKind kind;
-        CupError err = path_join(path, sizeof(path), staging, assets[i].absent_name);
+        CupError err = path_join(path, sizeof(path), staging, assets[i].spec.absent_name);
 
         if (err == CUP_OK) {
             err = system_get_path_kind(path, &kind);
@@ -817,17 +749,11 @@ static CupError all_assets_were_absent(const char *staging,
 typedef struct {
     char staging[MAX_PATH_LEN];
     char marker[MAX_PATH_LEN];
-    char binary[MAX_PATH_LEN];
-    char platform_checksums[MAX_PATH_LEN];
-    char catalog[MAX_PATH_LEN];
-    char install_policy[MAX_PATH_LEN];
-    char common_checksums[MAX_PATH_LEN];
     SystemPathKind marker_kind;
-    UpdateAsset assets[5];
+    UpdateAsset assets[CUP_UPDATE_ASSET_COUNT];
 } UpdateRecoveryPlan;
 
-static CupError acknowledge_rollback(const UpdateJournal *journal,
-                                               UpdateRecoveryResult *result) {
+static CupError acknowledge_rollback(const UpdateJournal *journal) {
     AssetsInspection inspection;
     char staging[MAX_PATH_LEN];
     SystemPathKind staging_kind;
@@ -865,9 +791,6 @@ static CupError acknowledge_rollback(const UpdateJournal *journal,
         return err;
     }
 
-    if (result != NULL) {
-        *result = CUP_UPDATE_RECOVERY_ACKNOWLEDGED;
-    }
     printf("Acknowledged failed cup update to version %s after a successful rollback "
            "(error %d).\n",
            journal->version,
@@ -878,66 +801,31 @@ static CupError acknowledge_rollback(const UpdateJournal *journal,
 static CupError resolve_recovery_plan(const UpdateJournal *journal,
                                       UpdateRecoveryPlan *plan) {
     CupError err;
+    size_t i;
 
     memset(plan, 0, sizeof(*plan));
     plan->marker_kind = SYSTEM_PATH_MISSING;
 
-    err = update_journal_get_staging_path(
-        journal, plan->staging, sizeof(plan->staging));
+    err = update_journal_get_staging_path(journal, plan->staging, sizeof(plan->staging));
     if (err == CUP_OK) {
-        err = path_join(
-            plan->marker, sizeof(plan->marker), plan->staging, CUP_UPDATE_COMMITTED);
-    }
-    if (err == CUP_OK) {
-        err = layout_get_binary_path(plan->binary, sizeof(plan->binary));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_platform_checksums_path(
-            plan->platform_checksums, sizeof(plan->platform_checksums));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_package_catalog_path(plan->catalog, sizeof(plan->catalog));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_install_policy_path(
-            plan->install_policy, sizeof(plan->install_policy));
-    }
-    if (err == CUP_OK) {
-        err = layout_get_common_checksums_path(
-            plan->common_checksums, sizeof(plan->common_checksums));
+        err = path_join(plan->marker, sizeof(plan->marker), plan->staging, CUP_UPDATE_COMMITTED);
     }
     if (err == CUP_OK) {
         err = system_get_path_kind(plan->marker, &plan->marker_kind);
     }
-    if (err != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
+    for (i = 0; err == CUP_OK && i < CUP_UPDATE_ASSET_COUNT; ++i) {
+        err = update_asset_spec((UpdateAssetId)i, &plan->assets[i].spec);
+        if (err == CUP_OK) {
+            err = update_asset_destination((UpdateAssetId)i,
+                                           plan->assets[i].destination,
+                                           sizeof(plan->assets[i].destination));
+        }
     }
-
-    plan->assets[0] = (UpdateAsset){
-        CUP_UPDATE_BINARY_OLD, CUP_UPDATE_BINARY_ABSENT, plan->binary, 1, 0};
-    plan->assets[1] = (UpdateAsset){CUP_UPDATE_PLATFORM_CHECKSUMS_OLD,
-                                      CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT,
-                                      plan->platform_checksums,
-                                      0,
-                                      1};
-    plan->assets[2] = (UpdateAsset){
-        CUP_UPDATE_PACKAGES_OLD, CUP_UPDATE_PACKAGES_ABSENT, plan->catalog, 0, 1};
-    plan->assets[3] = (UpdateAsset){CUP_UPDATE_INSTALL_POLICY_OLD,
-                                      CUP_UPDATE_INSTALL_POLICY_ABSENT,
-                                      plan->install_policy,
-                                      0,
-                                      1};
-    plan->assets[4] = (UpdateAsset){CUP_UPDATE_COMMON_CHECKSUMS_OLD,
-                                      CUP_UPDATE_COMMON_CHECKSUMS_ABSENT,
-                                      plan->common_checksums,
-                                      0,
-                                      1};
-    return CUP_OK;
+    return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
 }
 
 static CupError recover_committed_generation(const UpdateJournal *journal,
                                              UpdateRecoveryPlan *plan,
-                                             UpdateRecoveryResult *result,
                                              int *finalized) {
     AssetsInspection inspection;
     UpdateGeneration generation;
@@ -977,9 +865,6 @@ static CupError recover_committed_generation(const UpdateJournal *journal,
                 fprintf(stderr,
                         "Warning: the cup update completed, but stale update staging could "
                         "not be removed. Run 'cup repair'.\n");
-            }
-            if (result != NULL) {
-                *result = CUP_UPDATE_RECOVERY_FINALIZED;
             }
             *finalized = 1;
             printf("Completed interrupted cup update transaction.\n");
@@ -1024,8 +909,7 @@ static CupError restore_recovery_assets(const UpdateRecoveryPlan *plan,
 }
 
 static CupError finish_recovery_rollback(const UpdateJournal *journal,
-                                         const UpdateRecoveryPlan *plan,
-                                         UpdateRecoveryResult *result) {
+                                         const UpdateRecoveryPlan *plan) {
     AssetsInspection inspection;
     CupError err;
     int bootstrap_rollback = 0;
@@ -1045,9 +929,6 @@ static CupError finish_recovery_rollback(const UpdateJournal *journal,
         }
         if (filesystem_remove_tree(plan->staging) != CUP_OK) {
             return CUP_ERR_TRANSACTION;
-        }
-        if (result != NULL) {
-            *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
         }
         printf("Rolled back failed initial cup installation.\n");
         return CUP_OK;
@@ -1086,14 +967,10 @@ static CupError finish_recovery_rollback(const UpdateJournal *journal,
         printf("Rolled back interrupted cup update transaction.\n");
     }
 
-    if (result != NULL) {
-        *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
-    }
     return CUP_OK;
 }
 
-static CupError recover_scheduled(const UpdateJournal *journal,
-                                         UpdateRecoveryResult *result) {
+static CupError recover_scheduled(const UpdateJournal *journal) {
     char staging[MAX_PATH_LEN];
     CupError err;
 
@@ -1113,35 +990,32 @@ static CupError recover_scheduled(const UpdateJournal *journal,
                 "Warning: the pending cup update was cancelled, but stale update staging could "
                 "not be removed. Run 'cup repair'.\n");
     }
-    if (result != NULL) {
-        *result = CUP_UPDATE_RECOVERY_ROLLED_BACK;
-    }
     printf("Cancelled pending cup update before any installed asset was changed.\n");
     return CUP_OK;
 }
 
 CupError update_journal_recover(const UpdateJournal *journal,
                                     UpdateRecoveryMode mode,
-                                    UpdateRecoveryResult *result) {
+                                    int *finalized) {
     UpdateRecoveryPlan plan;
     CupError err;
-    int finalized;
+    int generation_finalized;
 
     if (journal == NULL ||
         (mode != CUP_UPDATE_RECOVER_REPLACE_BINARY &&
          mode != CUP_UPDATE_RECOVER_PRESERVE_BINARY)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (result != NULL) {
-        *result = CUP_UPDATE_RECOVERY_NONE;
+    if (finalized != NULL) {
+        *finalized = 0;
     }
 
     if (journal->phase == CUP_UPDATE_PHASE_FAILED &&
         journal->recovery == CUP_UPDATE_FAILURE_ROLLED_BACK) {
-        return acknowledge_rollback(journal, result);
+        return acknowledge_rollback(journal);
     }
     if (journal->phase == CUP_UPDATE_PHASE_SCHEDULED) {
-        return recover_scheduled(journal, result);
+        return recover_scheduled(journal);
     }
 
     err = resolve_recovery_plan(journal, &plan);
@@ -1149,8 +1023,11 @@ CupError update_journal_recover(const UpdateJournal *journal,
         return err;
     }
 
-    err = recover_committed_generation(journal, &plan, result, &finalized);
-    if (err != CUP_OK || finalized) {
+    err = recover_committed_generation(journal, &plan, &generation_finalized);
+    if (err != CUP_OK || generation_finalized) {
+        if (err == CUP_OK && generation_finalized && finalized != NULL) {
+            *finalized = 1;
+        }
         return err;
     }
 
@@ -1159,5 +1036,5 @@ CupError update_journal_recover(const UpdateJournal *journal,
         return err;
     }
 
-    return finish_recovery_rollback(journal, &plan, result);
+    return finish_recovery_rollback(journal, &plan);
 }

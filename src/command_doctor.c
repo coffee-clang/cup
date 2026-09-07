@@ -12,6 +12,7 @@
 #include "layout.h"
 #include "package_catalog.h"
 #include "package.h"
+#include "path.h"
 #include "platform.h"
 #include "state.h"
 #include "system.h"
@@ -21,6 +22,8 @@
 #include "uninstall_journal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* Aggregated diagnostic state; every failed inspection remains visible. */
 typedef struct {
@@ -28,10 +31,6 @@ typedef struct {
     int warning_count;
     int incomplete_count;
 } DoctorReport;
-
-static int state_contains_package(const CupState *state, const PackageIdentity *package) {
-    return state_find_installed(state, package) != -1;
-}
 
 static void report_incomplete(DoctorReport *report, const char *description) {
     printf("Incomplete: %s could not be checked.\n", description);
@@ -48,20 +47,6 @@ static void report_asset_status(DoctorReport *report,
 
     printf("Issue: %s is %s.\n", description, status == CUP_ASSET_MISSING ? "missing" : "invalid");
     report->issue_count++;
-}
-
-static void report_update_helper_status(DoctorReport *report, AssetStatus status) {
-    if (status == CUP_ASSET_VALID) {
-        printf("OK: derived native update helper is available.\n");
-    } else if (status == CUP_ASSET_MISSING) {
-        printf("Warning: derived native update helper is missing; it will be recreated "
-               "before the next cup update.\n");
-        report->warning_count++;
-    } else {
-        printf("Issue: derived native update helper path is invalid and blocks "
-               "regeneration.\n");
-        report->issue_count++;
-    }
 }
 
 static void check_read_only_path(const char *path, const char *description, DoctorReport *report) {
@@ -99,7 +84,7 @@ static CupError load_diagnostic_catalog(const AssetsInspection *inspection,
     return err;
 }
 
-static CupError check_assets(PackageCatalog *catalog, DoctorReport *report, int *has_catalog) {
+static void check_assets(PackageCatalog *catalog, DoctorReport *report, int *has_catalog) {
     AssetsInspection inspection;
     CupError err;
     char path[MAX_PATH_LEN];
@@ -107,12 +92,11 @@ static CupError check_assets(PackageCatalog *catalog, DoctorReport *report, int 
     err = assets_inspect(&inspection);
     if (err != CUP_OK) {
         report_incomplete(report, "cup assets");
-        return CUP_OK;
+        return;
     }
 
     if (assets_has_installed_assets(&inspection)) {
         report_asset_status(report, "installed cup executable", inspection.binary);
-        report_update_helper_status(report, inspection.helper);
         report_asset_status(report, "installed package catalog", inspection.catalog);
         report_asset_status(report, "installation configuration", inspection.install_policy);
         report_asset_status(report, "common checksum file", inspection.common_checksums);
@@ -146,7 +130,6 @@ static CupError check_assets(PackageCatalog *catalog, DoctorReport *report, int 
     if (err != CUP_OK) {
         report_incomplete(report, "current package catalog");
     }
-    return CUP_OK;
 }
 
 static void check_state_packages(const CupState *state,
@@ -276,7 +259,7 @@ static void check_scanned_packages(const PackageList *packages,
     }
 
     for (i = 0; i < packages->count; ++i) {
-        if (!state_contains_package(state, &packages->items[i])) {
+        if (state_find_installed(state, &packages->items[i]) == -1) {
             printf("Issue: valid package '%s@%s' exists in components "
                    "but is absent from state.txt.\n",
                    packages->items[i].tool,
@@ -322,41 +305,28 @@ typedef enum {
 /* Runtime snapshot preparation. Diagnostics continue only after a shared lock protects one
  * coherent view of state, journals and installed packages. */
 static DoctorRuntimeSnapshot acquire_runtime_snapshot(DoctorReport *report, SystemLock *lock) {
-    LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     CupError err;
     char path[MAX_PATH_LEN];
+    SystemPathKind root_kind = SYSTEM_PATH_MISSING;
     int lock_exists = 0;
 
-    err = layout_get_runtime_status(&runtime_status);
+    err = layout_get_root(path, sizeof(path));
+    if (err == CUP_OK) {
+        err = system_get_path_kind(path, &root_kind);
+    }
     if (err != CUP_OK) {
-        report_incomplete(report, "runtime structure");
+        report_incomplete(report, "cup root");
         return DOCTOR_RUNTIME_UNAVAILABLE;
     }
-    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        SystemPathKind root_kind = SYSTEM_PATH_MISSING;
-
-        err = layout_get_root(path, sizeof(path));
-        if (err == CUP_OK) {
-            err = system_get_path_kind(path, &root_kind);
-        }
-        if (err != CUP_OK) {
-            report_incomplete(report, "cup root");
-            return DOCTOR_RUNTIME_UNAVAILABLE;
-        }
-        if (root_kind == SYSTEM_PATH_MISSING) {
-            printf("Info: cup runtime is not initialized; "
-                   "the first operational command will create it.\n");
-            return DOCTOR_RUNTIME_MISSING;
-        }
-        if (root_kind != SYSTEM_PATH_DIRECTORY) {
-            printf("Issue: cup root is not a real directory.\n");
-            report->issue_count++;
-            return DOCTOR_RUNTIME_UNAVAILABLE;
-        }
+    if (root_kind == SYSTEM_PATH_MISSING) {
+        printf("Info: cup runtime is not initialized; "
+               "the first operational command will create it.\n");
+        return DOCTOR_RUNTIME_MISSING;
     }
-    if (runtime_status != LAYOUT_RUNTIME_READY) {
-        printf("Issue: cup runtime structure is incomplete.\n");
+    if (root_kind != SYSTEM_PATH_DIRECTORY) {
+        printf("Issue: cup root is not a real directory.\n");
         report->issue_count++;
+        return DOCTOR_RUNTIME_UNAVAILABLE;
     }
 
     err = layout_get_lock_path(path, sizeof(path));
@@ -506,13 +476,11 @@ static void check_transaction_journal(DoctorReport *report) {
         if (err != CUP_OK || uninstall_status != UNINSTALL_JOURNAL_LOADED) {
             printf("Issue: cup uninstall journal is invalid.\n");
         } else if (uninstall_journal.phase == UNINSTALL_PHASE_FAILED) {
-            printf("Issue: the previous cup uninstall failed during '%s' with error %d.\n",
-                   uninstall_stage_name(uninstall_journal.stage),
+            printf("Issue: the previous cup uninstall failed with error %d.\n",
                    uninstall_journal.error_code);
         } else {
-            printf("Issue: cup uninstall is pending in phase '%s' during '%s'.\n",
-                   uninstall_phase_name(uninstall_journal.phase),
-                   uninstall_stage_name(uninstall_journal.stage));
+            printf("Issue: cup uninstall is pending in phase '%s'.\n",
+                   uninstall_phase_name(uninstall_journal.phase));
         }
         report->issue_count++;
     }
@@ -561,6 +529,65 @@ static void check_package_tree(const CupState *state,
         check_scanned_packages(&packages, state, state_loaded, report);
     } else {
         report_incomplete(report, "installed package tree");
+    }
+}
+
+static int path_entry_matches(const char *entry, size_t length, const char *directory) {
+    char normalized[MAX_PATH_LEN];
+
+    if (entry == NULL || directory == NULL || length == 0 || length >= sizeof(normalized)) {
+        return 0;
+    }
+    memcpy(normalized, entry, length);
+    normalized[length] = '\0';
+#if !defined(_WIN32)
+    while (length > 1 && normalized[length - 1] == '/') {
+        normalized[--length] = '\0';
+    }
+#endif
+    return path_equal(normalized, directory);
+}
+
+static int path_contains_directory(const char *path_value, const char *directory) {
+    const char separator =
+#if defined(_WIN32)
+        ';';
+#else
+        ':';
+#endif
+    const char *cursor;
+
+    if (path_value == NULL || directory == NULL) {
+        return 0;
+    }
+    cursor = path_value;
+    while (*cursor != '\0') {
+        const char *end = strchr(cursor, separator);
+        size_t length = end == NULL ? strlen(cursor) : (size_t)(end - cursor);
+
+        if (path_entry_matches(cursor, length, directory)) {
+            return 1;
+        }
+        if (end == NULL) {
+            break;
+        }
+        cursor = end + 1;
+    }
+    return 0;
+}
+
+static void check_path_integration(DoctorReport *report) {
+    char bin_dir[MAX_PATH_LEN];
+    const char *path_value;
+
+    if (layout_get_bin_dir(bin_dir, sizeof(bin_dir)) != CUP_OK) {
+        report_incomplete(report, "cup command directory PATH integration");
+        return;
+    }
+    path_value = getenv("PATH");
+    if (!path_contains_directory(path_value, bin_dir)) {
+        printf("Warning: current CUP command directory is not in PATH: '%s'.\n", bin_dir);
+        report->warning_count++;
     }
 }
 
@@ -645,10 +672,8 @@ CupError command_doctor(void) {
         DoctorRuntimeSnapshot snapshot = acquire_runtime_snapshot(&report, &lock);
 
         if (snapshot == DOCTOR_RUNTIME_MISSING) {
-            err = check_assets(&catalog, &report, &has_catalog);
-            if (err == CUP_OK) {
-                err = print_doctor_summary(&report);
-            }
+            check_assets(&catalog, &report, &has_catalog);
+            err = print_doctor_summary(&report);
             goto done;
         }
         if (snapshot == DOCTOR_RUNTIME_UNAVAILABLE) {
@@ -656,12 +681,10 @@ CupError command_doctor(void) {
             goto done;
         }
     }
-    err = check_assets(&catalog, &report, &has_catalog);
-    if (err != CUP_OK) {
-        goto done;
-    }
+    check_assets(&catalog, &report, &has_catalog);
 
     check_runtime_contents(&report, current_host, sizeof(current_host));
+    check_path_integration(&report);
     load_and_check_state(
         &state, current_host, &report, &state_loaded, &state_valid);
     check_transaction_journal(&report);

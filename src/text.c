@@ -13,6 +13,35 @@ int text_is_empty(const char *value) {
     return value == NULL || value[0] == '\0';
 }
 
+int text_equal_ascii_ignore_case(const char *left, const char *right) {
+    const unsigned char *left_cursor;
+    const unsigned char *right_cursor;
+
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+
+    left_cursor = (const unsigned char *)left;
+    right_cursor = (const unsigned char *)right;
+    while (*left_cursor != '\0' && *right_cursor != '\0') {
+        unsigned char left_value = *left_cursor;
+        unsigned char right_value = *right_cursor;
+
+        if (left_value >= 'A' && left_value <= 'Z') {
+            left_value = (unsigned char)(left_value + ('a' - 'A'));
+        }
+        if (right_value >= 'A' && right_value <= 'Z') {
+            right_value = (unsigned char)(right_value + ('a' - 'A'));
+        }
+        if (left_value != right_value) {
+            return 0;
+        }
+        left_cursor++;
+        right_cursor++;
+    }
+    return *left_cursor == *right_cursor;
+}
+
 char *text_trim(char *text) {
     char *end;
 

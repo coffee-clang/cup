@@ -54,6 +54,27 @@ static void test_path_segments(void) {
     TEST_ASSERT_FALSE(path_is_safe_identifier("-starts"));
     TEST_ASSERT_FALSE(path_is_safe_identifier("bad name"));
     TEST_ASSERT_FALSE(path_is_safe_identifier("bad/name"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_validate_canonical_identifier("clang-22.1.5", 32));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          path_validate_canonical_identifier("Clang", 32));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          path_validate_canonical_identifier("bad/name", 32));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          path_validate_canonical_identifier("12345678", 8));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          path_validate_canonical_identifier(NULL, 32));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          path_validate_canonical_identifier("clang", 0));
+    TEST_ASSERT_EQUAL_STRING("abc123",
+                             path_generated_temp_suffix("cup-update-abc123", "cup-update"));
+    TEST_ASSERT_EQUAL_STRING("abc.tmp",
+                             path_generated_temp_suffix(".cup-uninstall-abc.tmp",
+                                                        ".cup-uninstall"));
+    TEST_ASSERT_NULL(path_generated_temp_suffix("cup-update", "cup-update"));
+    TEST_ASSERT_NULL(path_generated_temp_suffix("cup-update-", "cup-update"));
+    TEST_ASSERT_NULL(path_generated_temp_suffix("other-abc", "cup-update"));
+    TEST_ASSERT_NULL(path_generated_temp_suffix("cup-update-bad/name", "cup-update"));
+    TEST_ASSERT_NULL(path_generated_temp_suffix("cup-update-abc", "bad/prefix"));
 
     for (i = 0; i < sizeof(reserved) / sizeof(reserved[0]); ++i) {
         TEST_ASSERT_FALSE(path_is_safe_segment(reserved[i]));
@@ -143,9 +164,15 @@ static void test_path_building(void) {
 
     TEST_ASSERT_EQUAL_STRING("name", path_last_segment("name"));
     TEST_ASSERT_EQUAL_STRING("clang", path_last_segment("root/bin/clang"));
+#if defined(_WIN32)
     TEST_ASSERT_EQUAL_STRING("clang", path_last_segment("root\\bin\\clang"));
     TEST_ASSERT_EQUAL_STRING("clang", path_last_segment("root\\bin/clang"));
     TEST_ASSERT_EQUAL_STRING("clang", path_last_segment("root/bin\\clang"));
+#else
+    TEST_ASSERT_EQUAL_STRING("root\\bin\\clang", path_last_segment("root\\bin\\clang"));
+    TEST_ASSERT_EQUAL_STRING("clang", path_last_segment("root\\bin/clang"));
+    TEST_ASSERT_EQUAL_STRING("bin\\clang", path_last_segment("root/bin\\clang"));
+#endif
     TEST_ASSERT_EQUAL_STRING("", path_last_segment("root/bin/"));
     TEST_ASSERT_NULL(path_last_segment(NULL));
 

@@ -5,6 +5,7 @@
 
 #include "runtime_journal.h"
 
+#include "constants.h"
 #include "filesystem.h"
 #include "layout.h"
 #include "system.h"
@@ -12,6 +13,22 @@
 
 #include <stdio.h>
 #include <string.h>
+
+int runtime_journal_token_is_valid(const char *token) {
+    const unsigned char *cursor;
+
+    if (text_is_empty(token) || strlen(token) >= MAX_TRANSACTION_TOKEN_LEN) {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)token; *cursor != '\0'; ++cursor) {
+        if (!((*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z') ||
+              (*cursor >= '0' && *cursor <= '9') || *cursor == '_' || *cursor == '-' ||
+              *cursor == '.')) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 static CupError runtime_journal_read_at(const char *root,
                                         PersistentFileSnapshot *snapshot,
@@ -253,9 +270,9 @@ static CupError detect_journal_field(const char *key,
     if (strcmp(value, "install") == 0 || strcmp(value, "remove") == 0 ||
         strcmp(value, "update") == 0) {
         detection->detected = RUNTIME_JOURNAL_PACKAGE;
-    } else if (strcmp(value, "cup-update") == 0) {
+    } else if (strcmp(value, CUP_UPDATE_JOURNAL_OPERATION) == 0) {
         detection->detected = RUNTIME_JOURNAL_UPDATE;
-    } else if (strcmp(value, "uninstall") == 0) {
+    } else if (strcmp(value, CUP_UNINSTALL_JOURNAL_OPERATION) == 0) {
         detection->detected = RUNTIME_JOURNAL_UNINSTALL;
     } else {
         return CUP_ERR_TRANSACTION;

@@ -5,7 +5,6 @@ param(
     [string]$CupPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet("development", "debug", "coverage", "sanitizers", "release")]
     [string]$Configuration
 )
 Set-StrictMode -Version Latest
@@ -43,6 +42,56 @@ if ($syntaxErrors.Count -ne 0) {
 Write-Host "PowerShell syntax validation passed."
 
 . (Join-Path $projectRoot "tests\support\windows\common.ps1")
+Assert-TestConfiguration -Configuration $Configuration
+
+function Test-FailedInitializationCleanup {
+    $savedProfile = Get-Item -LiteralPath Env:USERPROFILE -ErrorAction SilentlyContinue
+    $savedAllowInsecure = Get-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE `
+        -ErrorAction SilentlyContinue
+    $profileSentinel = $projectRoot
+    $allowInsecureSentinel = 'outer-environment-sentinel'
+    $missingExecutable = Join-Path $projectRoot (
+        'missing-cup-' + [Guid]::NewGuid().ToString('N') + '.exe')
+
+    try {
+        $env:USERPROFILE = $profileSentinel
+        $env:CUP_INSTALL_ALLOW_INSECURE = $allowInsecureSentinel
+        $failed = $false
+        try {
+            Initialize-TestEnvironment -Name 'initialization-failure' `
+                -ExecutablePath $missingExecutable
+        } catch {
+            $failed = $true
+        } finally {
+            Remove-TestEnvironment
+        }
+
+        if (-not $failed) {
+            throw 'Windows test framework accepted a missing CUP executable'
+        }
+        if ($env:USERPROFILE -cne $profileSentinel) {
+            throw 'Failed Windows test initialization did not preserve USERPROFILE'
+        }
+        if ($env:CUP_INSTALL_ALLOW_INSECURE -cne $allowInsecureSentinel) {
+            throw 'Failed Windows test initialization did not preserve managed environment'
+        }
+    } finally {
+        if ($null -eq $savedProfile) {
+            Remove-Item -LiteralPath Env:USERPROFILE -ErrorAction SilentlyContinue
+        } else {
+            $env:USERPROFILE = $savedProfile.Value
+        }
+        if ($null -eq $savedAllowInsecure) {
+            Remove-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE `
+                -ErrorAction SilentlyContinue
+        } else {
+            $env:CUP_INSTALL_ALLOW_INSECURE = $savedAllowInsecure.Value
+        }
+    }
+}
+
+Test-FailedInitializationCleanup
+Write-Host "Windows test-framework failure cleanup passed."
 $suiteRoot = Join-Path $projectRoot "tests\integration\windows"
 $env:CUP_TEST_CONFIGURATION = $Configuration
 $suiteTimeout = 300

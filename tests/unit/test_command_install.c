@@ -18,11 +18,6 @@
 
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static InstallNamedList standard_profile;
 static InstallNamedList llvm_toolchain;
 static InstallNamedList gnu_toolchain;
@@ -51,8 +46,6 @@ static char already_installed_entry[MAX_SELECTOR_LEN];
 static int install_fail_call;
 static CupError install_fail_result;
 static CupError installed_valid_result;
-
-/* Fixture lifecycle and local construction helpers. */
 
 void setUp(void) {
     /* Curated policy fixtures cover component profiles and explicit toolchains. */
@@ -111,11 +104,6 @@ void setUp(void) {
 
 void tearDown(void) {
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
@@ -374,10 +362,33 @@ CupError package_artifact_spec_build(PackageArtifactSpec *spec,
                                      const PackageCatalog *catalog,
                                      const PackageIdentity *identity,
                                      const char *format_name) {
-    (void)catalog;
+    CupError err;
+    int available;
+
     TEST_ASSERT_NOT_NULL(spec);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_NOT_NULL(format_name);
+    err = package_catalog_has_version(catalog,
+                                      identity->component,
+                                      identity->tool,
+                                      identity->host_platform,
+                                      identity->target_platform,
+                                      identity->version,
+                                      &available);
+    if (err != CUP_OK || !available) {
+        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
+    }
+    err = package_catalog_has_format(catalog,
+                                     identity->component,
+                                     identity->tool,
+                                     identity->host_platform,
+                                     identity->target_platform,
+                                     format_name,
+                                     &available);
+    if (err != CUP_OK || !available) {
+        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
+    }
+
     memset(spec, 0, sizeof(*spec));
     spec->identity = *identity;
     if (strcmp(format_name, "tar.gz") == 0) {
@@ -433,11 +444,6 @@ CupError package_install(const char *component,
     return CUP_OK;
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           command_install("compiler", "clang@release-x", NULL, NULL));
@@ -458,6 +464,16 @@ static void test_tool_first_selection(void) {
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
     TEST_ASSERT_EQUAL_STRING("clang@release-x", installed_entries[0]);
+}
+
+static void test_tool_first_description_uses_selector_capacity(void) {
+    const char *selector = "clang@1234567890123456789012345678901";
+
+    TEST_ASSERT_TRUE(strlen(selector) >= MAX_IDENTIFIER_LEN);
+    TEST_ASSERT_TRUE(strlen(selector) < MAX_SELECTOR_LEN);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install(selector, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, install_calls);
+    TEST_ASSERT_EQUAL_STRING(selector, installed_entries[0]);
 }
 
 static void test_tool_first_stable_selection(void) {
@@ -639,6 +655,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_direct_selection);
     RUN_TEST(test_tool_first_selection);
+    RUN_TEST(test_tool_first_description_uses_selector_capacity);
     RUN_TEST(test_tool_first_stable_selection);
     RUN_TEST(test_abbreviated_install);
     RUN_TEST(test_profile_preferences);

@@ -33,13 +33,6 @@ typedef enum {
     CUP_UPDATE_RECOVER_PRESERVE_BINARY
 } UpdateRecoveryMode;
 
-typedef enum {
-    CUP_UPDATE_RECOVERY_NONE,
-    CUP_UPDATE_RECOVERY_FINALIZED,
-    CUP_UPDATE_RECOVERY_ROLLED_BACK,
-    CUP_UPDATE_RECOVERY_ACKNOWLEDGED
-} UpdateRecoveryResult;
-
 typedef struct {
     char temporary_name[MAX_PATH_LEN];
     char token[MAX_TRANSACTION_TOKEN_LEN];
@@ -70,6 +63,6 @@ CupError update_write_generation_marker(const char *staging,
                                         const char *staged_binary);
 CupError update_journal_recover(const UpdateJournal *journal,
                                 UpdateRecoveryMode mode,
-                                UpdateRecoveryResult *result);
+                                int *finalized);
 
 #endif /* CUP_UPDATE_JOURNAL_H */

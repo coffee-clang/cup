@@ -13,7 +13,13 @@ $Script:CupTestHome = $null
 $Script:CupTestDevRoot = $null
 $Script:CupTestOriginalUserProfile = $null
 $Script:CupTestOriginalEnvironment = @{}
+$Script:CupTestOriginalEnvironmentCaptured = $false
 $Script:CupTestCommandProcessor = $null
+
+. (Join-Path $PSScriptRoot "configuration.ps1")
+. (Join-Path $PSScriptRoot "build.ps1")
+. (Join-Path $PSScriptRoot "process.ps1")
+. (Join-Path $PSScriptRoot "hash.ps1")
 
 function Fail-Test {
     param(
@@ -102,66 +108,6 @@ function Assert-Equals {
 }
 
 # Isolated paths and native process invocation.
-function Resolve-TestBuildRoot {
-    $candidate = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_BUILD_ROOT)) {
-        Join-Path $Script:CupTestProjectRoot "build"
-    } else {
-        $env:CUP_TEST_BUILD_ROOT
-    }
-    $fullPath = [IO.Path]::GetFullPath($candidate)
-    $pathRoot = [IO.Path]::GetPathRoot($fullPath)
-    if ([string]::IsNullOrWhiteSpace($pathRoot) -or $fullPath -ceq $pathRoot) {
-        Fail-Test "unsafe test build root: $fullPath"
-    }
-
-    $current = $pathRoot
-    $relative = $fullPath.Substring($pathRoot.Length)
-    $separators = [char[]]@(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar)
-    $components = $relative.Split(
-        $separators,
-        [StringSplitOptions]::RemoveEmptyEntries)
-    foreach ($component in $components) {
-        if ($component -in @(".", "..")) {
-            Fail-Test "unsafe test build root component: $fullPath"
-        }
-        $current = Join-Path $current $component
-        if (-not (Test-Path -LiteralPath $current -PathType Container)) {
-            Fail-Test "test build root is not a real directory: $current"
-        }
-        $item = Get-Item -LiteralPath $current -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Fail-Test "test build root contains a reparse point: $current"
-        }
-    }
-
-    $marker = Join-Path $fullPath ".cup-build-root"
-    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
-        Fail-Test "test build root marker is missing: $marker"
-    }
-    $markerItem = Get-Item -LiteralPath $marker -Force
-    if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        Fail-Test "test build root marker is a reparse point: $marker"
-    }
-    $expected = @(
-        "format=1",
-        "product=coffee-clang/cup",
-        "kind=build-root",
-        "layout=1"
-    )
-    $actual = @(Get-Content -LiteralPath $marker)
-    if ($actual.Count -ne $expected.Count) {
-        Fail-Test "test build root marker is invalid: $marker"
-    }
-    for ($index = 0; $index -lt $expected.Count; $index++) {
-        if ($actual[$index] -cne $expected[$index]) {
-            Fail-Test "test build root marker is invalid: $marker"
-        }
-    }
-    return $fullPath
-}
-
 function New-RealTestDirectory {
     param(
         [Parameter(Mandatory = $true)]
@@ -202,16 +148,9 @@ function New-IsolatedTestRoot {
         [string]$Name
     )
 
-    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
-        "development"
-    } else {
-        $env:CUP_TEST_CONFIGURATION
-    }
-    if ($configuration -notin @("development", "debug", "coverage", "sanitizers", "release")) {
-        Fail-Test "unsupported CUP_TEST_CONFIGURATION: $configuration"
-    }
+    $configuration = Get-TestConfiguration
     if ($null -eq $Script:CupTestBuildRoot) {
-        $Script:CupTestBuildRoot = Resolve-TestBuildRoot
+        $Script:CupTestBuildRoot = Resolve-TestBuildRoot -ProjectRoot $Script:CupTestProjectRoot
     }
     $platformRoot = New-RealTestDirectory `
         -Parent $Script:CupTestBuildRoot -Name "windows-x64"
@@ -228,29 +167,16 @@ function Get-TestHelperPath {
         [string]$Name
     )
 
-    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
-        "development"
-    } else {
-        $env:CUP_TEST_CONFIGURATION
-    }
-    if ($configuration -notin @("development", "debug", "coverage", "sanitizers", "release")) {
-        Fail-Test "unsupported CUP_TEST_CONFIGURATION: $configuration"
-    }
+    $configuration = Get-TestConfiguration
     if ($null -eq $Script:CupTestBuildRoot) {
-        $Script:CupTestBuildRoot = Resolve-TestBuildRoot
+        $Script:CupTestBuildRoot = Resolve-TestBuildRoot `
+            -ProjectRoot $Script:CupTestProjectRoot
     }
-    $path = Join-Path $Script:CupTestBuildRoot (
-        "windows-x64\$configuration\tests\helpers\$Name.exe")
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        Fail-Test "test helper is unavailable: $path"
-    }
-    $item = Get-Item -LiteralPath $path -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        Fail-Test "test helper is a reparse point: $path"
-    }
-    return $item.FullName
+    return Resolve-TestHelperPath `
+        -BuildRoot $Script:CupTestBuildRoot `
+        -Configuration $configuration `
+        -Name $Name
 }
-
 function New-ZipPackageFixture {
     param(
         [Parameter(Mandatory = $true)]
@@ -294,7 +220,7 @@ function New-ZipPackageFixture {
         Fail-Test "archive fixture failed: $($result.Output)"
     }
 
-    $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-Sha256Lower -Path $archive
     # MSYS2 GNU sha256sum marks archive records as binary with '*'.
     Write-Utf8NoBom -Path (Join-Path $cacheDir 'SHA256SUMS') -Lines @(
         "$hash *$(Split-Path -Leaf $archive)")
@@ -377,44 +303,6 @@ function ConvertTo-NativeArgument {
     }
     [void]$builder.Append('"')
     return $builder.ToString()
-}
-
-function Stop-TestProcessTree {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Diagnostics.Process]$Process,
-
-        [ValidateRange(1, 60000)]
-        [int]$WaitMilliseconds = 10000
-    )
-
-    if ($Process.HasExited) {
-        return
-    }
-
-    $treeStopped = $false
-    try {
-        & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
-        $treeStopped = ($LASTEXITCODE -eq 0)
-    } catch {
-        $treeStopped = $false
-    }
-
-    if (-not $treeStopped -and -not $Process.HasExited) {
-        try {
-            $Process.Kill()
-        } catch {
-            # Cleanup is best effort.
-        }
-    }
-    if (-not $Process.WaitForExit($WaitMilliseconds) -and -not $Process.HasExited) {
-        try {
-            $Process.Kill()
-        } catch {
-            # Cleanup is best effort.
-        }
-        [void]$Process.WaitForExit($WaitMilliseconds)
-    }
 }
 
 function Invoke-NativeProcess {
@@ -588,6 +476,21 @@ function Initialize-TestEnvironment {
         [string]$ExecutablePath
     )
 
+    $originalEnvironment = @{}
+    foreach ($variable in @(
+        'CUP_INSTALL_BASE_URL', 'CUP_INSTALL_ALLOW_INSECURE',
+        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {
+        $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        $originalEnvironment[$variable] = if ($null -eq $item) {
+            $null
+        } else {
+            $item.Value
+        }
+    }
+    $Script:CupTestOriginalUserProfile = $env:USERPROFILE
+    $Script:CupTestOriginalEnvironment = $originalEnvironment
+    $Script:CupTestOriginalEnvironmentCaptured = $true
+
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
         Fail-Test "cup executable path is empty"
     }
@@ -595,17 +498,7 @@ function Initialize-TestEnvironment {
     $Script:CupTestRoot = New-IsolatedTestRoot -Name $Name
     $Script:CupTestHome = Join-Path $Script:CupTestRoot "home"
     $Script:CupTestDevRoot = Join-Path $Script:CupTestRoot "development-root"
-    $Script:CupTestOriginalUserProfile = $env:USERPROFILE
-    $Script:CupTestOriginalEnvironment = @{}
-    foreach ($variable in @(
-        'CUP_INSTALL_BASE_URL', 'CUP_INSTALL_ALLOW_INSECURE',
-        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {
-        $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
-        $Script:CupTestOriginalEnvironment[$variable] = if ($null -eq $item) {
-            $null
-        } else {
-            $item.Value
-        }
+    foreach ($variable in $Script:CupTestOriginalEnvironment.Keys) {
         Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
     }
 
@@ -620,19 +513,22 @@ function Initialize-TestEnvironment {
 }
 
 function Remove-TestEnvironment {
-    foreach ($entry in $Script:CupTestOriginalEnvironment.GetEnumerator()) {
-        if ($null -eq $entry.Value) {
-            Remove-Item -LiteralPath "Env:$($entry.Key)" -ErrorAction SilentlyContinue
-        } else {
-            Set-Item -LiteralPath "Env:$($entry.Key)" -Value $entry.Value
+    if ($Script:CupTestOriginalEnvironmentCaptured) {
+        foreach ($entry in $Script:CupTestOriginalEnvironment.GetEnumerator()) {
+            if ($null -eq $entry.Value) {
+                Remove-Item -LiteralPath "Env:$($entry.Key)" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -LiteralPath "Env:$($entry.Key)" -Value $entry.Value
+            }
         }
-    }
-    $Script:CupTestOriginalEnvironment = @{}
+        $Script:CupTestOriginalEnvironment = @{}
 
-    if ($null -eq $Script:CupTestOriginalUserProfile) {
-        Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
-    } else {
-        $env:USERPROFILE = $Script:CupTestOriginalUserProfile
+        if ($null -eq $Script:CupTestOriginalUserProfile) {
+            Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
+        } else {
+            $env:USERPROFILE = $Script:CupTestOriginalUserProfile
+        }
+        $Script:CupTestOriginalEnvironmentCaptured = $false
     }
 
     if ($null -ne $Script:CupTestRoot -and (Test-Path -LiteralPath $Script:CupTestRoot)) {
@@ -653,7 +549,13 @@ function Remove-TestEnvironment {
 }
 
 function Assert-CupHealthy {
-    $output = Invoke-Cup -CommandArgs @("doctor")
+    $savedPath = $env:Path
+    try {
+        $env:Path = "$(Join-Path $Script:CupTestHome '.cup\bin');$savedPath"
+        $output = Invoke-Cup -CommandArgs @("doctor")
+    } finally {
+        $env:Path = $savedPath
+    }
     Assert-Contains $output "Doctor found no issues."
     Assert-NotContains $output "Error:"
     Assert-NotContains $output "Issue:"
@@ -798,8 +700,20 @@ function New-TestPackage {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
+    $info.Add("package.mode=self-contained")
+    $info.Add("package.formats=tar.xz,tar.gz,zip")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
+    $info.Add("platform.host_triple=$HostPlatform-fixture")
+    $info.Add("platform.target_triple=$TargetPlatform-fixture")
+    $info.Add("platform.family=fixture")
+    $info.Add("platform.runtime=fixture")
+    $info.Add("platform.thread_model=fixture")
+    $info.Add("build.environment=test")
+    $info.Add("build.source_policy=fixture")
+    $info.Add("source.primary.name=$Tool")
+    $info.Add("source.primary.version=$Version")
+    $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
         $body = "@echo off`r`necho $Tool-$Version-${TargetPlatform}:$entry`r`n"
@@ -815,7 +729,7 @@ function New-TestPackage {
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive
 
-    $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-Sha256Lower -Path $archive
     # MSYS2 GNU sha256sum marks archive records as binary with '*'.
     Write-Utf8NoBom -Path (Join-Path $cacheDir "SHA256SUMS") -Lines @(
         "$hash *$(Split-Path -Leaf $archive)"
@@ -852,8 +766,20 @@ function New-InstalledPackageFixture {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
+    $info.Add("package.mode=self-contained")
+    $info.Add("package.formats=tar.xz,tar.gz,zip")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
+    $info.Add("platform.host_triple=$HostPlatform-fixture")
+    $info.Add("platform.target_triple=$TargetPlatform-fixture")
+    $info.Add("platform.family=fixture")
+    $info.Add("platform.runtime=fixture")
+    $info.Add("platform.thread_model=fixture")
+    $info.Add("build.environment=test")
+    $info.Add("build.source_policy=fixture")
+    $info.Add("source.primary.name=$Tool")
+    $info.Add("source.primary.version=$Version")
+    $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
         $body = "@echo off`r`necho $Tool-$Version-${TargetPlatform}:$entry`r`n"

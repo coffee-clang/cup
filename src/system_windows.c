@@ -44,10 +44,6 @@ static int wide_ascii_is_alpha(wchar_t value) {
     return (value >= L'A' && value <= L'Z') || (value >= L'a' && value <= L'z');
 }
 
-static unsigned char ascii_lower(unsigned char value) {
-    return value >= 'A' && value <= 'Z' ? (unsigned char)(value + ('a' - 'A')) : value;
-}
-
 static CupError process_directory_chain(const char *path, int create, int allow_missing);
 static CupError validate_directory_chain(const char *path);
 static CupError validate_temp_directory(const char *path);
@@ -56,6 +52,7 @@ static CupError identity_from_handle_information(
     HANDLE handle,
     const BY_HANDLE_FILE_INFORMATION *information,
     SystemPathIdentity *identity);
+static CupError lock_acquire_existing(SystemLock *lock, const char *path, SystemLockMode mode);
 
 static void print_windows_error(const char *message, const char *path) {
     DWORD error_code = GetLastError();
@@ -114,14 +111,7 @@ static int has_command_extension(const char *path) {
     }
 
     for (i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
-        const unsigned char *left = (const unsigned char *)extension;
-        const unsigned char *right = (const unsigned char *)extensions[i];
-
-        while (*left != '\0' && *right != '\0' && ascii_lower(*left) == ascii_lower(*right)) {
-            left++;
-            right++;
-        }
-        if (*left == '\0' && *right == '\0') {
+        if (text_equal_ascii_ignore_case(extension, extensions[i])) {
             return 1;
         }
     }
@@ -433,21 +423,31 @@ static HANDLE handoff_parent_signal = NULL;
 static HANDLE handoff_parent_authority = NULL;
 static const DWORD uninstall_carrier_ready_timeout_ms = 30000u;
 
-/* The authority key comes from the user-profile directory identity, never from .cup itself.
- * Root admission can therefore reject an active detach before opening anything in the managed
- * tree. */
-static CupError build_handoff_name(wchar_t *name, size_t capacity) {
-    char home[MAX_PATH_LEN];
+/* The root itself may be renamed away during uninstall, so the handoff authority is keyed by
+ * the stable parent-directory identity plus the canonical root slot. Independent CUP roots under
+ * different bases, and .cup/.coffee-cup under one base, therefore never share authority. */
+static CupError build_handoff_name(const char *root, wchar_t *name, size_t capacity) {
+    char parent[MAX_PATH_LEN];
+    const char *leaf;
     SystemPathIdentity identity;
+    unsigned int slot;
     CupError err;
     int written;
 
-    if (name == NULL || capacity == 0) {
+    if (text_is_empty(root) || name == NULL || capacity == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = system_get_home_dir(home, sizeof(home));
+    leaf = path_last_segment(root);
+    if (strcmp(leaf, CUP_PRIMARY_ROOT_DIRECTORY) == 0) {
+        slot = 0;
+    } else if (strcmp(leaf, CUP_FALLBACK_ROOT_DIRECTORY) == 0) {
+        slot = 1;
+    } else {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = path_parent(parent, sizeof(parent), root);
     if (err == CUP_OK) {
-        err = system_get_path_identity(home, &identity);
+        err = system_get_path_identity(parent, &identity);
     }
     if (err != CUP_OK) {
         return err;
@@ -457,24 +457,25 @@ static CupError build_handoff_name(wchar_t *name, size_t capacity) {
     }
     written = _snwprintf(name,
                          capacity,
-                         L"Global\\CoffeeClang.CUP.Handoff.%016llx.%016llx.%016llx",
+                         L"Global\\CoffeeClang.CUP.Handoff.%016llx.%016llx.%016llx.%u",
                          (unsigned long long)identity.volume,
                          (unsigned long long)identity.object_high,
-                         (unsigned long long)identity.object);
+                         (unsigned long long)identity.object,
+                         slot);
     return written < 0 || (size_t)written >= capacity ? CUP_ERR_BUFFER_TOO_SMALL : CUP_OK;
 }
 
-CupError system_handoff_active(int *active) {
+CupError system_handoff_active(const char *root, int *active) {
     wchar_t name[256];
     HANDLE authority;
     DWORD error;
     CupError err;
 
-    if (active == NULL) {
+    if (text_is_empty(root) || active == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *active = 0;
-    err = build_handoff_name(name, sizeof(name) / sizeof(name[0]));
+    err = build_handoff_name(root, name, sizeof(name) / sizeof(name[0]));
     if (err != CUP_OK) {
         return err;
     }
@@ -497,18 +498,18 @@ CupError system_handoff_active(int *active) {
     return CUP_ERR_FILESYSTEM;
 }
 
-static CupError create_handoff_authority(HANDLE *authority) {
+static CupError create_handoff_authority(const char *root, HANDLE *authority) {
     wchar_t name[256];
     PSECURITY_DESCRIPTOR descriptor = NULL;
     SECURITY_ATTRIBUTES security;
     DWORD error;
     CupError err;
 
-    if (authority == NULL) {
+    if (text_is_empty(root) || authority == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *authority = NULL;
-    err = build_handoff_name(name, sizeof(name) / sizeof(name[0]));
+    err = build_handoff_name(root, name, sizeof(name) / sizeof(name[0]));
     if (err == CUP_OK) {
         err = build_private_kernel_security_descriptor(&descriptor);
     }
@@ -892,7 +893,7 @@ static CupError start_handoff_helper(const char *helper,
         process_error = GetLastError();
         goto cleanup;
     }
-    err = create_handoff_authority(&authority_handle);
+    err = create_handoff_authority(root, &authority_handle);
     if (err != CUP_OK) {
         goto cleanup;
     }
@@ -1032,7 +1033,7 @@ CupError system_start_update_helper(const char *helper,
                                     const char *token,
                                     SystemLock *lock) {
     return start_handoff_helper(
-        helper, "--internal-update-helper", root, NULL, token, NULL, lock);
+        helper, CUP_INTERNAL_UPDATE_HELPER_ARGUMENT, root, NULL, token, NULL, lock);
 }
 
 CupError system_start_uninstall_helper(const char *helper,
@@ -1052,7 +1053,7 @@ CupError system_start_uninstall_helper(const char *helper,
         return err;
     }
     err = start_handoff_helper(helper,
-                               "--internal-uninstall-helper",
+                               CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT,
                                root,
                                detached_root,
                                token,
@@ -1215,7 +1216,7 @@ CupError system_handoff_acquire_lock(SystemHandoff *handoff,
      * cup.lock, but its mandatory post-lock handoff check must make it retreat. Retry only that
      * synchronization class and keep the wait finite. */
     for (attempt = 0; attempt < 500; ++attempt) {
-        err = system_lock_acquire_existing(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
+        err = lock_acquire_existing(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
         if (err != CUP_ERR_LOCK) {
             break;
         }
@@ -1468,14 +1469,6 @@ static CupError validate_open_parent_directory_chain(const char *path, int *miss
         *missing = 1;
     }
     return err;
-}
-
-CupError system_check_directory_chain(const char *path, int allow_missing) {
-    return process_directory_chain(path, 0, allow_missing);
-}
-
-CupError system_make_directory_chain(const char *path) {
-    return process_directory_chain(path, 1, 0);
 }
 
 CupError system_create_directory_exclusive(const char *path,
@@ -1765,7 +1758,17 @@ static CupError identity_from_handle_information(
     }
     memset(identity, 0, sizeof(*identity));
     if (!GetFileInformationByHandleEx(handle, FileIdInfo, &file_id, sizeof(file_id))) {
-        return CUP_ERR_FILESYSTEM;
+        DWORD error = GetLastError();
+
+        if (error != ERROR_NOT_SUPPORTED && error != ERROR_INVALID_PARAMETER) {
+            return CUP_ERR_FILESYSTEM;
+        }
+        identity->volume = (uint64_t)information->dwVolumeSerialNumber;
+        identity->object = ((uint64_t)information->nFileIndexHigh << 32) |
+                           (uint64_t)information->nFileIndexLow;
+        identity->kind = path_kind_from_attributes(information->dwFileAttributes);
+        identity->valid = 1;
+        return CUP_OK;
     }
     for (i = 0; i < sizeof(file_id.FileId.Identifier); ++i) {
         all_zero = all_zero && file_id.FileId.Identifier[i] == 0;
@@ -2534,6 +2537,25 @@ CupError system_open_regular_file(const char *path,
     return CUP_OK;
 }
 
+CupError system_open_regular_file_beneath(const char *root,
+                                          const char *relative_path,
+                                          FILE **file,
+                                          SystemPathIdentity *identity,
+                                          uint64_t *file_size,
+                                          int *missing) {
+    char path[MAX_PATH_LEN];
+    CupError err;
+
+    if (text_is_empty(root) || text_is_empty(relative_path)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = path_join_safe_relative(path, sizeof(path), root, relative_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+    return system_open_regular_file(path, file, identity, file_size, missing);
+}
+
 CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
     HANDLE handle = INVALID_HANDLE_VALUE;
     BY_HANDLE_FILE_INFORMATION information;
@@ -2755,7 +2777,7 @@ static CupError list_directory_bound(const char *path,
     if (expected_identity != NULL &&
         !system_path_identity_equal(&observed_identity, expected_identity)) {
         CloseHandle(directory);
-        return CUP_ERR_FILESYSTEM;
+        return CUP_ERR_TRANSACTION;
     }
     err = windows_utf8_to_wide_path(path, wide_path, MAX_PATH_LEN);
     if (err != CUP_OK) {
@@ -2876,11 +2898,6 @@ static CupError walk_directory_bound(const char *path,
     return list_directory_bound(path, expected_identity, windows_walk_entry, &context);
 }
 
-CupError system_walk_directory(const char *path,
-                               SystemDirectoryCallback callback,
-                               void *userdata) {
-    return walk_directory_bound(path, NULL, callback, userdata);
-}
 
 /* Recursive mutations reject reparse points through the directory walker. */
 typedef struct {
@@ -2947,7 +2964,7 @@ CupError system_remove_tree_contents(const char *path,
 
     context.preserve_name = preserve_name;
     context.cancelled = cancelled;
-    return system_list_directory(path, remove_tree_contents_callback, &context);
+    return list_directory_bound(path, NULL, remove_tree_contents_callback, &context);
 }
 
 static CupError remove_tree_common(const char *path,
@@ -3081,64 +3098,10 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     return lock_acquire_common(lock, path, mode, mode == SYSTEM_LOCK_EXCLUSIVE);
 }
 
-CupError system_lock_acquire_existing(SystemLock *lock,
+static CupError lock_acquire_existing(SystemLock *lock,
                                       const char *path,
                                       SystemLockMode mode) {
     return lock_acquire_common(lock, path, mode, 0);
-}
-
-CupError system_lock_get_identity(const SystemLock *lock, SystemPathIdentity *identity) {
-    BY_HANDLE_FILE_INFORMATION info;
-
-    if (lock == NULL || !lock->active || identity == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    memset(identity, 0, sizeof(*identity));
-    if (!GetFileInformationByHandle((HANDLE)lock->handle, &info)) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    return identity_from_handle_information((HANDLE)lock->handle, &info, identity);
-}
-
-CupError system_lock_read(const SystemLock *lock,
-                          void *buffer,
-                          size_t capacity,
-                          size_t *size) {
-    LARGE_INTEGER beginning;
-    size_t total = 0;
-
-    if (size == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *size = 0;
-    if (lock == NULL || !lock->active || buffer == NULL || capacity == 0 ||
-        capacity > MAXDWORD) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    beginning.QuadPart = 0;
-    if (!SetFilePointerEx((HANDLE)lock->handle, beginning, NULL, FILE_BEGIN)) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    while (total < capacity) {
-        DWORD read_size = 0;
-
-        if (!ReadFile((HANDLE)lock->handle,
-                      (unsigned char *)buffer + total,
-                      (DWORD)(capacity - total),
-                      &read_size,
-                      NULL)) {
-            return CUP_ERR_FILESYSTEM;
-        }
-        if (read_size == 0) {
-            break;
-        }
-        total += (size_t)read_size;
-    }
-
-    *size = total;
-    return CUP_OK;
 }
 
 void system_lock_release(SystemLock *lock) {

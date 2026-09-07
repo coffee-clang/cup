@@ -21,11 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char root[MAX_PATH_LEN];
 static CupError move_result;
 static SystemCommitState move_state;
@@ -38,8 +33,6 @@ static CupError package_validation_result;
 static int clear_calls;
 static int backup_calls;
 static int remove_tree_calls;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError clear_runtime_journal(void) {
     char journal[MAX_PATH_LEN];
@@ -163,11 +156,6 @@ void setUp(void) {
 void tearDown(void) {
     remove_tree_real(root);
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, "transaction.txt");
@@ -428,11 +416,6 @@ static void set_installed(CupState *state) {
     strcpy(entry->version, "22.1.5");
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_init_and_names(void) {
     PackageTransaction transaction;
 
@@ -509,6 +492,12 @@ static void test_begin_rejects(void) {
         begin_package_transaction_for_test(PACKAGE_OPERATION_INSTALL, &package, "/tmp/../x"));
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(staging, sizeof(staging), root, "staging/wrong-123"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          begin_package_transaction_for_test(
+                              PACKAGE_OPERATION_INSTALL, &package, staging));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, path_join(staging, sizeof(staging), root, "elsewhere/install-pkg-123"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
                           begin_package_transaction_for_test(
                               PACKAGE_OPERATION_INSTALL, &package, staging));

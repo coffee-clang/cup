@@ -4,6 +4,10 @@
 # requested native cup executable before any source file is compiled.
 set -eu
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+# shellcheck source=../lib/build-configuration.sh
+. "$SCRIPT_DIR/../lib/build-configuration.sh"
+
 platform=${1:?platform is required}
 compiler=${2:?compiler is required}
 windres=${3:-}
@@ -15,10 +19,8 @@ fail() {
     exit 1
 }
 
-case "$configuration" in
-    development|debug|coverage|sanitizers|release) ;;
-    *) fail "unsupported build configuration '$configuration'" ;;
-esac
+cup_build_configuration_valid "$configuration" ||
+    fail "unsupported build configuration '$configuration'"
 case "$role" in
     primary|secondary) ;;
     *) fail "unsupported toolchain role '$role'" ;;

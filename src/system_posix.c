@@ -588,7 +588,7 @@ CupError system_start_update_helper(const char *helper,
                                     const char *token,
                                     SystemLock *lock) {
     return start_handoff_helper(
-        helper, "--internal-update-helper", root, NULL, token, lock);
+        helper, CUP_INTERNAL_UPDATE_HELPER_ARGUMENT, root, NULL, token, lock);
 }
 
 CupError system_start_uninstall_helper(const char *helper,
@@ -600,7 +600,7 @@ CupError system_start_uninstall_helper(const char *helper,
         return CUP_ERR_INVALID_INPUT;
     }
     return start_handoff_helper(
-        helper, "--internal-uninstall-helper", root, detached_root, token, lock);
+        helper, CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT, root, detached_root, token, lock);
 }
 
 static CupError wait_for_parent_exit(int descriptor) {
@@ -762,36 +762,6 @@ CupError system_make_directory(const char *path) {
     }
     (void)close(parent_fd);
     return CUP_OK;
-}
-
-CupError system_check_directory_chain(const char *path, int allow_missing) {
-    int descriptor = -1;
-    int missing = 0;
-    CupError err;
-
-    if (allow_missing != 0 && allow_missing != 1) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = open_directory_path_no_follow_status(path, &descriptor, &missing);
-    if (descriptor >= 0) {
-        (void)close(descriptor);
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
-    return missing && !allow_missing ? CUP_ERR_FILESYSTEM : CUP_OK;
-}
-
-CupError system_make_directory_chain(const char *path) {
-    int descriptor = -1;
-    CupError err;
-
-    err = open_directory_path_no_follow_options(path, 1, &descriptor, NULL);
-    if (descriptor >= 0) {
-        (void)close(descriptor);
-    }
-    return err;
 }
 
 CupError system_directory_is_private(const char *path, int *is_private) {
@@ -1451,7 +1421,6 @@ CupError system_remove_tree_contents(const char *path,
         close(descriptor);
         return CUP_ERR_FILESYSTEM;
     }
-
     scan = dup(descriptor);
     if (scan < 0 || fcntl(scan, F_SETFD, FD_CLOEXEC) != 0 ||
         (directory = fdopendir(scan)) == NULL) {
@@ -1579,8 +1548,7 @@ CupError system_copy_file(const char *source_path, const char *destination_path)
 
     err = system_open_regular_file(
         source_path, &source, &source_identity, &source_size, &missing);
-    if (err != CUP_OK || missing || source == NULL || !source_identity.valid ||
-        fstat(fileno(source), &source_info) != 0) {
+    if (err != CUP_OK || missing || fstat(fileno(source), &source_info) != 0) {
         if (source != NULL) {
             fclose(source);
         }
@@ -1853,15 +1821,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *path_kind) {
         return CUP_ERR_FILESYSTEM;
     }
 
-    if (S_ISLNK(stat_info.st_mode)) {
-        *path_kind = SYSTEM_PATH_LINK;
-    } else if (S_ISDIR(stat_info.st_mode)) {
-        *path_kind = SYSTEM_PATH_DIRECTORY;
-    } else if (S_ISREG(stat_info.st_mode)) {
-        *path_kind = SYSTEM_PATH_REGULAR_FILE;
-    } else {
-        *path_kind = SYSTEM_PATH_OTHER;
-    }
+    *path_kind = path_kind_from_mode(stat_info.st_mode);
 
     return CUP_OK;
 }
@@ -1921,6 +1881,59 @@ CupError system_open_regular_file(const char *path,
         return CUP_ERR_FILESYSTEM;
     }
     return CUP_OK;
+}
+
+CupError system_open_regular_file_beneath(const char *root,
+                                          const char *relative_path,
+                                          FILE **file,
+                                          SystemPathIdentity *identity,
+                                          uint64_t *file_size,
+                                          int *missing) {
+    char joined[MAX_PATH_LEN];
+    char *physical_root = NULL;
+    char *physical_path = NULL;
+    size_t root_length;
+    CupError err;
+
+    if (text_is_empty(root) || text_is_empty(relative_path) || file == NULL || identity == NULL ||
+        file_size == NULL || missing == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *file = NULL;
+    memset(identity, 0, sizeof(*identity));
+    *file_size = 0;
+    *missing = 0;
+
+    err = path_join_safe_relative(joined, sizeof(joined), root, relative_path);
+    if (err != CUP_OK) {
+        return err;
+    }
+    physical_root = realpath(root, NULL);
+    if (physical_root == NULL) {
+        return CUP_ERR_FILESYSTEM;
+    }
+    physical_path = realpath(joined, NULL);
+    if (physical_path == NULL) {
+        int status_error = errno;
+        free(physical_root);
+        if (status_error == ENOENT || status_error == ENOTDIR) {
+            *missing = 1;
+            return CUP_OK;
+        }
+        return CUP_ERR_FILESYSTEM;
+    }
+
+    root_length = strlen(physical_root);
+    if (strncmp(physical_path, physical_root, root_length) != 0 ||
+        physical_path[root_length] != '/') {
+        free(physical_path);
+        free(physical_root);
+        return CUP_ERR_VALIDATION;
+    }
+    err = system_open_regular_file(physical_path, file, identity, file_size, missing);
+    free(physical_path);
+    free(physical_root);
+    return err;
 }
 
 CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
@@ -2168,123 +2181,6 @@ CupError system_list_directory(const char *path,
 }
 
 
-static CupError walk_directory_fd(int descriptor,
-                                  const char *display,
-                                  dev_t root_device,
-                                  unsigned int depth,
-                                  SystemDirectoryCallback callback,
-                                  void *userdata) {
-    int scan;
-    DIR *directory;
-    struct dirent *entry;
-    CupError err = CUP_OK;
-
-    if (depth > SYSTEM_MAX_TREE_DEPTH) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    scan = dup(descriptor);
-    if (scan < 0 || fcntl(scan, F_SETFD, FD_CLOEXEC) != 0) {
-        if (scan >= 0) {
-            close(scan);
-        }
-        return CUP_ERR_FILESYSTEM;
-    }
-    directory = fdopendir(scan);
-    if (directory == NULL) {
-        close(scan);
-        return CUP_ERR_FILESYSTEM;
-    }
-    errno = 0;
-    while ((entry = readdir(directory)) != NULL) {
-        struct stat observed;
-        char child[MAX_PATH_LEN];
-        SystemPathKind kind;
-
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        if (fstatat(descriptor, entry->d_name, &observed, AT_SYMLINK_NOFOLLOW) != 0) {
-            err = CUP_ERR_FILESYSTEM;
-            break;
-        }
-        err = path_join(child, sizeof(child), display, entry->d_name);
-        if (err != CUP_OK) {
-            break;
-        }
-        kind = path_kind_from_mode(observed.st_mode);
-        if (system_test_crosses_boundary(entry->d_name, observed.st_dev, root_device)) {
-            fprintf(stderr,
-                    "Error: refusing to cross a filesystem boundary at '%s'.\n",
-                    child);
-            err = CUP_ERR_FILESYSTEM;
-            break;
-        }
-        if (kind == SYSTEM_PATH_DIRECTORY) {
-            int child_fd;
-            struct stat opened;
-
-            child_fd = openat(descriptor,
-                              entry->d_name,
-                              O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (child_fd < 0 || fstat(child_fd, &opened) != 0 ||
-                !stat_identity_equal(&observed, &opened)) {
-                if (child_fd >= 0) {
-                    close(child_fd);
-                }
-                err = CUP_ERR_FILESYSTEM;
-                break;
-            }
-            err = walk_directory_fd(
-                child_fd, child, root_device, depth + 1u, callback, userdata);
-            (void)close(child_fd);
-            if (err != CUP_OK) {
-                break;
-            }
-        }
-
-        {
-            SystemPathIdentity identity;
-
-            identity_from_stat(&observed, &identity);
-            err = callback(child, kind, &identity, userdata);
-        }
-        if (err != CUP_OK) {
-            break;
-        }
-        errno = 0;
-    }
-    if (err == CUP_OK && errno != 0) {
-        err = CUP_ERR_FILESYSTEM;
-    }
-    (void)closedir(directory);
-    return err;
-}
-
-CupError system_walk_directory(const char *path,
-                               SystemDirectoryCallback callback,
-                               void *userdata) {
-    int descriptor = -1;
-    int missing = 0;
-    struct stat root_info;
-    CupError err;
-
-    if (callback == NULL || text_is_empty(path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    err = open_directory_path_no_follow_status(path, &descriptor, &missing);
-    if (err != CUP_OK || missing) {
-        return err;
-    }
-    if (fstat(descriptor, &root_info) != 0) {
-        close(descriptor);
-        return CUP_ERR_FILESYSTEM;
-    }
-    err = walk_directory_fd(descriptor, path, root_info.st_dev, 0u, callback, userdata);
-    (void)close(descriptor);
-    return err;
-}
-
 /* Nonblocking advisory locks tied to the acquired open-file description. */
 static CupError lock_acquire_common(SystemLock *lock,
                                     const char *path,
@@ -2346,65 +2242,6 @@ CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode 
     return lock_acquire_common(lock, path, mode, mode == SYSTEM_LOCK_EXCLUSIVE);
 }
 
-CupError system_lock_acquire_existing(SystemLock *lock,
-                                      const char *path,
-                                      SystemLockMode mode) {
-    return lock_acquire_common(lock, path, mode, 0);
-}
-
-CupError system_lock_get_identity(const SystemLock *lock, SystemPathIdentity *identity) {
-    struct stat info;
-
-    if (identity == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    memset(identity, 0, sizeof(*identity));
-    if (lock == NULL || !lock->active) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (fstat((int)lock->handle, &info) != 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-
-    identity_from_stat(&info, identity);
-    return CUP_OK;
-}
-
-CupError system_lock_read(const SystemLock *lock,
-                          void *buffer,
-                          size_t capacity,
-                          size_t *size) {
-    size_t total = 0;
-
-    if (size == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *size = 0;
-    if (lock == NULL || !lock->active || buffer == NULL || capacity == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    while (total < capacity) {
-        ssize_t count;
-
-        do {
-            count = pread((int)lock->handle,
-                          (unsigned char *)buffer + total,
-                          capacity - total,
-                          (off_t)total);
-        } while (count < 0 && errno == EINTR);
-        if (count < 0) {
-            return CUP_ERR_FILESYSTEM;
-        }
-        if (count == 0) {
-            break;
-        }
-        total += (size_t)count;
-    }
-
-    *size = total;
-    return CUP_OK;
-}
 
 void system_lock_release(SystemLock *lock) {
     if (lock == NULL || !lock->active) {
@@ -2418,8 +2255,8 @@ void system_lock_release(SystemLock *lock) {
     lock->active = 0;
 }
 
-CupError system_handoff_active(int *active) {
-    if (active == NULL) {
+CupError system_handoff_active(const char *root, int *active) {
+    if (text_is_empty(root) || active == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *active = 0;

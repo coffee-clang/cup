@@ -13,6 +13,10 @@ umask 022
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=../lib/path-safety.sh
 . "$SCRIPT_DIR/../lib/path-safety.sh"
+# shellcheck source=../lib/build-configuration.sh
+. "$SCRIPT_DIR/../lib/build-configuration.sh"
+# shellcheck source=../lib/sha256.sh
+. "$SCRIPT_DIR/../lib/sha256.sh"
 
 platform=${1:?platform is required}
 configuration=${2:?configuration is required}
@@ -28,13 +32,7 @@ require_tool() {
     command -v "$1" >/dev/null 2>&1 || fail "required tool '$1' was not found"
 }
 hash_binary() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$binary" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$binary" | awk '{print $1}'
-    else
-        fail 'neither sha256sum nor shasum is available'
-    fi
+    cup_sha256_file "$binary" || fail 'neither sha256sum nor shasum produced a valid SHA-256 digest'
 }
 write_report() {
     if [ -n "${CUP_BUILD_ROOT:-}" ]; then
@@ -47,10 +45,8 @@ write_report() {
         fail "could not write inspection report: $report"
 }
 
-case "$configuration" in
-    development|debug|coverage|sanitizers|release) ;;
-    *) fail "unsupported configuration '$configuration'" ;;
-esac
+cup_build_configuration_valid "$configuration" ||
+    fail "unsupported configuration '$configuration'"
 case "$inspection_policy" in build|public) ;; *) fail "unsupported inspection policy '$inspection_policy'" ;; esac
 [ "$inspection_policy" = build ] || [ "$configuration" = release ] ||
     fail 'public inspection is valid only for release candidates'
@@ -283,6 +279,13 @@ inspect_macho() {
             esac
         done
     fi
+    runtime_search_path=none
+    if [ -n "$rpaths" ]; then
+        runtime_search_path=$(printf '%s\n' "$rpaths" | awk '
+            NF { printf "%s%s", separator, $0; separator = "," }
+            END { print "" }
+        ')
+    fi
     minimum_os=$(printf '%s\n' "$load_commands" | awk '
         $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
             mode = "build"
@@ -343,7 +346,7 @@ inspect_macho() {
         printf 'third_party_linkage=static\nsystem_linkage=dynamic\nneeded_count=%s\n' \
             "$needed_count"
         printf '%s\n' "$libraries" | write_needed_entries
-        printf 'runtime_search_path=%s\nfile_description=%s\n' "${rpaths:-none}" "$file_description"
+        printf 'runtime_search_path=%s\nfile_description=%s\n' "$runtime_search_path" "$file_description"
     } | write_report
 }
 

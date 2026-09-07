@@ -7,7 +7,6 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
-require_sha256_tool
 
 if [ "${1:-}" = --clean-root ]; then
     [ "$#" -eq 2 ] || {
@@ -15,12 +14,6 @@ if [ "${1:-}" = --clean-root ]; then
         exit 2
     }
     require_tool cmp
-    require_tool mktemp
-    if [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" != 1 ]; then
-        export CUP_DEPS_ROOT_LOCK_ACTIVE=1
-        dependency_run_root_locked "$2" bash "$0" "$@"
-        exit $?
-    fi
     dependency_clean_root "$2"
     exit 0
 fi
@@ -28,7 +21,6 @@ fi
 PLATFORM=${1:?platform is required}
 MODE=${2:?dependency prefix, --print-cache-key or --print-profile is required}
 profile=$(dependency_profile "$PLATFORM")
-use_openssl=$(dependency_uses_openssl "$PLATFORM")
 
 case "$MODE" in
     --print-profile)
@@ -36,12 +28,15 @@ case "$MODE" in
         exit 0
         ;;
     --print-cache-key)
+        require_sha256_tool
         dependency_cache_key "$PLATFORM" "$profile"
         exit 0
         ;;
 esac
 
+require_sha256_tool
 require_tool cmp
+use_openssl=$(dependency_uses_openssl "$PLATFORM")
 DEPS_PREFIX=$MODE
 metadata=$(dependency_metadata "$PLATFORM" "$profile")
 if ! dependency_prefix_matches "$DEPS_PREFIX" "$metadata" "$use_openssl"; then

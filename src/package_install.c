@@ -47,7 +47,6 @@ typedef struct {
     PackageIdentity expected_default;
     int has_expected_default;
     WrapperPlan wrappers;
-    int wrappers_ready;
 } InstallOperation;
 
 static CupError update_scope_is_installed(const InstallOperation *operation,
@@ -71,9 +70,6 @@ static CupError update_scope_is_installed(const InstallOperation *operation,
             continue;
         }
 
-        if (package_identity_validate(identity, stderr) != CUP_OK) {
-            return CUP_ERR_INCONSISTENT_STATE;
-        }
         if (strcmp(identity->tool, tool) == 0) {
             *is_installed = 1;
             return CUP_OK;
@@ -154,10 +150,9 @@ static CupError validate_update_scope(InstallOperation *operation) {
     return CUP_ERR_NOT_INSTALLED;
 }
 
-static CupError check_existing_install(InstallOperation *operation, int *complete) {
+static CupError check_existing_install(InstallOperation *operation) {
     CupError err;
 
-    *complete = 0;
     err = installed_package_require_absent(&operation->context.state,
                                            &operation->artifact_spec.identity);
     if (err != CUP_ERR_ALREADY_INSTALLED) {
@@ -171,7 +166,6 @@ static CupError check_existing_install(InstallOperation *operation, int *complet
             return err;
         }
         operation->package_already_installed = 1;
-        *complete = 1;
         return CUP_OK;
     }
 
@@ -242,8 +236,6 @@ static CupError prepare_install(InstallOperation *operation,
                                 InstallRequestKind kind,
                                 const PackageIdentity *expected_default) {
     CupError err;
-    int complete;
-
     err = prepare_install_operation(operation, spec, kind, expected_default);
     if (err == CUP_OK) {
         err = load_install_context(operation);
@@ -255,8 +247,8 @@ static CupError prepare_install(InstallOperation *operation,
         return err;
     }
 
-    err = check_existing_install(operation, &complete);
-    if (err != CUP_OK || complete) {
+    err = check_existing_install(operation);
+    if (err != CUP_OK || operation->package_already_installed) {
         return err;
     }
 
@@ -305,7 +297,7 @@ static CupError discard_invalid_cache(InstallOperation *operation, CupError orig
 }
 
 static CupError extract_install_package(InstallOperation *operation) {
-    PackageCacheResult cache_result;
+    PackageCacheSource cache_source;
     CupError err;
 
     printf("==> Resolving package archive for %s@%s...\n",
@@ -315,7 +307,7 @@ static CupError extract_install_package(InstallOperation *operation) {
     err = package_cache_fetch_artifact(&operation->artifact,
                                        &operation->artifact_spec,
                                        PACKAGE_CACHE_ALLOW,
-                                       &cache_result);
+                                       &cache_source);
     if (err != CUP_OK) {
         return err;
     }
@@ -324,14 +316,14 @@ static CupError extract_install_package(InstallOperation *operation) {
         return CUP_ERR_INTERRUPT;
     }
 
-    if (cache_result.source == PACKAGE_CACHE_SOURCE_CACHE) {
+    if (cache_source == PACKAGE_CACHE_SOURCE_CACHE) {
         printf("==> Using cached package archive.\n");
     } else {
         printf("==> Downloaded package archive.\n");
     }
 
     err = extract_and_validate_package(operation);
-    if (err != CUP_OK && cache_result.source == PACKAGE_CACHE_SOURCE_CACHE &&
+    if (err != CUP_OK && cache_source == PACKAGE_CACHE_SOURCE_CACHE &&
         package_failure_allows_refresh(err)) {
         printf("==> Cached package is invalid; downloading it again...\n");
 
@@ -346,7 +338,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         err = package_cache_fetch_artifact(&operation->artifact,
                                            &operation->artifact_spec,
                                            PACKAGE_CACHE_REFRESH,
-                                           &cache_result);
+                                           &cache_source);
         if (err != CUP_OK) {
             return err;
         }
@@ -356,7 +348,7 @@ static CupError extract_install_package(InstallOperation *operation) {
     }
 
     if (err != CUP_OK) {
-        if (cache_result.source == PACKAGE_CACHE_SOURCE_NETWORK &&
+        if (cache_source == PACKAGE_CACHE_SOURCE_NETWORK &&
             package_failure_allows_refresh(err)) {
             return discard_invalid_cache(operation, err);
         }
@@ -411,14 +403,13 @@ static CupError prepare_default_change(InstallOperation *operation,
     if (err != CUP_OK) {
         return err;
     }
-    operation->wrappers_ready = 1;
     return CUP_OK;
 }
 
 static CupError save_default_change(InstallOperation *operation, const CupState *candidate) {
     CupError err;
 
-    if (!operation->wrappers_ready) {
+    if (!operation->made_default && !operation->default_moved) {
         return CUP_OK;
     }
 
@@ -430,6 +421,11 @@ static CupError save_default_change(InstallOperation *operation, const CupState 
     err = state_save(&operation->context.state,
                      &operation->context.state_identity,
                      &operation->context.state_identity);
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+                "Error: the updated default may already be saved, but its durability could not "
+                "be confirmed. Run 'cup doctor' before retrying.\n");
+    }
     if (err != CUP_OK) {
         return err;
     }
@@ -519,7 +515,7 @@ static CupError commit_install(InstallOperation *operation) {
         operation->journal_started = 0;
     }
 
-    if (operation->wrappers_ready) {
+    if (operation->made_default || operation->default_moved) {
         err = wrapper_plan_apply(&operation->wrappers);
         if (err != CUP_OK) {
             fprintf(stderr,

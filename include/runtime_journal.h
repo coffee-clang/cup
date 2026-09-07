@@ -25,6 +25,9 @@ typedef CupError (*RuntimeJournalFieldVisitor)(const char *key,
                                                const char *value,
                                                void *userdata);
 
+/* Shared transaction-token grammar used by detached update and uninstall journals. */
+int runtime_journal_token_is_valid(const char *token);
+
 /*
  * Parse the common key=value envelope and delegate owner-specific fields to a typed visitor.
  * When ordered_keys is non-NULL, the parser also enforces the complete declared field order.

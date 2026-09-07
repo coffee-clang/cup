@@ -59,7 +59,6 @@ static CupError configure_tls_trust(CURL *curl) {
 static curl_off_t validation_limit(DownloadValidation validation) {
     switch (validation) {
         case DOWNLOAD_VALIDATE_METADATA:
-        case DOWNLOAD_VALIDATE_NONEMPTY:
             return (curl_off_t)MAX_METADATA_DOWNLOAD_BYTES;
         case DOWNLOAD_VALIDATE_BINARY:
             return (curl_off_t)MAX_BINARY_DOWNLOAD_BYTES;
@@ -187,8 +186,8 @@ static CupError classify_transfer_result(const char *url,
     return remove_temporary_download(temporary_path, err);
 }
 
-/* Content-class validation. Each asset type has a bounded parser rather than relying on a
- * successful HTTP response alone. */
+/* Content-class validation. Every download must be a nonempty regular file; structured
+ * callers may additionally supply a format-specific validator before publication. */
 static CupError validate_download(const char *path, DownloadValidation validation) {
     CupError err;
     long long size;
@@ -282,7 +281,7 @@ CupError download_file_checked(const char *url,
                                void *validator_data) {
     CURL *curl = NULL;
     CURLcode result = CURLE_OK;
-    CURLcode package_metadata_result = CURLE_OK;
+    CURLcode response_result = CURLE_OK;
     FILE *file = NULL;
     CupError sync_err = CUP_OK;
     CupError err;
@@ -293,7 +292,7 @@ CupError download_file_checked(const char *url,
     int close_status = 0;
 
     if (text_is_empty(url) || text_is_empty(destination) ||
-        (validation != DOWNLOAD_VALIDATE_NONEMPTY && validation != DOWNLOAD_VALIDATE_METADATA &&
+        (validation != DOWNLOAD_VALIDATE_METADATA &&
          validation != DOWNLOAD_VALIDATE_BINARY && validation != DOWNLOAD_VALIDATE_ARCHIVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
@@ -309,6 +308,7 @@ CupError download_file_checked(const char *url,
         return err;
     }
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+        fprintf(stderr, "Error: could not initialize libcurl for '%s'.\n", url);
         return CUP_ERR_FETCH;
     }
 
@@ -324,6 +324,7 @@ CupError download_file_checked(const char *url,
         int close_failed = fclose(file) != 0;
         CupError cleanup_error = system_remove_file(temporary_path);
 
+        fprintf(stderr, "Error: could not initialize a libcurl transfer for '%s'.\n", url);
         curl_global_cleanup();
         return close_failed || cleanup_error != CUP_OK ? CUP_ERR_TEMPORARY : CUP_ERR_FETCH;
     }
@@ -333,19 +334,19 @@ CupError download_file_checked(const char *url,
     result = configure_transfer(curl, url, validation, file, error_buffer);
     if (result == CURLE_OK) {
         result = curl_easy_perform(curl);
-        package_metadata_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+        response_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     }
 
     /* Classify the transfer before issuing durability I/O for bytes that will be rejected. */
     curl_easy_cleanup(curl);
-    if (!(result == CURLE_OK && package_metadata_result == CURLE_OK && response_code == 200)) {
+    if (!(result == CURLE_OK && response_result == CURLE_OK && response_code == 200)) {
         close_status = fclose(file);
         file = NULL;
         curl_global_cleanup();
         err = classify_transfer_result(url,
                                        temporary_path,
                                        result,
-                                       package_metadata_result,
+                                       response_result,
                                        response_code,
                                        error_buffer);
         return close_status == 0 ? err : CUP_ERR_FILESYSTEM;
@@ -377,6 +378,12 @@ CupError download_file_checked(const char *url,
     err = commit_download(temporary_path, destination);
     if (err != CUP_OK && err != CUP_ERR_COMMIT) {
         return remove_temporary_download(temporary_path, err);
+    }
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+                "Error: downloaded data may already be published at '%s', but final durability "
+                "could not be confirmed.\n",
+                destination);
     }
     return err;
 }

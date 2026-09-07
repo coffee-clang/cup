@@ -17,13 +17,18 @@ assert_contains "$output" 'cup runtime is not initialized'
 assert_contains "$output" 'Doctor found no issues.'
 
 run_cup repair >/dev/null
+run_cup doctor > "$TMP_ROOT/doctor-path.out"
+assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
+    'current CUP command directory is not in PATH'
+PATH="$TEST_HOME/.cup/bin:$PATH"
+export PATH
 state_file=$TEST_HOME/.cup/state.txt
 
 # Create independent diagnostic conditions. The package is deliberately not in
 # state, another state record has no package, one valid package is unprotected
 # and absent from the current catalog, and runtime leftovers are present.
 make_installed_package compiler clang 99.0.0 "$TEST_PLATFORM" clang
-make_installed_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
+make_installed_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
 invalid_package=$TEST_HOME/.cup/components/linker/lld/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
 mkdir -p "$invalid_package"
 chmod u+w "$state_file"
@@ -43,7 +48,7 @@ assert_contains "$output" "installed state record 'linter:clang-tidy@22.1.5' has
 assert_contains "$output" "package metadata for 'compiler:clang@99.0.0' is not read-only"
 assert_contains "$output" "installed package 'compiler:clang@99.0.0' is not listed"
 assert_contains "$output" \
-    "valid package 'lldb@22.1.5' exists in components but is absent from state.txt"
+    "valid package 'lldb@23.1.0' exists in components but is absent from state.txt"
 assert_contains "$output" "package path '$invalid_package' is invalid"
 assert_contains "$output" 'staging directory contains 1 leftover item(s)'
 assert_contains "$output" 'Run '\''cup repair'\'' after reviewing them.'
@@ -68,17 +73,17 @@ chmod u+w "$state_file"
 cat > "$state_file" <<STATE
 format=1
 installed.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@99.0.0
-installed.debugger.$TEST_PLATFORM.$TEST_PLATFORM=lldb@22.1.5
+installed.debugger.$TEST_PLATFORM.$TEST_PLATFORM=lldb@23.1.0
 STATE
 chmod 0444 "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0/info.txt"
-chmod 0444 "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5/info.txt"
+chmod 0444 "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0/info.txt"
 
 # An incomplete runtime is reported, and a missing lock prevents an unsafe
 # snapshot from being treated as coherent.
 rm -rf "$TEST_HOME/.cup/cache"
 run_cup_expect_failure "$TMP_ROOT/doctor-incomplete.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-incomplete.out")" \
-    'cup runtime structure is incomplete'
+    'missing cache directory'
 mkdir -p "$TEST_HOME/.cup/cache"
 rm -f "$TEST_HOME/.cup/cup.lock"
 run_cup_expect_failure "$TMP_ROOT/doctor-missing-lock.out" doctor
@@ -135,22 +140,21 @@ assert_contains "$(cat "$TMP_ROOT/doctor-update-invalid.out")" \
 rm -f "$TEST_HOME/.cup/transaction.txt"
 
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
-format=1
+format=2
 operation=uninstall
 phase=failed
 temporary_name=.cup-uninstall-fixture
 token=fixture
-stage=detach
 error=6
 JOURNAL
 uninstall_journal_hash=$(hash_file "$TEST_HOME/.cup/transaction.txt")
 run_cup_expect_failure "$TMP_ROOT/doctor-uninstall-failed.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-uninstall-failed.out")" \
-    "the previous cup uninstall failed during 'detach' with error 6"
+    "the previous cup uninstall failed with error 6"
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$uninstall_journal_hash"
 run_cup_expect_failure "$TMP_ROOT/doctor-uninstall-failed-again.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-uninstall-failed-again.out")" \
-    "the previous cup uninstall failed during 'detach' with error 6"
+    "the previous cup uninstall failed with error 6"
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$uninstall_journal_hash"
 rm -f "$TEST_HOME/.cup/transaction.txt"
 

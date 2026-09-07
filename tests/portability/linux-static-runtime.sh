@@ -262,8 +262,20 @@ cat >"$package_directory/info.txt" <<METADATA
 package.component=compiler
 package.tool=clang
 package.version=99.0.0
+package.mode=self-contained
+package.formats=tar.xz,tar.gz,zip
 platform.host=$PLATFORM
 platform.target=$PLATFORM
+platform.host_triple=${PLATFORM}-fixture
+platform.target_triple=${PLATFORM}-fixture
+platform.family=fixture
+platform.runtime=fixture
+platform.thread_model=fixture
+build.environment=test
+build.source_policy=fixture
+source.primary.name=clang
+source.primary.version=99.0.0
+source.primary.url=https://example.invalid/clang-99.0.0.tar.xz
 entry.clang=bin/clang
 METADATA
 cat >"$package_directory/bin/clang" <<'PROGRAM'

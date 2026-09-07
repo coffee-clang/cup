@@ -208,23 +208,16 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
         *status = ARTIFACT_VERIFY_MISSING;
         return CUP_OK;
     }
-    if (identity.kind != SYSTEM_PATH_REGULAR_FILE) {
-        fclose(file);
-        *status = ARTIFACT_VERIFY_WRONG_TYPE;
-        return CUP_OK;
-    }
-    if (size == 0 || size > MAX_PACKAGE_DOWNLOAD_BYTES) {
-        fclose(file);
-        *status = ARTIFACT_VERIFY_REJECTED;
-        return CUP_OK;
-    }
-
     artifact->file = file;
     artifact->identity = identity;
     artifact->format = spec->format;
     if (text_copy(artifact->path, sizeof(artifact->path), path) != CUP_OK) {
         verified_artifact_release(artifact);
         return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    if (size == 0 || size > MAX_PACKAGE_DOWNLOAD_BYTES) {
+        *status = ARTIFACT_VERIFY_REJECTED;
+        return CUP_OK;
     }
 
     err = checksum_sha256_stream(file, artifact->digest, sizeof(artifact->digest));

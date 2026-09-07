@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #include <event2/http.h>
 #include <event2/listener.h>
 #include <event2/util.h>
+#include <zlib.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -51,6 +53,8 @@ typedef struct {
     const char *request_file;
     unsigned short port;
     long delay_ms;
+    const char *gzip_path;
+    unsigned long gzip_bytes;
     int has_port;
 } HttpOptions;
 
@@ -386,11 +390,22 @@ static int parse_http_options(int argc, char **argv, HttpOptions *options) {
             if (!parse_long(argv[++index], 0, 600000, &options->delay_ms)) {
                 return 0;
             }
+        } else if (strcmp(argv[index], "--gzip-path") == 0 && index + 1 < argc) {
+            options->gzip_path = argv[++index];
+        } else if (strcmp(argv[index], "--gzip-bytes") == 0 && index + 1 < argc) {
+            long gzip_bytes;
+
+            if (!parse_long(argv[++index], 1, 67108864, &gzip_bytes)) {
+                return 0;
+            }
+            options->gzip_bytes = (unsigned long)gzip_bytes;
         } else {
             return 0;
         }
     }
-    return options->root != NULL && options->has_port;
+    return options->root != NULL && options->has_port &&
+           ((options->gzip_path == NULL && options->gzip_bytes == 0) ||
+            (options->gzip_path != NULL && options->gzip_bytes != 0));
 }
 
 static int safe_request_path(const char *path) {
@@ -445,6 +460,55 @@ static int read_file_body(FILE *file, struct evbuffer *body) {
     }
 }
 
+static int add_gzip_repeated_body(struct evbuffer *body, size_t uncompressed_size) {
+    z_stream stream;
+    unsigned char *input = NULL;
+    unsigned char *output = NULL;
+    uLong output_capacity;
+    int result = 0;
+
+    if (body == NULL || uncompressed_size == 0 || uncompressed_size > UINT_MAX) {
+        return 0;
+    }
+    input = malloc(uncompressed_size);
+    if (input == NULL) {
+        return 0;
+    }
+    memset(input, 'A', uncompressed_size);
+
+    memset(&stream, 0, sizeof(stream));
+    if (deflateInit2(&stream,
+                     Z_DEFAULT_COMPRESSION,
+                     Z_DEFLATED,
+                     15 + 16,
+                     8,
+                     Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(input);
+        return 0;
+    }
+    output_capacity = deflateBound(&stream, (uLong)uncompressed_size);
+    output = malloc((size_t)output_capacity);
+    if (output == NULL) {
+        (void)deflateEnd(&stream);
+        free(input);
+        return 0;
+    }
+
+    stream.next_in = input;
+    stream.avail_in = (uInt)uncompressed_size;
+    stream.next_out = output;
+    stream.avail_out = (uInt)output_capacity;
+    if (deflate(&stream, Z_FINISH) == Z_STREAM_END &&
+        evbuffer_add(body, output, (size_t)stream.total_out) == 0) {
+        result = 1;
+    }
+
+    free(output);
+    (void)deflateEnd(&stream);
+    free(input);
+    return result;
+}
+
 static void serve_http_request(struct evhttp_request *request, void *context) {
     const HttpOptions *options = context;
     const char *path = evhttp_request_get_uri(request);
@@ -469,6 +533,26 @@ static void serve_http_request(struct evhttp_request *request, void *context) {
     }
     if (!safe_request_path(path)) {
         send_text_reply(request, CUP_TEST_HTTP_FORBIDDEN, "Forbidden", "forbidden\n");
+        return;
+    }
+    if (options->gzip_path != NULL && strcmp(path, options->gzip_path) == 0) {
+        body = evbuffer_new();
+        if (body == NULL || !add_gzip_repeated_body(body, (size_t)options->gzip_bytes)) {
+            evbuffer_free(body);
+            send_text_reply(request,
+                            CUP_TEST_HTTP_INTERNAL_ERROR,
+                            "Internal Server Error",
+                            "gzip error\n");
+            return;
+        }
+        (void)evhttp_add_header(evhttp_request_get_output_headers(request),
+                                "Content-Type",
+                                "application/octet-stream");
+        (void)evhttp_add_header(evhttp_request_get_output_headers(request),
+                                "Content-Encoding",
+                                "gzip");
+        evhttp_send_reply(request, CUP_TEST_HTTP_OK, "OK", body);
+        evbuffer_free(body);
         return;
     }
     length = snprintf(file_path, sizeof(file_path), "%s%s", options->root, path);
@@ -534,7 +618,8 @@ static int run_http_server(int argc, char **argv) {
     if (!parse_http_options(argc, argv, &options)) {
         fprintf(stderr,
                 "usage: network-helper http-server --root DIR --port PORT "
-                "[--ready-file PATH] [--request-file PATH] [--delay-ms N]\n");
+                "[--ready-file PATH] [--request-file PATH] [--delay-ms N] "
+                "[--gzip-path PATH --gzip-bytes N]\n");
         return 2;
     }
     base = event_base_new();

@@ -122,7 +122,6 @@ CupError uninstall_helper_remove_stale(const char *root,
                                        const SystemLock *lock) {
     char helper[MAX_PATH_LEN];
     SystemPathIdentity identity;
-    SystemPathKind kind;
     CupError err;
 
     if (text_is_empty(root) || text_is_empty(token) || lock == NULL || !lock->active ||
@@ -131,17 +130,13 @@ CupError uninstall_helper_remove_stale(const char *root,
     }
     err = build_helper_path(helper, sizeof(helper), root, token);
     if (err == CUP_OK) {
-        err = system_get_path_kind(helper, &kind);
+        err = system_get_path_identity(helper, &identity);
     }
-    if (err != CUP_OK || kind == SYSTEM_PATH_MISSING) {
+    if (err != CUP_OK || !identity.valid) {
         return err;
     }
-    if (kind != SYSTEM_PATH_REGULAR_FILE) {
+    if (identity.kind != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_TRANSACTION;
-    }
-    err = system_get_path_identity(helper, &identity);
-    if (err != CUP_OK || !identity.valid || identity.kind != SYSTEM_PATH_REGULAR_FILE) {
-        return err == CUP_OK ? CUP_ERR_TRANSACTION : err;
     }
     return system_remove_file_if_identity(helper, &identity);
 }
@@ -186,7 +181,7 @@ static CupError validate_handoff(const char *root,
     }
     if (err != CUP_OK || status != UNINSTALL_JOURNAL_LOADED ||
         journal->phase != UNINSTALL_PHASE_SCHEDULED ||
-        journal->stage != UNINSTALL_STAGE_HANDOFF || journal->error_code != 0 ||
+        journal->error_code != 0 ||
         strcmp(journal->token, token) != 0) {
         return CUP_ERR_TRANSACTION;
     }
@@ -292,7 +287,6 @@ CupError uninstall_helper_run(const char *root,
     err = uninstall_journal_set_at(root,
                                    &journal,
                                    UNINSTALL_PHASE_DETACHING,
-                                   UNINSTALL_STAGE_DETACH,
                                    0);
     if (err != CUP_OK) {
         system_handoff_release(&handoff);
@@ -305,7 +299,6 @@ CupError uninstall_helper_run(const char *root,
             CupError journal_err = uninstall_journal_set_at(root,
                                                             &journal,
                                                             UNINSTALL_PHASE_FAILED,
-                                                            UNINSTALL_STAGE_DETACH,
                                                             CUP_STATUS_OPERATION);
 
             system_handoff_release(&handoff);
@@ -328,7 +321,7 @@ CupError uninstall_helper_run(const char *root,
         if (err == CUP_OK &&
             (status != UNINSTALL_JOURNAL_LOADED ||
              journal.phase != UNINSTALL_PHASE_DETACHING ||
-             journal.stage != UNINSTALL_STAGE_DETACH || journal.error_code != 0 ||
+             journal.error_code != 0 ||
              strcmp(journal.token, token) != 0)) {
             err = CUP_ERR_TRANSACTION;
         }

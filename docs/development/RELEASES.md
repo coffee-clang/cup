@@ -54,28 +54,27 @@ release builds require a Git checkout and always record the real full commit.
 The assembled release also contains `provenance.txt`:
 
 ```ini
-format=3
+format=4
 version=X.Y.Z
 source_repository=owner/repository
 source_commit=<full-source-commit>
 tests_run_id=<tests-workflow-run-id>
 tests_run_attempt=<tests-workflow-attempt>
-tests_evidence_index_sha256=<evidence-index-digest>
 release_run_id=<release-workflow-run-id>
-release_run_attempt=<release-workflow-attempt>
 ```
 
 This file connects the public files to:
 
 - the repository and source commit;
 - the successful Tests run selected for that commit;
-- the exact rerun attempt of that Tests run;
-- the evidence index downloaded by Release;
+- the exact Tests rerun attempt that supplied the source-tested build identity;
 - the Release run that built and tested the candidates.
 
-A rerun attempt is treated as a separate generation. Evidence from different
-attempts is never mixed. When retrying an evidence-producing Tests or Release run, use
-**Re-run all jobs** so every attempt-bound artifact belongs to the new generation.
+The Tests attempt is part of the cross-workflow authorization. The Release
+attempt deliberately is not: retrying jobs inside the same Release run must not
+change the common release bytes merely because `github.run_attempt` increased.
+Internal Release artifacts therefore use stable names within that run and are
+uploaded with explicit overwrite semantics when an upstream job is rerun.
 
 ## Workflow responsibilities
 
@@ -84,8 +83,10 @@ The three application workflows involved in a release have separate jobs.
 ### Dependencies
 
 `.github/workflows/dependencies.yml` prepares or restores a dependency prefix for
-one native platform/profile. Its evidence records the platform, profile,
-toolchain and dependency identity used by the source job.
+one native platform/profile. Prefix compatibility is determined by the canonical
+metadata and verifier rather than by a separate cross-workflow artifact.
+The `primary` target selects the five profiles used for distributable CUP
+artifacts; `all` additionally includes Windows CLANG64 for test/sanitizer work.
 
 The normal profiles are:
 
@@ -104,17 +105,10 @@ uses UCRT64 GCC.
 ### Tests
 
 `.github/workflows/tests.yml` owns source verification. It runs repository
-quality, native source tests, coverage and sanitizers. After dependency and
-source jobs succeed, it builds an evidence index for the exact workflow attempt.
-
-The release-authorizing set contains:
-
-- six dependency-evidence artifacts;
-- five source-evidence artifacts.
-
-`scripts/ci/tests-evidence-artifacts.sh` is the single inventory of the
-release-authorizing artifact names. The index stores the artifact IDs and
-SHA-256 values returned by GitHub.
+quality, native source tests, coverage and sanitizers. Each successful source job
+also uploads the canonical source-tested `build-config.txt` for its release
+platform under a name bound to the current Tests run attempt. The final Tests
+gate requires every release-authorizing job family to succeed.
 
 ### Release
 
@@ -123,43 +117,42 @@ SHA-256 values returned by GitHub.
 1. selects the exact commit from `main`;
 2. finds a successful Tests run for that commit;
 3. fixes the selected Tests run ID and run attempt;
-4. downloads and verifies the evidence index;
-5. downloads every listed evidence artifact by ID;
-6. builds common assets and five platform candidates;
+4. downloads that attempt's source-tested build config for each release platform;
+5. builds common assets and five platform candidates from verified dependency prefixes;
+6. compares each candidate build identity with the corresponding source-tested build;
 7. tests each candidate on its native runner;
 8. publishes only after every required job succeeds.
 
-Repository quality, coverage and sanitizers are not repeated inside Release.
-Their evidence already belongs to the selected Tests run. Candidate-specific
-checks remain in Release because they must examine the final assembled files.
+Repository quality, coverage and sanitizers are not repeated inside Release;
+the selected successful Tests run already owns those results. Candidate-specific
+build-identity and native tests remain in Release because they must examine the
+actual official files.
 
 The protected Pages workflow is unrelated to this process. Website deployment
 does not authorize a cup release and is not included in the release gate.
 
-## Source evidence
+## Source-tested build identity
 
-Each source job writes evidence describing the build it tested. The
-verifier checks the envelope and its files before Release accepts it. Depending
-on the artifact type, the checked data includes:
+The cross-workflow artifact is the canonical `build-config.txt` produced by the
+source build itself; there is no second metadata envelope. Release accepts only
+the artifact name for the selected Tests run attempt and then independently
+validates the source-development config against the candidate-release config.
 
-- repository;
-- source commit;
-- workflow run ID and attempt;
-- artifact name;
-- platform and build configuration;
+Both files must have the exact current build-config schema and the expected
+platform, configuration and official-build role. Cross-runner equality is
+required for:
+
+- dependency prefix format, profile and build revision;
+- dependency source-lock and toolchain SHA-256 identities;
 - compiler command, normalized target and numeric version;
-- dependency-prefix format, profile, source lock and toolchain fingerprint;
-- generated version metadata;
-- binary-inspection policy and result.
+- on Windows, the corresponding resource-compiler command, normalized target
+  and numeric version.
 
-Compiler/resource-compiler raw targets, paths and full version lines remain
-recorded in each build config for diagnosis. Authorization compares the command,
-normalized platform target and numeric version because installation paths and
-vendor wording can differ without changing compiler identity. Windows candidates
-apply the same rule to the tested resource compiler.
-
-The verifier accepts only the repository evidence schema. Unsupported schema
-versions are rejected rather than routed through compatibility parsing.
+Resolved paths, full vendor version lines and effective flags stay in
+`build-config.txt` for diagnosis, but are not equality keys because native runner
+locations and harmless vendor wording may differ. A source artifact from another
+Tests attempt is not substituted when the selected attempt lacks its own file;
+that condition fails closed.
 
 ## Building common assets
 
@@ -278,7 +271,11 @@ paths.
 
 The executable must be PE32+ x86-64, use the console subsystem, import only the
 approved Windows system DLLs and contain the expected version resource and
-mitigation flags. MinGW runtime DLL dependencies are rejected.
+mitigation flags. MinGW runtime DLL dependencies are rejected. Release linking
+disables the PE insertion timestamp, and Windows finalization forces
+`SOURCE_DATE_EPOCH=1` for the `objcopy`/`strip` writers so an ambient clock or
+caller epoch does not own the final PE/debug bytes. Native reproducibility tests
+still compare independent builds rather than treating these flags alone as proof.
 
 Native symbols are stored as workflow artifacts for debugging. They are not part
 of the public download set. The public executable is stripped after symbol
@@ -298,7 +295,8 @@ The native release suites check:
 - checksum files and bytes;
 - `release.txt` and provenance identity;
 - executable version and startup;
-- installation into a fresh user home;
+- installation into the default base and a custom user-manageable base;
+- complete canonical-root relocation and reinstall at the relocated base;
 - a successful `cup doctor` after installation;
 - relevant preservation, repair and uninstall behavior.
 
@@ -325,9 +323,13 @@ The publisher handles these cases:
 
 ### No tag or release exists
 
-It creates the tag for the tested commit, creates a draft release, uploads the
-snapshot, downloads the remote assets for comparison and publishes only after
-the exact set and bytes match.
+It creates a draft release targeted at the tested commit, uploads the snapshot,
+downloads the remote assets for comparison and publishes only after the exact
+set and bytes match. The publisher does not pre-create a tag for this path. If a
+tag becomes observable during the draft lifecycle it must resolve to the tested
+commit, and successful publication requires the published release to have that
+resolvable tag. A tag that existed before draft creation is validated before it
+is used.
 
 ### A matching draft exists
 
@@ -374,14 +376,17 @@ review and commit the source changes
 push the commit to main
 let Tests finish successfully for that exact commit
 dispatch Release from the same main commit
-verify the selected Tests run and evidence attempt
+verify the selected Tests run and source-build-config attempt
 build the five official candidates
 test the exact candidates on native runners
 publish the verified generation
 ```
 
 If the release inputs or source commit change, the source Tests run must be
-repeated. A candidate is never reused for another commit or workflow attempt.
+repeated. A candidate is never reused for another source commit or a distinct
+Release run. A retry inside the same Release run may reuse an unchanged upstream
+artifact, which is why the internal artifact names and public provenance remain
+stable across `run_attempt` changes.
 
 ## Relationship with `cup update cup`
 

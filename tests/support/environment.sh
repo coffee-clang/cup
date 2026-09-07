@@ -166,10 +166,6 @@ cup_test_find_static_library() {
             printf '%s\n' "$_cup_test_directory/lib$_cup_test_name.a"
             return 0
         }
-        [ -f "$_cup_test_directory/lib$_cup_test_name.dll.a" ] && {
-            printf '%s\n' "$_cup_test_directory/lib$_cup_test_name.dll.a"
-            return 0
-        }
     done
     return 1
 }
@@ -195,97 +191,12 @@ cup_test_require_dependencies() {
     return 1
 }
 
-# Print actionable installation guidance for optional quality tools.
-cup_test_tool_hint() {
-    _cup_test_tool=$1
-    case "$CUP_TEST_PLATFORM" in
-        linux-*)
-            case "$_cup_test_tool" in
-                gcovr)
-                    printf '%s\n' "Install it with: sudo apt-get install gcovr" >&2
-                    ;;
-                gcc|gcov)
-                    printf '%s\n' \
-                        "Install GCC coverage tools with:" \
-                        "sudo apt-get install build-essential" >&2
-                    ;;
-                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
-                    printf '%s\n' \
-                        "Install LLVM tools with: sudo apt-get install clang llvm" >&2
-                    ;;
-                timeout)
-                    printf '%s\n' "Install it with: sudo apt-get install coreutils" >&2
-                    ;;
-                *)
-                    printf '%s\n' "Install '$_cup_test_tool' with your system package manager." >&2
-                    ;;
-            esac
-            ;;
-        macos-*)
-            case "$_cup_test_tool" in
-                timeout|gtimeout)
-                    printf '%s\n' "Install GNU timeout with: brew install coreutils" >&2
-                    ;;
-                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
-                    printf '%s\n' \
-                        "Install Xcode Command Line Tools with: xcode-select --install" >&2
-                    ;;
-                *)
-                    printf '%s\n' \
-                        "Install '$_cup_test_tool' with Homebrew or" \
-                        "Xcode Command Line Tools." >&2
-                    ;;
-            esac
-            ;;
-        windows-x64)
-            case "$_cup_test_tool" in
-                gcovr)
-                    printf '%s\n' \
-                        "Install it in UCRT64 with:" \
-                        "pacman -S mingw-w64-ucrt-x86_64-gcovr" >&2
-                    ;;
-                gcc|gcov)
-                    printf '%s\n' \
-                        "Install GCC tools in UCRT64 with:" \
-                        "pacman -S mingw-w64-ucrt-x86_64-gcc" >&2
-                    ;;
-                clang|llvm-cov|llvm-profdata|llvm-symbolizer)
-                    if [ "${MSYSTEM:-}" = CLANG64 ]; then
-                        _cup_test_package_prefix=mingw-w64-clang-x86_64
-                        _cup_test_environment=CLANG64
-                    else
-                        _cup_test_package_prefix=mingw-w64-ucrt-x86_64
-                        _cup_test_environment=UCRT64
-                    fi
-                    printf '%s\n' \
-                        "Install LLVM tools in $_cup_test_environment with:" \
-                        "  pacman -S ${_cup_test_package_prefix}-clang" \
-                        "    ${_cup_test_package_prefix}-compiler-rt" \
-                        "    ${_cup_test_package_prefix}-llvm-tools" >&2
-                    ;;
-                timeout)
-                    printf '%s\n' "Install it in MSYS2 with: pacman -S coreutils" >&2
-                    ;;
-                powershell.exe)
-                    printf '%s\n' "PowerShell is required from the Windows host." >&2
-                    ;;
-                *)
-                    printf '%s\n' \
-                        "Install '$_cup_test_tool' in the active MSYS2" \
-                        "${MSYSTEM:-UCRT64} environment." >&2
-                    ;;
-            esac
-            ;;
-    esac
-}
-
 cup_test_require_tool() {
     _cup_test_tool=$1
     _cup_test_purpose=${2:-the requested test target}
     command -v "$_cup_test_tool" >/dev/null 2>&1 && return 0
     printf "Required tool '%s' was not found; it is needed for %s.\n" \
         "$_cup_test_tool" "$_cup_test_purpose" >&2
-    cup_test_tool_hint "$_cup_test_tool"
     return 1
 }
 
@@ -306,7 +217,6 @@ cup_test_find_timeout() {
         fi
     done
     printf '%s\n' "A timeout command is required for bounded quality tests." >&2
-    cup_test_tool_hint timeout
     return 1
 }
 
@@ -320,7 +230,6 @@ cup_test_find_llvm_tool() {
         xcrun --find "$_cup_test_tool" 2>/dev/null && return 0
     fi
     printf "Required LLVM tool '%s' was not found.\n" "$_cup_test_tool" >&2
-    cup_test_tool_hint "$_cup_test_tool"
     return 1
 }
 

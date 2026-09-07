@@ -15,6 +15,10 @@ Set-StrictMode -Version Latest
 
 $originalLocation = (Get-Location).Path
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $projectRoot "tests\support\windows\configuration.ps1")
+. (Join-Path $projectRoot "tests\support\windows\build.ps1")
+. (Join-Path $projectRoot "tests\support\windows\process.ps1")
+. (Join-Path $projectRoot "tests\support\windows\hash.ps1")
 $ReleaseDir = (Resolve-Path -LiteralPath $ReleaseDir).Path
 $temporaryParent = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     [System.IO.Path]::GetTempPath()
@@ -22,43 +26,6 @@ $temporaryParent = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     $env:RUNNER_TEMP
 }
 $testWorkRoot = $null
-
-function Stop-ReleaseProcessTree {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Diagnostics.Process]$Process,
-
-        [ValidateRange(1, 60000)]
-        [int]$WaitMilliseconds = 10000
-    )
-
-    if ($Process.HasExited) {
-        return
-    }
-
-    $treeStopped = $false
-    try {
-        & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
-        $treeStopped = ($LASTEXITCODE -eq 0)
-    } catch {
-        $treeStopped = $false
-    }
-    if (-not $treeStopped -and -not $Process.HasExited) {
-        try {
-            $Process.Kill()
-        } catch {
-            # Cleanup is best effort.
-        }
-    }
-    if (-not $Process.WaitForExit($WaitMilliseconds) -and -not $Process.HasExited) {
-        try {
-            $Process.Kill()
-        } catch {
-            # Cleanup is best effort.
-        }
-        [void]$Process.WaitForExit($WaitMilliseconds)
-    }
-}
 
 function Write-CanonicalAsciiLines {
     param(
@@ -128,7 +95,7 @@ function Invoke-PowerShellScript {
             -PassThru
         [void]$process.Handle
         if (-not $process.WaitForExit(300000)) {
-            Stop-ReleaseProcessTree -Process $process
+            Stop-TestProcessTree -Process $process
             throw "PowerShell release fixture timed out: $ScriptPath"
         }
         $process.WaitForExit()
@@ -208,7 +175,7 @@ function Assert-ChecksumFile {
             throw "Checksum entry references missing file: $expectedName"
         }
 
-        $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-Sha256Lower -Path $path
         if ($actualHash -cne $expectedHash) {
             throw "Checksum mismatch for ${expectedName}: expected $expectedHash, got $actualHash"
         }
@@ -258,10 +225,8 @@ function Test-ChecksumFileAssertions {
         Write-CanonicalAsciiLines -Path (Join-Path $fixture $expectedNames[1]) `
             -Lines @('asset-b')
 
-        $hashA = (Get-FileHash -LiteralPath (Join-Path $fixture $expectedNames[0]) `
-            -Algorithm SHA256).Hash.ToLowerInvariant()
-        $hashB = (Get-FileHash -LiteralPath (Join-Path $fixture $expectedNames[1]) `
-            -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hashA = Get-Sha256Lower -Path (Join-Path $fixture $expectedNames[0])
+        $hashB = Get-Sha256Lower -Path (Join-Path $fixture $expectedNames[1])
         $validLines = @(
             "$hashA  $($expectedNames[0])",
             "$hashB  $($expectedNames[1])"
@@ -361,8 +326,7 @@ function Test-InstallerMetadataFailure {
 
         $platformNames = @('cup-windows-x64.exe', 'release.txt', 'SHA256SUMS.common')
         $checksumLines = foreach ($asset in $platformNames) {
-            $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $asset) `
-                -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hash = Get-Sha256Lower -Path (Join-Path $fixture $asset)
             "$hash  $asset"
         }
         Write-CanonicalAsciiLines `
@@ -477,7 +441,7 @@ function Test-InstallerFinalLowSpeedWindow {
         }
         if ($null -ne $serverProcess) {
             if (-not $serverProcess.HasExited) {
-                Stop-ReleaseProcessTree -Process $serverProcess
+                Stop-TestProcessTree -Process $serverProcess
             }
             $serverProcess.Dispose()
         }
@@ -524,20 +488,12 @@ if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_SERVER_ROOT)) {
     throw "CUP_TEST_SERVER_ROOT is required"
 }
 $root = (Resolve-Path -LiteralPath $env:CUP_TEST_SERVER_ROOT).Path
-if ($env:CUP_TEST_CONFIGURATION) {
-    $configuration = $env:CUP_TEST_CONFIGURATION
-} else {
-    $configuration = "development"
-}
-$testBuildRoot = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_BUILD_ROOT)) {
-    Join-Path $projectRoot 'build'
-} else {
-    $env:CUP_TEST_BUILD_ROOT
-}
-$helper = Join-Path $testBuildRoot "windows-x64\$configuration\tests\helpers\network-helper.exe"
-if (-not (Test-Path -LiteralPath $helper)) {
-    throw "HTTP test helper is not built: $helper"
-}
+$configuration = Get-TestConfiguration
+$testBuildRoot = Resolve-TestBuildRoot -ProjectRoot $projectRoot
+$helper = Resolve-TestHelperPath `
+    -BuildRoot $testBuildRoot `
+    -Configuration $configuration `
+    -Name 'network-helper'
 $server = $null
 $originalEnvironment = @{}
 
@@ -557,7 +513,10 @@ try {
     foreach ($name in @(
         "USERPROFILE",
         "CUP_INSTALL_ALLOW_INSECURE",
-        "CUP_INSTALL_BASE_URL"
+        "CUP_INSTALL_BASE_URL",
+        "CUP_INSTALL_BASE_DIR",
+        "CUP_INSTALL_NO_PATH_PROMPT",
+        "Path"
     )) {
         $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
         $originalEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
@@ -645,6 +604,8 @@ try {
     if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
         throw "Windows installer did not create $installed"
     }
+    # A zero-warning doctor run models the shell in which the current canonical root is on PATH.
+    $env:Path = "$(Split-Path -Parent $installed);$($env:Path)"
     $installedVersion = & $installed --version
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup --version failed with exit code $LASTEXITCODE"
@@ -672,6 +633,88 @@ try {
     if ($doctorText -notlike "*Doctor found no issues.*") {
         throw "Installed cup doctor did not report a healthy release installation"
     }
+
+    # A separate release lifecycle proves custom-base installation and complete-root relocation.
+    $customBase = Join-Path $testWorkRoot "custom base"
+    $relocatedBase = Join-Path $testWorkRoot "relocated base"
+    New-Item -ItemType Directory -Path $customBase | Out-Null
+    New-Item -ItemType Directory -Path $relocatedBase | Out-Null
+    $env:CUP_INSTALL_BASE_DIR = $customBase
+    $env:CUP_INSTALL_NO_PATH_PROMPT = '1'
+    $customInstall = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $testProfile
+    if ($customInstall.ExitCode -ne 0) {
+        throw "Custom-base Windows install failed`n$($customInstall.Output -join [Environment]::NewLine)"
+    }
+    $customRoot = Join-Path $customBase '.cup'
+    $customCup = Join-Path $customRoot 'bin\cup.exe'
+    if (-not (Test-Path -LiteralPath $customCup -PathType Leaf)) {
+        throw 'Custom-base Windows install did not create the canonical .cup root'
+    }
+    $savedCustomPath = $env:Path
+    try {
+        $env:Path = "$(Split-Path -Parent $customCup);$savedCustomPath"
+        $customDoctor = @(& $customCup doctor 2>&1)
+        $customDoctorStatus = $LASTEXITCODE
+    } finally {
+        $env:Path = $savedCustomPath
+    }
+    if ($customDoctorStatus -ne 0 -or
+        ($customDoctor -join [Environment]::NewLine) -notlike '*Doctor found no issues.*') {
+        throw 'Custom-base Windows doctor did not report a healthy installation'
+    }
+
+    $relocatedRoot = Join-Path $relocatedBase '.cup'
+    Move-Item -LiteralPath $customRoot -Destination $relocatedRoot
+    $relocatedCup = Join-Path $relocatedRoot 'bin\cup.exe'
+    $relocatedVersion = & $relocatedCup --version
+    if ($LASTEXITCODE -ne 0 -or $relocatedVersion -cne "cup $Version") {
+        throw 'Relocated Windows CUP did not derive its moved root from the executable'
+    }
+    if (Test-Path -LiteralPath $customRoot) {
+        throw 'Relocation left the old custom CUP root behind'
+    }
+    $env:CUP_INSTALL_BASE_DIR = $relocatedBase
+    $customReinstall = Invoke-PowerShellScript `
+        -ScriptPath (Join-Path $ReleaseDir "install.ps1") `
+        -WorkingDirectory $testProfile
+    if ($customReinstall.ExitCode -ne 0) {
+        throw "Relocated Windows reinstall failed`n$($customReinstall.Output -join [Environment]::NewLine)"
+    }
+    if (Test-Path -LiteralPath $customRoot) {
+        throw 'Relocated reinstall recreated the old custom CUP root'
+    }
+    $savedRelocatedPath = $env:Path
+    try {
+        $env:Path = "$(Split-Path -Parent $relocatedCup);$savedRelocatedPath"
+        $relocatedDoctor = @(& $relocatedCup doctor 2>&1)
+        $relocatedDoctorStatus = $LASTEXITCODE
+    } finally {
+        $env:Path = $savedRelocatedPath
+    }
+    if ($relocatedDoctorStatus -ne 0 -or
+        ($relocatedDoctor -join [Environment]::NewLine) -notlike '*Doctor found no issues.*') {
+        throw 'Relocated Windows reinstall did not leave a healthy installation'
+    }
+    $customUninstall = @(& $relocatedCup uninstall --yes 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Relocated custom-root uninstall failed`n$($customUninstall -join [Environment]::NewLine)"
+    }
+    $customDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $customResidues = @(Get-ChildItem -LiteralPath $relocatedBase -Force `
+            -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.cup-uninstall-*' })
+        if (-not (Test-Path -LiteralPath $relocatedRoot) -and $customResidues.Count -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $customDeadline)
+    if ((Test-Path -LiteralPath $relocatedRoot) -or $customResidues.Count -ne 0) {
+        throw 'Relocated custom-root uninstall did not complete cleanly'
+    }
+    Remove-Item Env:CUP_INSTALL_BASE_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:CUP_INSTALL_NO_PATH_PROMPT -ErrorAction SilentlyContinue
 
     # Preserve an unrelated .cup and validate the complete release lifecycle from
     # the stable .coffee-cup fallback.
@@ -705,8 +748,15 @@ try {
     if ($LASTEXITCODE -ne 0 -or $foreignVersion -cne "cup $Version") {
         throw "Fallback-root cup was not usable"
     }
-    $foreignDoctor = @(& $foreignInstalled doctor 2>&1)
-    if ($LASTEXITCODE -ne 0 -or
+    $savedForeignPath = $env:Path
+    try {
+        $env:Path = "$(Split-Path -Parent $foreignInstalled);$savedForeignPath"
+        $foreignDoctor = @(& $foreignInstalled doctor 2>&1)
+        $foreignDoctorStatus = $LASTEXITCODE
+    } finally {
+        $env:Path = $savedForeignPath
+    }
+    if ($foreignDoctorStatus -ne 0 -or
         ($foreignDoctor -join [Environment]::NewLine) -notlike "*Doctor found no issues.*") {
         throw "Fallback-root cup doctor did not report a healthy installation"
     }
@@ -772,12 +822,11 @@ try {
     Set-Content -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
         -Value "binary" -Encoding Ascii
     Write-CanonicalAsciiLines -Path (Join-Path $residueRoot "transaction.txt") -Lines @(
-        "format=1",
+        "format=2",
         "operation=uninstall",
         "phase=detaching",
         "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=detach",
         "error=0"
     )
     $residueBinaryHash = (Get-FileHash -LiteralPath (Join-Path $residueRoot "bin\cup.exe") `
@@ -833,36 +882,7 @@ try {
         throw "Installed cup was not usable after repair"
     }
 
-    # The update helper is derived from the installed executable, not a release asset. Repair
-    # regenerates a missing copy without changing the running executable.
     $updateHelper = Join-Path $env:USERPROFILE ".cup\helpers\update-helper.exe"
-    Remove-Item -LiteralPath $updateHelper -Force
-    $helperRepairOutput = @(& $installed repair 2>&1)
-    $helperRepairStatus = $LASTEXITCODE
-    $helperRepairText = $helperRepairOutput -join [Environment]::NewLine
-    if (-not [string]::IsNullOrEmpty($helperRepairText)) {
-        Write-Host $helperRepairText
-    }
-    if ($helperRepairStatus -ne 0) {
-        throw (
-            "Installed cup helper repair failed with exit code " +
-            "$helperRepairStatus`n$helperRepairText")
-    }
-    if ($helperRepairText -notlike
-        "*Regenerated native update helper from the installed executable.*") {
-        throw "Installed cup repair did not report regenerating update-helper.exe"
-    }
-    if (-not (Test-Path -LiteralPath $updateHelper -PathType Leaf)) {
-        throw "Installed cup repair did not regenerate update-helper.exe"
-    }
-    if ((Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash -ne
-        $binaryHashBeforeRepair) {
-        throw "Regenerated update-helper.exe does not match cup.exe"
-    }
-    if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
-        $binaryHashBeforeRepair) {
-        throw "Installed cup helper repair changed cup.exe"
-    }
 
     # A malformed canonical journal blocks bootstrap before any managed mutation.
     # The failed transport preserves the journal evidence and the installed executable.
@@ -997,6 +1017,9 @@ try {
     if ($updatedDoctorStatus -ne 0) {
         throw "updated cup doctor failed with exit code $updatedDoctorStatus`n$updatedDoctorText"
     }
+    if ($updatedDoctorText -notlike "*Doctor found no issues.*") {
+        throw "updated cup doctor did not report a healthy release installation"
+    }
     if ($updatedDoctorText -like "*development cup assets*" -or
         $updatedDoctorText -like "*development catalog*") {
         throw "Updated Windows release unexpectedly used development cup assets"
@@ -1008,15 +1031,20 @@ try {
     }
 
     # The assembled candidate performs its detached uninstall smoke test.
-    $uninstallStartedMessage =
-        "Uninstall started; cleanup continues in the background. " +
+    $uninstallHandoffMessage =
+        "Uninstall handoff accepted; cleanup continues in the background. " +
         "You can close this terminal. The PATH entry was not removed."
     $uninstallOutput = & $installed uninstall --yes 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup uninstall failed with exit code $LASTEXITCODE"
     }
-    if (($uninstallOutput -join "`n") -notlike "*$uninstallStartedMessage*") {
-        throw "Installed cup uninstall did not report detached removal"
+    $uninstallText = $uninstallOutput -join "`n"
+    if ($uninstallText -notlike "*$uninstallHandoffMessage*") {
+        throw "Installed cup uninstall did not report accepted detached handoff"
+    }
+    if ($uninstallText -notlike "*Recovery path if cleanup fails: *" -or
+        $uninstallText -notlike "*.cup-uninstall-*") {
+        throw "Installed cup uninstall did not report its detached recovery path"
     }
     $cupRoot = Join-Path $env:USERPROFILE ".cup"
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -1082,7 +1110,7 @@ try {
 
     if ($null -ne $server) {
         if (-not $server.HasExited) {
-            Stop-ReleaseProcessTree -Process $server
+            Stop-TestProcessTree -Process $server
         }
         $server.Dispose()
     }

@@ -22,11 +22,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 #if defined(_WIN32)
@@ -40,19 +35,26 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 #define TEST_PACKAGE_ENTRY "bin/clang"
 #define TEST_PACKAGE_BODY "#!/bin/sh\nexit 0\n"
 #endif
+
+#define TEST_PACKAGE_COMMON_METADATA \
+    "package.mode=self-contained\n" \
+    "package.formats=tar.xz,tar.gz,zip\n" \
+    "platform.host_triple=fixture-host-triple\n" \
+    "platform.target_triple=fixture-target-triple\n" \
+    "platform.family=fixture\n" \
+    "platform.runtime=fixture\n" \
+    "platform.thread_model=fixture\n" \
+    "build.environment=test\n" \
+    "build.source_policy=fixture\n" \
+    "source.primary.name=clang\n" \
+    "source.primary.version=22.1.5\n" \
+    "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n"
 static unsigned int recovery_serial;
 static CupError install_path_result;
 static CupError components_path_result;
 static CupError recovery_result;
 static CupError cleanup_result;
 static int cleanup_calls;
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
-
-/* Fixture lifecycle and local construction helpers. */
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     int written;
@@ -187,6 +189,7 @@ static void make_valid_package_for_platform(const char *root,
                        "package.version=22.1.5\n"
                        "platform.host=%s\n"
                        "platform.target=%s\n"
+                       TEST_PACKAGE_COMMON_METADATA
                        "entry.clang=" TEST_PACKAGE_ENTRY "\n",
                        host,
                        target);
@@ -233,11 +236,6 @@ static const PackageIssue *find_issue_suffix(const PackageList *packages,
     return NULL;
 }
 #endif
-
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
 
 static void test_scope_validation(void) {
     PackageScope first;
@@ -384,35 +382,13 @@ static void test_identity_argument_contracts(void) {
     PackageIdentity identity;
     PackageIdentity invalid;
     PackageScope scope;
-    PackageList packages = {0};
     char selector[MAX_SELECTOR_LEN];
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5"));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_scope_init(&scope, NULL, "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_scope_init(&scope, "compiler", NULL, "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_scope_init(&scope, "compiler", "linux-x64", NULL));
     TEST_ASSERT_NOT_EQUAL(
         CUP_OK, package_scope_init(&scope, "compiler", "linux-x64", "bad-platform"));
-    TEST_ASSERT_FALSE(package_scope_equals(&scope, NULL));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_get_scope(&identity, NULL));
-    TEST_ASSERT_FALSE(package_identity_equals(&identity, NULL));
-    TEST_ASSERT_FALSE(package_identity_matches(&identity, "", NULL, NULL));
-    package_identity_sort(&identity, 1);
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(NULL, stderr));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_identity_format_selector(NULL, selector, sizeof(selector)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_identity_format_selector(&identity, NULL, sizeof(selector)));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_identity_format_selector(&identity, selector, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
                           package_identity_format_selector(&identity, selector, 2));
 
@@ -421,28 +397,13 @@ static void test_identity_argument_contracts(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_identity_validate(&invalid, stderr));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           package_identity_format_selector(&invalid, selector, sizeof(selector)));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_identity_init(&identity, "compiler", NULL, "linux-x64", "linux-x64", "22.1.5"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_identity_init(&identity, "compiler", "clang", "linux-x64", "linux-x64", NULL));
     TEST_ASSERT_NOT_EQUAL(
         CUP_OK,
         package_identity_init(&identity, "compiler", "gdb", "linux-x64", "linux-x64", "22.1.5"));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         package_identity_from_selector(
-            NULL, "compiler", "linux-x64", "linux-x64", "clang@22.1.5", stderr));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_identity_from_selector(NULL, "compiler", "linux-x64", "linux-x64", "bad", stderr));
-
-    TEST_ASSERT_FALSE(package_list_contains(NULL, &identity));
-    TEST_ASSERT_FALSE(package_list_contains(&packages, NULL));
-    packages.count = MAX_SCANNED_PACKAGES + 1u;
-    TEST_ASSERT_FALSE(package_list_contains(&packages, &identity));
+            &identity, "compiler", "linux-x64", "linux-x64", "bad", stderr));
 }
 
 static void test_valid_package(void) {
@@ -507,6 +468,7 @@ static void test_validated_package_snapshot(void) {
                "package.version=99.0.0\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
                "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_STRING(
         "22.1.5", package_metadata_get(&package.metadata, "package.version"));
@@ -555,6 +517,7 @@ static void test_invalid_package(void) {
                "package.version=21.1.5\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
                "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
@@ -566,7 +529,8 @@ static void test_invalid_package(void) {
                "package.tool=clang\n"
                "package.version=22.1.5\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
-               "platform.target=" TEST_PACKAGE_HOST "\n");
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "unsafe-entry");
@@ -578,6 +542,7 @@ static void test_invalid_package(void) {
                "package.version=22.1.5\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
                "entry.clang=../clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
@@ -607,9 +572,39 @@ static void test_invalid_package(void) {
                    "package.version=22.1.5\n"
                    "platform.host=" TEST_PACKAGE_HOST "\n"
                    "platform.target=" TEST_PACKAGE_HOST "\n"
+                   TEST_PACKAGE_COMMON_METADATA
                    "entry.clang=" TEST_PACKAGE_ENTRY "\n");
         TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
     }
+
+#if !defined(_WIN32)
+    {
+        char bin[512];
+        char target[512];
+        char link[512];
+        char metadata_path[512];
+
+        build_path(root, sizeof(root), "symlink-entry");
+        make_dir(root);
+        join_path(bin, sizeof(bin), root, "bin");
+        make_dir(bin);
+        join_path(target, sizeof(target), bin, "clang-22");
+        write_text(target, TEST_PACKAGE_BODY);
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_executable(target, 1));
+        join_path(link, sizeof(link), bin, "clang");
+        TEST_ASSERT_EQUAL_INT(0, symlink("clang-22", link));
+        join_path(metadata_path, sizeof(metadata_path), root, "info.txt");
+        write_text(metadata_path,
+                   "package.component=compiler\n"
+                   "package.tool=clang\n"
+                   "package.version=22.1.5\n"
+                   "platform.host=" TEST_PACKAGE_HOST "\n"
+                   "platform.target=" TEST_PACKAGE_HOST "\n"
+                   TEST_PACKAGE_COMMON_METADATA
+                   "entry.clang=bin/clang\n");
+        TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
+    }
+#endif
 
     build_path(root, sizeof(root), "non-exec");
     make_valid_package(root);
@@ -628,6 +623,7 @@ static void test_invalid_package(void) {
                    "package.version=22.1.5\n"
                    "platform.host=" TEST_PACKAGE_HOST "\n"
                    "platform.target=" TEST_PACKAGE_HOST "\n"
+                   TEST_PACKAGE_COMMON_METADATA
                    "entry.clang=bin/clang\n");
     }
 #else

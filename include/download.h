@@ -12,7 +12,6 @@
 #include "error.h"
 
 typedef enum {
-    DOWNLOAD_VALIDATE_NONEMPTY,
     DOWNLOAD_VALIDATE_METADATA,
     DOWNLOAD_VALIDATE_BINARY,
     DOWNLOAD_VALIDATE_ARCHIVE
@@ -22,7 +21,7 @@ typedef enum {
  * remove temporary_path. */
 typedef CupError (*DownloadValidator)(const char *temporary_path, void *userdata);
 
-/* True only for an explicitly enabled HTTP loopback URL used by release-candidate tests. */
+/* True only for an explicitly enabled 127.0.0.1 HTTP URL used by release tests. */
 int download_insecure_loopback_is_allowed(const char *url);
 
 /* Copy the validated optional release-source override without trailing separators.

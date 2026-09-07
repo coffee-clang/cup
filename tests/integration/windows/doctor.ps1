@@ -17,13 +17,16 @@ try {
 
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
+    $pathWarning = Invoke-Cup -CommandArgs @("doctor")
+    Assert-Contains $pathWarning "current CUP command directory is not in PATH"
+    $env:Path = "$(Join-Path $cupRoot 'bin');$env:Path"
     $statePath = Join-Path $cupRoot "state.txt"
     $transactionPath = Join-Path $cupRoot "transaction.txt"
 
     $compilerRoot = New-InstalledPackageFixture -Component "compiler" -Tool "clang" `
         -Version "99.0.0" -Entries @("clang")
     $debuggerRoot = New-InstalledPackageFixture -Component "debugger" -Tool "lldb" `
-        -Version "22.1.5" -Entries @("lldb")
+        -Version "23.1.0" -Entries @("lldb")
     $invalidPackage = Join-Path $cupRoot (
         "components\linker\lld\windows-x64\windows-x64\22.1.5")
     New-Item -ItemType Directory -Force -Path $invalidPackage | Out-Null
@@ -43,7 +46,7 @@ try {
     Assert-Contains $issues "package metadata for 'compiler:clang@99.0.0' is not read-only"
     Assert-Contains $issues "installed package 'compiler:clang@99.0.0' is not listed"
     Assert-Contains $issues (
-        "valid package 'lldb@22.1.5' exists in components but is absent " +
+        "valid package 'lldb@23.1.0' exists in components but is absent " +
         "from state.txt")
     Assert-ContainsPathText $issues "package path '$invalidPackage' is invalid"
     Assert-Contains $issues "staging directory contains 1 leftover item(s)"
@@ -61,7 +64,7 @@ try {
     Write-Utf8NoBom -Path $statePath -Lines @(
         "format=1",
         "installed.compiler.windows-x64.windows-x64=clang@99.0.0",
-        "installed.debugger.windows-x64.windows-x64=lldb@22.1.5"
+        "installed.debugger.windows-x64.windows-x64=lldb@23.1.0"
     )
     (Get-Item -LiteralPath (Join-Path $compilerRoot "info.txt")).IsReadOnly = $true
     (Get-Item -LiteralPath (Join-Path $debuggerRoot "info.txt")).IsReadOnly = $true
@@ -69,7 +72,7 @@ try {
     $cachePath = Join-Path $cupRoot "cache"
     Remove-Item -LiteralPath $cachePath -Recurse -Force
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "cup runtime structure is incomplete"
+        "missing cache directory"
     New-Item -ItemType Directory -Force -Path $cachePath | Out-Null
 
     $lockPath = Join-Path $cupRoot "cup.lock"
@@ -130,21 +133,20 @@ try {
     Remove-Item -LiteralPath $transactionPath -Force
 
     Write-Utf8NoBom -Path $transactionPath -Lines @(
-        "format=1",
+        "format=2",
         "operation=uninstall",
         "phase=failed",
         "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=detach",
         "error=6"
     )
     $uninstallJournalHash = (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup uninstall failed during 'detach' with error 6"
+        "the previous cup uninstall failed with error 6"
     Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
         $uninstallJournalHash
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `
-        "the previous cup uninstall failed during 'detach' with error 6"
+        "the previous cup uninstall failed with error 6"
     Assert-Equals (Get-FileHash -LiteralPath $transactionPath -Algorithm SHA256).Hash `
         $uninstallJournalHash
     Remove-Item -LiteralPath $transactionPath -Force

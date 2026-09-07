@@ -78,6 +78,7 @@
 #define CUP_PREFERENCES_FILENAME "preferences.txt"
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
+#define CUP_PLATFORM_CHECKSUMS_FILENAME_TEMPLATE "SHA256SUMS.%s"
 #define CUP_COMMON_CHECKSUM_ASSET_COUNT 4u
 #define CUP_PLATFORM_CHECKSUM_ASSET_COUNT 3u
 #define CUP_COMMON_CHECKSUM_ASSETS \
@@ -91,6 +92,14 @@
 #define CUP_RELEASE_VERSIONED_URL_TEMPLATE \
     "https://github.com/coffee-clang/cup/releases/download/v%s"
 #define CUP_RELEASE_METADATA_FILENAME "release.txt"
+
+/* Shared detached update/uninstall protocol names. */
+#define CUP_UPDATE_TEMP_PREFIX "cup-update"
+#define CUP_UNINSTALL_TEMP_PREFIX ".cup-uninstall"
+#define CUP_UPDATE_JOURNAL_OPERATION "cup-update"
+#define CUP_UNINSTALL_JOURNAL_OPERATION "uninstall"
+#define CUP_INTERNAL_UPDATE_HELPER_ARGUMENT "--internal-update-helper"
+#define CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT "--internal-uninstall-helper"
 
 /* cup update staging, backup, absence, and commit names. */
 #define CUP_UPDATE_BINARY_NEW "binary.new"

@@ -14,10 +14,7 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
 
 validate_release_inputs
 : "${PLATFORM:?PLATFORM is required}"
-case "$PLATFORM" in
-    linux-x64|linux-arm64|macos-x64|macos-arm64|windows-x64) ;;
-    *) fail "unsupported release platform: $PLATFORM" ;;
-esac
+cup_platform_valid "$PLATFORM" || fail "unsupported release platform: $PLATFORM"
 
 [ "$#" -eq 3 ] || {
     printf 'Usage: %s <common-public-dir> <finalized-dir> <output-dir>\n' "$0" >&2
@@ -44,11 +41,11 @@ cmp -s "$COMMON/release.txt" "$FINALIZED/release.txt" ||
 
 if [ "$PLATFORM" = windows-x64 ]; then
     source_binary=$FINALIZED/bin/cup.exe
-    public_binary=cup-$PLATFORM.exe
 else
     source_binary=$FINALIZED/bin/cup
-    public_binary=cup-$PLATFORM
 fi
+public_binary=$(release_platform_binary_name "$PLATFORM") ||
+    fail "could not derive public binary name: $PLATFORM"
 require_nonempty_file "$source_binary"
 require_real_directory "$FINALIZED/symbols"
 cup_path_require_safe_tree "$FINALIZED/symbols" "finalized symbols" ||
@@ -72,15 +69,23 @@ PUBLIC=$OUTPUT_STAGING/public
 SYMBOLS=$OUTPUT_STAGING/symbols
 cup_path_prepare_child_directory "$BUILD_ROOT" "$PUBLIC" "platform public directory"
 cup_path_prepare_child_directory "$BUILD_ROOT" "$SYMBOLS" "platform symbols directory"
-if [ "$PLATFORM" = windows-x64 ]; then public_mode=0644; else public_mode=0755; fi
+public_mode=$(release_platform_binary_mode "$PLATFORM") ||
+    fail "could not derive public binary mode: $PLATFORM"
 cup_path_copy_file "$source_binary" "$PUBLIC/$public_binary" "$public_mode" replace ||
     fail "could not copy public release binary"
 
+platform_checksum=$(release_platform_checksum_name "$PLATFORM") ||
+    fail "could not derive platform checksum name: $PLATFORM"
 {
-    printf '%s  %s\n' "$(hash_file "$PUBLIC/$public_binary")" "$public_binary"
-    printf '%s  release.txt\n' "$(hash_file "$COMMON/release.txt")"
-    printf '%s  SHA256SUMS.common\n' "$(hash_file "$COMMON/SHA256SUMS.common")"
-} | cup_path_write_file "$PUBLIC/SHA256SUMS.$PLATFORM" 0644 replace
+    for asset in $(release_platform_checksum_assets "$PLATFORM"); do
+        case "$asset" in
+            "$public_binary") asset_path=$PUBLIC/$asset ;;
+            release.txt|SHA256SUMS.common) asset_path=$COMMON/$asset ;;
+            *) fail "unexpected platform checksum member: $asset" ;;
+        esac
+        printf '%s  %s\n' "$(hash_file "$asset_path")" "$asset"
+    done
+} | cup_path_write_file "$PUBLIC/$platform_checksum" 0644 replace
 
 cup_path_copy_tree "$FINALIZED/symbols" "$SYMBOLS" ||
     fail "could not copy finalized symbols"
@@ -94,14 +99,15 @@ done
 VERIFY=$OUTPUT_STAGING/.verify
 cup_path_prepare_child_directory "$BUILD_ROOT" "$VERIFY" "checksum verification directory"
 cup_path_copy_file "$PUBLIC/$public_binary" "$VERIFY/$public_binary" "$public_mode" replace
-cup_path_copy_file "$PUBLIC/SHA256SUMS.$PLATFORM" "$VERIFY/SHA256SUMS.$PLATFORM" 0644 replace
+cup_path_copy_file "$PUBLIC/$platform_checksum" "$VERIFY/$platform_checksum" 0644 replace
 cup_path_copy_file "$COMMON/release.txt" "$VERIFY/release.txt" 0644 replace
 cup_path_copy_file "$COMMON/SHA256SUMS.common" "$VERIFY/SHA256SUMS.common" 0644 replace
-verify_checksum_file_exact "$VERIFY" "SHA256SUMS.$PLATFORM" \
-    "$public_binary" release.txt SHA256SUMS.common
+# shellcheck disable=SC2086
+verify_checksum_file_exact "$VERIFY" "$platform_checksum" \
+    $(release_platform_checksum_assets "$PLATFORM")
 cup_path_remove_child_tree "$BUILD_ROOT" "$VERIFY" 'checksum verification directory'
 
-validate_exact_directory_files "$PUBLIC" "$public_binary" "SHA256SUMS.$PLATFORM"
+validate_exact_directory_files "$PUBLIC" "$public_binary" "$platform_checksum"
 commit_output_staging "$OUTPUT"
 trap - EXIT HUP INT TERM
 printf '%s\n' "$OUTPUT"

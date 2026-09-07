@@ -12,23 +12,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define UNINSTALL_JOURNAL_FORMAT "1"
-#define FIELD_FORMAT (1u << 0)
-#define FIELD_OPERATION (1u << 1)
-#define FIELD_PHASE (1u << 2)
-#define FIELD_TEMPORARY_NAME (1u << 3)
-#define FIELD_TOKEN (1u << 4)
-#define FIELD_STAGE (1u << 5)
-#define FIELD_ERROR (1u << 6)
-#define JOURNAL_FIELDS \
-    (FIELD_FORMAT | FIELD_OPERATION | FIELD_PHASE | FIELD_TEMPORARY_NAME | FIELD_TOKEN | \
-     FIELD_STAGE | FIELD_ERROR)
-
+#define UNINSTALL_JOURNAL_FORMAT "2"
 void uninstall_journal_init(UninstallJournal *journal) {
     if (journal != NULL) {
         memset(journal, 0, sizeof(*journal));
         journal->phase = UNINSTALL_PHASE_SCHEDULED;
-        journal->stage = UNINSTALL_STAGE_HANDOFF;
     }
 }
 
@@ -45,16 +33,6 @@ const char *uninstall_phase_name(UninstallPhase phase) {
     }
 }
 
-const char *uninstall_stage_name(UninstallStage stage) {
-    switch (stage) {
-        case UNINSTALL_STAGE_HANDOFF:
-            return "handoff";
-        case UNINSTALL_STAGE_DETACH:
-            return "detach";
-        default:
-            return "invalid";
-    }
-}
 
 static int parse_phase(const char *value, UninstallPhase *phase) {
     if (strcmp(value, "scheduled") == 0) {
@@ -69,61 +47,30 @@ static int parse_phase(const char *value, UninstallPhase *phase) {
     return 1;
 }
 
-static int parse_stage(const char *value, UninstallStage *stage) {
-    if (strcmp(value, "handoff") == 0) {
-        *stage = UNINSTALL_STAGE_HANDOFF;
-    } else if (strcmp(value, "detach") == 0) {
-        *stage = UNINSTALL_STAGE_DETACH;
-    } else {
-        return 0;
-    }
-    return 1;
-}
-
 static const char *temporary_name_token(const char *name) {
-    if (!path_is_safe_segment(name) || strlen(name) >= MAX_METADATA_VALUE_LEN ||
-        strncmp(name, ".cup-uninstall-", 15) != 0 || name[15] == '\0') {
+    if (name == NULL || strlen(name) >= MAX_METADATA_VALUE_LEN) {
         return NULL;
     }
-    return name + 15;
-}
-
-static int token_is_valid(const char *token) {
-    const unsigned char *cursor;
-
-    if (text_is_empty(token) || strlen(token) >= MAX_TRANSACTION_TOKEN_LEN) {
-        return 0;
-    }
-    for (cursor = (const unsigned char *)token; *cursor != '\0'; ++cursor) {
-        if (!((*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z') ||
-              (*cursor >= '0' && *cursor <= '9') || *cursor == '_' || *cursor == '-' ||
-              *cursor == '.')) {
-            return 0;
-        }
-    }
-    return 1;
+    return path_generated_temp_suffix(name, CUP_UNINSTALL_TEMP_PREFIX);
 }
 
 static int name_matches_token(const char *name, const char *token) {
     const char *name_token = temporary_name_token(name);
 
-    return name_token != NULL && token_is_valid(token) && strcmp(name_token, token) == 0;
+    return name_token != NULL && runtime_journal_token_is_valid(token) && strcmp(name_token, token) == 0;
 }
 
 static int journal_is_coherent(const UninstallJournal *journal) {
     if (journal == NULL || !name_matches_token(journal->temporary_name, journal->token) ||
-        strcmp(uninstall_phase_name(journal->phase), "invalid") == 0 ||
-        strcmp(uninstall_stage_name(journal->stage), "invalid") == 0) {
+        strcmp(uninstall_phase_name(journal->phase), "invalid") == 0) {
         return 0;
     }
     switch (journal->phase) {
         case UNINSTALL_PHASE_SCHEDULED:
-            return journal->error_code == 0 && journal->stage == UNINSTALL_STAGE_HANDOFF;
         case UNINSTALL_PHASE_DETACHING:
-            return journal->error_code == 0 && journal->stage == UNINSTALL_STAGE_DETACH;
+            return journal->error_code == 0;
         case UNINSTALL_PHASE_FAILED:
-            return journal->stage == UNINSTALL_STAGE_DETACH &&
-                   journal->error_code == CUP_STATUS_OPERATION;
+            return journal->error_code == CUP_STATUS_OPERATION;
         default:
             return 0;
     }
@@ -134,11 +81,10 @@ static CupError write_journal(FILE *file, const void *value) {
 
     if (journal == NULL ||
         fprintf(file, "format=%s\n", UNINSTALL_JOURNAL_FORMAT) < 0 ||
-        fprintf(file, "operation=uninstall\n") < 0 ||
+        fprintf(file, "operation=%s\n", CUP_UNINSTALL_JOURNAL_OPERATION) < 0 ||
         fprintf(file, "phase=%s\n", uninstall_phase_name(journal->phase)) < 0 ||
         fprintf(file, "temporary_name=%s\n", journal->temporary_name) < 0 ||
         fprintf(file, "token=%s\n", journal->token) < 0 ||
-        fprintf(file, "stage=%s\n", uninstall_stage_name(journal->stage)) < 0 ||
         fprintf(file, "error=%d\n", journal->error_code) < 0) {
         return CUP_ERR_TRANSACTION;
     }
@@ -181,7 +127,7 @@ CupError uninstall_journal_begin(const char *temporary_path, const char *token) 
     const char *name;
     CupError err;
 
-    if (text_is_empty(temporary_path) || !token_is_valid(token)) {
+    if (text_is_empty(temporary_path) || !runtime_journal_token_is_valid(token)) {
         return CUP_ERR_INVALID_INPUT;
     }
     name = path_last_segment(temporary_path);
@@ -203,45 +149,32 @@ CupError uninstall_journal_begin(const char *temporary_path, const char *token) 
 
 static CupError set_field(UninstallJournal *journal,
                           const char *key,
-                          const char *value,
-                          unsigned *seen) {
-    unsigned bit;
+                          const char *value) {
     CupError err = CUP_OK;
 
     if (strcmp(key, "format") == 0) {
-        bit = FIELD_FORMAT;
         if (strcmp(value, UNINSTALL_JOURNAL_FORMAT) != 0) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "operation") == 0) {
-        bit = FIELD_OPERATION;
-        if (strcmp(value, "uninstall") != 0) {
+        if (strcmp(value, CUP_UNINSTALL_JOURNAL_OPERATION) != 0) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "phase") == 0) {
-        bit = FIELD_PHASE;
         if (!parse_phase(value, &journal->phase)) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "temporary_name") == 0) {
-        bit = FIELD_TEMPORARY_NAME;
         if (text_copy(journal->temporary_name, sizeof(journal->temporary_name), value) != CUP_OK) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "token") == 0) {
-        bit = FIELD_TOKEN;
         if (text_copy(journal->token, sizeof(journal->token), value) != CUP_OK) {
-            err = CUP_ERR_TRANSACTION;
-        }
-    } else if (strcmp(key, "stage") == 0) {
-        bit = FIELD_STAGE;
-        if (!parse_stage(value, &journal->stage)) {
             err = CUP_ERR_TRANSACTION;
         }
     } else if (strcmp(key, "error") == 0) {
         unsigned parsed;
 
-        bit = FIELD_ERROR;
         if (!text_parse_uint(value, 255u, &parsed)) {
             err = CUP_ERR_TRANSACTION;
         } else {
@@ -250,38 +183,27 @@ static CupError set_field(UninstallJournal *journal,
     } else {
         return CUP_ERR_TRANSACTION;
     }
-    if (err != CUP_OK || (*seen & bit) != 0) {
-        return CUP_ERR_TRANSACTION;
-    }
-    *seen |= bit;
-    return CUP_OK;
+    return err == CUP_OK ? CUP_OK : CUP_ERR_TRANSACTION;
 }
 
 static const char *const journal_keys[] = {
-    "format", "operation", "phase", "temporary_name",
-    "token", "stage", "error"};
-
-typedef struct {
-    UninstallJournal *candidate;
-    unsigned seen;
-} UninstallJournalParser;
+    "format", "operation", "phase", "temporary_name", "token", "error"};
 
 static CupError parse_field(const char *key,
                             const char *value,
                             void *userdata) {
-    UninstallJournalParser *parser = userdata;
+    UninstallJournal *candidate = userdata;
 
-    if (parser == NULL) {
+    if (candidate == NULL) {
         return CUP_ERR_TRANSACTION;
     }
-    return set_field(parser->candidate, key, value, &parser->seen);
+    return set_field(candidate, key, value);
 }
 
 CupError uninstall_journal_load_at(const char *root,
                                    UninstallJournal *journal,
                                    UninstallJournalStatus *status) {
     UninstallJournal candidate;
-    UninstallJournalParser parser;
     SystemPathIdentity file_identity;
     CupError err;
     int missing;
@@ -292,9 +214,7 @@ CupError uninstall_journal_load_at(const char *root,
 
     uninstall_journal_init(journal);
     uninstall_journal_init(&candidate);
-    memset(&parser, 0, sizeof(parser));
     memset(&file_identity, 0, sizeof(file_identity));
-    parser.candidate = &candidate;
     *status = UNINSTALL_JOURNAL_MISSING;
 
     err = runtime_journal_parse_at(root,
@@ -302,14 +222,13 @@ CupError uninstall_journal_load_at(const char *root,
                                    sizeof(journal_keys) /
                                        sizeof(journal_keys[0]),
                                    parse_field,
-                                   &parser,
+                                   &candidate,
                                    &file_identity,
                                    &missing);
     if (err != CUP_OK || missing) {
         return err;
     }
-    if (parser.seen != JOURNAL_FIELDS ||
-        !journal_is_coherent(&candidate)) {
+    if (!journal_is_coherent(&candidate)) {
         return CUP_ERR_TRANSACTION;
     }
     candidate.file_identity = file_identity;
@@ -329,7 +248,6 @@ CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatu
 CupError uninstall_journal_set_at(const char *root,
                                   UninstallJournal *journal,
                                   UninstallPhase phase,
-                                  UninstallStage stage,
                                   int error_code) {
     UninstallJournal candidate;
     CupError err;
@@ -339,7 +257,6 @@ CupError uninstall_journal_set_at(const char *root,
     }
     candidate = *journal;
     candidate.phase = phase;
-    candidate.stage = stage;
     candidate.error_code = error_code;
     if (!journal_is_coherent(&candidate)) {
         return CUP_ERR_TRANSACTION;
@@ -386,13 +303,10 @@ CupError uninstall_journal_recover(const UninstallJournal *journal) {
     err = runtime_journal_clear_if_identity(&journal->file_identity);
     if (err == CUP_OK) {
         if (journal->phase == UNINSTALL_PHASE_FAILED) {
-            printf("Acknowledged failed cup uninstall during '%s' (error %d).\n",
-                   uninstall_stage_name(journal->stage),
-                   journal->error_code);
+            printf("Acknowledged failed cup uninstall (error %d).\n", journal->error_code);
         } else {
-            printf("Cancelled interrupted cup uninstall in phase '%s' during '%s'.\n",
-                   uninstall_phase_name(journal->phase),
-                   uninstall_stage_name(journal->stage));
+            printf("Cancelled interrupted cup uninstall in phase '%s'.\n",
+                   uninstall_phase_name(journal->phase));
         }
     }
     return err;

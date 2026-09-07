@@ -91,6 +91,13 @@ contain at most one tool for each component. Names and list items must resolve t
 canonical lowercase registry identifiers; duplicate list items and duplicate
 records are rejected.
 
+A curated toolchain can contain tools that are not available for every host and
+target. Group preflight resolves the entire selection before the first install,
+so an unsupported scope fails without a knowingly partial install. The current
+`toolchain.gnu=gcc,gdb,ld` is complete for native Linux x64, Linux arm64 and
+Windows x64; it remains unavailable in scopes where one of those packages is
+not cataloged.
+
 The file is part of the official cup assets and is checked by
 `SHA256SUMS.common`.
 
@@ -159,8 +166,8 @@ checksum_url_template
 Example:
 
 ```text
-compiler.gcc.linux-x64.windows-x64.stable_version=16.1.0-rev1
-compiler.gcc.linux-x64.windows-x64.available_versions=16.1.0-rev1
+compiler.gcc.linux-x64.windows-x64.stable_version=16.2.0-rev1
+compiler.gcc.linux-x64.windows-x64.available_versions=16.2.0-rev1
 compiler.gcc.linux-x64.windows-x64.default_format=tar.gz
 compiler.gcc.linux-x64.windows-x64.formats=tar.xz,tar.gz,zip
 compiler.gcc.linux-x64.windows-x64.url_template=https://github.com/coffee-clang/cup-components/releases/download/gcc-{version}-{host_platform}-{target_platform}/gcc-{version}-{host_platform}-{target_platform}.{format}
@@ -185,6 +192,9 @@ Loading fails for:
 
 The archive URL must identify the tool, version, host, target and format. The
 checksum URL identifies the release tuple and does not vary by archive format.
+Standalone GNU `ld` is revisionless. Version `2.47` is cataloged for native
+Linux x64, native Linux arm64, Linux x64 targeting Windows x64, and native
+Windows x64; no macOS `ld` tuple is advertised.
 
 ## URL placeholders
 
@@ -217,7 +227,7 @@ versions are available and which one is stable.
 A packaging revision can be part of the version:
 
 ```text
-16.1.0-rev1
+16.2.0-rev1
 ```
 
 The whole string is used in catalog lookup, asset names, metadata, state and
@@ -276,14 +286,25 @@ A package archive contains one top-level directory. cup does not trust that
 directory name as the package identity; `info.txt` must still match the package
 selected from the command and catalog.
 
-Archive paths must use safe portable segments. They cannot:
+Archive entry paths must use safe portable segments. They cannot:
 
 - be absolute;
 - contain `.` or `..` segments;
 - contain control characters;
 - collide after ASCII case folding;
 - describe the same path as both a file and a directory;
-- contain links or special filesystem objects.
+- contain hard links or special filesystem objects.
+
+POSIX packages may additionally contain relative symbolic links. CUP rejects absolute or
+lexically escaping link targets and a link may not become the parent of a later archive
+write. CUP otherwise preserves producer-owned link topology without requiring every link to
+resolve, terminate at a regular file or be acyclic. The declared public `entry.*` paths are
+validated separately through the real filesystem and must resolve to executable regular
+files physically beneath the package root.
+
+Raw hard-link archive entries remain rejected: the producer normalizes hard links to
+independent regular files, so the consumer has no hard-link topology to reconstruct or own.
+Windows packages continue to reject symbolic links and other reparse-style package content.
 
 A package may contain tool-specific directories such as:
 
@@ -326,7 +347,7 @@ Example:
 ```text
 package.component=compiler
 package.tool=gcc
-package.version=16.1.0-rev1
+package.version=16.2.0-rev1
 platform.host=linux-x64
 platform.target=linux-x64
 entry.gcc=bin/gcc
@@ -344,9 +365,12 @@ selected the package.
 
 ## Executable entries and wrappers
 
-Each `entry.<name>` value must be a safe relative path inside the package. The
-target must be present, non-empty, a regular file and executable according to the
-platform validation rules.
+Each `entry.<name>` value must be a safe relative path inside the package. On
+POSIX the path may traverse package-owned symbolic links admitted by the archive
+policy, but physical resolution must remain beneath the package root and end at a
+present, non-empty regular executable file. Windows retains no-reparse traversal,
+so the declared entry itself must reach a regular executable without a symbolic
+link.
 
 Wrapper names are derived as follows:
 
@@ -367,8 +391,9 @@ A package is accepted only when:
 2. the root is a real directory;
 3. `info.txt` is a bounded regular file that parses successfully;
 4. metadata matches the selected identity;
-5. each declared executable entry is a safe package-relative path to a present
-   regular executable file;
+5. each declared executable entry is a safe package-relative path whose admitted
+   platform resolution ends at a present regular executable file inside the
+   package root;
 6. the package root and `info.txt` still name the same filesystem objects
    observed during validation.
 

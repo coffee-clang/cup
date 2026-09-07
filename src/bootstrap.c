@@ -10,6 +10,7 @@
 #include "constants.h"
 #include "assets.h"
 #include "update_helper.h"
+#include "update_assets.h"
 #include "update_journal.h"
 #include "filesystem.h"
 #include "install_policy.h"
@@ -28,8 +29,8 @@
 #include <string.h>
 
 typedef struct {
-    char binary_name[MAX_IDENTIFIER_LEN];
-    char platform_checksums_name[MAX_IDENTIFIER_LEN];
+    char binary_name[MAX_PATH_SEGMENT_LEN];
+    char platform_checksums_name[MAX_PATH_SEGMENT_LEN];
     char binary[MAX_PATH_LEN];
     char release[MAX_PATH_LEN];
     char platform_checksums[MAX_PATH_LEN];
@@ -74,19 +75,6 @@ static void source_assets(BootstrapSource *source, BootstrapSourceAsset assets[8
     assets[7] = (BootstrapSourceAsset){CUP_INSTALL_WINDOWS_FILENAME,
                                        source->install_windows,
                                        sizeof(source->install_windows)};
-}
-
-static int absolute_path_is_valid(const char *path) {
-    if (text_is_empty(path)) {
-        return 0;
-    }
-#if defined(_WIN32)
-    return ((path[0] >= 'A' && path[0] <= 'Z') ||
-            (path[0] >= 'a' && path[0] <= 'z')) &&
-           path[1] == ':' && (path[2] == '/' || path[2] == '\\');
-#else
-    return path[0] == '/';
-#endif
 }
 
 static CupError build_source_path(const char *directory,
@@ -134,7 +122,7 @@ static CupError initialize_source(const char *directory, BootstrapSource *source
     int is_private = 0;
     size_t i;
 
-    if (!absolute_path_is_valid(directory) || source == NULL) {
+    if (text_is_empty(directory) || source == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     memset(source, 0, sizeof(*source));
@@ -142,10 +130,12 @@ static CupError initialize_source(const char *directory, BootstrapSource *source
     if (err != CUP_OK || !is_private) {
         return err != CUP_OK ? err : CUP_ERR_VALIDATION;
     }
-    err = assets_binary_asset_name(source->binary_name, sizeof(source->binary_name));
+    err = update_asset_release_name(
+        CUP_UPDATE_ASSET_BINARY, source->binary_name, sizeof(source->binary_name));
     if (err == CUP_OK) {
-        err = assets_platform_checksums_name(source->platform_checksums_name,
-                                            sizeof(source->platform_checksums_name));
+        err = update_asset_release_name(CUP_UPDATE_ASSET_PLATFORM_CHECKSUMS,
+                                        source->platform_checksums_name,
+                                        sizeof(source->platform_checksums_name));
     }
     if (err != CUP_OK) {
         return err;
@@ -184,7 +174,7 @@ static CupError verify_file(const ChecksumDocument *document,
 }
 
 static CupError verify_source(const BootstrapSource *source, const char *running_binary) {
-    const char *platform_assets[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
+    PlatformChecksumRequiredNames platform_required;
     ChecksumDocument platform_document;
     ChecksumDocument common_document;
     ReleaseMetadata metadata;
@@ -194,7 +184,7 @@ static CupError verify_source(const BootstrapSource *source, const char *running
     char running_hash[CHECKSUM_SHA256_HEX_LENGTH + 1];
     CupError err;
 
-    if (source == NULL || !absolute_path_is_valid(running_binary)) {
+    if (source == NULL || text_is_empty(running_binary)) {
         return CUP_ERR_INVALID_INPUT;
     }
     checksum_document_init(&platform_document);
@@ -202,13 +192,15 @@ static CupError verify_source(const BootstrapSource *source, const char *running
     package_catalog_init(&catalog);
     install_policy_init(&policy);
 
-    platform_assets[0] = source->binary_name;
-    platform_assets[1] = CUP_RELEASE_METADATA_FILENAME;
-    platform_assets[2] = CUP_COMMON_CHECKSUMS_FILENAME;
+    err = assets_platform_checksum_required_names(&platform_required);
+    if (err != CUP_OK || strcmp(platform_required.binary, source->binary_name) != 0) {
+        err = err != CUP_OK ? err : CUP_ERR_VALIDATION;
+        goto done;
+    }
     err = checksum_document_load(&platform_document, source->platform_checksums);
     if (err == CUP_OK) {
         err = checksum_document_validate_assets(
-            &platform_document, platform_assets, CUP_PLATFORM_CHECKSUM_ASSET_COUNT);
+            &platform_document, platform_required.names, CUP_PLATFORM_CHECKSUM_ASSET_COUNT);
     }
     if (err == CUP_OK) {
         err = checksum_document_load(&common_document, source->common_checksums);
@@ -255,6 +247,7 @@ static CupError verify_source(const BootstrapSource *source, const char *running
         err = CUP_ERR_VALIDATION;
     }
 
+done:
     package_catalog_free(&catalog);
     checksum_document_free(&common_document);
     checksum_document_free(&platform_document);
@@ -313,46 +306,45 @@ static CupError ensure_bootstrap_state(void) {
     if (err != CUP_OK) {
         return err;
     }
-    return status == STATE_FILE_MISSING ? state_save(&state, NULL, NULL)
-                                        : state_validate(&state, stderr);
+    if (status == STATE_FILE_MISSING) {
+        err = state_save(&state, NULL, NULL);
+        if (err == CUP_ERR_COMMIT) {
+            fprintf(stderr,
+                    "Error: bootstrap state.txt may already be published, but its durability "
+                    "could not be confirmed. Run 'cup doctor' before retrying.\n");
+        }
+        return err;
+    }
+    return state_validate(&state, stderr);
 }
 
 static CupError stage_bootstrap_assets(const BootstrapSource *source,
                                        const char *staging,
                                        char *staged_binary,
                                        size_t binary_size) {
+    UpdateAssetSpec assets[CUP_UPDATE_ASSET_COUNT];
+    const char *sources[CUP_UPDATE_ASSET_COUNT];
     char ignored[MAX_PATH_LEN];
     CupError err;
+    size_t i;
 
-    err = stage_copy(
-        staging, CUP_UPDATE_BINARY_NEW, source->binary, staged_binary, binary_size);
-    if (err == CUP_OK) {
-        err = stage_copy(staging,
-                         CUP_UPDATE_PLATFORM_CHECKSUMS_NEW,
-                         source->platform_checksums,
-                         ignored,
-                         sizeof(ignored));
+    err = update_asset_specs(assets);
+    if (err != CUP_OK) {
+        return err;
     }
-    if (err == CUP_OK) {
-        err = stage_copy(staging,
-                         CUP_UPDATE_PACKAGES_NEW,
-                         source->catalog,
-                         ignored,
-                         sizeof(ignored));
-    }
-    if (err == CUP_OK) {
-        err = stage_copy(staging,
-                         CUP_UPDATE_INSTALL_POLICY_NEW,
-                         source->install_policy,
-                         ignored,
-                         sizeof(ignored));
-    }
-    if (err == CUP_OK) {
-        err = stage_copy(staging,
-                         CUP_UPDATE_COMMON_CHECKSUMS_NEW,
-                         source->common_checksums,
-                         ignored,
-                         sizeof(ignored));
+    sources[CUP_UPDATE_ASSET_BINARY] = source->binary;
+    sources[CUP_UPDATE_ASSET_PLATFORM_CHECKSUMS] = source->platform_checksums;
+    sources[CUP_UPDATE_ASSET_PACKAGES] = source->catalog;
+    sources[CUP_UPDATE_ASSET_INSTALL_POLICY] = source->install_policy;
+    sources[CUP_UPDATE_ASSET_COMMON_CHECKSUMS] = source->common_checksums;
+    for (i = 0; i < CUP_UPDATE_ASSET_COUNT; ++i) {
+        char *destination = i == CUP_UPDATE_ASSET_BINARY ? staged_binary : ignored;
+        size_t destination_size = i == CUP_UPDATE_ASSET_BINARY ? binary_size : sizeof(ignored);
+
+        err = stage_copy(staging, assets[i].new_name, sources[i], destination, destination_size);
+        if (err != CUP_OK) {
+            break;
+        }
     }
 #if !defined(_WIN32)
     if (err == CUP_OK) {
@@ -458,7 +450,7 @@ static CupError stage_bootstrap_generation(BootstrapOperation *operation,
     err = layout_get_staging_dir(staging_root, sizeof(staging_root));
     if (err == CUP_OK) {
         err = system_create_temp_directory(
-            staging_root, "cup-update", operation->staging, sizeof(operation->staging));
+            staging_root, CUP_UPDATE_TEMP_PREFIX, operation->staging, sizeof(operation->staging));
     }
     if (err == CUP_OK) {
         err = copy_source_generation(&operation->source, operation->staging);
@@ -487,16 +479,14 @@ static CupError stage_bootstrap_generation(BootstrapOperation *operation,
     }
     if (err == CUP_OK) {
         err = update_journal_begin(operation->staging,
-                                       operation->token,
-                                       CUP_VERSION_BASE,
-                                       &operation->journal);
+                                   operation->token,
+                                   CUP_VERSION_BASE,
+                                   &operation->journal);
+        if (err == CUP_OK || err == CUP_ERR_COMMIT) {
+            operation->transaction_started = 1;
+        }
     }
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    operation->transaction_started = 1;
-    return interrupt_safe_point();
+    return err == CUP_OK ? interrupt_safe_point() : err;
 }
 
 CupError bootstrap_start(const char *source_directory, const char *running_binary) {

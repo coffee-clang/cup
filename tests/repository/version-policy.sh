@@ -8,16 +8,12 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 test_begin version
 repo=$TMP_ROOT/repository
-mkdir -p "$repo/scripts/lib" "$repo/include" "$repo/src"
+mkdir -p "$repo/scripts/lib"
 cp "$PROJECT_ROOT/scripts/version.sh" "$repo/scripts/version.sh"
-cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$PROJECT_ROOT/scripts/lib/path-ops.sh" \
-    "$PROJECT_ROOT/scripts/lib/path-ops.c" "$repo/scripts/lib/"
-for header in constants.h domain_registry.h error.h path.h system.h text.h; do
-    cp "$PROJECT_ROOT/include/$header" "$repo/include/$header"
-done
-for source in path.c system.c system_posix.c text.c; do
-    cp "$PROJECT_ROOT/src/$source" "$repo/src/$source"
-done
+cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" \
+    "$PROJECT_ROOT/scripts/lib/build-configuration.sh" \
+    "$PROJECT_ROOT/scripts/lib/git-identity.sh" \
+    "$PROJECT_ROOT/scripts/lib/semver.sh" "$repo/scripts/lib/"
 printf '%s\n' '0.2.0' > "$repo/VERSION"
 chmod +x "$repo/scripts/version.sh"
 
@@ -36,6 +32,12 @@ fi
 printf '0.2.0' > "$repo/VERSION"
 if (cd "$repo" && ./scripts/version.sh base >/dev/null 2>&1); then
     fail 'VERSION without a final LF unexpectedly succeeded'
+fi
+printf '%s\n' '999999.999999.999999' > "$repo/VERSION"
+assert_equals "$(cd "$repo" && ./scripts/version.sh base)" '999999.999999.999999'
+printf '%s\n' '1000000.0.0' > "$repo/VERSION"
+if (cd "$repo" && ./scripts/version.sh base >/dev/null 2>&1); then
+    fail 'VERSION component above 999999 unexpectedly succeeded'
 fi
 printf '%s\n' '0.2.0' > "$repo/VERSION"
 
@@ -60,8 +62,8 @@ printf '%s\n' '0.2.0' > "$repo/VERSION"
     git -c init.defaultBranch=main init -q
     git config user.email cup-tests@example.invalid
     git config user.name 'cup tests'
-    git add VERSION scripts/version.sh scripts/lib/path-safety.sh scripts/lib/path-ops.sh \
-        scripts/lib/path-ops.c include src
+    git add VERSION scripts/version.sh scripts/lib/path-safety.sh \
+        scripts/lib/build-configuration.sh scripts/lib/git-identity.sh scripts/lib/semver.sh
     git commit -qm initial
 
     assert_contains "$(./scripts/version.sh current)" '0.2.0-dev.1+'

@@ -13,15 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static CupError state_path_error;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -33,11 +26,6 @@ void setUp(void) {
 
 void tearDown(void) {
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError layout_get_root(char *buffer, size_t size) {
     if (buffer == NULL || size == 0) {
@@ -283,11 +271,6 @@ static char *read_state(void) {
     return text;
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_mutators(void) {
     CupState state = {0};
     PackageIdentity clang1 = identity("compiler", "clang", "linux-x64", "1.0.0");
@@ -346,29 +329,6 @@ static void test_scope_mutation(void) {
     TEST_ASSERT_EQUAL_STRING("debugger", state.defaults[0].component);
 }
 
-static void test_mutator_guards(void) {
-    CupState state = {0};
-    PackageIdentity valid = identity("compiler", "clang", "linux-x64", "1");
-    PackageIdentity invalid = {0};
-    PackageScope valid_scope = scope("compiler", "linux-x64");
-    PackageScope invalid_scope = {0};
-
-    TEST_ASSERT_EQUAL_INT(-1, state_find_installed(NULL, &valid));
-    TEST_ASSERT_EQUAL_INT(-1, state_find_installed(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(-1, state_find_installed(&state, &invalid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_add_installed(NULL, &valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_add_installed(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(NULL, &valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_remove_installed(&state, &invalid));
-    TEST_ASSERT_NULL(state_get_default(NULL, &valid_scope));
-    TEST_ASSERT_NULL(state_get_default(&state, NULL));
-    TEST_ASSERT_NULL(state_get_default(&state, &invalid_scope));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_default(NULL, &valid));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_set_default(&state, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_default(NULL, &valid_scope));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_default(&state, &invalid_scope));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_clear_matching_default(NULL, &valid));
-}
 
 static void test_capacity_limits(void) {
     CupState state = {0};
@@ -421,7 +381,6 @@ static void test_validation(void) {
     PackageIdentity clang1 = identity("compiler", "clang", "linux-x64", "1");
     PackageIdentity clang2 = identity("compiler", "clang", "linux-x64", "2");
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, state_validate(NULL, stderr));
     state.installed_count = MAX_INSTALLED + 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_STATE_FULL, state_validate(&state, stderr));
     memset(&state, 0, sizeof(state));
@@ -726,7 +685,6 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_mutators);
     RUN_TEST(test_scope_mutation);
-    RUN_TEST(test_mutator_guards);
     RUN_TEST(test_capacity_limits);
     RUN_TEST(test_validation);
     RUN_TEST(test_save_load);

@@ -76,7 +76,13 @@ static CupError initialize_runtime(void) {
     }
 
     memset(&state, 0, sizeof(state));
-    return state_save(&state, NULL, NULL);
+    err = state_save(&state, NULL, NULL);
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+                "Error: initial state.txt may already be published, but its durability could not "
+                "be confirmed. Run 'cup doctor' before retrying.\n");
+    }
+    return err;
 }
 
 static CupError require_usable_runtime(LayoutRuntimeStatus status) {
@@ -184,6 +190,8 @@ static CupError initialize_locked_runtime(LayoutRuntimeStatus runtime_status) {
     return CUP_OK;
 }
 
+static CupError selected_root_is_missing(int *missing);
+
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
@@ -197,30 +205,25 @@ CupError command_context_begin(CommandContext *context,
 
     err = prepare_context(context, target_override);
     if (err == CUP_OK) {
-        err = layout_get_runtime_status(&runtime_status);
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
+        int root_missing = 0;
 
-    /* The pre-lock status selects only the lock/bootstrap route. It is never authoritative for
-     * readiness: a concurrent repair may complete, or the runtime may degrade, before ownership is
-     * acquired. inspect_locked_runtime() makes the only usable/incomplete decision. */
-    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        err = validate_assets();
-        if (err != CUP_OK) {
-            fprintf(stderr,
-                    "Error: cup assets are unavailable. "
-                    "Run the installer or execute cup from the repository root.\n");
-            return err;
+        err = selected_root_is_missing(&root_missing);
+        if (err == CUP_OK && root_missing) {
+            err = validate_assets();
+            if (err != CUP_OK) {
+                fprintf(stderr,
+                        "Error: cup assets are unavailable. "
+                        "Run the installer or execute cup from the repository root.\n");
+                return err;
+            }
+            lock_mode = SYSTEM_LOCK_EXCLUSIVE;
+            err = interrupt_safe_point();
+            if (err == CUP_OK) {
+                err = acquire_bootstrap_lock(context);
+            }
+        } else if (err == CUP_OK) {
+            err = acquire_runtime_lock(context, lock_mode);
         }
-        lock_mode = SYSTEM_LOCK_EXCLUSIVE;
-        err = interrupt_safe_point();
-        if (err == CUP_OK) {
-            err = acquire_bootstrap_lock(context);
-        }
-    } else {
-        err = acquire_runtime_lock(context, lock_mode);
     }
     if (err != CUP_OK) {
         return err;
@@ -313,24 +316,16 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
     }
     err = prepare_context(context, target_override);
     if (err == CUP_OK) {
-        err = layout_get_runtime_status(&runtime_status);
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
-    /* As in mutating contexts, the unlocked classification only determines whether a lock path
-     * can exist. Readiness is decided from the shared locked snapshot below. */
-    if (runtime_status == LAYOUT_RUNTIME_MISSING) {
-        int root_missing;
+        int root_missing = 0;
 
         err = selected_root_is_missing(&root_missing);
-        if (err != CUP_OK) {
-            return err;
-        }
-        if (root_missing) {
+        if (err == CUP_OK && root_missing) {
             context->runtime_available = 0;
             return CUP_OK;
         }
+    }
+    if (err != CUP_OK) {
+        return err;
     }
 
     err = acquire_runtime_lock(context, SYSTEM_LOCK_SHARED);

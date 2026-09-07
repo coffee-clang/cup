@@ -118,14 +118,20 @@ Load command 1
 EOF_LOAD
         fi
         if [ "${FAKE_MAC_RPATH:-0}" != 0 ]; then
-            rpath=${FAKE_MAC_RPATH}
-            [ "$rpath" != 1 ] || rpath=/tmp/lib
-            cat <<EOF_RPATH
-Load command 2
+            old_ifs=$IFS
+            IFS=,
+            command_number=2
+            for rpath in ${FAKE_MAC_RPATH}; do
+                [ "$rpath" != 1 ] || rpath=/tmp/lib
+                cat <<EOF_RPATH
+Load command $command_number
           cmd LC_RPATH
       cmdsize 32
          path $rpath (offset 12)
 EOF_RPATH
+                command_number=$((command_number + 1))
+            done
+            IFS=$old_ifs
         fi
         ;;
     *)
@@ -362,6 +368,17 @@ FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
 FAKE_MAC_RPATH='@executable_path' \
 FAKE_NM_SYMBOLS='__asan_init __ubsan_handle_type_mismatch_v1' \
     inspect macos-x64 sanitizers "$binary" "$TMP_ROOT/mac-sanitizers.txt"
+multi_rpath_report=$TMP_ROOT/mac-sanitizers-multi-rpath.txt
+FAKE_FORMAT=macho \
+FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
+FAKE_MAC_RPATH='@executable_path,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/22/lib/darwin' \
+FAKE_NM_SYMBOLS='__asan_init __ubsan_handle_type_mismatch_v1' \
+    inspect macos-x64 sanitizers "$binary" "$multi_rpath_report"
+assert_contains "$(cat "$multi_rpath_report")" \
+    'runtime_search_path=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/22/lib/darwin,@executable_path'
+if grep -v '^[^=][^=]*=' "$multi_rpath_report" >/dev/null; then
+    fail 'Mach-O report contains a non-key line after multi-RPATH serialization'
+fi
 if FAKE_FORMAT=macho \
         FAKE_MAC_LIBS='@rpath/libclang_rt.asan_osx_dynamic.dylib' \
         FAKE_MAC_RPATH='/tmp/lib' \
@@ -418,12 +435,18 @@ if "$path_guard" "$TMP_ROOT/leaking-binary" "$TMP_ROOT/forbidden" \
     fail 'release path guard accepted a machine-specific path'
 fi
 assert_contains "$(cat "$TMP_ROOT/path-leak.out")" 'contains forbidden path'
-printf '%s\n' '/tmp/.install.staging.ABCD/include' > "$TMP_ROOT/staging-binary"
+printf '%s\n' '/tmp/.install.staging/include' > "$TMP_ROOT/staging-binary"
 if "$path_guard" "$TMP_ROOT/staging-binary" \
         >"$TMP_ROOT/staging-leak.out" 2>&1; then
-    fail 'release path guard accepted a staging path'
+    fail 'release path guard accepted the current dependency staging path'
 fi
 assert_contains "$(cat "$TMP_ROOT/staging-leak.out")" 'transactional dependency path'
+printf '%s\n' 'C:\tmp\.install.staging\include' > "$TMP_ROOT/windows-staging-binary"
+if "$path_guard" "$TMP_ROOT/windows-staging-binary" \
+        >"$TMP_ROOT/windows-staging-leak.out" 2>&1; then
+    fail 'release path guard accepted the Windows spelling of the dependency staging path'
+fi
+assert_contains "$(cat "$TMP_ROOT/windows-staging-leak.out")" 'transactional dependency path'
 printf '%s\n' 'OPENSSLDIR: "/__cup_runtime__/other"' > "$TMP_ROOT/wrong-neutral-binary"
 if "$path_guard" "$TMP_ROOT/wrong-neutral-binary" \
         >"$TMP_ROOT/wrong-neutral.out" 2>&1; then

@@ -5,6 +5,16 @@ set -eu
 : "${SCRIPT_DIR:?release SCRIPT_DIR is required before sourcing common.sh}"
 # shellcheck source=../lib/path-safety.sh
 . "$SCRIPT_DIR/../lib/path-safety.sh"
+# shellcheck source=../lib/sha256.sh
+. "$SCRIPT_DIR/../lib/sha256.sh"
+# shellcheck source=../lib/repository-id.sh
+. "$SCRIPT_DIR/../lib/repository-id.sh"
+# shellcheck source=../lib/git-identity.sh
+. "$SCRIPT_DIR/../lib/git-identity.sh"
+# shellcheck source=../lib/platform-domain.sh
+. "$SCRIPT_DIR/../lib/platform-domain.sh"
+# shellcheck source=../lib/semver.sh
+. "$SCRIPT_DIR/../lib/semver.sh"
 
 fail() {
     printf 'Error: %s\n' "$*" >&2
@@ -18,13 +28,8 @@ info() {
 hash_file() {
     hash_input=$1
     require_regular_file "$hash_input"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$hash_input" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$hash_input" | awk '{print $1}'
-    else
-        fail 'neither sha256sum nor shasum is available'
-    fi
+    cup_sha256_file "$hash_input" ||
+        fail 'neither sha256sum nor shasum produced a valid SHA-256 digest'
 }
 
 require_regular_file() {
@@ -45,30 +50,20 @@ require_real_directory() {
         fail "expected a real no-follow directory: $real_directory"
 }
 
-validate_repository_identifier() {
+validate_repository_identifier() (
     repository_identifier=$1
     repository_label=${2:-repository}
-    printf '%s\n' "$repository_identifier" |
-        grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ||
+    cup_repository_identifier_valid "$repository_identifier" ||
         fail "invalid $repository_label: $repository_identifier"
-    repository_owner=${repository_identifier%%/*}
-    repository_name=${repository_identifier#*/}
-    case "$repository_owner:$repository_name" in
-        .:*|..:*|*:.|*:..)
-            fail "invalid $repository_label: $repository_identifier"
-            ;;
-    esac
-}
+)
 
 validate_release_inputs() {
     : "${VERSION:?VERSION is required}"
     : "${TAG:?TAG is required}"
     : "${SHA:?SHA is required}"
     [ "$TAG" = "v$VERSION" ] || fail 'TAG does not match VERSION'
-    printf '%s\n' "$VERSION" |
-        grep -Eq '^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$' ||
-        fail "invalid VERSION: $VERSION"
-    printf '%s\n' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "invalid SHA: $SHA"
+    cup_semver_valid "$VERSION" || fail "invalid VERSION: $VERSION"
+    cup_git_commit_valid "$SHA" || fail "invalid SHA: $SHA"
 }
 
 validate_build_root() {
@@ -188,16 +183,70 @@ validate_release_file() (
     trap - EXIT HUP INT TERM
 )
 
-release_asset_mode() {
-    case "$1" in
-        install.sh|cup-linux-x64|cup-linux-arm64|cup-macos-x64|cup-macos-arm64)
-            printf '0755\n'
-            ;;
-        *)
-            printf '0644\n'
-            ;;
+release_common_checksum_assets() (
+    printf '%s\n' packages.cfg install.cfg install.sh install.ps1
+)
+
+release_common_public_assets() (
+    printf '%s\n' \
+        THIRD_PARTY_NOTICES.txt SHA256SUMS.common install.cfg install.ps1 install.sh \
+        packages.cfg provenance.txt release.txt
+)
+
+release_platform_binary_name() (
+    platform=$1
+    cup_platform_valid "$platform" || return 1
+    case "$platform" in
+        windows-x64) printf 'cup-%s.exe\n' "$platform" ;;
+        *) printf 'cup-%s\n' "$platform" ;;
     esac
-}
+)
+
+release_platform_binary_mode() (
+    platform=$1
+    cup_platform_valid "$platform" || return 1
+    case "$platform" in
+        windows-x64) printf '0644\n' ;;
+        *) printf '0755\n' ;;
+    esac
+)
+
+release_platform_checksum_name() (
+    platform=$1
+    cup_platform_valid "$platform" || return 1
+    printf 'SHA256SUMS.%s\n' "$platform"
+)
+
+release_platform_checksum_assets() (
+    platform=$1
+    binary=$(release_platform_binary_name "$platform") || return 1
+    printf '%s\n' "$binary" release.txt SHA256SUMS.common
+)
+
+release_public_assets() (
+    printf '%s\n' packages.cfg install.cfg release.txt provenance.txt \
+        THIRD_PARTY_NOTICES.txt install.sh install.ps1
+    for platform in $CUP_SUPPORTED_PLATFORMS; do
+        release_platform_binary_name "$platform" || return 1
+    done
+    printf '%s\n' SHA256SUMS.common
+    for platform in $CUP_SUPPORTED_PLATFORMS; do
+        release_platform_checksum_name "$platform" || return 1
+    done
+)
+
+release_asset_mode() (
+    asset=$1
+    [ "$asset" = install.sh ] && { printf '0755\n'; return 0; }
+    for platform in $CUP_SUPPORTED_PLATFORMS; do
+        binary=$(release_platform_binary_name "$platform") || return 1
+        if [ "$asset" = "$binary" ]; then
+            release_platform_binary_mode "$platform"
+            return
+        fi
+    done
+    printf '0644\n'
+)
 
 validate_release_asset_modes() {
     asset_directory=$1
@@ -213,7 +262,9 @@ validate_release_asset_modes() {
             # still normalizes the Windows executable to the canonical 0644 mode there.
             case "${MSYSTEM:-}" in
                 UCRT64|CLANG64)
-                    [ "$asset_name" = cup-windows-x64.exe ] &&
+                    windows_binary=$(release_platform_binary_name windows-x64) ||
+                        fail 'could not derive Windows release binary name'
+                    [ "$asset_name" = "$windows_binary" ] &&
                         [ "$expected_mode" = 0644 ] && [ "$actual_mode" = 755 ] && continue
                     ;;
             esac
@@ -222,45 +273,34 @@ validate_release_asset_modes() {
     done
 }
 
+validate_release_provenance_inputs() (
+    expected_repository=$1
+    expected_tests_run_id=$2
+    expected_tests_run_attempt=$3
+    expected_release_run_id=$4
+
+    validate_repository_identifier "$expected_repository" SOURCE_REPOSITORY
+    for run_value in "$expected_tests_run_id" "$expected_tests_run_attempt" \
+            "$expected_release_run_id"; do
+        printf '%s\n' "$run_value" | grep -Eq '^[1-9][0-9]*$' ||
+            fail 'invalid release provenance run identity'
+    done
+)
+
 validate_provenance_file() {
     provenance_file=$1
-    expected_repository=${2:-}
-    expected_tests_run_id=${3:-}
-    expected_tests_run_attempt=${4:-}
-    expected_tests_index_sha256=${5:-}
-    expected_release_run_id=${6:-}
-    expected_release_run_attempt=${7:-}
+    expected_repository=$2
+    expected_tests_run_id=$3
+    expected_tests_run_attempt=$4
+    expected_release_run_id=$5
     require_nonempty_file "$provenance_file"
-    awk -F= \
-        -v version="$VERSION" -v sha="$SHA" \
-        -v expected_repository="$expected_repository" \
-        -v expected_tests_run_id="$expected_tests_run_id" \
-        -v expected_tests_run_attempt="$expected_tests_run_attempt" \
-        -v expected_tests_index_sha256="$expected_tests_index_sha256" \
-        -v expected_release_run_id="$expected_release_run_id" \
-        -v expected_release_run_attempt="$expected_release_run_attempt" '
-        function valid_repository(value) { return value ~ /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/ }
-        function valid_number(value) { return value ~ /^[1-9][0-9]*$/ }
-        function valid_sha256(value) { return value ~ /^[0-9a-f]{64}$/ }
-        $1 == "format" && NF == 2 && $2 == "3" { f++; next }
-        $1 == "version" && NF == 2 && $2 == version { v++; next }
-        $1 == "source_repository" && NF == 2 && valid_repository($2) { repo=$2; r++; next }
-        $1 == "source_commit" && NF == 2 && $2 == sha { c++; next }
-        $1 == "tests_run_id" && NF == 2 && valid_number($2) { tests=$2; t++; next }
-        $1 == "tests_run_attempt" && NF == 2 && valid_number($2) { tests_attempt=$2; a++; next }
-        $1 == "tests_evidence_index_sha256" && NF == 2 && valid_sha256($2) { index_sha=$2; i++; next }
-        $1 == "release_run_id" && NF == 2 && valid_number($2) { release=$2; q++; next }
-        $1 == "release_run_attempt" && NF == 2 && valid_number($2) { release_attempt=$2; p++; next }
-        { invalid=1 }
-        END {
-            if (invalid || NR != 9 || f != 1 || v != 1 || r != 1 || c != 1 ||
-                    t != 1 || a != 1 || i != 1 || q != 1 || p != 1) exit 1
-            if (expected_repository != "" && repo != expected_repository) exit 1
-            if (expected_tests_run_id != "" && tests != expected_tests_run_id) exit 1
-            if (expected_tests_run_attempt != "" && tests_attempt != expected_tests_run_attempt) exit 1
-            if (expected_tests_index_sha256 != "" && index_sha != expected_tests_index_sha256) exit 1
-            if (expected_release_run_id != "" && release != expected_release_run_id) exit 1
-            if (expected_release_run_attempt != "" && release_attempt != expected_release_run_attempt) exit 1
-        }
-    ' "$provenance_file" || fail "invalid provenance file: $provenance_file"
+    {
+        printf 'format=4\n'
+        printf 'version=%s\n' "$VERSION"
+        printf 'source_repository=%s\n' "$expected_repository"
+        printf 'source_commit=%s\n' "$SHA"
+        printf 'tests_run_id=%s\n' "$expected_tests_run_id"
+        printf 'tests_run_attempt=%s\n' "$expected_tests_run_attempt"
+        printf 'release_run_id=%s\n' "$expected_release_run_id"
+    } | cmp -s - "$provenance_file" || fail "invalid provenance file: $provenance_file"
 }

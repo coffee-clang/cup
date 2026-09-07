@@ -7,14 +7,6 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-function Get-Sha256Lower {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
 function New-PrivateBootstrapDirectory {
     param(
         [Parameter(Mandatory = $true)]
@@ -55,11 +47,7 @@ function New-BootstrapSource {
     )
 
     New-PrivateBootstrapDirectory -Path $Path | Out-Null
-    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
-        "development"
-    } else {
-        $env:CUP_TEST_CONFIGURATION
-    }
+    $configuration = Get-TestConfiguration
     $releaseMetadata = Join-Path $Script:CupTestBuildRoot `
         "windows-x64\$configuration\generated\release.txt"
     Assert-PathExists $releaseMetadata
@@ -123,7 +111,7 @@ function Wait-ForBootstrapCommit {
         if ((Test-Path -LiteralPath $binary -PathType Leaf) -and
             -not (Test-Path -LiteralPath $transaction) -and
             (Test-BootstrapStagingEmpty -Path $staging)) {
-            $ready = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+            $ready = Invoke-NativeProcess -FilePath $binary `
                 -Arguments @("--internal-runtime-ready") `
                 -WorkingDirectory $Script:CupTestDevRoot
             if ($ready.ExitCode -eq 0) {
@@ -140,11 +128,14 @@ function Invoke-Bootstrap {
         [Parameter(Mandatory = $true)]
         [string]$Source,
 
+        [Parameter(Mandatory = $true)]
+        [string]$Base,
+
         [switch]$ExpectFailure
     )
 
     $result = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
-        -Arguments @("--internal-bootstrap", $Source) `
+        -Arguments @("--internal-bootstrap", $Source, $Base) `
         -WorkingDirectory $Script:CupTestDevRoot
     if ($ExpectFailure) {
         if ($result.ExitCode -eq 0) {
@@ -161,7 +152,7 @@ try {
 
     $source = Join-Path $Script:CupTestRoot "source"
     New-BootstrapSource -Path $source
-    $result = Invoke-Bootstrap -Source $source
+    $result = Invoke-Bootstrap -Source $source -Base $Script:CupTestHome
     Assert-Contains $result.Output "installation scheduled"
 
     $root = Join-Path $Script:CupTestHome ".cup"
@@ -196,23 +187,54 @@ try {
     if ($version.ExitCode -ne 0) {
         Fail-Test "installed bootstrap binary failed --version"
     }
-    $doctor = Invoke-NativeProcess -FilePath $installed -Arguments @("doctor") `
-        -WorkingDirectory $Script:CupTestDevRoot
+    $savedPath = $env:Path
+    try {
+        $env:Path = "$(Join-Path $root 'bin');$savedPath"
+        $doctor = Invoke-NativeProcess -FilePath $installed -Arguments @("doctor") `
+            -WorkingDirectory $Script:CupTestDevRoot
+    } finally {
+        $env:Path = $savedPath
+    }
     if ($doctor.ExitCode -ne 0) {
         Fail-Test "installed bootstrap binary failed doctor`n$($doctor.Output)"
     }
     Assert-Contains $doctor.Output "Doctor found no issues."
 
-    # A second verified generation must use the same update transaction rather than a
-    # bootstrap-specific replacement path.
+    # Moving the complete canonical root preserves identity independently of USERPROFILE.
+    $relocatedBase = Join-Path $Script:CupTestRoot "relocated base"
+    New-Item -ItemType Directory -Path $relocatedBase | Out-Null
+    $relocatedRoot = Join-Path $relocatedBase ".cup"
+    Move-Item -LiteralPath $root -Destination $relocatedRoot
+    $installed = Join-Path $relocatedRoot "bin\cup.exe"
+    $version = Invoke-NativeProcess -FilePath $installed -Arguments @("--version") `
+        -WorkingDirectory $Script:CupTestDevRoot
+    if ($version.ExitCode -ne 0) {
+        Fail-Test "relocated bootstrap binary failed --version"
+    }
+    $savedPath = $env:Path
+    try {
+        $env:Path = "$(Join-Path $relocatedRoot 'bin');$savedPath"
+        $doctor = Invoke-NativeProcess -FilePath $installed -Arguments @("doctor") `
+            -WorkingDirectory $Script:CupTestDevRoot
+    } finally {
+        $env:Path = $savedPath
+    }
+    if ($doctor.ExitCode -ne 0) {
+        Fail-Test "relocated bootstrap binary failed doctor`n$($doctor.Output)"
+    }
+    Assert-Contains $doctor.Output "Doctor found no issues."
+    Assert-PathMissing $root
+
+    # A second verified generation must reuse the relocated canonical root.
     $secondSource = Join-Path $Script:CupTestRoot "second-source"
     New-BootstrapSource -Path $secondSource
-    $second = Invoke-Bootstrap -Source $secondSource
+    $second = Invoke-Bootstrap -Source $secondSource -Base $relocatedBase
     Assert-Contains $second.Output "installation scheduled"
-    Wait-ForBootstrapCommit -Root $root
-    Assert-PathMissing (Join-Path $root "transaction.txt")
-    if (-not (Test-BootstrapStagingEmpty -Path (Join-Path $root "staging"))) {
-        Fail-Test "successful bootstrap reinstall left staging residue"
+    Wait-ForBootstrapCommit -Root $relocatedRoot
+    Assert-PathMissing (Join-Path $relocatedRoot "transaction.txt")
+    Assert-PathMissing $root
+    if (-not (Test-BootstrapStagingEmpty -Path (Join-Path $relocatedRoot "staging"))) {
+        Fail-Test "successful relocated bootstrap reinstall left staging residue"
     }
 
     # Exact-set and digest failures must occur before any root mutation.
@@ -224,14 +246,14 @@ try {
         $invalidSource = Join-Path $Script:CupTestRoot "invalid-source"
         New-BootstrapSource -Path $invalidSource
         Write-Utf8NoBom -Path (Join-Path $invalidSource "extra.txt") -Lines @("extra")
-        Invoke-Bootstrap -Source $invalidSource -ExpectFailure | Out-Null
+        Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure | Out-Null
         Assert-PathMissing (Join-Path $invalidHome ".cup")
         Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
 
         Remove-Item -LiteralPath (Join-Path $invalidSource "extra.txt") -Force
         Add-Content -LiteralPath (Join-Path $invalidSource "packages.cfg") `
             -Value "tampered" -Encoding ascii
-        Invoke-Bootstrap -Source $invalidSource -ExpectFailure | Out-Null
+        Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure | Out-Null
         Assert-PathMissing (Join-Path $invalidHome ".cup")
         Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
     } finally {

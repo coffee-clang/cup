@@ -15,19 +15,14 @@ _Static_assert(MAX_SELECTOR_LEN >= 2 * MAX_IDENTIFIER_LEN,
 
 /* Parse symbolic or concrete tool selectors without consulting the catalog. */
 static CupError selector_init(PackageSelector *selector, const char *tool, const char *release) {
-    const unsigned char *cursor;
     CupError err;
 
     if (selector == NULL || text_is_empty(tool) || text_is_empty(release)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (!path_is_safe_identifier(tool)) {
-        return CUP_ERR_INVALID_TOOL;
-    }
-    for (cursor = (const unsigned char *)tool; *cursor != '\0'; ++cursor) {
-        if (*cursor >= 'A' && *cursor <= 'Z') {
-            return CUP_ERR_INVALID_TOOL;
-        }
+    err = path_validate_canonical_identifier(tool, sizeof(selector->tool));
+    if (err != CUP_OK) {
+        return err == CUP_ERR_VALIDATION ? CUP_ERR_INVALID_TOOL : err;
     }
 
     if (!package_release_is_stable(release)) {
@@ -73,21 +68,16 @@ int package_release_is_stable(const char *release) {
 }
 
 CupError package_release_validate_concrete(const char *release) {
-    char canonical[MAX_IDENTIFIER_LEN];
     CupError err;
 
     if (text_is_empty(release)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = text_copy_lower_ascii(canonical, sizeof(canonical), release);
+    err = path_validate_canonical_identifier(release, MAX_IDENTIFIER_LEN);
     if (err != CUP_OK) {
-        return err;
+        return err == CUP_ERR_VALIDATION ? CUP_ERR_INVALID_RELEASE : err;
     }
-    if (strcmp(canonical, release) != 0 || package_release_is_stable(release) ||
-        !path_is_safe_identifier(release)) {
-        return CUP_ERR_INVALID_RELEASE;
-    }
-    return CUP_OK;
+    return package_release_is_stable(release) ? CUP_ERR_INVALID_RELEASE : CUP_OK;
 }
 
 CupError package_selector_parse_parts(

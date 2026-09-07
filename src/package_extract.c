@@ -1,7 +1,7 @@
 /*
  * Extracts one bounded package archive below an anchored staging directory. Archive paths use a
- * portable ASCII grammar, case-fold collisions and file/directory aliases are rejected, only
- * directories and regular files are admitted, and permissions are normalized rather than trusted
+ * portable ASCII grammar, case-fold collisions and path aliases are rejected, POSIX packages may
+ * contain confined relative symbolic links, and permissions are normalized rather than trusted
  * from the archive.
  */
 
@@ -38,7 +38,8 @@
 typedef enum {
     PATH_STATE_ANCESTOR_ONLY,
     PATH_STATE_EXPLICIT_DIRECTORY,
-    PATH_STATE_EXPLICIT_FILE
+    PATH_STATE_EXPLICIT_FILE,
+    PATH_STATE_EXPLICIT_SYMLINK
 } ExtractedPathState;
 
 typedef struct ExtractedPath {
@@ -115,11 +116,11 @@ static CupError path_table_add(ExtractedPathTable *table,
                                const char *key,
                                ExtractedPathState state) {
     ExtractedPath *entry;
-    size_t length;
+    size_t key_length;
     uint64_t allocation_size;
 
-    length = strlen(key) + 1;
-    allocation_size = (uint64_t)sizeof(*entry) + length;
+    key_length = strlen(key) + 1;
+    allocation_size = (uint64_t)sizeof(*entry) + key_length;
     if (allocation_size > MAX_PACKAGE_PATH_TABLE_BYTES - table->allocated_bytes) {
         fprintf(stderr, "Error: archive path state exceeds the resource limit.\n");
         return CUP_ERR_ARCHIVE_UNSAFE;
@@ -130,7 +131,7 @@ static CupError path_table_add(ExtractedPathTable *table,
         return CUP_ERR_EXTRACT;
     }
     entry->state = state;
-    memcpy(entry->key, key, length);
+    memcpy(entry->key, key, key_length);
     HASH_ADD_KEYPTR(hh, table->paths, entry->key, strlen(entry->key), entry);
     if (entry->hash_oom) {
         free(entry);
@@ -150,7 +151,12 @@ static CupError path_table_register(ExtractedPathTable *table, const char *path,
     ExtractedPathState explicit_state;
     CupError err;
 
-    if (table == NULL || (type != AE_IFDIR && type != AE_IFREG)) {
+    if (table == NULL ||
+        (type != AE_IFDIR && type != AE_IFREG
+#if !defined(_WIN32)
+         && type != AE_IFLNK
+#endif
+         )) {
         return CUP_ERR_INVALID_INPUT;
     }
     err = lowercase_path(path, key, sizeof(key));
@@ -163,7 +169,7 @@ static CupError path_table_register(ExtractedPathTable *table, const char *path,
         !(entry->state == PATH_STATE_ANCESTOR_ONLY && type == AE_IFDIR)) {
         fprintf(stderr,
                 "Error: archive contains a duplicate, case-colliding, or "
-                "file/directory-colliding path.\n");
+                "path-type-colliding path.\n");
         return CUP_ERR_ARCHIVE_UNSAFE;
     }
 
@@ -173,10 +179,11 @@ static CupError path_table_register(ExtractedPathTable *table, const char *path,
         *slash = '\0';
         entry = path_table_find(table, key);
         *slash = saved;
-        if (entry != NULL && entry->state == PATH_STATE_EXPLICIT_FILE) {
+        if (entry != NULL && (entry->state == PATH_STATE_EXPLICIT_FILE ||
+                              entry->state == PATH_STATE_EXPLICIT_SYMLINK)) {
             fprintf(stderr,
                     "Error: archive contains a duplicate, case-colliding, or "
-                    "file/directory-colliding path.\n");
+                    "path-type-colliding path.\n");
             return CUP_ERR_ARCHIVE_UNSAFE;
         }
         slash++;
@@ -203,7 +210,9 @@ static CupError path_table_register(ExtractedPathTable *table, const char *path,
         return CUP_OK;
     }
 
-    explicit_state = type == AE_IFDIR ? PATH_STATE_EXPLICIT_DIRECTORY : PATH_STATE_EXPLICIT_FILE;
+    explicit_state = type == AE_IFDIR ? PATH_STATE_EXPLICIT_DIRECTORY
+                     : type == AE_IFREG ? PATH_STATE_EXPLICIT_FILE
+                                        : PATH_STATE_EXPLICIT_SYMLINK;
     return path_table_add(table, key, explicit_state);
 }
 
@@ -271,8 +280,55 @@ static CupError normalize_entry_path(const char *input, char *output, size_t siz
     return CUP_OK;
 }
 
-/* Entry policy and accounting. Only directories and regular files with bounded sizes are
- * admitted. */
+#if !defined(_WIN32)
+/* A symlink may be producer-owned and need not resolve during installation, but its lexical target
+ * must remain within the package root. This prevents an installed package from deliberately
+ * pointing outside its own tree without making CUP own the producer's internal topology. */
+static CupError validate_symlink_target(const char *relative_path, const char *target) {
+    char combined[MAX_PATH_LEN];
+    char parent[MAX_PATH_LEN];
+    char *segment;
+    char *next;
+    size_t depth = 0;
+
+    if (text_is_empty(relative_path) || text_is_empty(target) || target[0] == '/' ||
+        strchr(target, '\\') != NULL) {
+        return CUP_ERR_ARCHIVE_UNSAFE;
+    }
+    if (path_parent(parent, sizeof(parent), relative_path) != CUP_OK) {
+        parent[0] = '\0';
+    }
+    if (parent[0] == '\0') {
+        if (text_copy(combined, sizeof(combined), target) != CUP_OK) {
+            return CUP_ERR_ARCHIVE_UNSAFE;
+        }
+    } else if (path_join(combined, sizeof(combined), parent, target) != CUP_OK) {
+        return CUP_ERR_ARCHIVE_UNSAFE;
+    }
+
+    segment = combined;
+    while (segment != NULL && *segment != '\0') {
+        next = strchr(segment, '/');
+        if (next != NULL) {
+            *next = '\0';
+        }
+        if (strcmp(segment, "..") == 0) {
+            if (depth == 0) {
+                return CUP_ERR_ARCHIVE_UNSAFE;
+            }
+            depth--;
+        } else if (strcmp(segment, ".") != 0 && *segment != '\0') {
+            depth++;
+            if (depth > MAX_PACKAGE_PATH_DEPTH || !path_is_safe_segment(segment)) {
+                return CUP_ERR_ARCHIVE_UNSAFE;
+            }
+        }
+        segment = next == NULL ? NULL : next + 1;
+    }
+    return CUP_OK;
+}
+#endif
+
 static CupError validate_entry_type(struct archive_entry *entry) {
     mode_t type = archive_entry_filetype(entry);
 
@@ -280,19 +336,26 @@ static CupError validate_entry_type(struct archive_entry *entry) {
         (type == AE_IFREG || type == AE_IFDIR)) {
         return CUP_OK;
     }
+#if !defined(_WIN32)
+    if (archive_entry_hardlink(entry) == NULL && archive_entry_symlink(entry) != NULL &&
+        type == AE_IFLNK) {
+        return CUP_OK;
+    }
+#endif
 
     fprintf(stderr,
             "Error: archive contains unsupported entry type for '%s'.\n",
             archive_entry_pathname(entry));
     return CUP_ERR_ARCHIVE_UNSAFE;
 }
-
 static void normalize_entry_metadata(struct archive_entry *entry) {
     mode_t type = archive_entry_filetype(entry);
     mode_t permissions;
 
     if (type == AE_IFDIR) {
         permissions = 0755;
+    } else if (type == AE_IFLNK) {
+        permissions = 0777;
     } else {
         permissions = (archive_entry_perm(entry) & 0111) != 0 ? 0755 : 0644;
     }
@@ -373,7 +436,13 @@ static CupError prepare_archive_entry(const char *expected_root,
     if (err != CUP_OK) {
         return err;
     }
-
+#if !defined(_WIN32)
+    if (archive_entry_filetype(entry) == AE_IFLNK &&
+        validate_symlink_target(relative_path, archive_entry_symlink(entry)) != CUP_OK) {
+        fprintf(stderr, "Error: archive symbolic link escapes the package root.\n");
+        return CUP_ERR_ARCHIVE_UNSAFE;
+    }
+#endif
     normalize_entry_metadata(entry);
     archive_entry_set_pathname(entry, relative_path);
     return CUP_OK;

@@ -32,6 +32,10 @@ const char *path_last_segment(const char *path);
 /* Validate one segment or a stricter identifier accepted by text formats. */
 int path_is_safe_segment(const char *value);
 int path_is_safe_identifier(const char *value);
+int path_is_canonical_identifier(const char *value);
+CupError path_validate_canonical_identifier(const char *value, size_t capacity);
+/* Return the borrowed nonempty suffix from the generated safe segment <prefix>-<suffix>. */
+const char *path_generated_temp_suffix(const char *name, const char *prefix);
 
 /* Validate a nonabsolute relative path with no traversal or empty segment. */
 int path_is_safe_relative(const char *path);

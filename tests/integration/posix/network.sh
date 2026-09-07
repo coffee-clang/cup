@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Verifies package download through a local hostname and checksum rejection on POSIX.
+# Verifies package download through a loopback address and checksum rejection on POSIX.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -47,8 +47,12 @@ trap 'network_signal_handler 129' HUP
 trap 'network_signal_handler 130' INT
 trap 'network_signal_handler 143' TERM
 
+compressed_version=97.0.3
+compressed_path="/compressed-limit/$compressed_version-$TEST_PLATFORM-$TEST_PLATFORM/SHA256SUMS"
 "$helper" http-server --root "$server_root" --port 0 \
-    --ready-file "$ready_file" >"$server_log" 2>&1 &
+    --ready-file "$ready_file" \
+    --gzip-path "$compressed_path" --gzip-bytes 4194305 \
+    >"$server_log" 2>&1 &
 server_pid=$!
 
 attempt=0
@@ -72,13 +76,13 @@ set_network_catalog() {
     awk -v platform="$TEST_PLATFORM" -v port="$port" '
         $0 ~ "^compiler\\.clang\\." platform "\\." platform "\\.url_template=" {
             print "compiler.clang." platform "." platform ".url_template=" \
-                "http://localhost:" port "/{version}-{host_platform}-{target_platform}/" \
+                "http://127.0.0.1:" port "/{version}-{host_platform}-{target_platform}/" \
                 "clang-{version}-{host_platform}-{target_platform}.{format}"
             next
         }
         $0 ~ "^compiler\\.clang\\." platform "\\." platform "\\.checksum_url_template=" {
             print "compiler.clang." platform "." platform ".checksum_url_template=" \
-                "http://localhost:" port "/{version}-{host_platform}-{target_platform}/SHA256SUMS"
+                "http://127.0.0.1:" port "/{version}-{host_platform}-{target_platform}/SHA256SUMS"
             next
         }
         { print }
@@ -106,10 +110,10 @@ package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz repla
 publish_package "$valid_version"
 
 export CUP_INSTALL_ALLOW_INSECURE=1
-export NO_PROXY=localhost,127.0.0.1
-export no_proxy=localhost,127.0.0.1
+export NO_PROXY=127.0.0.1
+export no_proxy=127.0.0.1
 
-printf '==> Downloading a package through the local hostname...\n'
+printf '==> Downloading a package through the loopback address...\n'
 run_cup install compiler "clang@$valid_version" >/dev/null
 
 bad_version=97.0.2
@@ -131,6 +135,25 @@ bad_cache=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$ba
 assert_missing "$bad_cache/clang-$bad_version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
     "compiler:clang@$bad_version"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_cup_healthy
+
+package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions \
+    "$compressed_version" prepend
+package_catalog_edit compiler clang "$TEST_PLATFORM" checksum_url_template \
+    "http://127.0.0.1:$port/compressed-limit/{version}-{host_platform}-{target_platform}/SHA256SUMS" replace
+
+printf '==> Rejecting checksum metadata whose decompressed body exceeds the limit...\n'
+if run_cup install compiler "clang@$compressed_version" \
+        >"$TMP_ROOT/compressed-limit.out" 2>&1; then
+    fail 'oversized decompressed checksum metadata was accepted'
+fi
+assert_contains "$(cat "$TMP_ROOT/compressed-limit.out")" \
+    'download exceeded the configured size limit'
+compressed_cache=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$compressed_version
+assert_missing "$compressed_cache/SHA256SUMS"
+assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
+    "compiler:clang@$compressed_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 

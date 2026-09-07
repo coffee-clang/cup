@@ -107,9 +107,7 @@ try {
     $mismatchArchive = Join-Path (Split-Path -Parent $mismatchFixture.Archive) `
         "$($mismatchFixture.PackageName).tar.gz"
     Move-Item -LiteralPath $mismatchFixture.Archive -Destination $mismatchArchive
-    $mismatchHash = (Get-FileHash `
-        -LiteralPath $mismatchArchive `
-        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $mismatchHash = Get-Sha256Lower -Path $mismatchArchive
     Write-Utf8NoBom -Path (Join-Path (Split-Path -Parent $mismatchArchive) "SHA256SUMS") -Lines @(
         "$mismatchHash  $(Split-Path -Leaf $mismatchArchive)")
     $mismatchOutput = Assert-InstallRejected $mismatchVersion
@@ -134,9 +132,7 @@ try {
     New-Item -ItemType Directory -Force -Path $invalidCache | Out-Null
     $invalidArchive = Join-Path $invalidCache "$invalidPackage.zip"
     Set-Content -LiteralPath $invalidArchive -Encoding ascii -Value "not a zip archive"
-    $invalidHash = (Get-FileHash `
-        -LiteralPath $invalidArchive `
-        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $invalidHash = Get-Sha256Lower -Path $invalidArchive
     Write-Utf8NoBom -Path (Join-Path $invalidCache "SHA256SUMS") -Lines @(
         "$invalidHash  $(Split-Path -Leaf $invalidArchive)")
     $invalidOutput = Assert-InstallRejected $invalidVersion

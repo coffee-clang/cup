@@ -5,6 +5,7 @@
 
 #include "self_update.h"
 
+#include "constants.h"
 #include "download.h"
 
 #include "assets.h"
@@ -19,6 +20,7 @@
 #include "system.h"
 #include "text.h"
 #include "update_journal.h"
+#include "update_assets.h"
 #include "update_helper.h"
 #include "runtime_journal.h"
 #include "release_metadata.h"
@@ -31,8 +33,8 @@
 #if CUP_VERSION_OFFICIAL
 
 typedef struct {
-    char binary_name[MAX_IDENTIFIER_LEN];
-    char platform_checksums_name[MAX_IDENTIFIER_LEN];
+    char binary_name[MAX_PATH_SEGMENT_LEN];
+    char platform_checksums_name[MAX_PATH_SEGMENT_LEN];
     char staging[MAX_PATH_LEN];
     char staged_binary[MAX_PATH_LEN];
     char staged_platform_checksums[MAX_PATH_LEN];
@@ -132,39 +134,27 @@ static CupError require_replaceable_generation(void) {
 
 static CupError resolve_staged_update_paths(UpdateFiles *files,
                                             const char *staging_root) {
+    UpdateAssetSpec assets[CUP_UPDATE_ASSET_COUNT];
+    char *paths[CUP_UPDATE_ASSET_COUNT] = {files->staged_binary,
+                                               files->staged_platform_checksums,
+                                               files->staged_catalog,
+                                               files->staged_install_policy,
+                                               files->staged_common_checksums};
+    const size_t sizes[CUP_UPDATE_ASSET_COUNT] = {sizeof(files->staged_binary),
+                                                  sizeof(files->staged_platform_checksums),
+                                                  sizeof(files->staged_catalog),
+                                                  sizeof(files->staged_install_policy),
+                                                  sizeof(files->staged_common_checksums)};
     CupError err;
+    size_t i;
 
     err = system_create_temp_directory(
-        staging_root, "cup-update", files->staging, sizeof(files->staging));
+        staging_root, CUP_UPDATE_TEMP_PREFIX, files->staging, sizeof(files->staging));
     if (err == CUP_OK) {
-        err = path_join(files->staged_binary,
-                        sizeof(files->staged_binary),
-                        files->staging,
-                        CUP_UPDATE_BINARY_NEW);
+        err = update_asset_specs(assets);
     }
-    if (err == CUP_OK) {
-        err = path_join(files->staged_platform_checksums,
-                        sizeof(files->staged_platform_checksums),
-                        files->staging,
-                        CUP_UPDATE_PLATFORM_CHECKSUMS_NEW);
-    }
-    if (err == CUP_OK) {
-        err = path_join(files->staged_catalog,
-                        sizeof(files->staged_catalog),
-                        files->staging,
-                        CUP_UPDATE_PACKAGES_NEW);
-    }
-    if (err == CUP_OK) {
-        err = path_join(files->staged_install_policy,
-                        sizeof(files->staged_install_policy),
-                        files->staging,
-                        CUP_UPDATE_INSTALL_POLICY_NEW);
-    }
-    if (err == CUP_OK) {
-        err = path_join(files->staged_common_checksums,
-                        sizeof(files->staged_common_checksums),
-                        files->staging,
-                        CUP_UPDATE_COMMON_CHECKSUMS_NEW);
+    for (i = 0; err == CUP_OK && i < CUP_UPDATE_ASSET_COUNT; ++i) {
+        err = path_join(paths[i], sizes[i], files->staging, assets[i].new_name);
     }
     if (err == CUP_OK) {
         err = path_join(files->staged_metadata,
@@ -184,10 +174,12 @@ static CupError prepare_update_files(UpdateFiles *files) {
     }
     memset(files, 0, sizeof(*files));
 
-    err = assets_binary_asset_name(files->binary_name, sizeof(files->binary_name));
+    err = update_asset_release_name(
+        CUP_UPDATE_ASSET_BINARY, files->binary_name, sizeof(files->binary_name));
     if (err == CUP_OK) {
-        err = assets_platform_checksums_name(files->platform_checksums_name,
-                                            sizeof(files->platform_checksums_name));
+        err = update_asset_release_name(CUP_UPDATE_ASSET_PLATFORM_CHECKSUMS,
+                                        files->platform_checksums_name,
+                                        sizeof(files->platform_checksums_name));
     }
     if (err == CUP_OK) {
         err = layout_get_staging_dir(staging_root, sizeof(staging_root));
@@ -301,7 +293,7 @@ static CupError fetch_verified_release_metadata(const UpdateFiles *files,
                                                 const UpdateUrls *urls,
                                                 const ReleaseMetadata *latest,
                                                 ReleaseMetadata *versioned) {
-    const char *platform_assets[CUP_PLATFORM_CHECKSUM_ASSET_COUNT];
+    PlatformChecksumRequiredNames platform_required;
     CupError err;
 
     err = download_file(
@@ -317,13 +309,14 @@ static CupError fetch_verified_release_metadata(const UpdateFiles *files,
         return err;
     }
 
-    platform_assets[0] = files->binary_name;
-    platform_assets[1] = CUP_RELEASE_METADATA_FILENAME;
-    platform_assets[2] = CUP_COMMON_CHECKSUMS_FILENAME;
+    err = assets_platform_checksum_required_names(&platform_required);
+    if (err != CUP_OK || strcmp(platform_required.binary, files->binary_name) != 0) {
+        return err != CUP_OK ? err : CUP_ERR_VALIDATION;
+    }
 
     err = checksum_validate_assets(files->staged_platform_checksums,
-                                   platform_assets,
-                                   sizeof(platform_assets) / sizeof(platform_assets[0]));
+                                   platform_required.names,
+                                   CUP_PLATFORM_CHECKSUM_ASSET_COUNT);
     if (err == CUP_OK) {
         err = checksum_validate_assets(files->staged_common_checksums,
                                        CUP_COMMON_CHECKSUM_ASSETS,
@@ -427,9 +420,9 @@ CupError self_update_start(void) {
     CupError err;
     int update_available = 0;
     int transaction_started = 0;
-    int helper_started = 0;
+    int journal_begin_ambiguous = 0;
     char root[MAX_PATH_LEN];
-    char helper_token[MAX_PATH_LEN];
+    char helper_token[MAX_TRANSACTION_TOKEN_LEN];
 
     memset(&files, 0, sizeof(files));
     update_journal_init(&journal);
@@ -488,6 +481,7 @@ CupError self_update_start(void) {
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             transaction_started = 1;
+            journal_begin_ambiguous = 1;
         }
         goto done;
     }
@@ -500,8 +494,6 @@ CupError self_update_start(void) {
     if (err != CUP_OK) {
         goto done;
     }
-    helper_started = 1;
-
     printf("Verified update from cup %s to %s scheduled. The executable and "
            "official configuration assets will be replaced transactionally "
            "after this process exits.\n",
@@ -511,7 +503,7 @@ CupError self_update_start(void) {
 
 done:
     /* Before helper ownership, this process remains responsible for journal and staging cleanup. */
-    if (!helper_started && files.staging[0] != '\0') {
+    if (context.lock.active && files.staging[0] != '\0') {
         CupError cleanup_err = CUP_OK;
 
         if (transaction_started) {
@@ -524,6 +516,10 @@ done:
         }
         if (cleanup_err != CUP_OK) {
             fprintf(stderr, "Error: cup update cleanup was incomplete. Run 'cup repair'.\n");
+            err = CUP_ERR_TRANSACTION;
+        } else if (journal_begin_ambiguous) {
+            /* The identity-bound journal and staging are both gone. The initial publication
+             * ambiguity has therefore been resolved and must not be reported as COMMIT. */
             err = CUP_ERR_TRANSACTION;
         }
     }

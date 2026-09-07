@@ -14,6 +14,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 # shellcheck source=lib/path-safety.sh
 . "$PROJECT_ROOT/scripts/lib/path-safety.sh"
+# shellcheck source=lib/build-configuration.sh
+. "$PROJECT_ROOT/scripts/lib/build-configuration.sh"
+# shellcheck source=lib/git-identity.sh
+. "$PROJECT_ROOT/scripts/lib/git-identity.sh"
+# shellcheck source=lib/semver.sh
+. "$PROJECT_ROOT/scripts/lib/semver.sh"
 case "${CUP_VERSION_FILE:-VERSION}" in
     /*) VERSION_FILE=${CUP_VERSION_FILE:-VERSION} ;;
     *) VERSION_FILE=$PROJECT_ROOT/${CUP_VERSION_FILE:-VERSION} ;;
@@ -32,13 +38,8 @@ validate_build_context() {
             fail "CUP_OFFICIAL_BUILD must be 0 or 1"
             ;;
     esac
-    case "${CUP_BUILD_CONFIGURATION:-development}" in
-        development|debug|coverage|sanitizers|release)
-            ;;
-        *)
-            fail "invalid CUP_BUILD_CONFIGURATION '${CUP_BUILD_CONFIGURATION}'"
-            ;;
-    esac
+    cup_build_configuration_valid "${CUP_BUILD_CONFIGURATION:-development}" ||
+        fail "invalid CUP_BUILD_CONFIGURATION '${CUP_BUILD_CONFIGURATION:-development}'"
     if [ "${CUP_OFFICIAL_BUILD:-0}" = 1 ] &&
         [ "${CUP_BUILD_CONFIGURATION:-development}" != release ]; then
         fail "official identity requires the release build configuration"
@@ -46,40 +47,11 @@ validate_build_context() {
 }
 
 # VERSION and Git identity helpers.
-is_semver() {
-    case "$1" in
-        ''|*[!0-9.]*|.*|*..*|*.)
-            return 1
-            ;;
-    esac
-    old_ifs=$IFS
-    IFS=.
-    set -- $1
-    IFS=$old_ifs
-    [ "$#" -eq 3 ] || return 1
-    for part in "$@"; do
-        case "$part" in
-            '' | *[!0-9]*)
-                return 1
-                ;;
-        esac
-        case "$part" in
-            0)
-                ;;
-            0*)
-                return 1
-                ;;
-        esac
-        [ "${#part}" -le 6 ] || return 1
-        [ "$part" -le 999999 ] || return 1
-    done
-}
-
 base_version() {
     cup_path_require_regular_file "$VERSION_FILE" 'VERSION file' || fail "missing or unsafe $VERSION_FILE"
     IFS= read -r version < "$VERSION_FILE" ||
         fail "$VERSION_FILE must contain one LF-terminated line"
-    is_semver "$version" || fail "invalid semantic version '$version' in $VERSION_FILE"
+    cup_semver_valid "$version" || fail "invalid semantic version '$version' in $VERSION_FILE"
     expected=$(mktemp "${TMPDIR:-/tmp}/cup-version.XXXXXX") ||
         fail 'could not create VERSION comparison file'
     printf '%s\n' "$version" > "$expected" || {
@@ -95,7 +67,7 @@ base_version() {
 }
 
 split_semver() {
-    is_semver "$1" || fail "invalid semantic version '$1'"
+    cup_semver_valid "$1" || fail "invalid semantic version '$1'"
     old_ifs=$IFS
     IFS=.
     set -- $1
@@ -155,7 +127,7 @@ latest_reachable_version_tag() {
     have_git_repository || return 1
     for tag in $(git_at_root tag --merged HEAD --sort=-version:refname); do
         case "$tag" in v*) version=${tag#v} ;; *) continue ;; esac
-        if is_semver "$version"; then
+        if cup_semver_valid "$version"; then
             printf '%s\n' "$tag"
             return 0
         fi
@@ -184,10 +156,8 @@ validate_explicit_release_context() {
         fail "release version '$CUP_RELEASE_VERSION' does not match VERSION '$base'"
     [ "$CUP_RELEASE_TAG" = "v$base" ] ||
         fail "release tag must be v$base"
-    case "$CUP_RELEASE_COMMIT" in
-        ''|*[!0-9a-f]*) fail 'release commit must be a lowercase hexadecimal Git commit' ;;
-    esac
-    [ "${#CUP_RELEASE_COMMIT}" -eq 40 ] || fail 'release commit must contain 40 hexadecimal characters'
+    cup_git_commit_valid "$CUP_RELEASE_COMMIT" ||
+        fail 'release commit must be a 40-character lowercase hexadecimal Git commit'
     [ "$(git_at_root rev-parse HEAD)" = "$CUP_RELEASE_COMMIT" ] ||
         fail 'release commit does not match checkout HEAD'
 }

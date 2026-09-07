@@ -9,13 +9,13 @@ param(
 
 function Test-PackageAdoption {
     $Script:RepairCompilerRoot = New-InstalledPackageFixture `
-        -Component "compiler" -Tool "clang" -Version "22.1.5" -Entries @("clang")
+        -Component "compiler" -Tool "clang" -Version "23.1.0" -Entries @("clang")
 
     $adopted = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $adopted "Adopted valid package 'compiler:clang@22.1.5'"
-    Assert-Contains $adopted "Restored read-only protection for clang@22.1.5 metadata."
+    Assert-Contains $adopted "Prepared state repair: adopt valid package 'compiler:clang@23.1.0'"
+    Assert-Contains $adopted "Restored read-only protection for clang@23.1.0 metadata."
     Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "installed.compiler.windows-x64.windows-x64=clang@22.1.5"
+        "installed.compiler.windows-x64.windows-x64=clang@23.1.0"
 
     $infoPath = Join-Path $Script:RepairCompilerRoot "info.txt"
     if (-not (Get-Item -LiteralPath $infoPath).IsReadOnly) {
@@ -28,19 +28,19 @@ function Test-StaleStateRemoval {
     foreach ($line in (Get-Content -LiteralPath $Script:RepairStatePath)) {
         $state.Add($line)
     }
-    $state.Add("installed.debugger.windows-x64.windows-x64=lldb@22.1.5")
-    $state.Add("default.debugger.windows-x64.windows-x64=lldb@22.1.5")
+    $state.Add("installed.debugger.windows-x64.windows-x64=lldb@23.1.0")
+    $state.Add("default.debugger.windows-x64.windows-x64=lldb@23.1.0")
     Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $state
 
     $stale = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $stale "Removed stale state record 'debugger:lldb@22.1.5'."
+    Assert-Contains $stale "Removed stale state record 'debugger:lldb@23.1.0'."
     Assert-NotContains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "lldb@22.1.5"
+        "lldb@23.1.0"
 }
 
 function Test-InvalidPackageQuarantine {
     $invalidPackage = Join-Path $Script:RepairCupRoot (
-        "components\debugger\lldb\windows-x64\windows-x64\22.1.5")
+        "components\debugger\lldb\windows-x64\windows-x64\23.1.0")
     $malformedRoot = Join-Path $Script:RepairCupRoot "components\unknown-component"
     New-Item -ItemType Directory -Force -Path $invalidPackage, $malformedRoot | Out-Null
 
@@ -68,7 +68,7 @@ function Test-InvalidStateRebuild {
     Assert-Contains $rebuilt "Preserved invalid state as"
     Assert-PathExists "$($Script:RepairStatePath).invalid"
     Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "clang@22.1.5"
+        "clang@23.1.0"
 
     $Script:RepairValidState = @(Get-Content -LiteralPath $Script:RepairStatePath)
 }
@@ -88,8 +88,8 @@ function Test-PendingTransactionBlocksInvalidState {
         "tool=clang",
         "host_platform=windows-x64",
         "target_platform=windows-x64",
-        "package_version=22.1.5",
-        "temporary_name=install-compiler-clang-windows-x64-windows-x64-22.1.5-test"
+        "package_version=23.1.0",
+        "temporary_name=install-compiler-clang-windows-x64-windows-x64-23.1.0-test"
     )
 
     $failure = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
@@ -158,14 +158,14 @@ function Test-StaleStagingCleanup {
 function Test-ForeignHostPreservation {
     $foreignHost = "linux-x64"
     $foreignTree = Join-Path $Script:RepairCupRoot (
-        "components\compiler\clang\$foreignHost\$foreignHost\22.1.5")
+        "components\compiler\clang\$foreignHost\$foreignHost\23.1.0")
     New-Item -ItemType Directory -Force -Path $foreignTree | Out-Null
 
     $state = [System.Collections.Generic.List[string]]::new()
     foreach ($line in (Get-Content -LiteralPath $Script:RepairStatePath)) {
         $state.Add($line)
     }
-    $state.Add("installed.compiler.$foreignHost.$foreignHost=clang@22.1.5")
+    $state.Add("installed.compiler.$foreignHost.$foreignHost=clang@23.1.0")
     Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $state
 
     $foreignDoctor = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
@@ -176,7 +176,7 @@ function Test-ForeignHostPreservation {
     Assert-Contains $foreignRepair "Preserved 1 foreign-host package tree(s)"
     Assert-PathExists $foreignTree
     Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "installed.compiler.$foreignHost.$foreignHost=clang@22.1.5"
+        "installed.compiler.$foreignHost.$foreignHost=clang@23.1.0"
     Assert-Contains (Invoke-Cup -CommandArgs @("list") -ExpectFailure) "foreign host"
 
     $cleanState = Get-Content -LiteralPath $Script:RepairStatePath | Where-Object {
@@ -195,32 +195,30 @@ function Test-UninstallRecovery {
     $staleHelper = Join-Path $profileRoot ".cup-uninstall-helper-fixture.exe"
 
     Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=1",
+        "format=2",
         "operation=uninstall",
         "phase=scheduled",
         "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=handoff",
         "error=0"
     )
     Write-Utf8NoBom -Path $staleHelper -Lines @("stale helper")
     $pending = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $pending `
-        "Cancelled interrupted cup uninstall in phase 'scheduled' during 'handoff'."
+        "Cancelled interrupted cup uninstall in phase 'scheduled'."
     Assert-PathMissing $Script:RepairTransactionPath
     Assert-PathMissing $staleHelper
 
     Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=1",
+        "format=2",
         "operation=uninstall",
         "phase=failed",
         "temporary_name=.cup-uninstall-fixture",
         "token=fixture",
-        "stage=detach",
         "error=6"
     )
     Assert-Contains (Invoke-Cup -CommandArgs @("repair")) `
-        "Acknowledged failed cup uninstall during 'detach' (error 6)."
+        "Acknowledged failed cup uninstall (error 6)."
     Assert-PathMissing $Script:RepairTransactionPath
     Assert-CupHealthy
 }

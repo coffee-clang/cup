@@ -69,7 +69,6 @@ assembled_assets=$(
 )
 # shellcheck disable=SC2086
 validate_release_asset_modes "$staging" $assembled_assets
-chmod 0755 "$staging"
 cup_path_move_entry "$staging" "$output" || fail "could not commit candidate output"
 staging=
 trap - EXIT HUP INT TERM

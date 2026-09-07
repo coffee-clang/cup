@@ -59,8 +59,7 @@ run_check 'Testing dependency contracts...' tests/repository/dependencies.sh
 run_check 'Testing embedded CA metadata...' scripts/certs/check-ca-bundle.sh
 run_check 'Testing build configuration...' tests/repository/build-system.sh
 run_check 'Testing CI supply-chain policy...' tests/repository/ci-security.sh
-run_check 'Testing CI evidence index...' tests/repository/ci-evidence.sh
-run_check 'Testing source evidence...' tests/repository/source-evidence.sh
+run_check 'Testing source/release build identity...' tests/repository/source-build-config.sh
 run_check 'Testing binary inspection policy...' tests/repository/binary-inspection.sh
 run_check 'Testing version policy...' tests/repository/version-policy.sh
 run_check 'Testing installer behavior and shell compatibility...' tests/repository/installer-behavior.sh

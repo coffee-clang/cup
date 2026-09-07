@@ -13,6 +13,10 @@ umask 022
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=../lib/path-safety.sh
 . "$SCRIPT_DIR/../lib/path-safety.sh"
+# shellcheck source=../lib/text-file.sh
+. "$SCRIPT_DIR/../lib/text-file.sh"
+# shellcheck source=../lib/sha256.sh
+. "$SCRIPT_DIR/../lib/sha256.sh"
 
 output=${1:?output path is required}
 : "${CUP_BUILD_PLATFORM:?CUP_BUILD_PLATFORM is required}"
@@ -37,14 +41,6 @@ single_line() {
     esac
 }
 
-reject_nul_or_cr() {
-    file=$1
-    label=$2
-    if od -An -v -t x1 "$file" | awk '{ for (i = 1; i <= NF; ++i) if ($i == "00" || $i == "0d") exit 1 }'; then
-        return 0
-    fi
-    fail "$label contains a NUL or carriage-return byte"
-}
 
 read_exact_field() {
     file=$1
@@ -102,7 +98,10 @@ set -- $CUP_BUILD_CC
 compiler_program=${1:-}
 [ -n "$compiler_program" ] || fail 'compiler command is empty'
 compiler_path=$(command -v "$compiler_program" 2>/dev/null || printf missing)
-compiler_target=$($CUP_BUILD_CC -dumpmachine 2>/dev/null | first_line)
+compiler_target=$(
+    ($CUP_BUILD_CC -dumpmachine 2>/dev/null ||
+        $CUP_BUILD_CC -print-target-triple 2>/dev/null) | first_line
+)
 compiler_version=$($CUP_BUILD_CC --version 2>/dev/null | first_line)
 compiler_target_normalized=$(normalize_compiler_target "$compiler_target" || true)
 compiler_numeric=$($CUP_BUILD_CC -dumpfullversion -dumpversion 2>/dev/null | first_line || true)
@@ -137,13 +136,15 @@ cup_path_check_directory_chain "$CUP_BUILD_DEPS_PREFIX" 0 "dependency prefix" ||
 dependency_file=$CUP_BUILD_DEPS_PREFIX/.cup-dependencies
 cup_path_require_regular_file "$dependency_file" "dependency metadata" ||
     fail "dependency metadata is missing or unsafe: $dependency_file"
-reject_nul_or_cr "$dependency_file" 'dependency metadata'
+cup_text_file_is_nul_cr_free "$dependency_file" || fail 'dependency metadata contains a NUL or carriage-return byte'
 dependency_prefix_format=$(read_exact_field "$dependency_file" prefix_format)
 dependency_platform=$(read_exact_field "$dependency_file" platform)
 dependency_profile=$(read_exact_field "$dependency_file" profile)
 dependency_build_revision=$(read_exact_field "$dependency_file" build_revision)
 dependency_source_lock_sha256=$(read_exact_field "$dependency_file" source_lock_sha256)
 dependency_toolchain_sha256=$(read_exact_field "$dependency_file" toolchain_sha256)
+cup_sha256_valid "$dependency_source_lock_sha256" || fail 'dependency source-lock SHA-256 is invalid'
+cup_sha256_valid "$dependency_toolchain_sha256" || fail 'dependency toolchain SHA-256 is invalid'
 
 host_system=$(uname -s 2>/dev/null || printf unknown)
 host_machine=$(uname -m 2>/dev/null || printf unknown)

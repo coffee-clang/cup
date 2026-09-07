@@ -19,20 +19,6 @@
 
 #define INSTALL_POLICY_FORMAT "1"
 
-static int name_is_canonical(const char *name) {
-    const unsigned char *cursor;
-
-    if (!path_is_safe_identifier(name)) {
-        return 0;
-    }
-    for (cursor = (const unsigned char *)name; *cursor != '\0'; ++cursor) {
-        if (*cursor >= 'A' && *cursor <= 'Z') {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 /* Scoped lookup helpers. Policy entries are keyed by component, host and target; no global fallback
  * is inferred here. */
 static int default_index(const InstallPolicy *policy, const PackageScope *scope) {
@@ -112,7 +98,7 @@ static CupError parse_list(char *value,
             *separator = '\0';
         }
         item = text_trim(cursor);
-        if (text_is_empty(item) || !name_is_canonical(item) || *count >= capacity) {
+        if (text_is_empty(item) || !path_is_canonical_identifier(item) || *count >= capacity) {
             return CUP_ERR_INVALID_INPUT;
         }
         for (i = 0; i < *count; ++i) {
@@ -209,7 +195,7 @@ static CupError parse_named_list(InstallPolicy *policy,
     parts[0] = (TextBuffer){prefix, sizeof(prefix)};
     parts[1] = (TextBuffer){name, sizeof(name)};
     if (text_split_exact(key, '.', parts, 2) != CUP_OK || strcmp(prefix, expected_prefix) != 0 ||
-        !name_is_canonical(name)) {
+        !path_is_canonical_identifier(name)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -239,8 +225,8 @@ static CupError parse_named_list(InstallPolicy *policy,
                                                    : validate_toolchain_items(list);
 }
 
-/* Cross-record validation. Profiles and toolchains are checked only after the complete file has
- * been parsed. */
+/* Cross-record validation. Named-list contents are validated as they are parsed; this final
+ * check requires every policy section to be represented. */
 static CupError validate_policy(const InstallPolicy *policy) {
     return policy->default_count == 0 || policy->profile_count == 0 || policy->toolchain_count == 0
                ? CUP_ERR_INVALID_INPUT

@@ -6,22 +6,16 @@ kept consistent. Recovery after interrupted changes is described in
 
 ## Selecting the cup root
 
-The preferred root is:
+The default bases produce:
 
 ```text
-POSIX   ~/.cup
+POSIX   $HOME/.cup
 Windows %USERPROFILE%\.cup
 ```
 
-If that directory already belongs to another application, cup keeps it intact
-and tries:
-
-```text
-POSIX   ~/.coffee-cup
-Windows %USERPROFILE%\.coffee-cup
-```
-
-The chosen root contains `root.txt`:
+For any selected base, `.coffee-cup` is the deterministic fallback when `.cup` exists but
+is foreign. Both names are fixed product identities; selecting a base never permits an
+arbitrary root leaf. The chosen root contains `root.txt`:
 
 ```text
 format=1
@@ -29,16 +23,19 @@ product=coffee-clang/cup
 layout=1
 ```
 
-This file is the normal ownership marker. cup does not select the root from the
-executable path and does not support a `CUP_HOME` override.
+`root.txt` is the normal ownership marker. Once CUP is installed, the real executable path
+selects the current canonical root and the marker authenticates it. A complete `.cup` or
+`.coffee-cup` tree can therefore be relocated to another base without changing persistent
+state. CUP does not support a `CUP_HOME` override.
 
 ### Roots without `root.txt`
 
 A root without the ownership marker is not adopted from layout clues alone.
 Even when it contains a canonical cup executable, the directory is preserved and
-reported as an unmarked cup-like root. cup does not add `root.txt`, mutate that
-root or silently choose another root. Familiar names such as `state.txt` or
-`components/` alone are not ownership proof.
+reported as an unmarked cup-like root. cup does not add `root.txt` or mutate that
+directory. During fresh base selection a foreign `.cup` may cause the canonical
+`.coffee-cup` fallback to be selected; familiar names such as `state.txt` or `components/`
+alone are never ownership proof.
 
 ## Filesystem layout
 
@@ -110,9 +107,9 @@ Example:
 
 ```text
 format=1
-installed.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
-installed.compiler.linux-x64.windows-x64=gcc@16.1.0-rev1
-default.compiler.linux-x64.linux-x64=gcc@16.1.0-rev1
+installed.compiler.linux-x64.linux-x64=gcc@16.2.0-rev1
+installed.compiler.linux-x64.windows-x64=gcc@16.2.0-rev1
+default.compiler.linux-x64.linux-x64=gcc@16.2.0-rev1
 ```
 
 Only concrete versions are stored. `stable` is resolved before a state entry is

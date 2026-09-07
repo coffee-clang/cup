@@ -41,6 +41,10 @@ run_cup() {
     (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" "$@")
 }
 
+run_cup_with_managed_path() {
+    (cd "$DEV_ROOT" && HOME="$TEST_HOME" PATH="$TEST_HOME/.cup/bin:$PATH" "$CUP" "$@")
+}
+
 run_cup_expect_failure() (
     output_file=$1
     shift
@@ -63,7 +67,7 @@ run_cup_expect_status() (
 )
 
 assert_cup_healthy() (
-    cup_health_output=$(run_cup doctor 2>&1)
+    cup_health_output=$(run_cup_with_managed_path doctor 2>&1)
     assert_contains "$cup_health_output" 'Doctor found no issues.'
     assert_not_contains "$cup_health_output" 'Error:'
     assert_not_contains "$cup_health_output" 'Issue:'
@@ -135,6 +139,21 @@ EOF_PACKAGE_CATALOG
 }
 
 
+write_package_revision() {
+    tool=$1
+    version=$2
+
+    [ "$tool" = gcc ] || return 0
+    case "$version" in
+        *-rev*) revision=${version##*-rev} ;;
+        *) fail "invalid GCC fixture revision: $version" ;;
+    esac
+    case "$revision" in
+        ''|0*|*[!0-9]*) fail "invalid GCC fixture revision: $version" ;;
+    esac
+    printf 'package.revision=%s\n' "$revision"
+}
+
 make_package() {
     component=$1
     tool=$2
@@ -164,8 +183,21 @@ make_package_format() {
         printf 'package.component=%s\n' "$component"
         printf 'package.tool=%s\n' "$tool"
         printf 'package.version=%s\n' "$version"
+        write_package_revision "$tool" "$version"
+        printf 'package.mode=self-contained\n'
+        printf 'package.formats=tar.xz,tar.gz,zip\n'
         printf 'platform.host=%s\n' "$host"
         printf 'platform.target=%s\n' "$target"
+        printf 'platform.host_triple=%s-fixture\n' "$host"
+        printf 'platform.target_triple=%s-fixture\n' "$target"
+        printf 'platform.family=fixture\n'
+        printf 'platform.runtime=fixture\n'
+        printf 'platform.thread_model=fixture\n'
+        printf 'build.environment=test\n'
+        printf 'build.source_policy=fixture\n'
+        printf 'source.primary.name=%s\n' "$tool"
+        printf 'source.primary.version=%s\n' "$version"
+        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"
         done
@@ -213,8 +245,21 @@ make_installed_package() {
         printf 'package.component=%s\n' "$component"
         printf 'package.tool=%s\n' "$tool"
         printf 'package.version=%s\n' "$version"
+        write_package_revision "$tool" "$version"
+        printf 'package.mode=self-contained\n'
+        printf 'package.formats=tar.xz,tar.gz,zip\n'
         printf 'platform.host=%s\n' "$TEST_PLATFORM"
         printf 'platform.target=%s\n' "$target"
+        printf 'platform.host_triple=%s-fixture\n' "$TEST_PLATFORM"
+        printf 'platform.target_triple=%s-fixture\n' "$target"
+        printf 'platform.family=fixture\n'
+        printf 'platform.runtime=fixture\n'
+        printf 'platform.thread_model=fixture\n'
+        printf 'build.environment=test\n'
+        printf 'build.source_policy=fixture\n'
+        printf 'source.primary.name=%s\n' "$tool"
+        printf 'source.primary.version=%s\n' "$version"
+        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"
         done

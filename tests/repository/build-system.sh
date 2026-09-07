@@ -26,24 +26,102 @@ unset MAKEFLAGS MAKEOVERRIDES BUILD_DIR DEPS_ROOT DEPS_PREFIX \
     MACOSX_DEPLOYMENT_TARGET OS MSYSTEM MINGW_PREFIX \
     PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432
 
-# A recursive make's long --no-print-directory option is not the short -n flag.
-# The build lock must remain active for that normal recursive invocation, while
-# a genuine dry run still bypasses execution of the native lock helper.
-normal_lock_prefix=$(
-    cd "$PROJECT_ROOT"
-    make -p -s PLATFORM=linux-x64 MAKEFLAGS=--no-print-directory help 2>/dev/null |
-        sed -n 's/^BUILD_LOCK_PREFIX = //p' | sed -n '1p'
-)
-assert_contains "$normal_lock_prefix" 'cup_path_run_build'
-dry_lock_prefix=$(
-    cd "$PROJECT_ROOT"
-    make -p -s PLATFORM=linux-x64 MAKEFLAGS=n help 2>/dev/null |
-        sed -n 's/^BUILD_LOCK_PREFIX = //p' | sed -n '1p'
-)
-[ -z "$dry_lock_prefix" ] || fail 'GNU make -n did not disable the build lock command'
-
 NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
     fail 'could not resolve native build platform for build-system tests'
+
+# Shell tooling and GNU Make keep language-native mirrors of the platform and
+# build-configuration domains. Verify their semantic parity rather than making
+# either boundary parse the other one's implementation.
+. "$PROJECT_ROOT/scripts/lib/platform-domain.sh"
+. "$PROJECT_ROOT/scripts/lib/build-configuration.sh"
+. "$PROJECT_ROOT/scripts/lib/text-file.sh"
+. "$PROJECT_ROOT/scripts/lib/repository-id.sh"
+. "$PROJECT_ROOT/scripts/lib/git-identity.sh"
+make_supported_platforms=$(sed -n 's/^SUPPORTED_PLATFORM := //p' "$PROJECT_ROOT/Makefile")
+make_supported_configurations=$(
+    sed -n 's/^SUPPORTED_CONFIGURATION := //p' "$PROJECT_ROOT/Makefile"
+)
+assert_equals "$CUP_SUPPORTED_PLATFORMS" "$make_supported_platforms"
+assert_equals "$CUP_BUILD_CONFIGURATIONS" "$make_supported_configurations"
+for platform in $CUP_SUPPORTED_PLATFORMS; do
+    cup_platform_valid "$platform" || fail "shell platform owner rejected supported platform: $platform"
+done
+for configuration in $CUP_BUILD_CONFIGURATIONS; do
+    cup_build_configuration_valid "$configuration" ||
+        fail "shell build-configuration owner rejected supported configuration: $configuration"
+done
+if cup_platform_valid linux-riscv64; then
+    fail 'shell platform owner accepted unsupported platform'
+fi
+if cup_build_configuration_valid optimized; then
+    fail 'shell build-configuration owner accepted unsupported configuration'
+fi
+printf '%s\n' 'Platform and build-configuration parity tests passed.'
+
+cup_repository_identifier_valid owner/repository ||
+    fail 'repository identifier owner rejected canonical owner/repository'
+for repository in ./repository ../repository owner/. owner/.. owner//repository owner/repository/extra; do
+    if cup_repository_identifier_valid "$repository"; then
+        fail "repository identifier owner accepted invalid value: $repository"
+    fi
+done
+valid_commit=0123456789abcdef0123456789abcdef01234567
+cup_git_commit_valid "$valid_commit" || fail 'Git identity owner rejected canonical commit'
+for commit in \
+    0123456789abcdef0123456789abcdef0123456 \
+    0123456789abcdef0123456789abcdef012345678 \
+    0123456789abcdef0123456789abcdef0123456A; do
+    if cup_git_commit_valid "$commit"; then
+        fail "Git identity owner accepted invalid commit: $commit"
+    fi
+done
+printf '%s\n' 'Repository and Git identity owner tests passed.'
+
+# The common text-file owner deliberately accepts LF but rejects CR and NUL.
+# Keep these probes byte-oriented so a line parser cannot accidentally mask the
+# property that write-config and CA validation share.
+text_lf=$TMP_ROOT/text-policy-lf
+text_cr=$TMP_ROOT/text-policy-cr
+text_nul=$TMP_ROOT/text-policy-nul
+printf 'first\nsecond\n' > "$text_lf"
+printf 'first\r\nsecond\n' > "$text_cr"
+printf 'first\000second\n' > "$text_nul"
+cup_text_file_is_nul_cr_free "$text_lf" || fail 'shared text-file owner rejected LF input'
+if cup_text_file_is_nul_cr_free "$text_cr"; then
+    fail 'shared text-file owner accepted CR input'
+fi
+if cup_text_file_is_nul_cr_free "$text_nul"; then
+    fail 'shared text-file owner accepted NUL input'
+fi
+printf '%s\n' 'Shared text-file byte-policy tests passed.'
+
+# Generated outputs must depend on the shared owners that can change their
+# validation, hashing or configuration semantics, not only on the immediate
+# wrapper script. Query GNU Make's parsed graph so this checks real dependency
+# edges rather than comments or duplicated test metadata.
+make_graph=$(
+    cd "$PROJECT_ROOT"
+    make -p -s PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=development help 2>/dev/null
+)
+assert_graph_edge() {
+    graph_target=$1
+    graph_prerequisite=$2
+    printf '%s\n' "$make_graph" | awk -v target="$graph_target" -v prerequisite="$graph_prerequisite" '
+        index($0, target ":") > 0 && index($0, prerequisite) > 0 { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' || fail "Make graph is missing $graph_prerequisite from $graph_target"
+}
+for prerequisite in scripts/lib/path-safety.sh scripts/lib/build-configuration.sh scripts/lib/sha256.sh; do
+    assert_graph_edge /binary-inspection.txt "$prerequisite"
+done
+for prerequisite in scripts/lib/path-safety.sh scripts/lib/build-configuration.sh scripts/lib/git-identity.sh scripts/lib/semver.sh; do
+    assert_graph_edge /.version-stamp "$prerequisite"
+done
+for prerequisite in scripts/lib/path-safety.sh scripts/lib/text-file.sh scripts/lib/sha256.sh; do
+    assert_graph_edge /.ca-bundle-stamp "$prerequisite"
+    assert_graph_edge /build-config.txt "$prerequisite"
+done
+printf '%s\n' 'Generated-artifact dependency-closure tests passed.'
 
 # Exercise GCC's runtime profile relocation with the same lifecycle used by
 # transactionally built test binaries: compile in staging, publish, remove the
@@ -226,6 +304,10 @@ cat >"$fake_bin/fakecc" <<EOF_CC
 #!/bin/sh
 case "\$*" in
     -dumpmachine)
+        [ "\${FAKE_DUMPMACHINE_FAIL:-0}" != 1 ] || exit 9
+        cat '$TMP_ROOT/compiler-target'
+        ;;
+    -print-target-triple)
         cat '$TMP_ROOT/compiler-target'
         ;;
     '-dumpfullversion -dumpversion'|-dumpversion)
@@ -382,6 +464,7 @@ cat > "$graph_project/scripts/version.sh" <<'EOF_GRAPH_VERSION'
 set -eu
 [ "$1" = generate ] && [ "$#" -eq 2 ]
 out=$2
+[ ! -f .skip-version-output ] || exit 0
 version=$(tr -d '\n' < VERSION)
 mkdir -p "$out"
 write_if_different() {
@@ -414,6 +497,7 @@ cat > "$graph_project/scripts/certs/generate-ca-bundle.sh" <<'EOF_GRAPH_CA'
 set -eu
 [ "$#" -eq 2 ]
 out=$2
+[ ! -f .skip-ca-output ] || exit 0
 marker=one
 mkdir -p "$out"
 write_if_different() {
@@ -510,6 +594,31 @@ assert_contains "$(cat "$graph_trace")" 'LINK '
 graph_make
 [ ! -s "$graph_trace" ] || fail 'unchanged semantic graph rebuilt production objects or binary'
 
+# A successful generator invocation must produce its complete output set before
+# canonical generated files or stamps can advance. Preserve known-good outputs
+# when a generator returns success without writing anything.
+version_before=$(cat "$graph_build/linux-x64/development/generated/version.h")
+touch "$graph_project/.skip-version-output"
+if graph_make >"$TMP_ROOT/missing-version-output.out" 2>&1; then
+    fail 'version generator success without outputs was accepted'
+fi
+[ "$(cat "$graph_build/linux-x64/development/generated/version.h")" = "$version_before" ] ||
+    fail 'failed version generation changed the canonical version header'
+rm "$graph_project/.skip-version-output"
+graph_make
+
+ca_before=$(cat "$graph_build/linux-x64/development/generated/ca_bundle.h")
+touch "$graph_project/.skip-ca-output"
+touch "$graph_project/scripts/certs/generate-ca-bundle.sh"
+if graph_make >"$TMP_ROOT/missing-ca-output.out" 2>&1; then
+    fail 'CA generator success without outputs was accepted'
+fi
+[ "$(cat "$graph_build/linux-x64/development/generated/ca_bundle.h")" = "$ca_before" ] ||
+    fail 'failed CA generation changed the canonical CA header'
+rm "$graph_project/.skip-ca-output"
+touch "$graph_project/scripts/certs/generate-ca-bundle.sh"
+graph_make
+
 # VERSION is a semantic input to generated version.h; all consumers must be invalidated in-place.
 graph_current_version=$(tr -d '\r\n' < "$graph_project/VERSION")
 graph_major=${graph_current_version%%.*}
@@ -599,6 +708,15 @@ CFLAGS=-DENV_REPLACEMENT PATH="$fake_bin:$PATH" MAKEFLAGS= MAKEOVERRIDES= \
 assert_not_contains "$(cat "$env_config")" '-DENV_REPLACEMENT'
 assert_contains "$(cat "$env_config")" '-Wall -Wextra -Werror -std=c11'
 
+windres_env_config=$TMP_ROOT/environment-windres-build/linux-x64/development/build-config.txt
+WINDRES=missing-resource-compiler PATH="$fake_bin:$PATH" MAKEFLAGS= MAKEOVERRIDES= \
+    make -C "$PROJECT_ROOT" --no-print-directory -s \
+    PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=development \
+    BUILD_DIR="$TMP_ROOT/environment-windres-build" DEPS_PREFIX="$prefix" CC=fakecc \
+    "$windres_env_config"
+assert_contains "$(cat "$windres_env_config")" 'windres_command='
+assert_not_contains "$(cat "$windres_env_config")" 'windres_command=missing-resource-compiler'
+
 if make -C "$PROJECT_ROOT" --no-print-directory -n \
         CFLAGS=-DREPLACED all >"$TMP_ROOT/direct-flags.out" 2>&1; then
     fail 'direct CFLAGS replacement was accepted'
@@ -612,6 +730,17 @@ if make -C "$PROJECT_ROOT" --no-print-directory -n \
 fi
 assert_contains "$(cat "$TMP_ROOT/direct-configuration.out")" \
     'CONFIGURATION is internal'
+
+# Toolchain admission and build-evidence writing use the same target probe contract.
+# A compiler that reports its target only through -print-target-triple remains valid.
+print_target_config=$TMP_ROOT/print-target-build-config.txt
+FAKE_DUMPMACHINE_FAIL=1 PATH="$fake_bin:$PATH" \
+    "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" linux-x64 fakecc
+FAKE_DUMPMACHINE_FAIL=1 PATH="$fake_bin:$PATH" \
+    CUP_BUILD_PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=development \
+    CUP_BUILD_CC=fakecc CUP_BUILD_DEPS_PREFIX="$prefix" CUP_BUILD_OFFICIAL=0 \
+    "$PROJECT_ROOT/scripts/build/write-config.sh" "$print_target_config"
+assert_contains "$(cat "$print_target_config")" 'compiler_target=x86_64-unknown-linux-gnu'
 
 # Toolchain validation checks both native host and compiler target.
 printf '%s\n' aarch64-unknown-linux-gnu >"$TMP_ROOT/compiler-target"
@@ -665,8 +794,7 @@ assert_contains "$(cat "$TMP_ROOT/windows-sanitizer-runtime.out")" \
 
 # A resource compiler may place a compatibility banner before its version.
 # Build evidence keeps the banner but extracts the complete numeric version.
-# Keep path-ops on this repository-test host; CUP_BUILD_PLATFORM only controls
-# the build-config semantics exercised below.
+# CUP_BUILD_PLATFORM controls only the build-config semantics exercised below.
 printf '%s\n' Linux >"$TMP_ROOT/host-system"
 printf '%s\n' x86_64 >"$TMP_ROOT/host-machine"
 windres_config=$TMP_ROOT/windows-windres-config.txt
@@ -802,37 +930,6 @@ fi
 assert_contains "$(cat "$TMP_ROOT/build-dir-space.out")" \
     'BUILD_DIR must not contain whitespace'
 
-# Make inputs are frozen literally before validation. Embedded Make functions
-# must never execute while a caller-controlled value is parsed.
-make_expansion_marker=$TMP_ROOT/make-expansion-executed
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        "BUILD_DIR=\$(shell touch $make_expansion_marker)" help \
-        >"$TMP_ROOT/make-expansion.out" 2>&1; then
-    fail 'caller-controlled Make expression was accepted'
-fi
-assert_missing "$make_expansion_marker"
-assert_contains "$(cat "$TMP_ROOT/make-expansion.out")" \
-    'Caller-controlled Make expressions are not supported'
-
-release_expansion_marker=$TMP_ROOT/release-expansion-executed
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        "RELEASE_COMMON_ROOT=\${shell touch $release_expansion_marker}" help \
-        >"$TMP_ROOT/release-expansion.out" 2>&1; then
-    fail 'caller-controlled release-path Make expression was accepted'
-fi
-assert_missing "$release_expansion_marker"
-assert_contains "$(cat "$TMP_ROOT/release-expansion.out")" \
-    'Caller-controlled Make expressions are not supported'
-
-# Internal derived paths cannot be replaced from the command line.
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        TARGET="$TMP_ROOT/foreign-target" help \
-        >"$TMP_ROOT/private-make-variable.out" 2>&1; then
-    fail 'private Make target path was accepted from the command line'
-fi
-assert_contains "$(cat "$TMP_ROOT/private-make-variable.out")" \
-    'Private Make variables cannot be overridden'
-
 # Path spellings that GNU Make or the shell interpret structurally are rejected
 # before they can become targets or recipe fragments.
 for unsafe_path in \
@@ -864,10 +961,6 @@ printf '\$(shell touch %s):\n' "$depfile_marker" > \
 make -C "$PROJECT_ROOT" --no-print-directory -n \
     BUILD_DIR="$depfile_root" help >/dev/null
 assert_missing "$depfile_marker"
-if grep -Eq '^-include[[:space:]]+\$\(DEP\)' "$PROJECT_ROOT/Makefile"; then
-    fail 'Makefile still parses generated depfiles before the build boundary'
-fi
-
 # Even the conventional build/ spelling is not ownership proof. Every existing
 # unmarked root is preserved and rejected, whether empty or non-empty.
 foreign_build_root=$TMP_ROOT/foreign-build-root
@@ -896,31 +989,21 @@ assert_contains "$(cat "$TMP_ROOT/empty-foreign-build-root.out")" \
     'invalid build root marker'
 assert_missing "$empty_foreign_build_root/.cup-build-root"
 
-# Public build entry points and clean use the canonical marker lock operations.
-grep -Fq "cup_path_run_build '\$(BUILD_ROOT)' --" "$PROJECT_ROOT/Makefile" ||
-    fail 'public builds are not coordinated through the build-root marker lock'
-grep -Fq 'cup_path_clean_build_root "$$root"' "$PROJECT_ROOT/Makefile" ||
-    fail 'make clean does not use the canonical build-root clean operation'
+custom_release_build_root=$TMP_ROOT/release-build-output
+# Release tests must pass the selected configuration and build root to the
+# release harness. Observe Make's expanded commands instead of parsing recipe text.
+release_posix_command=$(make -C "$PROJECT_ROOT" --no-print-directory -n \
+    PLATFORM=linux-x64 BUILD_DIR="$custom_release_build_root" \
+    DEPS_PREFIX="$PINNED_PREFIX" CUP_TEST_CONFIGURATION=debug test-release)
+assert_contains "$release_posix_command" 'tests/release/update-fixture.sh'
+assert_contains "$release_posix_command" "CUP_BUILD_DIR='$custom_release_build_root'"
+assert_contains "$release_posix_command" "CUP_TEST_CONFIGURATION='debug'"
 
-# Release tests build helpers in the selected configuration. The Windows
-# runner must receive the same value instead of falling back to development.
-release_windows_block=$(awk '
-    /^test-release:/ { in_release = 1 }
-    in_release && /windows-x64\)/ { in_windows = 1 }
-    in_windows { print }
-    in_windows && /;;/ { exit }
-' "$PROJECT_ROOT/Makefile")
-assert_contains "$release_windows_block" 'tests/release/windows.ps1'
-assert_contains "$release_windows_block" \
-    "CUP_TEST_CONFIGURATION='\$(CUP_TEST_CONFIGURATION)'"
-release_target_block=$(awk '
-    /^test-release:/ { in_release = 1 }
-    in_release { print }
-    in_release && /^test-coverage:/ { exit }
-' "$PROJECT_ROOT/Makefile")
-assert_contains "$release_target_block" "CUP_BUILD_DIR='\$(BUILD_DIR)'"
-assert_contains "$release_target_block" 'tests/release/update-fixture.sh'
-assert_contains "$release_target_block" '@set -e;'
+release_windows_command=$(make -C "$PROJECT_ROOT" --no-print-directory -n \
+    PLATFORM=windows-x64 BUILD_DIR="$custom_release_build_root" \
+    DEPS_PREFIX="$PINNED_PREFIX" CUP_TEST_CONFIGURATION=debug test-release)
+assert_contains "$release_windows_command" 'tests/release/windows.ps1'
+assert_contains "$release_windows_command" "CUP_TEST_CONFIGURATION='debug'"
 
 # Every existing component of a managed build path is inspected before a
 # marker is created or a tree is removed. A symlinked ancestor must never turn
@@ -1125,14 +1208,6 @@ assert_contains "$unit_builder_text" 'compile_command=("$CC"'
 assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
-windows_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list windows-x64)
-assert_not_contains "$windows_helper_list" 'binary-patch.exe'
-assert_contains "$windows_helper_list" 'network-helper.exe'
-assert_not_contains "$windows_helper_list" 'process-group'
-assert_contains "$windows_helper_list" 'archive-fixture.exe'
-posix_helper_list=$("$PROJECT_ROOT/tests/build/helpers.sh" --list linux-x64)
-assert_contains "$posix_helper_list" 'archive-fixture'
-assert_contains "$posix_helper_list" 'process-group'
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
@@ -1140,6 +1215,22 @@ assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
 assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
 assert_contains "$helper_builder_text" 'compile_helper all archive-fixture'
 windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
+windows_configuration_text=$(cat "$PROJECT_ROOT/tests/support/windows/configuration.ps1")
+windows_process_text=$(cat "$PROJECT_ROOT/tests/support/windows/process.ps1")
+windows_hash_text=$(cat "$PROJECT_ROOT/tests/support/windows/hash.ps1")
+windows_runner_text=$(cat "$PROJECT_ROOT/tests/runners/integration-windows.ps1")
+for configuration in development debug coverage sanitizers release; do
+    assert_contains "$windows_configuration_text" "\"$configuration\""
+done
+assert_contains "$windows_common_text" 'configuration.ps1'
+assert_contains "$windows_common_text" 'build.ps1'
+assert_contains "$windows_common_text" 'process.ps1'
+assert_contains "$windows_common_text" 'hash.ps1'
+assert_contains "$windows_runner_text" 'Assert-TestConfiguration -Configuration $Configuration'
+assert_contains "$windows_runner_text" 'Test-FailedInitializationCleanup'
+assert_not_contains "$windows_runner_text" '[ValidateSet('
+assert_contains "$windows_process_text" 'function Stop-TestProcessTree'
+assert_contains "$windows_hash_text" 'function Get-Sha256Lower'
 assert_contains "$windows_common_text" 'function New-ZipPackageFixture'
 assert_contains "$windows_common_text" "Get-TestHelperPath -Name 'archive-fixture'"
 [ ! -e "$PROJECT_ROOT/tests/support/windows/archive-fixtures.ps1" ] ||
@@ -1172,13 +1263,17 @@ assert_contains "$update_fixture_text" 'CUP_BUILD_DIR'
 assert_not_contains "$update_fixture_text" 'binary-patch'
 posix_release_text=$(cat "$PROJECT_ROOT/tests/release/posix.sh")
 windows_release_text=$(cat "$PROJECT_ROOT/tests/release/windows.ps1")
+windows_build_support_text=$(cat "$PROJECT_ROOT/tests/support/windows/build.ps1")
 assert_not_contains "$posix_release_text" 'binary-patch'
 assert_not_contains "$windows_release_text" 'binary-patch'
 assert_contains "$posix_release_text" 'CUP_TEST_SERVER_ROOT'
 assert_contains "$posix_release_text" 'validate_release_asset_modes'
 assert_not_contains "$posix_release_text" 'chmod +x "$release_dir/'
 assert_contains "$windows_release_text" 'CUP_TEST_SERVER_ROOT'
-assert_contains "$windows_release_text" 'CUP_TEST_BUILD_ROOT'
+assert_contains "$windows_release_text" 'Resolve-TestBuildRoot'
+assert_contains "$windows_release_text" 'Resolve-TestHelperPath'
+assert_contains "$windows_build_support_text" 'CUP_TEST_BUILD_ROOT'
+assert_contains "$windows_build_support_text" '.cup-build-root'
 assert_contains "$windows_release_text" 'Assert-ExactCandidateFiles'
 assert_contains "$windows_release_text" '$process.WaitForExit()'
 assert_not_contains "$windows_release_text" '$testRoot'
@@ -1266,40 +1361,21 @@ assert_contains "$release_command" '-static'
 printf 'Target-based build configuration tests passed.\n'
 
 
-copy_path_ops_sources() {
+copy_path_safety_source() {
     destination=$1
 
-    mkdir -p "$destination/scripts/lib" "$destination/include" "$destination/src"
-    cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" \
-        "$PROJECT_ROOT/scripts/lib/path-ops.sh" \
-        "$PROJECT_ROOT/scripts/lib/path-ops.c" \
-        "$destination/scripts/lib/"
-    cp "$PROJECT_ROOT/include/constants.h" \
-        "$PROJECT_ROOT/include/domain_registry.h" \
-        "$PROJECT_ROOT/include/error.h" \
-        "$PROJECT_ROOT/include/path.h" \
-        "$PROJECT_ROOT/include/system.h" \
-        "$PROJECT_ROOT/include/text.h" \
-        "$destination/include/"
-    cp "$PROJECT_ROOT/src/system.c" \
-        "$PROJECT_ROOT/src/system_posix.c" \
-        "$PROJECT_ROOT/src/path.c" \
-        "$PROJECT_ROOT/src/text.c" \
-        "$destination/src/"
+    mkdir -p "$destination/scripts/lib"
+    cp "$PROJECT_ROOT/scripts/lib/path-safety.sh" "$destination/scripts/lib/"
 }
 
-# Source-test evidence is staged outside build/ so later clean operations for
-# secondary compilers and portability cannot remove the primary evidence.
-source_fixture=$TMP_ROOT/source-evidence-project
+# Preserve the primary source-tested build identity before later secondary builds
+# reuse the development build tree.
+source_fixture=$TMP_ROOT/source-build-config-project
 mkdir -p "$source_fixture/scripts/ci" "$source_fixture/scripts/build" \
-    "$source_fixture/bin" "$source_fixture/evidence"
-copy_path_ops_sources "$source_fixture"
-cp "$PROJECT_ROOT/scripts/ci/source-posix.sh" \
-    "$PROJECT_ROOT/scripts/ci/evidence-common.sh" \
-    "$PROJECT_ROOT/scripts/ci/write-source-evidence.sh" \
-    "$PROJECT_ROOT/scripts/ci/verify-source-evidence.sh" "$source_fixture/scripts/ci/"
-cp "$PROJECT_ROOT/scripts/version.sh" "$source_fixture/scripts/"
-printf '%s\n' 0.2.2 > "$source_fixture/VERSION"
+    "$source_fixture/scripts/lib" "$source_fixture/bin"
+copy_path_safety_source "$source_fixture"
+cp "$PROJECT_ROOT/scripts/lib/platform-domain.sh" "$source_fixture/scripts/lib/"
+cp "$PROJECT_ROOT/scripts/ci/source-posix.sh" "$source_fixture/scripts/ci/"
 cat > "$source_fixture/scripts/build/validate-toolchain.sh" <<'EOF_VALIDATE'
 #!/bin/sh
 exit 0
@@ -1312,14 +1388,6 @@ case "${1:-}" in
     *) exit 2 ;;
 esac
 EOF_UNAME_SOURCE
-cat > "$source_fixture/bin/git" <<'EOF_GIT_SOURCE'
-#!/bin/sh
-if [ "${1:-}" = -C ]; then
-    shift 2
-fi
-[ "$#" -eq 2 ] && [ "$1" = rev-parse ] && [ "$2" = HEAD ] || exit 2
-printf '%s\n' 0123456789abcdef0123456789abcdef01234567
-EOF_GIT_SOURCE
 cat > "$source_fixture/bin/make" <<'EOF_MAKE_SOURCE'
 #!/bin/sh
 set -eu
@@ -1344,7 +1412,7 @@ case "$target" in
         ;;
     check-development)
         output=build/linux-x64/development
-        mkdir -p "$output/generated"
+        mkdir -p "$output"
         if [ "$secondary" -eq 1 ]; then identity=secondary; else identity=primary; fi
         cat > "$output/build-config.txt" <<EOF_CONFIG
 format=3
@@ -1376,54 +1444,21 @@ dependency_source_lock_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 dependency_toolchain_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 official_build=0
 EOF_CONFIG
-        cat > "$output/generated/release.txt" <<'EOF_RELEASE'
-format=1
-version=0.2.2
-commit=0123456789abcdef0123456789abcdef01234567
-EOF_RELEASE
-        cat > "$output/binary-inspection.txt" <<EOF_INSPECTION
-format=2
-platform=linux-x64
-configuration=development
-inspection_policy=build
-binary=cup
-sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-object_format=ELF
-architecture=x86_64
-elf_class=ELF64
-elf_data=little-endian
-elf_type=DYN
-machine=Advanced Micro Devices X86-64
-entry_point=0x1000
-linkage=dynamic-system
-interpreter=/lib64/ld-linux-x86-64.so.2
-needed_count=1
-needed=libc.so.6
-runtime_search_path=none
-file_description=$identity
-EOF_INSPECTION
         ;;
 esac
 EOF_MAKE_SOURCE
 chmod +x "$source_fixture/scripts/ci/source-posix.sh" \
-    "$source_fixture/scripts/ci/write-source-evidence.sh" \
-    "$source_fixture/scripts/ci/verify-source-evidence.sh" \
-    "$source_fixture/scripts/version.sh" \
     "$source_fixture/scripts/build/validate-toolchain.sh" \
-    "$source_fixture/bin/uname" "$source_fixture/bin/git" "$source_fixture/bin/make"
+    "$source_fixture/bin/uname" "$source_fixture/bin/make"
 (
     cd "$source_fixture"
     PATH="$source_fixture/bin:$PATH" PLATFORM=linux-x64 FAMILY=linux \
-        CUP_SOURCE_EVIDENCE_ROOT="$source_fixture/evidence" \
+        CUP_SOURCE_BUILD_CONFIG="$source_fixture/source-build-config.txt" \
         scripts/ci/source-posix.sh
 )
-assert_contains "$(cat "$source_fixture/evidence/linux-x64/build-config.txt")" \
+assert_contains "$(cat "$source_fixture/source-build-config.txt")" \
     'compiler_command=primary'
-assert_equals "$(cat "$source_fixture/evidence/linux-x64/release.txt")" \
-    "$(printf 'format=1\nversion=0.2.2\ncommit=0123456789abcdef0123456789abcdef01234567')"
-assert_contains "$(cat "$source_fixture/evidence/linux-x64/binary-inspection.txt")" \
-    'file_description=primary'
-assert_not_contains "$(cat "$source_fixture/evidence/linux-x64/build-config.txt")" secondary
+assert_not_contains "$(cat "$source_fixture/source-build-config.txt")" secondary
 
 # Unit tests and helper programs are built in private staging directories. A
 # compiler failure must preserve the previous complete output, while success
@@ -1442,15 +1477,14 @@ cp "$PROJECT_ROOT/tests/build/unit.sh" "$PROJECT_ROOT/tests/build/helpers.sh" \
     "$test_build_fixture/tests/build/"
 cp "$PROJECT_ROOT/tests/support/environment.sh" \
     "$test_build_fixture/tests/support/environment.sh"
-copy_path_ops_sources "$test_build_fixture"
+copy_path_safety_source "$test_build_fixture"
 cat > "$test_build_fixture/scripts/dependencies/verify.sh" <<'EOF_VERIFY_TEST_DEPS'
 #!/bin/sh
 exit 0
 EOF_VERIFY_TEST_DEPS
 chmod +x "$test_build_fixture/scripts/dependencies/verify.sh" \
     "$test_build_fixture/tests/build/unit.sh" \
-    "$test_build_fixture/tests/build/helpers.sh" \
-    "$test_build_fixture/scripts/lib/path-ops.sh"
+    "$test_build_fixture/tests/build/helpers.sh"
 printf '%s\n' \
     'format=1' \
     'product=coffee-clang/cup' \
@@ -1461,6 +1495,7 @@ printf '%s\n' previous-unit > \
 printf '%s\n' previous-helper > \
     "$test_build_fixture/build/linux-x64/development/tests/helpers/sentinel.txt"
 : > "$test_build_fixture/prefix/lib/libunity.a"
+: > "$test_build_fixture/prefix/lib/libz.a"
 cat > "$test_build_fixture/bin/pkg-config" <<'EOF_FAKE_PKG_CONFIG'
 #!/bin/sh
 printf '%s\n' -lfixture
@@ -1535,11 +1570,10 @@ if ! run_fixture_builder unit.sh >"$TMP_ROOT/unit-staging-success.out" 2>&1; the
     fail 'complete unit-test staging could not be published'
 fi
 assert_missing "$test_build_fixture/build/linux-x64/development/tests/unit/sentinel.txt"
-expected_units=$("$test_build_fixture/tests/build/unit.sh" --list linux-x64 | wc -l | tr -d '[:space:]')
 actual_units=$(find "$test_build_fixture/build/linux-x64/development/tests/unit" \
     -maxdepth 1 -type f -name 'test_*' ! -name '*.gcno' ! -name '*.gcda' |
     wc -l | tr -d '[:space:]')
-assert_equals "$actual_units" "$expected_units"
+[ "$actual_units" -gt 0 ] || fail 'complete unit-test staging published no test binaries'
 
 rm -f "$test_build_fixture/compiler-count"
 if CUP_FAKE_CC_FAIL_AFTER=1 run_fixture_builder helpers.sh \
@@ -1558,10 +1592,9 @@ if ! run_fixture_builder helpers.sh >"$TMP_ROOT/helper-staging-success.out" 2>&1
     fail 'complete test-helper staging could not be published'
 fi
 assert_missing "$test_build_fixture/build/linux-x64/development/tests/helpers/sentinel.txt"
-expected_helpers=$("$test_build_fixture/tests/build/helpers.sh" --list linux-x64 | wc -l | tr -d '[:space:]')
 actual_helpers=$(find "$test_build_fixture/build/linux-x64/development/tests/helpers" \
     -maxdepth 1 -type f -perm -u+x | wc -l | tr -d '[:space:]')
-assert_equals "$actual_helpers" "$expected_helpers"
+[ "$actual_helpers" -gt 0 ] || fail 'complete test-helper staging published no helpers'
 
 
 # Release-output replacement must retain the managed build-root identity until

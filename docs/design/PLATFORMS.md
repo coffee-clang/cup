@@ -47,17 +47,19 @@ adopted automatically.
 
 ## User roots
 
+Default roots are:
+
 ```text
 POSIX   $HOME/.cup
 Windows %USERPROFILE%\.cup
 ```
 
-The fallback is `.coffee-cup` on the same home directory.
-
-POSIX uses `HOME`. Its value must already be a clean, non-root absolute path.
-cup does not turn `.`/`..`, repeated or trailing separators, or backslashes into
-a different managed root. Windows uses `USERPROFILE`. The program does not infer
-the root from the executable path and does not support an environment override.
+An installer may select another existing user-manageable base. The leaf remains `.cup`, or
+`.coffee-cup` when the primary leaf is foreign. Installed CUP derives that canonical root
+from its own real executable path and authenticates `root.txt`; no `CUP_HOME` override is
+supported. A location outside the default home/profile is not intrinsically privileged, but
+CUP never elevates when the current user lacks a filesystem capability required by an
+operation.
 
 ## Executable and helper names
 
@@ -187,11 +189,17 @@ expectations only where Git/MSYS needs them for repository scripts.
 
 ## Links, reparse points and archive paths
 
-Managed trees do not accept symbolic links, junctions or other reparse points as
-normal package content.
+CUP control trees such as state, staging control data and runtime metadata do not
+use symbolic links, junctions or other reparse points as structural shortcuts.
+Windows package content follows the same no-reparse rule.
 
-Archive entries must be regular files or directories. Hard links, symbolic
-links, device files, FIFOs and sockets are rejected.
+POSIX package archives may contain relative symbolic links. Their targets must not be
+absolute or lexically escape the package, and a link may not act as the parent of a later
+archive write. CUP does not otherwise own producer link topology: dangling links, cycles and
+links to non-regular internal objects are not rejected merely for that topology. Declared
+`entry.*` paths are still resolved physically beneath the package and must end at executable
+regular files. Raw hard-link entries, device files, FIFOs and sockets remain rejected; the
+producer normalizes hard links to independent regular files.
 
 When an operation enumerates a directory, the observed child identity is passed
 to later copy or removal work. The later operation checks that it opened the
@@ -199,12 +207,15 @@ same object instead of trusting that the pathname still refers to it.
 
 ## Filesystem boundaries
 
-Recursive removal and repository helper operations record the starting device or
-volume. They refuse to cross into another mounted filesystem or reparse target.
+Native recursive removal records the starting device or volume and refuses to
+cross into another mounted filesystem or reparse target. This rule protects
+runtime cleanup of owned CUP trees from continuing into a separately mounted or
+reparsed object that happens to appear below them.
 
-This rule is important for cleanup commands: removing an owned build or staging
-directory must not continue into a separately mounted tree that happens to be
-inside it.
+Repository build/dependency cleanup has a separate, simpler shell path-safety
+contract based on canonical paths, ownership markers, containment and rejection
+of evident symbolic-link components; it does not claim the native recursive
+filesystem-boundary model.
 
 ## Locks, handoff and atomic replacement
 
@@ -214,9 +225,10 @@ unlocked interval, so the system layer also provides a temporary `SystemHandoff`
 
 On POSIX, parent and child retain references to the same `flock` open-file
 description across `fork`/`exec`. On Windows, where `LockFileEx` ownership cannot
-be transferred to another process, a named per-user kernel object outside the
-managed root bridges the transition. Root admission checks that Windows handoff
-before inspecting a root and again after acquiring `cup.lock`.
+be transferred to another process, a named kernel object keyed by the root-parent
+filesystem identity and canonical root slot bridges the transition. Root admission
+checks that no Windows handoff authority is active before inspecting a root and
+again after acquiring `cup.lock`.
 
 For self-update, the child returns from handoff authority to the canonical lock
 before changing update state. For uninstall, the child keeps handoff authority
@@ -359,7 +371,8 @@ runners remain the final test for native APIs and shell behavior.
 
 - Windows ARM64 is not supported.
 - cup does not install a system compiler or runtime outside its own root.
-- The user must configure PATH manually.
+- PATH is optional for correctness; interactive installers may offer user-level
+  PATH integration, while relocation and uninstall do not rewrite it automatically.
 - Windows directory flushing may provide weaker confirmation than POSIX
   directory `fsync` on filesystems that reject `FlushFileBuffers` for a
   directory handle.

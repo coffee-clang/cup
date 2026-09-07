@@ -14,9 +14,7 @@ SHA=0123456789abcdef0123456789abcdef01234567
 PUBLIC_SHA=89abcdef0123456789abcdef0123456789abcdef
 TESTS_RUN_ID=31
 TESTS_RUN_ATTEMPT=2
-TESTS_INDEX_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 RELEASE_RUN_ID=41
-RELEASE_RUN_ATTEMPT=3
 DIST=$TMP_ROOT/dist
 MOCK_BIN=$TMP_ROOT/bin
 MOCK_STATE=$TMP_ROOT/state
@@ -40,15 +38,13 @@ write_candidate() {
     printf 'install configuration\n' > "$DIST/install.cfg"
     printf 'format=1\nversion=%s\ncommit=%s\n' "$VERSION" "$SHA" > "$DIST/release.txt"
     cat > "$DIST/provenance.txt" <<EOF_PROVENANCE
-format=3
+format=4
 version=$VERSION
 source_repository=example/cup-source
 source_commit=$SHA
 tests_run_id=$TESTS_RUN_ID
 tests_run_attempt=$TESTS_RUN_ATTEMPT
-tests_evidence_index_sha256=$TESTS_INDEX_SHA
 release_run_id=$RELEASE_RUN_ID
-release_run_attempt=$RELEASE_RUN_ATTEMPT
 EOF_PROVENANCE
     printf 'third-party licenses\n' > "$DIST/THIRD_PARTY_NOTICES.txt"
     printf 'CUP_RELEASE_VERSION="%s"\nCUP_RELEASE_TAG="%s"\nCUP_RELEASE_COMMIT="%s"\n' \
@@ -275,8 +271,7 @@ run_publish() {
         RELEASE_TARGET=public-main TAG="$TAG" VERSION="$VERSION" SHA="$SHA" \
         SOURCE_REPOSITORY=example/cup-source TESTS_RUN_ID="$TESTS_RUN_ID" \
         TESTS_RUN_ATTEMPT="$TESTS_RUN_ATTEMPT" \
-        TESTS_EVIDENCE_INDEX_SHA256="$TESTS_INDEX_SHA" \
-        RELEASE_RUN_ID="$RELEASE_RUN_ID" RELEASE_RUN_ATTEMPT="$RELEASE_RUN_ATTEMPT" \
+        RELEASE_RUN_ID="$RELEASE_RUN_ID" \
         GH_TOKEN=test GH_REPO=example/cup-public \
         MUTATE_CANDIDATE_ON_FIRST_API="${MUTATE_CANDIDATE_ON_FIRST_API:-0}" \
         CONCURRENT_ON_SECOND_RELEASE_QUERY="${CONCURRENT_ON_SECOND_RELEASE_QUERY:-0}" \
@@ -333,7 +328,7 @@ fi
 
 # MSYS2 synthesizes executable mode bits for .exe files even when the canonical
 # transported mode is 0644. Validate the release-mode policy directly so the
-# fixture does not change the path-ops platform backend selected by uname.
+# fixture does not change the host platform selected by uname.
 mode_bin=$TMP_ROOT/mode-bin
 mode_fixture=$TMP_ROOT/mode-fixture
 mkdir -p "$mode_bin" "$mode_fixture"
@@ -360,9 +355,14 @@ assert_contains "$(cat "$TMP_ROOT/msys-bad.out")" \
 [ "$(stat -c '%a' "$assembled/cup-windows-x64.exe")" = 644 ] ||
     fail 'MSYS2 mode tolerance changed the canonical Windows executable mode'
 
+# Provenance is stable across retries of the same release run; attempt identity is not public.
+if grep -q '^release_run_attempt=' "$DIST/provenance.txt"; then
+    fail 'release provenance unexpectedly includes retry-specific release_run_attempt'
+fi
+
 # Invalid provenance fails before any GitHub operation.
 cp "$DIST/provenance.txt" "$TMP_ROOT/provenance.valid"
-printf 'release_run_attempt=%s\n' "$RELEASE_RUN_ATTEMPT" >> "$DIST/provenance.txt"
+printf 'release_run_id=%s\n' "$RELEASE_RUN_ID" >> "$DIST/provenance.txt"
 if run_publish > "$TMP_ROOT/provenance.out" 2>&1; then
     fail 'duplicate provenance unexpectedly passed validation'
 fi

@@ -16,15 +16,9 @@ validate_release_inputs
 : "${SOURCE_REPOSITORY:?SOURCE_REPOSITORY is required}"
 : "${TESTS_RUN_ID:?TESTS_RUN_ID is required}"
 : "${TESTS_RUN_ATTEMPT:?TESTS_RUN_ATTEMPT is required}"
-: "${TESTS_EVIDENCE_INDEX_SHA256:?TESTS_EVIDENCE_INDEX_SHA256 is required}"
 : "${RELEASE_RUN_ID:?RELEASE_RUN_ID is required}"
-: "${RELEASE_RUN_ATTEMPT:?RELEASE_RUN_ATTEMPT is required}"
-validate_repository_identifier "$SOURCE_REPOSITORY" SOURCE_REPOSITORY
-for value in "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"; do
-    printf '%s\n' "$value" | grep -Eq '^[1-9][0-9]*$' || fail 'invalid provenance run identity'
-done
-printf '%s\n' "$TESTS_EVIDENCE_INDEX_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
-    fail 'invalid TESTS_EVIDENCE_INDEX_SHA256'
+validate_release_provenance_inputs "$SOURCE_REPOSITORY" \
+    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID"
 
 BUILD_ROOT=${CUP_BUILD_ROOT:-$PROJECT_ROOT/build}
 OUTPUT=${1:-$BUILD_ROOT/release/common}
@@ -55,34 +49,27 @@ cup_path_copy_file \
     "$PUBLIC/THIRD_PARTY_NOTICES.txt" 0644 replace
 prepare_installer "$PROJECT_ROOT/scripts/install/install.sh" "$PUBLIC/install.sh" 0755
 prepare_installer "$PROJECT_ROOT/scripts/install/install.ps1" "$PUBLIC/install.ps1" 0644
-chmod 0755 "$PUBLIC/install.sh"
-chmod 0644 "$PUBLIC/packages.cfg" "$PUBLIC/install.cfg" "$PUBLIC/release.txt" \
-    "$PUBLIC/THIRD_PARTY_NOTICES.txt" "$PUBLIC/install.ps1"
 
 cat <<PROVENANCE | cup_path_write_file "$PUBLIC/provenance.txt" 0644 replace
-format=3
+format=4
 version=$VERSION
 source_repository=$SOURCE_REPOSITORY
 source_commit=$SHA
 tests_run_id=$TESTS_RUN_ID
 tests_run_attempt=$TESTS_RUN_ATTEMPT
-tests_evidence_index_sha256=$TESTS_EVIDENCE_INDEX_SHA256
 release_run_id=$RELEASE_RUN_ID
-release_run_attempt=$RELEASE_RUN_ATTEMPT
 PROVENANCE
-chmod 0644 "$PUBLIC/provenance.txt"
 
 {
-    for asset in packages.cfg install.cfg install.sh install.ps1; do
+    for asset in $(release_common_checksum_assets); do
         printf '%s  %s\n' "$(hash_file "$PUBLIC/$asset")" "$asset"
     done
-} > "$PUBLIC/SHA256SUMS.common"
-chmod 0644 "$PUBLIC/SHA256SUMS.common"
+} | cup_path_write_file "$PUBLIC/SHA256SUMS.common" 0644 replace
 
 validate_provenance_file "$PUBLIC/provenance.txt" "$SOURCE_REPOSITORY" \
-    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$TESTS_EVIDENCE_INDEX_SHA256" \
-    "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"
-verify_checksum_file_exact "$PUBLIC" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
+    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID"
+# shellcheck disable=SC2086
+verify_checksum_file_exact "$PUBLIC" SHA256SUMS.common $(release_common_checksum_assets)
 grep -F "CUP_RELEASE_VERSION=\"$VERSION\"" "$PUBLIC/install.sh" >/dev/null
 grep -F "CUP_RELEASE_TAG=\"$TAG\"" "$PUBLIC/install.sh" >/dev/null
 grep -F "CUP_RELEASE_COMMIT=\"$SHA\"" "$PUBLIC/install.sh" >/dev/null
@@ -90,9 +77,8 @@ grep -F "\$ReleaseVersion = \"$VERSION\"" "$PUBLIC/install.ps1" >/dev/null
 grep -F "\$ReleaseTag = \"$TAG\"" "$PUBLIC/install.ps1" >/dev/null
 grep -F "\$ReleaseCommit = \"$SHA\"" "$PUBLIC/install.ps1" >/dev/null
 ! grep -E '@CUP_RELEASE_(VERSION|TAG|COMMIT)@' "$PUBLIC/install.sh" "$PUBLIC/install.ps1" >/dev/null
-validate_exact_directory_files "$PUBLIC" \
-    THIRD_PARTY_NOTICES.txt SHA256SUMS.common install.cfg install.ps1 install.sh \
-    packages.cfg provenance.txt release.txt
+# shellcheck disable=SC2086
+validate_exact_directory_files "$PUBLIC" $(release_common_public_assets)
 
 cup_path_remove_child_tree "$BUILD_ROOT" "$GENERATED" 'release generated directory'
 commit_output_staging "$OUTPUT"

@@ -22,7 +22,7 @@ Package selectors use:
 ```
 
 `stable` selects the stable version from the package catalog. A specific
-version, such as `gcc@16.1.0-rev1`, refers only to that exact version.
+version, such as `gcc@16.2.0-rev1`, refers only to that exact version.
 
 Supported components are:
 
@@ -151,7 +151,11 @@ then the official default. When no release is supplied, `stable` is used.
 
 Profiles select one tool for several components using the current preferences.
 Toolchains use fixed curated selections. `cup` resolves and validates the
-complete group before installing its first package.
+complete group before installing its first package. The `gnu` preset is
+`gcc,gdb,ld` and is complete for the native Linux x64, Linux arm64 and Windows
+x64 scopes in the current catalog. Other scopes still preflight the whole group
+and fail before the first install when one of those tools is unavailable; CUP
+never silently degrades the preset or starts a knowingly partial toolchain.
 
 Group installs are sequential rather than all-or-nothing. If a later package
 fails, packages that completed earlier remain installed and `cup` reports the
@@ -271,8 +275,12 @@ cup uninstall
 cup uninstall --yes
 ```
 
-Removes the selected `cup` installation and every package inside it. The command
-asks for confirmation unless `--yes` is supplied. PATH is not modified.
+Schedules removal of the selected `cup` installation and every package inside
+it. The command asks for confirmation unless `--yes` is supplied. Success means
+the detached native helper accepted the handoff; final cleanup continues in the
+background after the original `cup` process exits. cup prints the detached
+recovery path that will retain transaction evidence if cleanup later fails. PATH
+is not modified.
 
 ## Input validation
 

@@ -1,5 +1,5 @@
-# Verifies package download through a local hostname and checksum
-# rejection on Windows.
+# Verifies package download through a loopback address, checksum rejection,
+# and decompressed metadata size limits on Windows.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -8,11 +8,6 @@ param(
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 $server = $null
-$originalEnvironment = @{}
-foreach ($name in @('CUP_INSTALL_ALLOW_INSECURE', 'NO_PROXY')) {
-    $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
-    $originalEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
-}
 
 function Publish-NetworkPackage {
     param(
@@ -43,14 +38,7 @@ try {
     Initialize-TestEnvironment -Name 'network' -ExecutablePath $CupExecutablePath
     # Initialize the isolated runtime; repair behavior is owned by repair.ps1.
     Invoke-Cup -CommandArgs @('repair') | Out-Null
-    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
-        'development'
-    } else {
-        $env:CUP_TEST_CONFIGURATION
-    }
-    $helper = Join-Path $Script:CupTestBuildRoot (
-        "windows-x64\$configuration\tests\helpers\network-helper.exe")
-    Assert-PathExists $helper
+    $helper = Get-TestHelperPath -Name 'network-helper'
 
     $serverRoot = Join-Path $Script:CupTestRoot 'server'
     $readyFile = Join-Path $Script:CupTestRoot 'server.ready'
@@ -58,9 +46,13 @@ try {
     $stderrFile = Join-Path $Script:CupTestRoot 'server.stderr'
     New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
 
+    $compressedVersion = '97.0.4'
+    $compressedPath =
+        "/compressed-limit/$compressedVersion-windows-x64-windows-x64/SHA256SUMS"
     $arguments = @(
         'http-server', '--root', $serverRoot, '--port', '0',
-        '--ready-file', $readyFile
+        '--ready-file', $readyFile,
+        '--gzip-path', $compressedPath, '--gzip-bytes', '4194305'
     )
     $server = Start-TestHelperProcess -FilePath $helper `
         -ArgumentList $arguments `
@@ -96,21 +88,21 @@ try {
 
     Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
         -Field 'url_template' -Mode 'Replace' -Value (
-            "http://localhost:$port/{version}-{host_platform}-{target_platform}/" +
+            "http://127.0.0.1:$port/{version}-{host_platform}-{target_platform}/" +
             'clang-{version}-{host_platform}-{target_platform}.{format}')
     Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
         -Field 'checksum_url_template' -Mode 'Replace' -Value (
-            "http://localhost:$port/{version}-{host_platform}-{target_platform}/SHA256SUMS")
+            "http://127.0.0.1:$port/{version}-{host_platform}-{target_platform}/SHA256SUMS")
 
     $env:CUP_INSTALL_ALLOW_INSECURE = '1'
-    $env:NO_PROXY = 'localhost,127.0.0.1'
+    $env:NO_PROXY = '127.0.0.1'
 
     $validVersion = '97.0.1'
     Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
         -Field 'available_versions' -Value $validVersion -Mode 'Prepend'
     Publish-NetworkPackage -Version $validVersion -ServerRoot $serverRoot | Out-Null
 
-    Write-Host '==> Downloading a package through the local hostname...'
+    Write-Host '==> Downloading a package through the loopback address...'
     Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$validVersion") | Out-Null
 
     $badVersion = '97.0.2'
@@ -153,6 +145,26 @@ try {
         "$($invalidChecksumPackage.PackageName).zip")
     Assert-CupHealthy
 
+    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
+        -Field 'available_versions' -Value $compressedVersion -Mode 'Prepend'
+    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
+        -Field 'checksum_url_template' -Mode 'Replace' -Value (
+            "http://127.0.0.1:$port/compressed-limit/" +
+            '{version}-{host_platform}-{target_platform}/SHA256SUMS')
+
+    Write-Host '==> Rejecting checksum metadata whose decompressed body exceeds the limit...'
+    $compressedFailure = Invoke-Cup `
+        -CommandArgs @('install', 'compiler', "clang@$compressedVersion") `
+        -ExpectFailure
+    Assert-Contains $compressedFailure 'download exceeded the configured size limit'
+    $compressedCache = Join-Path $Script:CupTestHome (
+        ".cup\cache\compiler\clang\windows-x64\windows-x64\$compressedVersion")
+    Assert-PathMissing (Join-Path $compressedCache 'SHA256SUMS')
+    Assert-NotContains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
+        "compiler:clang@$compressedVersion"
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
+    Assert-CupHealthy
+
     Write-Host 'Windows network integration tests passed.'
 } finally {
     if ($null -ne $server) {
@@ -160,13 +172,6 @@ try {
             Stop-TestProcessTree -Process $server -WaitMilliseconds 5000
         }
         $server.Dispose()
-    }
-    foreach ($name in $originalEnvironment.Keys) {
-        if ($null -eq $originalEnvironment[$name]) {
-            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
-        } else {
-            Set-Item -LiteralPath "Env:$name" -Value $originalEnvironment[$name]
-        }
     }
     Remove-TestEnvironment
 }

@@ -123,9 +123,6 @@ int path_equal(const char *left, const char *right) {
     {
         char normalized_left[MAX_PATH_LEN];
         char normalized_right[MAX_PATH_LEN];
-        const unsigned char *left_cursor;
-        const unsigned char *right_cursor;
-
         if (text_copy(normalized_left, sizeof(normalized_left), left) != CUP_OK ||
             text_copy(normalized_right, sizeof(normalized_right), right) != CUP_OK ||
             path_normalize(normalized_left) != CUP_OK ||
@@ -133,16 +130,7 @@ int path_equal(const char *left, const char *right) {
             return 0;
         }
 
-        left_cursor = (const unsigned char *)normalized_left;
-        right_cursor = (const unsigned char *)normalized_right;
-        while (*left_cursor != '\0' && *right_cursor != '\0') {
-            if (ascii_lower(*left_cursor) != ascii_lower(*right_cursor)) {
-                return 0;
-            }
-            left_cursor++;
-            right_cursor++;
-        }
-        return *left_cursor == *right_cursor;
+        return text_equal_ascii_ignore_case(normalized_left, normalized_right);
     }
 #else
     return strcmp(left, right) == 0;
@@ -162,15 +150,8 @@ CupError path_join(char *buffer, size_t size, const char *parent, const char *ch
 }
 
 CupError path_join_safe_relative(char *buffer, size_t size, const char *parent, const char *child) {
-    if (buffer == NULL || size == 0 || text_is_empty(parent)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (!path_is_safe_relative(child)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    return path_join(buffer, size, parent, child);
+    return path_is_safe_relative(child) ? path_join(buffer, size, parent, child)
+                                        : CUP_ERR_INVALID_INPUT;
 }
 
 CupError path_parent(char *buffer, size_t size, const char *path) {
@@ -207,19 +188,21 @@ CupError path_parent(char *buffer, size_t size, const char *path) {
 
 const char *path_last_segment(const char *path) {
     const char *slash;
-    const char *backslash;
 
     if (path == NULL) {
         return NULL;
     }
 
     slash = strrchr(path, '/');
-    backslash = strrchr(path, '\\');
+#if defined(_WIN32)
+    {
+        const char *backslash = strrchr(path, '\\');
 
-    if (backslash != NULL && (slash == NULL || backslash > slash)) {
-        slash = backslash;
+        if (backslash != NULL && (slash == NULL || backslash > slash)) {
+            slash = backslash;
+        }
     }
-
+#endif
     return slash == NULL ? path : slash + 1;
 }
 
@@ -310,6 +293,44 @@ int path_is_safe_identifier(const char *value) {
     return 1;
 }
 
+const char *path_generated_temp_suffix(const char *name, const char *prefix) {
+    size_t prefix_length;
+
+    if (!path_is_safe_segment(name) || !path_is_safe_segment(prefix)) {
+        return NULL;
+    }
+    prefix_length = strlen(prefix);
+    if (strncmp(name, prefix, prefix_length) != 0 || name[prefix_length] != '-' ||
+        name[prefix_length + 1u] == '\0') {
+        return NULL;
+    }
+    return name + prefix_length + 1u;
+}
+
+int path_is_canonical_identifier(const char *value) {
+    const unsigned char *cursor;
+
+    if (!path_is_safe_identifier(value)) {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (*cursor >= 'A' && *cursor <= 'Z') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+CupError path_validate_canonical_identifier(const char *value, size_t capacity) {
+    if (text_is_empty(value) || capacity == 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (strlen(value) >= capacity) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    return path_is_canonical_identifier(value) ? CUP_OK : CUP_ERR_VALIDATION;
+}
+
 int path_is_safe_relative(const char *path) {
     const char *segment;
     const char *cursor;
@@ -317,18 +338,6 @@ int path_is_safe_relative(const char *path) {
     size_t length;
 
     if (text_is_empty(path)) {
-        return 0;
-    }
-
-    if (path[0] == '/' || path[0] == '\\') {
-        return 0;
-    }
-
-    if (path[0] != '\0' && path[1] == ':') {
-        return 0;
-    }
-
-    if (strchr(path, '\\') != NULL || strchr(path, ':') != NULL) {
         return 0;
     }
 

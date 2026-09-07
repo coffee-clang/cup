@@ -16,38 +16,15 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 : "${SOURCE_REPOSITORY:?SOURCE_REPOSITORY is required}"
 : "${TESTS_RUN_ID:?TESTS_RUN_ID is required}"
 : "${TESTS_RUN_ATTEMPT:?TESTS_RUN_ATTEMPT is required}"
-: "${TESTS_EVIDENCE_INDEX_SHA256:?TESTS_EVIDENCE_INDEX_SHA256 is required}"
 : "${RELEASE_RUN_ID:?RELEASE_RUN_ID is required}"
-: "${RELEASE_RUN_ATTEMPT:?RELEASE_RUN_ATTEMPT is required}"
 validate_release_inputs
 validate_repository_identifier "$GH_REPO" GH_REPO
-validate_repository_identifier "$SOURCE_REPOSITORY" SOURCE_REPOSITORY
-for run_value in "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"; do
-    printf '%s\n' "$run_value" | grep -Eq '^[1-9][0-9]*$' || fail 'invalid release provenance run identity'
-done
-printf '%s\n' "$TESTS_EVIDENCE_INDEX_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
-    fail 'invalid TESTS_EVIDENCE_INDEX_SHA256'
+validate_release_provenance_inputs "$SOURCE_REPOSITORY" \
+    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID"
 
 candidate=${1:-dist/candidate}
 require_real_directory "$candidate"
-public_assets='packages.cfg
-install.cfg
-release.txt
-provenance.txt
-THIRD_PARTY_NOTICES.txt
-install.sh
-install.ps1
-cup-linux-x64
-cup-linux-arm64
-cup-macos-x64
-cup-macos-arm64
-cup-windows-x64.exe
-SHA256SUMS.common
-SHA256SUMS.linux-x64
-SHA256SUMS.linux-arm64
-SHA256SUMS.macos-x64
-SHA256SUMS.macos-arm64
-SHA256SUMS.windows-x64'
+public_assets=$(release_public_assets)
 # shellcheck disable=SC2086
 validate_exact_directory_files "$candidate" $public_assets
 for asset in $public_assets; do require_nonempty_file "$candidate/$asset"; done
@@ -75,8 +52,7 @@ validate_release_asset_modes "$snapshot" $public_assets
 
 validate_release_file "$snapshot/release.txt"
 validate_provenance_file "$snapshot/provenance.txt" "$SOURCE_REPOSITORY" \
-    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$TESTS_EVIDENCE_INDEX_SHA256" \
-    "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"
+    "$TESTS_RUN_ID" "$TESTS_RUN_ATTEMPT" "$RELEASE_RUN_ID"
 grep -F "CUP_RELEASE_VERSION=\"$VERSION\"" "$snapshot/install.sh" >/dev/null
 grep -F "CUP_RELEASE_TAG=\"$TAG\"" "$snapshot/install.sh" >/dev/null
 grep -F "CUP_RELEASE_COMMIT=\"$SHA\"" "$snapshot/install.sh" >/dev/null
@@ -84,15 +60,15 @@ grep -F "\$ReleaseVersion = \"$VERSION\"" "$snapshot/install.ps1" >/dev/null
 grep -F "\$ReleaseTag = \"$TAG\"" "$snapshot/install.ps1" >/dev/null
 grep -F "\$ReleaseCommit = \"$SHA\"" "$snapshot/install.ps1" >/dev/null
 ! grep -E '@CUP_RELEASE_(VERSION|TAG|COMMIT)@' "$snapshot/install.sh" "$snapshot/install.ps1" >/dev/null
-verify_checksum_file_exact "$snapshot" SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
-verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-x64 cup-linux-x64 release.txt SHA256SUMS.common
-verify_checksum_file_exact "$snapshot" SHA256SUMS.linux-arm64 cup-linux-arm64 release.txt SHA256SUMS.common
-verify_checksum_file_exact "$snapshot" SHA256SUMS.macos-x64 \
-    cup-macos-x64 release.txt SHA256SUMS.common
-verify_checksum_file_exact "$snapshot" SHA256SUMS.macos-arm64 \
-    cup-macos-arm64 release.txt SHA256SUMS.common
-verify_checksum_file_exact "$snapshot" SHA256SUMS.windows-x64 \
-    cup-windows-x64.exe release.txt SHA256SUMS.common
+# shellcheck disable=SC2086
+verify_checksum_file_exact "$snapshot" SHA256SUMS.common $(release_common_checksum_assets)
+for platform in $CUP_SUPPORTED_PLATFORMS; do
+    platform_checksum=$(release_platform_checksum_name "$platform") ||
+        fail "could not derive platform checksum name: $platform"
+    # shellcheck disable=SC2086
+    verify_checksum_file_exact "$snapshot" "$platform_checksum" \
+        $(release_platform_checksum_assets "$platform")
+done
 
 if [ "$GH_REPO" = "$SOURCE_REPOSITORY" ]; then
     release_target=$SHA
@@ -102,7 +78,7 @@ else
 fi
 canonical_target=$(gh api "repos/$GH_REPO/commits/$release_target" --jq '.sha') ||
     fail "could not resolve release target '$release_target' in $GH_REPO"
-printf '%s\n' "$canonical_target" | grep -Eq '^[0-9a-f]{40}$' || fail 'release target did not resolve to a commit'
+cup_git_commit_valid "$canonical_target" || fail 'release target did not resolve to a commit'
 if [ "$GH_REPO" = "$SOURCE_REPOSITORY" ]; then
     [ "$canonical_target" = "$SHA" ] || fail 'release target does not match the tested source commit'
 fi
@@ -133,7 +109,7 @@ query_tag() {
             cat "$tag_commit_error" >&2 || true
             fail "could not resolve tag $TAG to a commit"
         fi
-        printf '%s\n' "$TAG_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "could not read tag commit for $TAG"
+        cup_git_commit_valid "$TAG_COMMIT" || fail "could not read tag commit for $TAG"
         [ "$TAG_COMMIT" = "$canonical_target" ] ||
             fail "tag $TAG points to ${TAG_COMMIT:-an unknown commit}, expected $canonical_target"
     else

@@ -39,6 +39,10 @@ require_tool() {
 [ "$mode" = debug ] || [ "$mode" = release ] || fail "unsupported mode '$mode'"
 [ "$inspection_policy" = build ] || [ "$inspection_policy" = public ] ||
     fail "unsupported inspection policy '$inspection_policy'"
+if [ "$platform" = windows-x64 ]; then
+    SOURCE_DATE_EPOCH=1
+    export SOURCE_DATE_EPOCH
+fi
 for absolute_path in "$input" "$output_root" "$build_config" "$release_metadata" \
         "$inspector" "$path_leak_checker"; do
     case "$absolute_path" in

@@ -42,11 +42,6 @@ int OPENSSL_init_ssl(uint64_t options, const OPENSSL_INIT_SETTINGS *settings) {
 
 #define MAX_SEQUENCE 16
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static char temp_home[CUP_TEST_TEMP_PATH_SIZE];
 static CURLcode mock_global_result;
 static CURLcode mock_perform_result;
@@ -183,6 +178,7 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
     }
     if (artifact != NULL && result == CUP_OK &&
         (verification == ARTIFACT_VERIFY_VALID ||
+         verification == ARTIFACT_VERIFY_REJECTED ||
          verification == ARTIFACT_VERIFY_DIGEST_MISMATCH)) {
         artifact->file = (FILE *)(uintptr_t)1;
         (void)snprintf(artifact->path, sizeof(artifact->path), "%s", path);
@@ -286,8 +282,6 @@ const char *package_archive_format_name(PackageArchiveFormat format) {
     }
 }
 
-/* Fixture lifecycle and local construction helpers. */
-
 static void set_test_environment(const char *name, const char *value);
 
 static void reset_mocks(void) {
@@ -338,11 +332,6 @@ void tearDown(void) {
     set_test_environment("CUP_INSTALL_BASE_URL", NULL);
     set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 int download_insecure_loopback_is_allowed(const char *url) {
     (void)url;
@@ -588,11 +577,6 @@ static void make_cache_files(const PackageIdentity *identity,
     write_text(archive_path, "mock package archive\n");
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_protocol_policy(void) {
     char destination[1024];
 
@@ -601,7 +585,7 @@ static void test_protocol_policy(void) {
         CUP_OK,
         download_file("https://example.invalid/resource",
                       destination,
-                      DOWNLOAD_VALIDATE_NONEMPTY));
+                      DOWNLOAD_VALIDATE_METADATA));
 #if LIBCURL_VERSION_NUM >= 0x075500
     TEST_ASSERT_EQUAL_STRING("https", mock_protocols);
     TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
@@ -618,7 +602,7 @@ static void test_protocol_policy(void) {
         CUP_OK,
         download_file("http://127.0.0.1:18080/resource",
                       destination,
-                      DOWNLOAD_VALIDATE_NONEMPTY));
+                      DOWNLOAD_VALIDATE_METADATA));
 #if LIBCURL_VERSION_NUM >= 0x075500
     TEST_ASSERT_EQUAL_STRING("http", mock_protocols);
     TEST_ASSERT_EQUAL_STRING("http", mock_redirect_protocols);
@@ -634,7 +618,7 @@ static void test_protocol_policy(void) {
         CUP_OK,
         download_file("http://example.invalid/resource",
                       destination,
-                      DOWNLOAD_VALIDATE_NONEMPTY));
+                      DOWNLOAD_VALIDATE_METADATA));
 #if LIBCURL_VERSION_NUM >= 0x075500
     TEST_ASSERT_EQUAL_STRING("https", mock_protocols);
     TEST_ASSERT_EQUAL_STRING("https", mock_redirect_protocols);
@@ -657,7 +641,7 @@ static CupError request_interrupt_after_validation(const char *temporary_path, v
 static void test_file_success(void) {
     char destination[1024];
     char content[128];
-    DownloadValidation validations[] = {DOWNLOAD_VALIDATE_NONEMPTY,
+    DownloadValidation validations[] = {DOWNLOAD_VALIDATE_METADATA,
                                         DOWNLOAD_VALIDATE_METADATA,
                                         DOWNLOAD_VALIDATE_BINARY,
                                         DOWNLOAD_VALIDATE_ARCHIVE};
@@ -679,17 +663,17 @@ static void test_file_success(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(destination, 1));
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        download_file("https://example.invalid/resource", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid/resource", destination, DOWNLOAD_VALIDATE_METADATA));
     read_text(destination, content, sizeof(content));
     TEST_ASSERT_EQUAL_STRING("downloaded data\n", content);
 }
 
 static void assert_download_argument_failures(const char *destination) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          download_file(NULL, destination, DOWNLOAD_VALIDATE_NONEMPTY));
+                          download_file(NULL, destination, DOWNLOAD_VALIDATE_METADATA));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        download_file("https://example.invalid", NULL, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", NULL, DOWNLOAD_VALIDATE_METADATA));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
         download_file("https://example.invalid", destination, (DownloadValidation)999));
@@ -703,39 +687,39 @@ static void assert_download_setup_failures(const char *destination) {
     mock_tls_init_result = 0;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 #endif
 
     reset_mocks();
     mock_global_result = CURLE_FAILED_INIT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     build_path(missing_parent, sizeof(missing_parent), "missing/child.out");
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TEMPORARY,
-        download_file("https://example.invalid", missing_parent, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", missing_parent, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_easy_init_null = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_fail_option = CURLOPT_URL;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE)
     reset_mocks();
     mock_fail_option = CURLOPT_CAINFO_BLOB;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 #endif
 }
 
@@ -744,37 +728,37 @@ static void assert_download_transport_failures(const char *destination) {
     mock_perform_result = CURLE_OPERATION_TIMEDOUT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TIMEOUT,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_perform_result = CURLE_PEER_FAILED_VERIFICATION;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TLS,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_response_code = 404;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_interrupt = 1;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INTERRUPT,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_info_result = CURLE_BAD_FUNCTION_ARGUMENT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     mock_perform_result = CURLE_SSL_CONNECT_ERROR;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TLS,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 }
 
 static void assert_download_content_failures(const char *destination) {
@@ -792,7 +776,7 @@ static void assert_download_content_failures(const char *destination) {
         CUP_ERR_INTERRUPT,
         download_file_checked("https://example.invalid",
                               destination,
-                              DOWNLOAD_VALIDATE_NONEMPTY,
+                              DOWNLOAD_VALIDATE_METADATA,
                               request_interrupt_after_validation,
                               NULL));
     {
@@ -805,7 +789,7 @@ static void assert_download_content_failures(const char *destination) {
     mock_payload[0] = '\0';
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 
     /* Unauthenticated archive bytes receive only raw bounded/non-empty validation here. */
     reset_mocks();
@@ -828,13 +812,13 @@ static void assert_download_destination_failures(const char *destination) {
     long_path[sizeof(long_path) - 1] = '\0';
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_BUFFER_TOO_SMALL,
-        download_file("https://example.invalid", long_path, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", long_path, DOWNLOAD_VALIDATE_METADATA));
 
     reset_mocks();
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(destination, 0755));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FILESYSTEM,
-        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_NONEMPTY));
+        download_file("https://example.invalid", destination, DOWNLOAD_VALIDATE_METADATA));
 }
 
 static void test_file_failures(void) {
@@ -865,28 +849,28 @@ static PackageArtifactSpec artifact_spec_for(const char *version) {
     return spec;
 }
 
-static void test_typed_cache_results(void) {
+static void test_cache_source_results(void) {
     PackageArtifactSpec spec = artifact_spec_for("22.1.5-typed-cache");
-    PackageCacheResult result;
+    PackageCacheSource source;
     VerifiedArtifact artifact;
     char archive_path[MAX_PATH_LEN];
 
     memset(&artifact, 0, sizeof(artifact));
-    memset(&result, 0x7f, sizeof(result));
+    source = (PackageCacheSource)0x7f;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(NULL, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
-    memset(&result, 0x7f, sizeof(result));
+        package_cache_fetch_artifact(NULL, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = (PackageCacheSource)0x7f;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(&artifact, NULL, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
-    memset(&result, 0x7f, sizeof(result));
+        package_cache_fetch_artifact(&artifact, NULL, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    source = (PackageCacheSource)0x7f;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(&artifact, &spec, (PackageCachePolicy)999, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, (PackageCachePolicy)999, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
 
     reset_mocks();
     spec = artifact_spec_for("22.1.5-typed-valid");
@@ -896,8 +880,8 @@ static void test_typed_cache_results(void) {
     push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
@@ -909,8 +893,8 @@ static void test_typed_cache_results(void) {
     push_artifact_revalidation(CUP_OK, ARTIFACT_VERIFY_VALID);
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_open_index);
     TEST_ASSERT_EQUAL_size_t(1, artifact_revalidate_index);
 
@@ -925,8 +909,8 @@ static void test_typed_cache_results(void) {
     mock_perform_result = CURLE_COULDNT_CONNECT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
     TEST_ASSERT_FALSE(test_access_exists(archive_path));
 
@@ -942,9 +926,9 @@ static void test_typed_cache_results(void) {
     mock_perform_result = CURLE_COULDNT_CONNECT;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FETCH,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
-    TEST_ASSERT_EQUAL_size_t(0, artifact_discard_calls);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
     TEST_ASSERT_FALSE(test_access_exists(archive_path));
 
     reset_mocks();
@@ -958,8 +942,8 @@ static void test_typed_cache_results(void) {
     push_artifact(CUP_OK, ARTIFACT_VERIFY_WRONG_TYPE);
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_FILESYSTEM,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(0, artifact_discard_calls);
     TEST_ASSERT_TRUE(test_access_exists(archive_path));
 
@@ -971,8 +955,8 @@ static void test_typed_cache_results(void) {
     push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_VALIDATION,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_REFRESH, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_REFRESH, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
 
     reset_mocks();
@@ -986,8 +970,8 @@ static void test_typed_cache_results(void) {
     artifact_discard_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_COMMIT,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &result));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, result.source);
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
 }
 
@@ -1003,6 +987,6 @@ int main(void) {
     RUN_TEST(test_protocol_policy);
     RUN_TEST(test_file_success);
     RUN_TEST(test_file_failures);
-    RUN_TEST(test_typed_cache_results);
+    RUN_TEST(test_cache_source_results);
     return UNITY_END();
 }

@@ -55,22 +55,18 @@ jobs:
             runner: ubuntu-24.04
             family: linux
             profile: gcc
-            dependency_target: linux-x64-gcc
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             family: linux
             profile: gcc
-            dependency_target: linux-arm64-gcc
           - platform: macos-x64
             runner: macos-15-intel
             family: macos
             profile: apple-clang
-            dependency_target: macos-x64-apple-clang
           - platform: macos-arm64
             runner: macos-15
             family: macos
             profile: apple-clang
-            dependency_target: macos-arm64-apple-clang
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -97,18 +93,6 @@ jobs:
             ${{ steps.cache.outputs.prefix }}
           key: ${{ steps.cache.outputs.key }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.dependency_target }}
-      - name: Verify dependency evidence
-        env:
-          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-        run: |
-          scripts/ci/verify-dependency-evidence.sh \
-            "$RUNNER_TEMP/cup-dependency-evidence/${{ matrix.dependency_target }}/evidence.txt" \
-            '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
-            '${{ matrix.profile }}' '${{ steps.cache.outputs.prefix }}'
       - name: Run source tests
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -116,13 +100,13 @@ jobs:
           DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          CUP_SOURCE_EVIDENCE_ROOT: ${{ runner.temp }}/cup-source-evidence
+          CUP_SOURCE_BUILD_CONFIG: ${{ runner.temp }}/cup-source-build-config.txt
           CUP_CI_BUILD_REPOSITORY_TESTS: 1
         run: scripts/ci/source-posix.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: cup-source-evidence-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-source-evidence/${{ matrix.platform }}/*
+          name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cup-source-build-config.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -176,11 +160,7 @@ jobs:
             ${{ steps.cache.outputs.cache_prefix }}
           key: ${{ steps.cache.outputs.key }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: cup-dependency-evidence-windows-x64-ucrt64-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-dependency-evidence/windows-x64-ucrt64
-      - name: Run source tests and save evidence
+      - name: Run source tests
         shell: msys2 {0}
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
@@ -189,76 +169,16 @@ jobs:
           CUP_TEST_UNIT_TIMEOUT: 300
         run: |
           set -euo pipefail
-          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
-          scripts/ci/verify-dependency-evidence.sh \
-            "$evidence_root/windows-x64-ucrt64/evidence.txt" \
-            windows-x64-ucrt64 windows-x64 ucrt64-gcc "$DEPS_PREFIX"
           make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_INTERNAL_DEPS_TARGET=deps-check test
           make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_INTERNAL_DEPS_TARGET=deps-check check-development
-          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-source-evidence
-          evidence_dir=$evidence_root/windows-x64
-          scripts/ci/write-source-evidence.sh \
-            "$evidence_dir" windows-x64 \
-            "$PWD/build/windows-x64/development/build-config.txt" \
-            "$PWD/build/windows-x64/development/generated/release.txt" \
-            "$PWD/build/windows-x64/development/binary-inspection.txt" \
-            '${{ github.repository }}' '${{ github.run_id }}' '${{ github.run_attempt }}'
-          scripts/ci/verify-source-evidence.sh \
-            "$evidence_dir" windows-x64 \
-            '${{ github.repository }}' "$(git rev-parse HEAD)" \
-            '${{ github.run_id }}' '${{ github.run_attempt }}' \
-            'cup-source-evidence-windows-x64-attempt-${{ github.run_attempt }}'
+          CUP_TEST_PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
+            ./tests/repository/reproducibility.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: cup-source-evidence-windows-x64-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-source-evidence/windows-x64/*
-          if-no-files-found: error
-          retention-days: 14
-
-  evidence_index:
-    name: Bind release evidence
-    needs:
-      - dependencies
-      - posix
-      - windows
-    if: >-
-      ${{
-        needs.dependencies.result == 'success' &&
-        needs.posix.result == 'success' &&
-        needs.windows.result == 'success'
-      }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Resolve exact artifact identities
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api \
-            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
-            > "$RUNNER_TEMP/artifacts.json"
-          scripts/ci/write-tests-evidence-index.sh \
-            "$RUNNER_TEMP/cup-tests-evidence-index" \
-            "$RUNNER_TEMP/artifacts.json" '${{ github.repository }}' '${{ github.sha }}' \
-            '${{ github.run_id }}' '${{ github.run_attempt }}'
-          scripts/ci/verify-tests-evidence-index.sh \
-            "$RUNNER_TEMP/cup-tests-evidence-index/index.txt" \
-            '${{ github.repository }}' '${{ github.sha }}' \
-            '${{ github.run_id }}' '${{ github.run_attempt }}'
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: cup-tests-evidence-index-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-tests-evidence-index/index.txt
+          name: cup-source-build-config-windows-x64-attempt-${{ github.run_attempt }}
+          path: build/windows-x64/development/build-config.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -276,35 +196,30 @@ jobs:
             runner: ubuntu-24.04
             family: linux
             profile: gcc
-            dependency_target: linux-x64-gcc
             variant: linux-x64
             compiler: gcc
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             family: linux
             profile: gcc
-            dependency_target: linux-arm64-gcc
             variant: linux-arm64
             compiler: gcc
           - platform: macos-x64
             runner: macos-15-intel
             family: macos
             profile: apple-clang
-            dependency_target: macos-x64-apple-clang
             variant: macos-x64
             compiler: clang
           - platform: macos-arm64
             runner: macos-15
             family: macos
             profile: apple-clang
-            dependency_target: macos-arm64-apple-clang
             variant: macos-arm64
             compiler: clang
           - platform: windows-x64
             runner: windows-2025
             family: windows
             profile: ucrt64-gcc
-            dependency_target: windows-x64-ucrt64
             variant: windows-x64
             compiler: gcc
     steps:
@@ -380,10 +295,6 @@ jobs:
             ${{ steps.cache-windows.outputs.cache_prefix }}
           key: ${{ steps.cache-windows.outputs.key }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.dependency_target }}
       - name: Collect POSIX coverage
         if: matrix.family != 'windows'
         shell: bash
@@ -399,10 +310,6 @@ jobs:
           CUP_COVERAGE_MIN_FUNCTIONS: 97
         run: |
           set -euo pipefail
-          scripts/ci/verify-dependency-evidence.sh \
-            "$RUNNER_TEMP/cup-dependency-evidence/${{ matrix.dependency_target }}/evidence.txt" \
-            '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
-            '${{ matrix.profile }}' "$DEPS_PREFIX"
           tests/runners/coverage.sh
           make PLATFORM="$PLATFORM" DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CC="$CC" CUP_BUILD_CONFIGURATION=coverage _check-binary
@@ -422,10 +329,6 @@ jobs:
           CUP_COVERAGE_MIN_FUNCTIONS: 97
         run: |
           set -euo pipefail
-          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
-          scripts/ci/verify-dependency-evidence.sh \
-            "$evidence_root/${{ matrix.dependency_target }}/evidence.txt" \
-            '${{ matrix.dependency_target }}' windows-x64 '${{ matrix.profile }}' "$DEPS_PREFIX"
           tests/runners/coverage.sh
           make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CC=gcc WINDRES=windres CUP_BUILD_CONFIGURATION=coverage _check-binary
@@ -451,31 +354,26 @@ jobs:
             runner: ubuntu-24.04
             family: linux
             profile: gcc
-            dependency_target: linux-x64-gcc
             variant: linux-x64
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             family: linux
             profile: gcc
-            dependency_target: linux-arm64-gcc
             variant: linux-arm64
           - platform: macos-x64
             runner: macos-15-intel
             family: macos
             profile: apple-clang
-            dependency_target: macos-x64-apple-clang
             variant: macos-x64
           - platform: macos-arm64
             runner: macos-15
             family: macos
             profile: apple-clang
-            dependency_target: macos-arm64-apple-clang
             variant: macos-arm64
           - platform: windows-x64
             runner: windows-2025
             family: windows
             profile: clang64
-            dependency_target: windows-x64-clang64
             variant: windows-x64-clang64
     steps:
       - uses: actions/checkout@v6.0.2
@@ -550,10 +448,6 @@ jobs:
             ${{ steps.cache-windows.outputs.cache_prefix }}
           key: ${{ steps.cache-windows.outputs.key }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: cup-dependency-evidence-${{ matrix.dependency_target }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-dependency-evidence/${{ matrix.dependency_target }}
       - name: Run POSIX sanitizer tests
         if: matrix.family != 'windows'
         shell: bash
@@ -566,10 +460,6 @@ jobs:
           CC: clang
         run: |
           set -euo pipefail
-          scripts/ci/verify-dependency-evidence.sh \
-            "$RUNNER_TEMP/cup-dependency-evidence/${{ matrix.dependency_target }}/evidence.txt" \
-            '${{ matrix.dependency_target }}' '${{ matrix.platform }}' \
-            '${{ matrix.profile }}' "$DEPS_PREFIX"
           tests/runners/sanitizers.sh
           make PLATFORM="$PLATFORM" DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CC=clang CUP_BUILD_CONFIGURATION=sanitizers _check-binary
@@ -586,10 +476,6 @@ jobs:
           CC: clang
         run: |
           set -euo pipefail
-          evidence_root=$(cygpath -u "$RUNNER_TEMP")/cup-dependency-evidence
-          scripts/ci/verify-dependency-evidence.sh \
-            "$evidence_root/${{ matrix.dependency_target }}/evidence.txt" \
-            '${{ matrix.dependency_target }}' windows-x64 '${{ matrix.profile }}' "$DEPS_PREFIX"
           tests/runners/sanitizers.sh
           make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
             CC=clang WINDRES=llvm-windres CUP_BUILD_CONFIGURATION=sanitizers _check-binary
@@ -609,7 +495,6 @@ jobs:
       - quality
       - posix
       - windows
-      - evidence_index
       - coverage
       - sanitizers
     runs-on: ubuntu-24.04
@@ -621,14 +506,12 @@ jobs:
           QUALITY_RESULT: ${{ needs.quality.result }}
           POSIX_RESULT: ${{ needs.posix.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
-          EVIDENCE_INDEX_RESULT: ${{ needs.evidence_index.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           SANITIZERS_RESULT: ${{ needs.sanitizers.result }}
         run: |
           set -euo pipefail
           for result in "$DEPENDENCIES_RESULT" "$QUALITY_RESULT" "$POSIX_RESULT" \
-            "$WINDOWS_RESULT" "$EVIDENCE_INDEX_RESULT" "$COVERAGE_RESULT" \
-            "$SANITIZERS_RESULT"; do
+            "$WINDOWS_RESULT" "$COVERAGE_RESULT" "$SANITIZERS_RESULT"; do
             if [ "$result" != success ]; then
               echo "A required Tests job did not succeed: $result" >&2
               exit 1

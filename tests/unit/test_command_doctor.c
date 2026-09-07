@@ -29,8 +29,6 @@ typedef struct {
     CupError assets_result;
     AssetsInspection assets;
     CupError package_catalog_result;
-    LayoutRuntimeStatus runtime_status;
-    CupError runtime_result;
     CupError root_path_result;
     CupError root_kind_result;
     SystemPathKind root_kind;
@@ -57,7 +55,6 @@ typedef struct {
     CupError uninstall_load_result;
     UninstallJournalStatus uninstall_status;
     UninstallPhase uninstall_phase;
-    UninstallStage uninstall_stage;
     int uninstall_error;
     CupError identity_result;
     CupError install_path_result;
@@ -81,11 +78,6 @@ typedef struct {
     int read_only;
 } DoctorScenario;
 
-/*
- * Scenario controls and observations. Configured results drive the boundary doubles below;
- * counters record the calls made by production code.
- */
-
 static DoctorScenario scenario;
 static int assets_inspect_calls;
 static int root_snapshot_begin_calls;
@@ -97,8 +89,6 @@ static int package_metadata_protection_calls;
 static int package_catalog_check_calls;
 static int plan_build_calls;
 static int tmp_count_calls;
-
-/* Fixture lifecycle and local construction helpers. */
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -116,12 +106,10 @@ static void fill_identity(PackageIdentity *package, const char *version) {
 static void reset_scenario(void) {
     memset(&scenario, 0, sizeof(scenario));
     scenario.assets.binary = CUP_ASSET_VALID;
-    scenario.assets.helper = CUP_ASSET_VALID;
     scenario.assets.catalog = CUP_ASSET_VALID;
     scenario.assets.install_policy = CUP_ASSET_VALID;
     scenario.assets.common_checksums = CUP_ASSET_VALID;
     scenario.assets.platform_checksums = CUP_ASSET_VALID;
-    scenario.runtime_status = LAYOUT_RUNTIME_READY;
     scenario.root_kind = SYSTEM_PATH_DIRECTORY;
     scenario.lock_exists = 1;
     scenario.state_status = STATE_FILE_LOADED;
@@ -133,7 +121,6 @@ static void reset_scenario(void) {
     scenario.update_recovery = CUP_UPDATE_FAILURE_NONE;
     scenario.uninstall_status = UNINSTALL_JOURNAL_MISSING;
     scenario.uninstall_phase = UNINSTALL_PHASE_SCHEDULED;
-    scenario.uninstall_stage = UNINSTALL_STAGE_HANDOFF;
     scenario.package_metadata_read_only = 1;
     scenario.package_catalog_available = 1;
     scenario.packages.complete = 1;
@@ -153,11 +140,6 @@ static void reset_scenario(void) {
     plan_build_calls = 0;
     tmp_count_calls = 0;
 }
-
-/*
- * Controlled boundary doubles. Each implementation exposes one dependency through the scenario
- * state above.
- */
 
 CupError platform_get_host(char *buffer, size_t size) {
     return buffer_write_result(snprintf(buffer, size, "linux-x64"), size);
@@ -265,19 +247,16 @@ CupError layout_get_lock_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "cup.lock", scenario.lock_path_result);
 }
 
+CupError layout_get_bin_dir(char *buffer, size_t size) {
+    return buffer_write_result(snprintf(buffer, size, "/test/.cup/bin"), size);
+}
+
 CupError layout_get_staging_dir(char *buffer, size_t size) {
     return copy_path(buffer, size, "tmp", scenario.tmp_path_result);
 }
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "transaction", scenario.transaction_path_result);
-}
-
-CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
-    if (status != NULL) {
-        *status = scenario.runtime_status;
-    }
-    return scenario.runtime_result;
 }
 
 CupError layout_root_snapshot_begin(void) {
@@ -315,9 +294,10 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
 
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     (void)path;
-    if (kind != NULL) {
-        *kind = scenario.root_kind;
+    if (kind == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
+    *kind = scenario.root_kind;
     return scenario.root_kind_result;
 }
 
@@ -456,7 +436,6 @@ CupError uninstall_journal_load(UninstallJournal *journal, UninstallJournalStatu
     uninstall_journal_init(journal);
     *status = scenario.uninstall_status;
     journal->phase = scenario.uninstall_phase;
-    journal->stage = scenario.uninstall_stage;
     journal->error_code = scenario.uninstall_error;
     return scenario.uninstall_load_result;
 }
@@ -470,13 +449,6 @@ const char *uninstall_phase_name(UninstallPhase phase) {
     }
 }
 
-const char *uninstall_stage_name(UninstallStage stage) {
-    switch (stage) {
-        case UNINSTALL_STAGE_HANDOFF: return "handoff";
-        case UNINSTALL_STAGE_DETACH: return "detach";
-        default: return "invalid";
-    }
-}
 
 void package_transaction_init(PackageTransaction *transaction) {
     memset(transaction, 0, sizeof(*transaction));
@@ -581,11 +553,6 @@ CupError wrapper_plan_check(const WrapperPlan *plan, size_t *issue_count) {
     return scenario.plan_check_result;
 }
 
-/*
- * Test cases exercise the real production entry point while changing only controlled boundary
- * outcomes.
- */
-
 static void test_healthy(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
     TEST_ASSERT_EQUAL_INT(1, root_snapshot_begin_calls);
@@ -596,7 +563,6 @@ static void test_healthy(void) {
 
 static void test_assets_modes(void) {
     scenario.assets_result = CUP_ERR_FILESYSTEM;
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
     scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
@@ -604,13 +570,11 @@ static void test_assets_modes(void) {
     memset(&scenario.assets, 0, sizeof(scenario.assets));
     scenario.assets.development_catalog_valid = 1;
     scenario.assets.development_install_policy_valid = 1;
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
     scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
 
     reset_scenario();
     memset(&scenario.assets, 0, sizeof(scenario.assets));
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
     scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
@@ -619,26 +583,21 @@ static void test_asset_issues(void) {
     scenario.assets.binary = CUP_ASSET_INVALID;
     scenario.assets.install_policy = CUP_ASSET_MISSING;
     scenario.read_only = 0;
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
-
-    reset_scenario();
-    scenario.assets.helper = CUP_ASSET_INVALID;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
     scenario.package_catalog_result = CUP_ERR_VALIDATION;
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
 static void test_runtime_gates(void) {
-    scenario.runtime_status = LAYOUT_RUNTIME_INCOMPLETE;
     scenario.lock_exists = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.runtime_result = CUP_ERR_FILESYSTEM;
+    scenario.runtime_check_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
@@ -647,7 +606,7 @@ static void test_runtime_gates(void) {
     TEST_ASSERT_EQUAL_INT(0, assets_inspect_calls);
 
     reset_scenario();
-    scenario.runtime_status = LAYOUT_RUNTIME_MISSING;
+    scenario.root_kind = SYSTEM_PATH_MISSING;
     scenario.root_kind = SYSTEM_PATH_DIRECTORY;
     scenario.lock_exists = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
@@ -671,7 +630,6 @@ static void test_root_and_uninstall_journal(void) {
     scenario.journal_kind = RUNTIME_JOURNAL_UNINSTALL;
     scenario.uninstall_status = UNINSTALL_JOURNAL_LOADED;
     scenario.uninstall_phase = UNINSTALL_PHASE_FAILED;
-    scenario.uninstall_stage = UNINSTALL_STAGE_DETACH;
     scenario.uninstall_error = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
@@ -738,10 +696,6 @@ static void test_warning_only(void) {
     scenario.package_catalog_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
     TEST_ASSERT_EQUAL_INT(1, package_catalog_check_calls);
-
-    reset_scenario();
-    scenario.assets.helper = CUP_ASSET_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
 
     reset_scenario();
     scenario.tmp_count = 2;

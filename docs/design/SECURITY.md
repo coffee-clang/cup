@@ -25,7 +25,8 @@ cup does not trust:
 - archive entry names or types;
 - a familiar directory name as proof of ownership;
 - a pathname after another operation may have replaced the object behind it;
-- CI artifacts unless their repository, commit, run and digest metadata match.
+- cross-workflow source build identity unless it comes from the selected Tests
+  run attempt and matches the official candidate's build identity.
 
 ## HTTPS policy
 
@@ -37,15 +38,16 @@ public installers apply the same transport rule, impose an overall timeout and
 low-speed limit, and stop if a binary exceeds 256 MiB or a text asset exceeds
 16 MiB.
 
-The cup release base URL is fixed for official builds. Tests may use loopback
-HTTP only when both conditions are true:
+The cup release base URL is fixed for official builds. The application-level
+test override accepts loopback HTTP only with the explicit insecure-test flag,
+the literal host `127.0.0.1` and an explicit non-zero port. It does not accept
+`localhost` as an equivalent product URL.
 
-```text
-explicit insecure-test flag
-host is 127.0.0.1 or localhost
-```
-
-A non-loopback HTTP URL is rejected even when the test flag is present.
+The public installer scripts have their own test-only transport override because
+they are exercised before CUP exists. With the same explicit opt-in, those
+scripts accept only their documented loopback host spellings with an explicit
+port and keep redirects inside that loopback transport. Neither path permits a
+non-loopback HTTP endpoint.
 
 ## Embedded certificate authority (CA) bundle
 
@@ -159,26 +161,42 @@ The extraction pass owns structural admission. Before writing an entry, it
 checks that:
 
 - the archive has one safe top-level directory;
-- entries are only directories or regular files;
-- symbolic links, hard links and special objects are absent;
+- portable entries are directories or regular files;
+- hard links and special objects are absent;
 - relative paths satisfy the portable path grammar;
 - names do not collide after ASCII case folding or file/directory normalization;
 - depth, per-file size and total resource limits remain within bounds.
 
-Files are created without following links. Existing unexpected objects cause a
-failure instead of being reused. Size and format checks are repeated here
-because extraction is a new decoder/read/write pass, not a second validation of
-an unchanged in-memory result.
+On POSIX, relative symbolic links are an additional admitted object type. Their
+targets must remain lexically inside the package, and a symbolic link cannot be
+used as the parent of a later archive write. CUP otherwise preserves
+producer-owned link topology without requiring every link to resolve, terminate
+at a regular file or be acyclic. Declared executable entries are validated
+separately through the real filesystem and must resolve to executable regular
+files physically beneath the package root. Windows continues to reject symbolic
+links in package content. Raw hard-link entries remain unsupported because the
+producer normalizes them to independent regular files.
+
+Regular files and directories are created without following pre-existing links.
+Existing unexpected objects cause a failure instead of being reused. Size and
+format checks are repeated here because extraction is a new decoder/read/write
+pass, not a second validation of an unchanged in-memory result.
 
 The extracted package is not installed immediately. cup first validates the
 package root, the semantic identity in `info.txt` and every declared executable
-entry. The package directory is moved to its installed path only after those
-checks succeed.
+entry. POSIX entry resolution may cross only package-owned symbolic links and must
+terminate at a regular executable physically beneath that root; Windows keeps
+no-reparse entry traversal. Validation and publication operate on one fresh
+private staging directory while the command holds exclusive CUP mutation
+authority; publication refuses a pre-existing installed destination.
 
 ## Filesystem identity
 
-For managed trees cup records native file or directory identity and passes it to
-later copy, move or removal operations.
+Where an earlier filesystem observation is mutation authority, cup records the
+native file or directory identity and passes it to the later move, replacement
+or removal operation. Short rechecks remain immediately at destructive
+boundaries; private staging does not retain identity merely as extra same-user
+hardening.
 
 This matters in a sequence such as:
 
@@ -288,10 +306,10 @@ cannot be armed, the child is stopped while still pre-handoff and uninstall
 returns before root mutation. Once armed, temporary-helper cleanup is independent
 of whether detached-root payload cleanup later succeeds.
 
-On POSIX, handoff authority is the original flock open-file description. On
-Windows, it is a named per-user kernel object outside the managed root. Both
-mechanisms preserve exclusive mutation authority while the parent exits and the
-child takes over.
+On POSIX, handoff authority is the original flock open-file description. On Windows, it
+is a named kernel object keyed by the native identity of the root parent plus the canonical
+`.cup`/`.coffee-cup` slot. Both mechanisms preserve exclusive mutation authority while the
+parent exits and the child takes over.
 
 Cleanup keeps `transaction.txt` until every other managed entry is gone. If
 cleanup fails while managed payload remains, that strict journal remains as
@@ -312,24 +330,23 @@ build, test or release trust chain.
 Checkout credentials are disabled in the cup build, test and release
 workflows.
 
-The Tests workflow produces source and dependency evidence containing:
+The Tests workflow has a final gate over dependency preparation, repository
+quality, native source tests, coverage and sanitizers. Each source job also
+publishes its canonical `build-config.txt` under a name bound to the current
+Tests run attempt.
 
-```text
-repository
-commit
-run ID
-run attempt
-artifact name or ID
-platform/profile
-compiler command, normalized target and numeric version
-dependency source lock and toolchain fingerprint
-hashes of the checked files
-```
+Release selects one successful Tests run for the exact source commit and
+downloads only that attempt's source build config for each release platform. An
+independent verifier requires the candidate to use the same dependency
+profile/build revision/source-lock/toolchain identity and compiler command,
+normalized target and numeric version; Windows applies the same rule to the
+resource compiler. Dependency caches are accepted only after the canonical
+prefix verifier succeeds rather than through a second cross-workflow artifact.
 
-The release workflow selects one successful Tests run and verifies those fields
-before using an artifact. Raw targets, compiler/resource-compiler paths and full
-vendor strings remain diagnostic fields rather than cross-runner equality
-keys. Artifacts from different run attempts are not mixed.
+Internal Release artifacts use stable names within one Release run so a failed
+publisher or candidate job can be retried without changing provenance merely
+because `run_attempt` increased. `provenance.txt` records the selected Tests run
+and attempt plus the stable Release run ID.
 
 Candidate assembly accepts the complete expected asset set. Publication checks
 tag/commit identity, draft provenance and existing asset bytes before making a

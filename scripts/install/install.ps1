@@ -346,144 +346,211 @@ function Assert-ReleaseMetadata {
 }
 
 function Test-DirectoryEmpty([string]$Path) {
-    if (-not [IO.Directory]::Exists($Path)) {
-        return $false
-    }
+    if (-not [IO.Directory]::Exists($Path)) { return $false }
     $enumerator = [IO.Directory]::EnumerateFileSystemEntries($Path).GetEnumerator()
-    try {
-        return -not $enumerator.MoveNext()
-    } finally {
-        $enumerator.Dispose()
-    }
+    try { return -not $enumerator.MoveNext() } finally { $enumerator.Dispose() }
 }
 
 function Test-CupRootMarker([string]$Root) {
-    try {
-        $lines = @(Get-CanonicalLines (Join-Path $Root 'root.txt'))
-    } catch {
-        return $false
-    }
-    return $lines.Count -eq 3 -and
-        $lines[0] -ceq 'format=1' -and
-        $lines[1] -ceq 'product=coffee-clang/cup' -and
-        $lines[2] -ceq 'layout=1'
+    try { $lines = @(Get-CanonicalLines (Join-Path $Root 'root.txt')) } catch { return $false }
+    return $lines.Count -eq 3 -and $lines[0] -ceq 'format=1' -and
+        $lines[1] -ceq 'product=coffee-clang/cup' -and $lines[2] -ceq 'layout=1'
 }
 
 function Test-ExpectedCupBinary([string]$Path) {
     try {
         $item = Get-Item -LiteralPath $Path -Force
-        if ($item.PSIsContainer -or
-            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             return $false
         }
         $output = @(& $Path --version 2>$null)
-        return $LASTEXITCODE -eq 0 -and $output.Count -eq 1 -and
-            $output[0] -ceq "cup $ReleaseVersion"
-    } catch {
-        return $false
-    }
+        return $LASTEXITCODE -eq 0 -and $output.Count -eq 1 -and $output[0] -ceq "cup $ReleaseVersion"
+    } catch { return $false }
 }
 
 function Test-CupReady([string]$Path) {
-    try {
-        & $Path --internal-runtime-ready *> $null
-        return $LASTEXITCODE -eq 0
-    } catch {
-        return $false
-    }
+    try { & $Path --internal-runtime-ready *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
 }
 
-function Get-CupCanonicalProfile([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        Fail 'USERPROFILE is not available'
-    }
+function Get-CupCanonicalBase([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { Fail 'CUP base directory is not available' }
     $windowsPath = $Path.Replace('/', '\')
     if ($windowsPath.StartsWith('\\.\', [StringComparison]::Ordinal)) {
-        Fail 'USERPROFILE contains an unsupported Windows device path'
+        Fail 'CUP base contains an unsupported Windows device path'
     }
     $driveAbsolute = $windowsPath -match '^[A-Za-z]:\\'
     $uncAbsolute = $windowsPath.StartsWith('\\', [StringComparison]::Ordinal)
-    if (-not $driveAbsolute -and -not $uncAbsolute) {
-        Fail 'USERPROFILE must contain an absolute path'
-    }
-    if ($windowsPath.StartsWith('\\?\', [StringComparison]::Ordinal) -and
-        -not $windowsPath.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase) -and
-        $windowsPath.Substring(4) -notmatch '^[A-Za-z]:\\') {
-        Fail 'USERPROFILE contains an unsupported Windows device path'
-    }
+    if (-not $driveAbsolute -and -not $uncAbsolute) { Fail 'CUP base must contain an absolute path' }
     try {
         $absolute = [IO.Path]::GetFullPath($windowsPath)
-        $volume = [IO.Path]::GetPathRoot($absolute)
-    } catch {
-        Fail 'USERPROFILE must contain a valid absolute path'
-    }
-    if ([string]::IsNullOrWhiteSpace($volume)) {
-        Fail 'USERPROFILE must contain an absolute path'
+        $item = Get-Item -LiteralPath $absolute -Force
+    } catch { Fail 'CUP base must name an existing directory' }
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail 'CUP base must name an existing real directory'
     }
     $trimmed = $absolute.TrimEnd([char[]]'\/')
-    $volumeTrimmed = $volume.TrimEnd([char[]]'\/')
-    if ($trimmed.Equals($volumeTrimmed, [StringComparison]::OrdinalIgnoreCase)) {
-        Fail 'USERPROFILE must be an absolute user directory, not a volume root'
+    $volume = [IO.Path]::GetPathRoot($absolute).TrimEnd([char[]]'\/')
+    if ($trimmed.Equals($volume, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail 'CUP base must be a directory below the volume root'
     }
-
-    if ($absolute.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
-        $canonical = '//' + $absolute.Substring(8)
-    } elseif ($absolute.StartsWith('\\?\', [StringComparison]::Ordinal)) {
-        $canonical = $absolute.Substring(4)
-    } elseif ($absolute.StartsWith('\\', [StringComparison]::Ordinal)) {
-        $canonical = '//' + $absolute.Substring(2)
-    } else {
-        $canonical = $absolute
+    if ($trimmed.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        $trimmed = '//' + $trimmed.Substring(8)
+    } elseif ($trimmed.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        $trimmed = $trimmed.Substring(4)
+    } elseif ($trimmed.StartsWith('\\', [StringComparison]::Ordinal)) {
+        $trimmed = '//' + $trimmed.Substring(2)
     }
-    return $canonical.Replace('\', '/').TrimEnd('/')
+    return $trimmed.Replace('\', '/')
 }
 
-function Get-BootstrapRoot([string[]]$Output) {
-    $records = @($Output | Where-Object {
-        $_.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal)
-    })
-    if ($records.Count -ne 1) {
-        Fail 'bootstrap did not report one canonical root'
+function Invoke-NativeRootSelect([string]$Bootstrap, [string]$Base) {
+    $output = @(& $Bootstrap --internal-select-root $Base 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { Fail "could not select a canonical CUP root below $Base" }
+    $root = $output[0]
+    if (-not ($root.Equals("$Base/.cup", [StringComparison]::OrdinalIgnoreCase) -or
+              $root.Equals("$Base/.coffee-cup", [StringComparison]::OrdinalIgnoreCase))) {
+        Fail 'native root selection returned an unexpected path'
     }
-    $root = $records[0].Substring('CUP_BOOTSTRAP_ROOT='.Length)
-    $canonicalProfile = Get-CupCanonicalProfile $env:USERPROFILE
-    $profile = $canonicalProfile.Replace('/', '\')
-    $primary = Join-Path $profile '.cup'
-    $fallback = Join-Path $profile '.coffee-cup'
-    $canonicalPrimary = "$canonicalProfile/.cup"
-    $canonicalFallback = "$canonicalProfile/.coffee-cup"
-    if ($root.Equals($canonicalPrimary, [StringComparison]::OrdinalIgnoreCase)) {
-        $selected = $primary
-    } elseif ($root.Equals($canonicalFallback, [StringComparison]::OrdinalIgnoreCase)) {
-        $selected = $fallback
-    } else {
-        Fail 'bootstrap reported an unsupported canonical root'
+    return $root
+}
+
+function Test-NativeRootProbe([string]$Bootstrap, [string]$Root) {
+    try { & $Bootstrap --internal-root-probe $Root *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
+}
+
+function Get-InstalledVersion([string]$Binary) {
+    $output = @(& $Binary --version 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1 -or
+        -not $output[0].StartsWith('cup ', [StringComparison]::Ordinal)) {
+        Fail 'existing CUP version response is invalid'
     }
-    foreach ($line in $Output) {
-        if (-not $line.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal)) {
-            Write-Host $line
+    return $output[0].Substring(4)
+}
+
+function Compare-CupVersion([string]$Left, [string]$Right) {
+    $l = $Left.Split('.') | ForEach-Object { [int]$_ }
+    $r = $Right.Split('.') | ForEach-Object { [int]$_ }
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($l[$i] -lt $r[$i]) { return -1 }
+        if ($l[$i] -gt $r[$i]) { return 1 }
+    }
+    return 0
+}
+
+function Find-PathInstallation([string]$Bootstrap) {
+    $command = Get-Command cup.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) { $command = Get-Command cup -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if ($null -eq $command) { return $null }
+    try { $item = Get-Item -LiteralPath $command.Source -Force } catch { return $null }
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+    $bin = [IO.Path]::GetDirectoryName($item.FullName)
+    if ([IO.Path]::GetFileName($bin) -ine 'bin') { return $null }
+    $rootNative = [IO.Path]::GetDirectoryName($bin)
+    $leaf = [IO.Path]::GetFileName($rootNative)
+    if ($leaf -ine '.cup' -and $leaf -ine '.coffee-cup') { return $null }
+    $root = (Get-CupCanonicalBase ([IO.Path]::GetDirectoryName($rootNative))) + "/$leaf"
+    if (-not (Test-NativeRootProbe $Bootstrap $root)) { return $null }
+    return [PSCustomObject]@{ Root = $root; Binary = $item.FullName }
+}
+
+function Select-Installation([string]$Bootstrap) {
+    if (-not [string]::IsNullOrWhiteSpace($env:CUP_INSTALL_BASE_DIR)) {
+        $base = Get-CupCanonicalBase $env:CUP_INSTALL_BASE_DIR
+        return [PSCustomObject]@{ Base = $base; Root = (Invoke-NativeRootSelect $Bootstrap $base) }
+    }
+    $pathInstallation = Find-PathInstallation $Bootstrap
+    if ($null -ne $pathInstallation -and [Environment]::UserInteractive) {
+        $version = Get-InstalledVersion $pathInstallation.Binary
+        $answer = Read-Host "Found CUP $version at $($pathInstallation.Root). Use this installation? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($answer) -or $answer -match '^(?i:y|yes)$') {
+            $base = Get-CupCanonicalBase ([IO.Path]::GetDirectoryName($pathInstallation.Root.Replace('/', '\')))
+            return [PSCustomObject]@{ Base = $base; Root = $pathInstallation.Root }
         }
     }
-    return $selected
+    $baseInput = $env:USERPROFILE
+    if ([Environment]::UserInteractive) {
+        $answer = Read-Host "Choose the parent/base directory for CUP [$baseInput]"
+        if (-not [string]::IsNullOrWhiteSpace($answer)) { $baseInput = $answer }
+    }
+    $base = Get-CupCanonicalBase $baseInput
+    return [PSCustomObject]@{ Base = $base; Root = (Invoke-NativeRootSelect $Bootstrap $base) }
+}
+
+function Assert-NoImplicitDowngrade([string]$Bootstrap, [string]$Root) {
+    if (-not (Test-NativeRootProbe $Bootstrap $Root)) { return }
+    $binary = Join-Path ($Root.Replace('/', '\')) 'bin\cup.exe'
+    $existing = Get-InstalledVersion $binary
+    if ((Compare-CupVersion $existing $ReleaseVersion) -gt 0) {
+        Fail "refusing to replace newer CUP $existing at $Root with older $ReleaseVersion; choose another base directory"
+    }
+}
+
+function Get-BootstrapRoot([string[]]$Output, [string]$ExpectedRoot) {
+    $records = @($Output | Where-Object { $_.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal) })
+    if ($records.Count -ne 1) { Fail 'bootstrap did not report one canonical root' }
+    $root = $records[0].Substring('CUP_BOOTSTRAP_ROOT='.Length)
+    if (-not $root.Equals($ExpectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail 'bootstrap changed the selected canonical root'
+    }
+    foreach ($line in $Output) {
+        if (-not $line.StartsWith('CUP_BOOTSTRAP_ROOT=', [StringComparison]::Ordinal)) { Write-Host $line }
+    }
+    return $root.Replace('/', '\')
 }
 
 function Wait-ForCommit([string]$Root) {
     $binary = Join-Path $Root 'bin\cup.exe'
     $transaction = Join-Path $Root 'transaction.txt'
     $staging = Join-Path $Root 'staging'
-
     for ($attempt = 0; $attempt -lt $WaitAttempts; $attempt++) {
-        if ((Test-CupRootMarker $Root) -and
-            -not [IO.File]::Exists($transaction) -and
-            -not [IO.Directory]::Exists($transaction) -and
-            (Test-DirectoryEmpty $staging) -and
-            (Test-ExpectedCupBinary $binary) -and
-            (Test-CupReady $binary)) {
-            return $binary
-        }
+        if ((Test-CupRootMarker $Root) -and -not [IO.File]::Exists($transaction) -and
+            -not [IO.Directory]::Exists($transaction) -and (Test-DirectoryEmpty $staging) -and
+            (Test-ExpectedCupBinary $binary) -and (Test-CupReady $binary)) { return $binary }
         Start-Sleep -Seconds 1
     }
     Fail 'timed out while waiting for the installed cup to become ready'
+}
+
+function Normalize-PathEntry([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    return $Value.Trim().TrimEnd([char[]]'\/')
+}
+
+function Test-PathContains([string]$PathValue, [string]$Directory) {
+    $wanted = Normalize-PathEntry $Directory
+    foreach ($entry in ($PathValue -split ';')) {
+        if ((Normalize-PathEntry $entry).Equals($wanted, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Offer-PathIntegration([string]$Root) {
+    $bin = Join-Path ($Root.Replace('/', '\')) 'bin'
+    if ($bin.Contains(';')) {
+        Write-Host (
+            "Automatic User PATH integration is unavailable for $bin because the path " +
+            "contains ';'. Configure PATH manually or use the full path to cup.exe.")
+        return
+    }
+    if (Test-PathContains $env:Path $bin) { return }
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (Test-PathContains $userPath $bin) {
+        Write-Host "CUP is already in your User PATH. Open a new shell to use $bin."
+        return
+    }
+    if ($env:CUP_INSTALL_NO_PATH_PROMPT -ceq '1' -or -not [Environment]::UserInteractive) { return }
+    $answer = Read-Host "Add $bin to your User PATH? [Y/n]"
+    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer -notmatch '^(?i:y|yes)$') { return }
+    $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $bin } else { "$userPath;$bin" }
+    try {
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    } catch {
+        Write-Warning (
+            "Could not update your User PATH automatically. CUP remains installed at $bin. " +
+            "Configure PATH manually to use cup from a new shell.")
+        return
+    }
+    Write-Host "Added $bin to your User PATH. Open a new shell to use it."
 }
 
 try {
@@ -509,15 +576,18 @@ try {
     Assert-ReleaseMetadata
 
     $bootstrap = Join-Path $Work $binaryAsset
-    $bootstrapOutput = @(& $bootstrap --internal-bootstrap $Work)
+    $selection = Select-Installation $bootstrap
+    Assert-NoImplicitDowngrade $bootstrap $selection.Root
+    Write-Host "CUP will be installed in $($selection.Root)"
+    $bootstrapOutput = @(& $bootstrap --internal-bootstrap $Work $selection.Base)
     if ($LASTEXITCODE -ne 0) {
         Fail 'the verified cup bootstrap transaction was rejected'
     }
-    $bootstrapRoot = Get-BootstrapRoot $bootstrapOutput
+    $bootstrapRoot = Get-BootstrapRoot $bootstrapOutput $selection.Root
     $installed = Wait-ForCommit $bootstrapRoot
     Write-Host "cup $ReleaseVersion installed successfully."
     Write-Host "Binary: $installed"
-    Write-Host "Add $([IO.Path]::GetDirectoryName($installed)) to PATH if it is not already available."
+    Offer-PathIntegration $selection.Root
 } catch {
     Write-Error $_.Exception.Message
     exit 1

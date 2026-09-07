@@ -41,3 +41,7 @@ const char *package_archive_format_name(PackageArchiveFormat format) {
             return NULL;
     }
 }
+
+const char *package_archive_formats_csv(void) {
+    return "tar.xz,tar.gz,zip";
+}

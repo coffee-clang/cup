@@ -336,9 +336,6 @@ static void test_paths_permissions_and_traversal(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(nested));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_list_directory(directory, count_entry, &count));
     TEST_ASSERT_EQUAL_size_t(4, count);
-    count = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_walk_directory(directory, count_entry, &count));
-    TEST_ASSERT_EQUAL_size_t(4, count);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           system_list_directory(directory, reject_entry, NULL));
 
@@ -562,6 +559,9 @@ static void test_handoff_primitives(void) {
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
     char parent_signal_value[32];
     char authority_value[32];
+    char parent[CUP_TEST_TEMP_PATH_SIZE];
+    char root[CUP_TEST_TEMP_PATH_SIZE];
+    char fallback[CUP_TEST_TEMP_PATH_SIZE];
     SystemHandoff handoff = {0};
     SystemLock lock = {0};
     SECURITY_ATTRIBUTES security;
@@ -570,9 +570,14 @@ static void test_handoff_primitives(void) {
     HANDLE authority = NULL;
     int active = 1;
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_handoff_active(NULL));
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    build_path(parent, sizeof(parent), "handoff parent");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(parent));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(root, sizeof(root), parent, ".cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(fallback, sizeof(fallback), parent, ".coffee-cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, system_handoff_active(root, NULL));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(root, &active));
+    TEST_ASSERT_FALSE(active);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(fallback, &active));
     TEST_ASSERT_FALSE(active);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -625,6 +630,7 @@ static void test_handoff_primitives(void) {
     system_handoff_release(&handoff);
     system_lock_release(&lock);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(parent));
 }
 
 static void run_uninstall_helper_cleanup_lifecycle_case(const char *copy_name,
@@ -728,7 +734,9 @@ static void test_handoff_helper_start(void) {
     char helper[CUP_TEST_TEMP_PATH_SIZE];
     char marker[CUP_TEST_TEMP_PATH_SIZE];
     char lock_path[CUP_TEST_TEMP_PATH_SIZE];
+    char protocol_parent[CUP_TEST_TEMP_PATH_SIZE];
     char protocol_root[CUP_TEST_TEMP_PATH_SIZE];
+    char protocol_fallback[CUP_TEST_TEMP_PATH_SIZE];
     char protocol_detached[CUP_TEST_TEMP_PATH_SIZE];
     char contents[CUP_TEST_TEMP_PATH_SIZE * 3];
     wchar_t wide_executable[CUP_TEST_TEMP_PATH_SIZE];
@@ -746,15 +754,21 @@ static void test_handoff_helper_start(void) {
     int active = 0;
     int written;
 
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("USERPROFILE", temp_dir));
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           system_get_executable_path(executable, sizeof(executable)));
     build_path(helper, sizeof(helper), "handoff-helper-probe.exe");
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(executable, helper));
     build_path(marker, sizeof(marker), "handoff-started.txt");
     build_path(lock_path, sizeof(lock_path), "handoff-start.lock");
-    build_path(protocol_root, sizeof(protocol_root), "protocol root");
-    build_path(protocol_detached, sizeof(protocol_detached), "protocol detached");
+    build_path(protocol_parent, sizeof(protocol_parent), "protocol parent");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(protocol_parent));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          path_join(protocol_root, sizeof(protocol_root), protocol_parent, ".cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          path_join(protocol_fallback, sizeof(protocol_fallback), protocol_parent, ".coffee-cup"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          path_join(protocol_detached, sizeof(protocol_detached), protocol_parent,
+                                    ".cup-uninstall-test"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_root));
     TEST_ASSERT_EQUAL_INT(CUP_OK, path_normalize(protocol_detached));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
@@ -771,9 +785,9 @@ static void test_handoff_helper_start(void) {
                           system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           system_start_update_helper(
-                              "C:/cup-missing-handoff-helper.exe", temp_dir, "token", &lock));
+                              "C:/cup-missing-handoff-helper.exe", protocol_root, "token", &lock));
     TEST_ASSERT_TRUE(lock.active);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(protocol_root, &active));
     TEST_ASSERT_FALSE(active);
     system_lock_release(&lock);
 
@@ -860,11 +874,12 @@ static void test_handoff_helper_start(void) {
     line = strtok(NULL, "\n");
     TEST_ASSERT_EQUAL_STRING("handoff=accepted", line);
     TEST_ASSERT_NULL(strtok(NULL, "\n"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(&active));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_handoff_active(protocol_root, &active));
     TEST_ASSERT_FALSE(active);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(marker));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_file(lock_path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(protocol_parent));
 }
 
 static void test_copy_replace_and_temporary_objects(void) {
@@ -1067,9 +1082,7 @@ static void test_copy_replace_and_temporary_objects(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(temporary_directory));
 }
 
-static void test_shared_script_primitives(void) {
-    char chain[MAX_PATH_LEN];
-    char parent[MAX_PATH_LEN];
+static void test_directory_tree_primitives(void) {
     char exclusive[MAX_PATH_LEN];
     char contents[MAX_PATH_LEN];
     char keep[MAX_PATH_LEN];
@@ -1084,14 +1097,6 @@ static void test_shared_script_primitives(void) {
     SystemPathKind kind;
     uint64_t reader_size = 0;
     int missing = 0;
-    size_t size;
-
-    build_path(parent, sizeof(parent), "chain");
-    TEST_ASSERT_TRUE(snprintf(chain, sizeof(chain), "%s/one/two", parent) > 0);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_check_directory_chain(chain, 1));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, system_check_directory_chain(chain, 0));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory_chain(chain));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_check_directory_chain(chain, 0));
 
     build_path(exclusive, sizeof(exclusive), "script-exclusive");
     state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -1117,18 +1122,15 @@ static void test_shared_script_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
                           system_remove_tree_contents(contents, NULL, always_cancel));
 
+
+
     build_path(lock_path, sizeof(lock_path), "existing.lock");
     write_text(lock_path, "format=1\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          system_lock_acquire_existing(
-                              &lock, lock_path, SYSTEM_LOCK_SHARED));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_get_identity(&lock, &identity));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_identity(lock_path, &identity));
     TEST_ASSERT_TRUE(identity.valid);
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, identity.kind);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_lock_read(&lock, buffer, sizeof(buffer), &size));
-    TEST_ASSERT_EQUAL_size_t(strlen("format=1\n"), size);
-    buffer[size] = '\0';
-    TEST_ASSERT_EQUAL_STRING("format=1\n", buffer);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_lock_acquire(&lock, lock_path, SYSTEM_LOCK_EXCLUSIVE));
 
     /* An exclusive SystemLock must coordinate other locks without making the
      * file contents unreadable or preventing identity-bound unlink. */
@@ -1148,9 +1150,6 @@ static void test_shared_script_primitives(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(lock_path, &kind));
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_MISSING, kind);
 
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          system_lock_acquire_existing(
-                              &lock, "C:/cup-missing-existing-lock", SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           system_remove_tree_contents(contents, "../unsafe", NULL));
 }
@@ -1276,9 +1275,21 @@ static int run_handoff_parent_probe(int argc, char **argv) {
         system_lock_release(&lock);
         return 10 + (int)err;
     }
-    if (lock.active || system_handoff_active(&active) != CUP_OK || !active) {
+    if (lock.active || system_handoff_active(argv[4], &active) != CUP_OK || !active) {
         write_handoff_parent_error(argv[7], "authority", CUP_ERR_TRANSACTION, GetLastError());
         return 4;
+    }
+    {
+        char parent[CUP_TEST_TEMP_PATH_SIZE];
+        char fallback[CUP_TEST_TEMP_PATH_SIZE];
+
+        if (path_parent(parent, sizeof(parent), argv[4]) != CUP_OK ||
+            path_join(fallback, sizeof(fallback), parent, ".coffee-cup") != CUP_OK ||
+            system_handoff_active(fallback, &active) != CUP_OK || active) {
+            write_handoff_parent_error(argv[7], "sibling-authority",
+                                       CUP_ERR_TRANSACTION, GetLastError());
+            return 5;
+        }
     }
     return 0;
 }
@@ -1398,7 +1409,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handoff_primitives);
     RUN_TEST(test_uninstall_helper_cleanup_lifecycle);
     RUN_TEST(test_copy_replace_and_temporary_objects);
-    RUN_TEST(test_shared_script_primitives);
+    RUN_TEST(test_directory_tree_primitives);
     RUN_TEST(test_private_directory_tree_removal_and_locks);
     RUN_TEST(test_handoff_helper_start);
     {

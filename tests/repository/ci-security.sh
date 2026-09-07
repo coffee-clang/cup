@@ -96,12 +96,27 @@ if tests_cancellation_policy "$cancel_fixture.bad"; then
     fail 'Tests cancellation-policy checker accepted an always-run diagnostic job'
 fi
 
-grep -Fq 'cup-tests-evidence-index-attempt-${{ github.run_attempt }}' "$workflows/tests.yml" ||
-    fail 'Tests workflow does not publish run-attempt-bound evidence index'
-grep -Fq 'artifact-ids: ${{ matrix.dependency_artifact_id }}' "$workflows/release.yml" ||
-    fail 'release workflow does not select dependency evidence by artifact ID'
+grep -Fq 'name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ github.run_attempt }}' \
+    "$workflows/tests.yml" ||
+    fail 'Tests workflow does not publish run-attempt-bound source build identity'
+grep -Fq 'name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ needs.metadata.outputs.tests_run_attempt }}' \
+    "$workflows/release.yml" ||
+    fail 'release workflow does not select source build identity from the tested run attempt'
+grep -Fq 'run-id: ${{ needs.metadata.outputs.tests_run_id }}' "$workflows/release.yml" ||
+    fail 'release workflow does not bind source build identity to the selected Tests run'
 grep -Fq 'tests_run_attempt:' "$workflows/release.yml" ||
     fail 'release workflow does not expose the Tests run attempt'
+# Release-run artifacts use stable names so a failed publisher can be retried without
+# requiring already-successful upstream jobs to run again. Rebuilt jobs replace them explicitly.
+for artifact in cup-release-common 'cup-release-${{ matrix.platform }}' 'cup-symbols-${{ matrix.platform }}'; do
+    grep -Fq "name: $artifact" "$workflows/release.yml" ||
+        fail "release workflow is missing stable internal artifact name: $artifact"
+done
+if grep -Eq 'cup-(release|symbols)-[^ ]*attempt-\$\{\{ github\.run_attempt \}\}' "$workflows/release.yml"; then
+    fail 'release workflow still binds internal artifacts to the retry attempt'
+fi
+[ "$(grep -c 'overwrite: true' "$workflows/release.yml")" -eq 3 ] ||
+    fail 'release workflow does not explicitly replace rerun-produced internal artifacts'
 grep -Fq 'candidate=$(cygpath -u "$RUNNER_TEMP")/cup-release-windows-x64' \
     "$workflows/release.yml" ||
     fail 'release workflow does not normalize the Windows candidate path for POSIX assembly'

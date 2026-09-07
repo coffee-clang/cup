@@ -36,8 +36,8 @@ These two pages are enough for someone who only wants to use cup.
   files, binary inspection and the documentation target.
 - [Testing](development/TESTING.md) explains test levels, local commands,
   coverage, sanitizers and CI.
-- [Releases](development/RELEASES.md) describes versioning, evidence, candidate
-  assembly, native validation and publication.
+- [Releases](development/RELEASES.md) describes versioning, tested build identity,
+  candidate assembly, native validation and publication.
 
 ## Project limits
 
@@ -46,7 +46,8 @@ The current project intentionally keeps a small scope:
 - cup works in user space and never requires `sudo` or administrator rights;
 - it installs complete prebuilt packages instead of building tools locally;
 - it does not manage a global sysroot;
-- it does not modify the system PATH;
+- it never requires or modifies a system-wide PATH; the installer may optionally
+  update the current user's PATH;
 - it uses one local root and one transaction file;
 - it supports only the platforms and tools listed by the built-in registry;
 - `stable` is the only symbolic release selector;

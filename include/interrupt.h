@@ -8,11 +8,8 @@
 
 #include "error.h"
 
-/* Install native handlers and preserve the process' previous disposition. */
+/* Install native handlers for the lifetime of this one-shot cup process. */
 CupError interrupt_enable(void);
-
-/* Restore the native dispositions saved by interrupt_enable(). */
-void interrupt_disable(void);
 
 /* Return nonzero after SIGINT/SIGTERM or a supported console event. */
 int interrupt_requested(void);

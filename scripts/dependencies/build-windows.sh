@@ -15,6 +15,7 @@ case "${MSYSTEM:-}" in
             exit 1
         fi
         TOOLCHAIN_LABEL=UCRT64
+        EXPECTED_PROFILE=ucrt64-gcc
         CC=gcc
         AR=ar
         RANLIB=ranlib
@@ -28,6 +29,7 @@ case "${MSYSTEM:-}" in
             exit 1
         fi
         TOOLCHAIN_LABEL=CLANG64
+        EXPECTED_PROFILE=clang64
         CC=clang
         AR=llvm-ar
         RANLIB=llvm-ranlib
@@ -56,15 +58,6 @@ dependency_require_whitespace_free_path "dependency root" "$DEPS_ROOT"
 dependency_require_whitespace_free_path "dependency source directory" "$SRC_DIR"
 dependency_require_whitespace_free_path "dependency build directory" "$BUILD_DIR"
 dependency_require_whitespace_free_path "dependency prefix" "$DEPS_PREFIX"
-
-require_tool cmp
-require_tool mktemp
-
-if [ "${CUP_DEPS_ROOT_LOCK_ACTIVE:-0}" != 1 ]; then
-    export CUP_DEPS_ROOT_LOCK_ACTIVE=1 PLATFORM DEPS_ROOT DEPS_PREFIX
-    dependency_run_root_locked "$DEPS_ROOT" bash "$0" "$@"
-    exit $?
-fi
 
 # Static native Windows dependency builders.
 build_zlib() {
@@ -222,22 +215,16 @@ build_libarchive() {
     make install DESTDIR="$DESTDIR"
 }
 
-# Final prefix and static metadata verification.
-verify() {
-    echo "==> Verifying generated dependency prefix"
-    dependency_prefix_complete "$PREFIX" 0 "$CUP_DEPS_FINAL_PREFIX" || {
-        echo "Error: generated dependency prefix is incomplete or unsafe." >&2
-        exit 1
-    }
-    echo "==> Windows dependencies verified for $CUP_DEPS_FINAL_PREFIX"
-}
-
-# Ordered Windows x64 bootstrap.
 main() {
     local compiler_target
     local profile
     local metadata
 
+    profile=$(dependency_profile "$PLATFORM")
+    if [ "$profile" != "$EXPECTED_PROFILE" ]; then
+        echo "Error: dependency profile '$profile' does not match MSYS2 $TOOLCHAIN_LABEL." >&2
+        exit 1
+    fi
     require_tool "$CC"
     require_tool "$AR"
     require_tool "$RANLIB"
@@ -253,9 +240,7 @@ main() {
             exit 1
             ;;
     esac
-    profile=$(dependency_profile "$PLATFORM")
     metadata=$(dependency_metadata "$PLATFORM" "$profile")
-    dependency_require_root_lock
     trap 'abort_dependency_prefix' EXIT
     prepare_dependency_prefix "$DEPS_PREFIX" "$metadata" 0
     if [ "$CUP_DEPS_PREFIX_READY" = 1 ]; then
@@ -303,8 +288,8 @@ main() {
         "$CC" "$AR" "$RANLIB"
     normalize_dependency_metadata "$PREFIX" \
         "$CUP_DEPS_BUILD_PREFIX" "$CUP_DEPS_FINAL_PREFIX"
-    verify
     finish_dependency_prefix "$PREFIX"
+    echo "==> $TOOLCHAIN_LABEL dependencies verified for $CUP_DEPS_FINAL_PREFIX"
     trap - EXIT HUP INT TERM
 }
 

@@ -12,17 +12,17 @@ try {
     New-TestPackage `
         -Component "compiler" `
         -Tool "clang" `
-        -Version "22.1.5" `
+        -Version "23.1.0" `
         -Entries @("clang", "clang++")
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
 
-    Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
+    Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-23.1.0-windows-x64:clang"
     $wrapper = Join-Path $Script:CupTestHome ".cup\bin\clang.cmd"
     Set-Content -LiteralPath $wrapper -Value "@echo altered" -Encoding ascii
     Assert-Contains (Invoke-Cup -CommandArgs @("info") -ExpectFailure) "status: invalid"
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) "wrapper"
     Invoke-Cup -CommandArgs @("repair") | Out-Null
-    Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-22.1.5-windows-x64:clang"
+    Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-23.1.0-windows-x64:clang"
 
     $stale = Join-Path $Script:CupTestHome ".cup\bin\stale-command.cmd"
     Set-Content -LiteralPath $stale -Value "@echo off`r`nexit /b 0`r`n" -Encoding ascii -NoNewline
@@ -31,14 +31,14 @@ try {
     Invoke-Cup -CommandArgs @("repair") | Out-Null
     Assert-PathMissing $stale
 
-    New-TestPackage -Component "linker" -Tool "lld" -Version "22.1.5" -Entries @("cup")
+    New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" -Entries @("cup")
     $reserved = Invoke-Cup -CommandArgs @("install", "linker", "lld@stable") -ExpectFailure
     Assert-Contains $reserved "conflicts with cup itself"
 
     New-TestPackage `
         -Component "formatter" `
         -Tool "clang-format" `
-        -Version "22.1.5" `
+        -Version "23.1.0" `
         -Entries @("CLANG")
     $collision = Invoke-Cup `
         -CommandArgs @("install", "formatter", "clang-format@stable") `

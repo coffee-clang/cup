@@ -6,6 +6,7 @@
 #include "package.h"
 
 #include "package_selector.h"
+#include "package_archive.h"
 #include "filesystem.h"
 #include "package_metadata.h"
 #include "layout.h"
@@ -320,24 +321,108 @@ static CupError require_metadata_value(const PackageMetadata *metadata,
     return CUP_OK;
 }
 
-static CupError validate_package_command_file(const char *path) {
+static CupError require_metadata_present(const PackageMetadata *metadata,
+                                         const char *key,
+                                         FILE *diagnostics) {
+    if (package_metadata_get(metadata, key) == NULL) {
+        package_diagnostic(diagnostics,
+                           "Error: required package metadata field '%s' is missing.\n",
+                           key);
+        return CUP_ERR_VALIDATION;
+    }
+    return CUP_OK;
+}
+
+static int package_revision_is_canonical_positive(const char *value) {
+    const unsigned char *cursor;
+
+    if (value == NULL || value[0] < '1' || value[0] > '9') {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)value + 1; *cursor != '\0'; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static CupError validate_package_revision(const PackageMetadata *metadata,
+                                          const PackageIdentity *identity,
+                                          FILE *diagnostics) {
+    const char *revision = package_metadata_get(metadata, "package.revision");
+
+    if (strcmp(identity->tool, "gcc") == 0) {
+        if (!package_revision_is_canonical_positive(revision)) {
+            package_diagnostic(
+                diagnostics, "Error: GCC package metadata requires a positive canonical revision.\n");
+            return CUP_ERR_VALIDATION;
+        }
+    } else if (revision != NULL) {
+        package_diagnostic(diagnostics,
+                           "Error: package metadata field 'package.revision' is not valid for '%s'.\n",
+                           identity->tool);
+        return CUP_ERR_VALIDATION;
+    }
+    return CUP_OK;
+}
+
+static CupError validate_package_common_metadata(const PackageMetadata *metadata,
+                                                 const PackageIdentity *identity,
+                                                 FILE *diagnostics) {
+    static const char *const required_declarations[] = {
+        "platform.host_triple",
+        "platform.target_triple",
+        "platform.family",
+        "platform.runtime",
+        "platform.thread_model",
+        "build.environment",
+        "build.source_policy",
+        "source.primary.name",
+        "source.primary.version",
+        "source.primary.url"
+    };
+    size_t i;
+    CupError err;
+
+    err = require_metadata_value(metadata, "package.mode", "self-contained", diagnostics);
+    if (err == CUP_OK) {
+        err = require_metadata_value(
+            metadata, "package.formats", package_archive_formats_csv(), diagnostics);
+    }
+    for (i = 0; err == CUP_OK && i < sizeof(required_declarations) / sizeof(required_declarations[0]);
+         ++i) {
+        err = require_metadata_present(metadata, required_declarations[i], diagnostics);
+    }
+    if (err == CUP_OK) {
+        err = validate_package_revision(metadata, identity, diagnostics);
+    }
+    return err;
+}
+
+static CupError validate_package_command_file(const char *base_path, const char *relative_path) {
     SystemPathIdentity identity;
     FILE *file = NULL;
+    char display_path[MAX_PATH_LEN];
     uint64_t size = 0;
     int is_executable = 0;
     int missing = 0;
     CupError err;
 
     memset(&identity, 0, sizeof(identity));
-    err = system_open_regular_file(path, &file, &identity, &size, &missing);
-    if (err != CUP_OK || missing || file == NULL || size == 0) {
+    err = path_join_safe_relative(display_path, sizeof(display_path), base_path, relative_path);
+    if (err == CUP_OK) {
+        err = system_open_regular_file_beneath(
+            base_path, relative_path, &file, &identity, &size, &missing);
+    }
+    if (err != CUP_OK || missing || size == 0) {
         if (file != NULL) {
             (void)fclose(file);
         }
         return err == CUP_ERR_INVALID_INPUT ? err : CUP_ERR_VALIDATION;
     }
 
-    err = system_file_is_executable(file, path, &is_executable);
+    err = system_file_is_executable(file, display_path, &is_executable);
     if (fclose(file) != 0 && err == CUP_OK) {
         err = CUP_ERR_FILESYSTEM;
     }
@@ -355,16 +440,12 @@ static CupError validate_package_commands(const PackageMetadata *metadata,
     size_t count = 0;
 
     while (package_metadata_next_command(metadata, &command, &cursor)) {
-        char path[MAX_PATH_LEN];
         CupError err;
 
         if (!path_is_safe_relative(command.path)) {
             err = CUP_ERR_VALIDATION;
         } else {
-            err = path_join_safe_relative(path, sizeof(path), base_path, command.path);
-        }
-        if (err == CUP_OK) {
-            err = validate_package_command_file(path);
+            err = validate_package_command_file(base_path, command.path);
         }
 
         if (err != CUP_OK) {
@@ -439,6 +520,9 @@ static CupError load_validated_payload_metadata(PackageMetadata *metadata,
     if (err == CUP_OK) {
         err = require_metadata_value(
             metadata, "platform.target", identity->target_platform, diagnostics);
+    }
+    if (err == CUP_OK) {
+        err = validate_package_common_metadata(metadata, identity, diagnostics);
     }
     if (err == CUP_OK) {
         err = validate_package_commands(metadata, base_path, diagnostics);
@@ -550,7 +634,6 @@ CupError package_metadata_is_read_only(const char *base_path, int *is_read_only)
 
 CupError package_set_metadata_read_only(const char *base_path) {
     char package_metadata_path[MAX_PATH_LEN];
-    int metadata_read_only;
     CupError err;
 
     if (text_is_empty(base_path)) {
@@ -559,14 +642,7 @@ CupError package_set_metadata_read_only(const char *base_path) {
 
     err = path_join(
         package_metadata_path, sizeof(package_metadata_path), base_path, CUP_INFO_FILENAME);
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = system_is_read_only(package_metadata_path, &metadata_read_only);
-    if (err != CUP_OK || metadata_read_only) {
-        return err;
-    }
-    return system_set_read_only(package_metadata_path, 1);
+    return err == CUP_OK ? system_set_read_only(package_metadata_path, 1) : err;
 }
 
 CupError package_path_exists(const PackageIdentity *identity, int *exists) {
@@ -751,7 +827,7 @@ static CupError scan_package_path(const char *path,
     const char *name;
     CupError err = CUP_OK;
 
-    if (context == NULL || identity == NULL || !identity->valid || identity->kind != path_kind) {
+    if (context == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -837,7 +913,6 @@ CupError package_scan(PackageList *packages, FILE *diagnostics) {
     PackageScanContext context;
     CupError err;
     char root[MAX_PATH_LEN];
-    SystemPathKind root_kind;
 
     if (packages == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -856,17 +931,6 @@ CupError package_scan(PackageList *packages, FILE *diagnostics) {
     err = layout_get_components_dir(root, sizeof(root));
     if (err != CUP_OK) {
         return err;
-    }
-
-    err = system_get_path_kind(root, &root_kind);
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (root_kind == SYSTEM_PATH_MISSING) {
-        return CUP_OK;
-    }
-    if (root_kind != SYSTEM_PATH_DIRECTORY) {
-        return CUP_ERR_FILESYSTEM;
     }
 
     return system_list_directory(root, scan_package_path, &context);

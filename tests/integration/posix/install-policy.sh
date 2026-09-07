@@ -20,15 +20,16 @@ component_root() {
 prepare_fixture() {
     run_cup repair >/dev/null
     package_catalog_ensure_package compiler gcc "$TEST_PLATFORM" \
-        16.1.0-rev1 tar.gz
-    make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang clang++
-    make_package compiler gcc 16.1.0-rev1 "$TEST_PLATFORM" gcc g++
-    make_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
-    make_package debugger gdb 17.1 "$TEST_PLATFORM" gdb
-    make_package linker lld 22.1.5 "$TEST_PLATFORM" lld
-    make_package formatter clang-format 22.1.5 "$TEST_PLATFORM" clang-format
-    make_package linter clang-tidy 22.1.5 "$TEST_PLATFORM" clang-tidy
-    make_package language-server clangd 22.1.5 "$TEST_PLATFORM" clangd
+        16.2.0-rev1 tar.gz
+    make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
+    make_package compiler gcc 16.2.0-rev1 "$TEST_PLATFORM" gcc g++
+    make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
+    make_package debugger gdb 17.2 "$TEST_PLATFORM" gdb
+    make_package linker ld 2.47 "$TEST_PLATFORM" ld
+    make_package linker lld 23.1.0 "$TEST_PLATFORM" lld
+    make_package formatter clang-format 23.1.0 "$TEST_PLATFORM" clang-format
+    make_package linter clang-tidy 23.1.0 "$TEST_PLATFORM" clang-tidy
+    make_package language-server clangd 23.1.0 "$TEST_PLATFORM" clangd
 }
 
 # Profile/default resolution and user preference scenarios.
@@ -49,8 +50,8 @@ test_defaults_profile() {
     assert_contains "$output" "Installing profile 'minimal' (2 packages)"
     assert_contains "$output" \
         "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
-    assert_file "$(component_root compiler clang 22.1.5)/info.txt"
-    assert_file "$(component_root linker lld 22.1.5)/info.txt"
+    assert_file "$(component_root compiler clang 23.1.0)/info.txt"
+    assert_file "$(component_root linker lld 23.1.0)/info.txt"
 }
 
 test_scoped_preferences() {
@@ -61,8 +62,8 @@ test_scoped_preferences() {
         'compiler           gcc                clang              user preference'
 
     output=$(run_cup install COMPILER)
-    assert_contains "$output" 'Installed compiler gcc@16.1.0-rev1'
-    assert_file "$(component_root compiler gcc 16.1.0-rev1)/info.txt"
+    assert_contains "$output" 'Installed compiler gcc@16.2.0-rev1'
+    assert_file "$(component_root compiler gcc 16.2.0-rev1)/info.txt"
 
     assert_contains "$(run_cup config set compiler gcc --target windows-x64)" \
         "Preferred tool for 'compiler' on target 'windows-x64' set to 'gcc'."
@@ -89,14 +90,13 @@ test_scoped_preferences() {
     assert_missing "$TEST_HOME/.cup/config/preferences.txt"
 }
 
-# Toolchain plans must prevalidate completely before installing any package.
-test_gnu_prevalidation() {
-    run_cup_expect_failure "$TMP_ROOT/gnu-toolchain.out" install TOOLCHAIN GNU
-    output=$(cat "$TMP_ROOT/gnu-toolchain.out")
-    assert_contains "$output" "Install group 'gnu' cannot be installed"
-    assert_contains "$output" 'ld                 not currently available'
-    assert_contains "$output" 'No packages were installed.'
-    assert_missing "$(component_root debugger gdb 17.1)"
+# The native GNU toolchain is complete; an already installed member is skipped.
+test_gnu_toolchain() {
+    output=$(run_cup install TOOLCHAIN GNU)
+    assert_contains "$output" "Installing toolchain 'gnu' (3 packages)"
+    assert_contains "$output" "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
+    assert_file "$(component_root debugger gdb 17.2)/info.txt"
+    assert_file "$(component_root linker ld 2.47)/info.txt"
 }
 
 test_toolchain_explicit() {
@@ -106,17 +106,17 @@ test_toolchain_explicit() {
     output=$(run_cup install TOOLCHAIN LLVM)
     assert_contains "$output" "Installing toolchain 'llvm' (6 packages)"
     assert_contains "$output" "Install group 'llvm' completed: 4 package(s) installed, 2 skipped."
-    assert_file "$(component_root debugger lldb 22.1.5)/info.txt"
-    assert_file "$(component_root formatter clang-format 22.1.5)/info.txt"
-    assert_file "$(component_root linter clang-tidy 22.1.5)/info.txt"
-    assert_file "$(component_root language-server clangd 22.1.5)/info.txt"
+    assert_file "$(component_root debugger lldb 23.1.0)/info.txt"
+    assert_file "$(component_root formatter clang-format 23.1.0)/info.txt"
+    assert_file "$(component_root linter clang-tidy 23.1.0)/info.txt"
+    assert_file "$(component_root language-server clangd 23.1.0)/info.txt"
     rm -f "$TEST_HOME/.cup/config/preferences.txt"
 }
 
 prepare_fixture
 test_defaults_profile
 test_scoped_preferences
-test_gnu_prevalidation
+test_gnu_toolchain
 test_toolchain_explicit
 assert_cup_healthy
 printf 'Install policy tests passed for %s.\n' "$TEST_PLATFORM"

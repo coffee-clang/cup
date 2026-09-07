@@ -8,24 +8,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* libcurl owns URL syntax and decomposition. CUP owns the deliberately narrow test-transport
- * policy: explicit opt-in, HTTP, one of the supported loopback hosts, an explicit non-zero port,
- * no credentials/query/fragment/IPv6 zone identifier and no backslash path form. */
+/* libcurl owns URL syntax and decomposition. CUP keeps the test-only transport override deliberately
+ * small: explicit opt-in, HTTP, 127.0.0.1, an explicit non-zero port and a plain path. */
 static CupError normalize_insecure_loopback_url(const char *url, char *normalized, size_t size) {
     CURLU *parsed = NULL;
     CURLUcode result;
     char *scheme = NULL;
     char *host = NULL;
     char *port = NULL;
-    char *query = NULL;
-    char *fragment = NULL;
-    char *zone = NULL;
-    char *path = NULL;
     char *canonical = NULL;
     CupError err = CUP_ERR_INVALID_INPUT;
     size_t length;
 
-    if (url == NULL) {
+    if (url == NULL || strpbrk(url, "?#\\") != NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
 
@@ -40,48 +35,14 @@ static CupError normalize_insecure_loopback_url(const char *url, char *normalize
     }
     result = curl_url_get(parsed, CURLUPART_SCHEME, &scheme, 0);
     if (result != CURLUE_OK || strcmp(scheme, "http") != 0) {
-        err = result == CURLUE_OUT_OF_MEMORY ? CUP_ERR_TEMPORARY : CUP_ERR_INVALID_INPUT;
         goto cleanup;
     }
     result = curl_url_get(parsed, CURLUPART_HOST, &host, 0);
-    if (result != CURLUE_OK ||
-        (strcmp(host, "127.0.0.1") != 0 && strcmp(host, "localhost") != 0 &&
-         strcmp(host, "[::1]") != 0)) {
-        err = result == CURLUE_OUT_OF_MEMORY ? CUP_ERR_TEMPORARY : CUP_ERR_INVALID_INPUT;
+    if (result != CURLUE_OK || strcmp(host, "127.0.0.1") != 0) {
         goto cleanup;
     }
     result = curl_url_get(parsed, CURLUPART_PORT, &port, 0);
     if (result != CURLUE_OK || strcmp(port, "0") == 0) {
-        err = result == CURLUE_OUT_OF_MEMORY ? CUP_ERR_TEMPORARY : CUP_ERR_INVALID_INPUT;
-        goto cleanup;
-    }
-    result = curl_url_get(parsed, CURLUPART_QUERY, &query, CURLU_GET_EMPTY);
-    if (result == CURLUE_OK || (result != CURLUE_NO_QUERY && result != CURLUE_OUT_OF_MEMORY)) {
-        goto cleanup;
-    }
-    if (result == CURLUE_OUT_OF_MEMORY) {
-        err = CUP_ERR_TEMPORARY;
-        goto cleanup;
-    }
-    result = curl_url_get(parsed, CURLUPART_FRAGMENT, &fragment, CURLU_GET_EMPTY);
-    if (result == CURLUE_OK || (result != CURLUE_NO_FRAGMENT && result != CURLUE_OUT_OF_MEMORY)) {
-        goto cleanup;
-    }
-    if (result == CURLUE_OUT_OF_MEMORY) {
-        err = CUP_ERR_TEMPORARY;
-        goto cleanup;
-    }
-    result = curl_url_get(parsed, CURLUPART_ZONEID, &zone, 0);
-    if (result == CURLUE_OK || (result != CURLUE_NO_ZONEID && result != CURLUE_OUT_OF_MEMORY)) {
-        goto cleanup;
-    }
-    if (result == CURLUE_OUT_OF_MEMORY) {
-        err = CUP_ERR_TEMPORARY;
-        goto cleanup;
-    }
-    result = curl_url_get(parsed, CURLUPART_PATH, &path, 0);
-    if (result != CURLUE_OK || strchr(path, '\\') != NULL) {
-        err = result == CURLUE_OUT_OF_MEMORY ? CUP_ERR_TEMPORARY : CUP_ERR_INVALID_INPUT;
         goto cleanup;
     }
 
@@ -106,10 +67,6 @@ static CupError normalize_insecure_loopback_url(const char *url, char *normalize
 
 cleanup:
     curl_free(canonical);
-    curl_free(path);
-    curl_free(zone);
-    curl_free(fragment);
-    curl_free(query);
     curl_free(port);
     curl_free(host);
     curl_free(scheme);

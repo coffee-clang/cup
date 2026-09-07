@@ -13,6 +13,8 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 PROJECT_ROOT=$ROOT_DIR
 # shellcheck source=../lib/path-safety.sh
 . "$ROOT_DIR/scripts/lib/path-safety.sh"
+# shellcheck source=../lib/sha256.sh
+. "$ROOT_DIR/scripts/lib/sha256.sh"
 CERT_DIR=$ROOT_DIR/certs
 CERT_FILE=$CERT_DIR/cacert.pem
 META_FILE=$CERT_DIR/cacert.meta
@@ -112,13 +114,8 @@ if [ -f "$META_FILE" ]; then
     max_age=$(sed -n 's/^max_age_days=//p' "$META_FILE")
 fi
 
-if command -v sha256sum >/dev/null 2>&1; then
-    digest=$(sha256sum "$PEM_TMP" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-    digest=$(shasum -a 256 "$PEM_TMP" | awk '{print $1}')
-else
-    fail 'neither sha256sum nor shasum is available'
-fi
+digest=$(cup_sha256_file "$PEM_TMP") ||
+    fail 'neither sha256sum nor shasum produced a valid SHA-256 digest'
 count=$(grep -c '^-----BEGIN CERTIFICATE-----$' "$PEM_TMP" || true)
 [ "$count" -ge 100 ] || fail "downloaded CA bundle has a suspicious certificate count: $count"
 

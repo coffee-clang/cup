@@ -82,6 +82,11 @@ static CupError commit_default(CommandContext *context,
     context->state = candidate;
     err = state_save(
         &context->state, &context->state_identity, &context->state_identity);
+    if (err == CUP_ERR_COMMIT) {
+        fprintf(stderr,
+                "Error: the default state may already be saved, but its durability could not "
+                "be confirmed. Run 'cup doctor' before retrying.\n");
+    }
     if (err != CUP_OK) {
         return err;
     }

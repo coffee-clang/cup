@@ -55,23 +55,14 @@ function Complete-CupCapture {
 
 $server = $null
 $captureA = $null
-$originalAllowInsecure = Get-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE `
-    -ErrorAction SilentlyContinue
 
 try {
     Initialize-TestEnvironment -Name "concurrency" -ExecutablePath $CupExecutablePath
     Invoke-Cup -CommandArgs @("repair") | Out-Null
-    New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" `
+    New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++")
 
-    $configuration = if ([string]::IsNullOrWhiteSpace($env:CUP_TEST_CONFIGURATION)) {
-        "development"
-    } else {
-        $env:CUP_TEST_CONFIGURATION
-    }
-    $helper = Join-Path $Script:CupTestBuildRoot `
-        "windows-x64\$configuration\tests\helpers\network-helper.exe"
-    Assert-PathExists $helper
+    $helper = Get-TestHelperPath -Name "network-helper"
 
     $port = 0
     $serverRoot = Join-Path $Script:CupTestRoot "http-root"
@@ -81,11 +72,11 @@ try {
     New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
 
     $cacheDir = Join-Path $Script:CupTestHome `
-        ".cup\cache\compiler\clang\windows-x64\windows-x64\22.1.5"
-    $archiveName = "clang-22.1.5-windows-x64-windows-x64.zip"
+        ".cup\cache\compiler\clang\windows-x64\windows-x64\23.1.0"
+    $archiveName = "clang-23.1.0-windows-x64-windows-x64.zip"
     Move-Item -LiteralPath (Join-Path $cacheDir $archiveName) `
         -Destination (Join-Path $serverRoot $archiveName)
-    $checksumRoot = Join-Path $serverRoot "22.1.5\windows-x64\windows-x64"
+    $checksumRoot = Join-Path $serverRoot "23.1.0\windows-x64\windows-x64"
     New-Item -ItemType Directory -Force -Path $checksumRoot | Out-Null
     Move-Item -LiteralPath (Join-Path $cacheDir "SHA256SUMS") `
         -Destination (Join-Path $checksumRoot "SHA256SUMS")
@@ -191,7 +182,7 @@ try {
     if ($readyAfterResult.ExitCode -ne 0) {
         Fail-Test "runtime readiness probe did not recover after the mutation completed"
     }
-    Assert-Contains $resultA.Output "Installed compiler clang@22.1.5"
+    Assert-Contains $resultA.Output "Installed compiler clang@23.1.0"
     if (-not ($resultB.Output.Contains("another cup operation is currently running") -or
               $resultB.Output.Contains("a package transaction is active or requires recovery"))) {
         Fail-Test (
@@ -209,9 +200,9 @@ try {
         Fail-Test "concurrent installs left temporary paths behind"
     }
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `
-        "compiler [windows-x64]: clang@22.1.5 (stable)"
+        "compiler [windows-x64]: clang@23.1.0 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") `
-        "clang-22.1.5-windows-x64:clang"
+        "clang-23.1.0-windows-x64:clang"
 
     Write-Host "Windows concurrency tests passed."
 } finally {
@@ -238,11 +229,6 @@ try {
             # Cleanup is best effort.
         }
         $server.Dispose()
-    }
-    if ($null -eq $originalAllowInsecure) {
-        Remove-Item -LiteralPath Env:CUP_INSTALL_ALLOW_INSECURE -ErrorAction SilentlyContinue
-    } else {
-        $env:CUP_INSTALL_ALLOW_INSECURE = $originalAllowInsecure.Value
     }
     Remove-TestEnvironment
 }

@@ -8,14 +8,13 @@ override PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # whitespace-free until all supported metadata formats can quote them portably.
 empty :=
 space := $(empty) $(empty)
+tab := $(shell printf '\t')
 apostrophe := '
 colon := :
 semicolon := ;
 percent := %
 hash := \#
 dollar := $$
-left_paren := (
-left_brace := {
 escape_spaces = $(subst $(space),\$(space),$(1))
 
 SUPPORTED_PLATFORM := linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
@@ -112,14 +111,8 @@ endif
 ifneq ($(filter environment environment\ override command\ line,$(origin TESTS_RUN_ATTEMPT)),)
 override TESTS_RUN_ATTEMPT := $(value TESTS_RUN_ATTEMPT)
 endif
-ifneq ($(filter environment environment\ override command\ line,$(origin TESTS_EVIDENCE_INDEX_SHA256)),)
-override TESTS_EVIDENCE_INDEX_SHA256 := $(value TESTS_EVIDENCE_INDEX_SHA256)
-endif
 ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_RUN_ID)),)
 override RELEASE_RUN_ID := $(value RELEASE_RUN_ID)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_RUN_ATTEMPT)),)
-override RELEASE_RUN_ATTEMPT := $(value RELEASE_RUN_ATTEMPT)
 endif
 ifneq ($(filter environment environment\ override command\ line,$(origin MSYSTEM)),)
 override MSYSTEM := $(value MSYSTEM)
@@ -141,47 +134,6 @@ override CUP_ALLOW_DEV_CLEAN := $(value CUP_ALLOW_DEV_CLEAN)
 endif
 ifneq ($(filter environment environment\ override command\ line,$(origin CUP_TEST_WITH_BUILD_OUTPUT)),)
 override CUP_TEST_WITH_BUILD_OUTPUT := $(value CUP_TEST_WITH_BUILD_OUTPUT)
-endif
-
-# Reject nested Make expressions before any frozen value is passed to another
-# Make function. $(value ...) is the only expansion that exposes caller text
-# without evaluating it. Explicit EXTRA_* flag strings are trusted compiler
-# additions and remain outside this check.
-override RAW_MAKE_INPUTS := \
-    PLATFORM OS PROCESSOR_ARCHITEW6432 PROCESSOR_ARCHITECTURE HOME \
-    CUP_BUILD_CONFIGURATION CUP_OFFICIAL_BUILD CUP_INTERNAL_DEPS_TARGET \
-    CUP_INTERNAL_TOOLCHAIN_ROLE BUILD_DIR DEPS_ROOT DEPS_PREFIX CC WINDRES JOBS \
-    MACOSX_DEPLOYMENT_TARGET \
-    CUP_TEST_CONFIGURATION RELEASE_DIR MDBOOK EXTRA_CPPFLAGS EXTRA_CFLAGS \
-    EXTRA_LDFLAGS EXTRA_LDLIBS CUP_RELEASE_VERSION \
-    CUP_RELEASE_TAG CUP_RELEASE_COMMIT SOURCE_REPOSITORY TESTS_RUN_ID \
-    TESTS_RUN_ATTEMPT TESTS_EVIDENCE_INDEX_SHA256 RELEASE_RUN_ID \
-    RELEASE_RUN_ATTEMPT MSYSTEM CUP_DEPENDENCY_PROFILE RELEASE_COMMON_ROOT \
-    RELEASE_COMMON_DIR RELEASE_PLATFORM_ROOT CUP_ALLOW_DEV_CLEAN \
-    CUP_TEST_WITH_BUILD_OUTPUT
-override MAKE_PAREN_OPEN := $(dollar)$(left_paren)
-override MAKE_BRACE_OPEN := $(dollar)$(left_brace)
-ifneq ($(strip $(foreach variable,$(RAW_MAKE_INPUTS),\
-        $(if $(findstring $(MAKE_PAREN_OPEN),$(value $(variable))),$(variable))\
-        $(if $(findstring $(MAKE_BRACE_OPEN),$(value $(variable))),$(variable)))),)
-    $(error Caller-controlled Make expressions are not supported)
-endif
-tab := $(shell printf '\t')
-
-# Derived paths, file lists and policy variables are private implementation
-# details. Refuse command-line replacement instead of silently building or
-# cleaning a caller-selected path under an internal variable name.
-override PRIVATE_MAKE_VARIABLES := \
-    HOST_SYSTEM HOST_MACHINE WINDOWS_MACHINE NATIVE_PLATFORM \
-    VERSION_OFFICIAL_BUILD NEED_BUILD_CONFIG BUILD_ROOT CONFIG_DIR OBJ_DIR \
-    BIN_DIR GENERATED_DIR BUILD_CONFIG VERSION_STAMP VERSION_HEADER \
-    VERSION_RESOURCE VERSION_METADATA CA_BUNDLE_STAMP CA_BUNDLE_HEADER \
-    CA_BUNDLE_SOURCE BINARY_INSPECTION TARGET OBJ DEP SRC SYSTEM_SRC \
-    COMMON_SRC RESOURCE_OBJ COVERAGE_ENTRY_OBJ DEPS_INCLUDE DEPS_LIB_DIRS \
-    CURL_CONFIG PKG_CONFIG_PATH BUILD_ROOT_MARKER FINALIZED_ROOT
-ifneq ($(strip $(foreach variable,$(PRIVATE_MAKE_VARIABLES),\
-        $(if $(filter command\ line,$(origin $(variable))),$(variable)))),)
-    $(error Private Make variables cannot be overridden from the command line)
 endif
 
 ifneq ($(findstring $(apostrophe),$(PROJECT_ROOT)),)
@@ -250,6 +202,7 @@ ifeq ($(origin CONFIGURATION),command line)
     $(error CONFIGURATION is internal; select make, debug, coverage, sanitizers or release)
 endif
 CUP_BUILD_CONFIGURATION ?= development
+CUP_TEST_CONFIGURATION ?= development
 CUP_OFFICIAL_BUILD ?= 0
 CUP_INTERNAL_DEPS_TARGET ?= deps
 CUP_INTERNAL_TOOLCHAIN_ROLE ?= primary
@@ -270,7 +223,7 @@ endif
 # Public targets enter a recursive private build target. Selector validation is
 # therefore attached to the private build boundary rather than maintained as a
 # fragile negative list of every non-build goal.
-BUILD_ENTRY_GOALS := _build _check-binary _debug-artifact _release-candidate
+BUILD_ENTRY_GOALS := _build _check-binary _debug-artifact _release-candidate _release-output
 ifneq ($(strip $(filter $(BUILD_ENTRY_GOALS),$(MAKECMDGOALS))),)
     NEED_BUILD_CONFIG := 1
 else
@@ -388,6 +341,7 @@ COMMON_SRC := \
     src/checksum.c \
     src/third_party/sha256.c \
     src/assets.c \
+    src/update_assets.c \
     src/package.c \
     src/installed_package.c \
     src/package_transaction.c \
@@ -431,7 +385,7 @@ PLATFORM_LDLIBS :=
 DEPENDENCY_CPPFLAGS :=
 DEPENDENCY_CFLAGS :=
 DEPENDENCY_LDFLAGS :=
-DEPENDENCY_LDLIBS :=
+DEPENDENCY_LDLIBS =
 
 CONFIG_CFLAGS_development := -O0 -g3
 CONFIG_CFLAGS_debug := -O0 -g3 -fno-omit-frame-pointer \
@@ -449,6 +403,7 @@ COVERAGE_ENTRY_OBJ :=
 # command-line CC/WINDRES values remain available for compiler-matrix and MSYS2
 # jobs because GNU Make command-line variables override these defaults.
 ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64 macos-x64 macos-arm64),)
+    override WINDRES :=
     SYSTEM_SRC := src/system_posix.c
     TARGET := $(BIN_DIR)/cup
 endif
@@ -616,33 +571,20 @@ DEPS_LIB_DIRS = $(foreach directory,$(DEPS_PREFIX)/lib $(DEPS_PREFIX)/lib64,\
     $(if $(wildcard $(directory)),$(directory)))
 ARGTABLE_LIB = $(firstword $(wildcard \
     $(DEPS_PREFIX)/lib/libargtable3.a \
-    $(DEPS_PREFIX)/lib64/libargtable3.a \
-    $(DEPS_PREFIX)/lib/libargtable3.dll.a \
-    $(DEPS_PREFIX)/lib64/libargtable3.dll.a))
+    $(DEPS_PREFIX)/lib64/libargtable3.a))
 override CURL_CONFIG := $(DEPS_PREFIX)/bin/curl-config
-CURL_LIBS := $(shell $(CURL_CONFIG) --static-libs 2>/dev/null)
-STATIC_PKG_CONFIG_PATH := \
+CURL_LIBS = $(shell $(CURL_CONFIG) --static-libs 2>/dev/null)
+STATIC_PKG_CONFIG_PATH = \
     $(DEPS_PREFIX)/lib/pkgconfig:$(DEPS_PREFIX)/lib64/pkgconfig
-ARCHIVE_LIBS := $(shell \
+ARCHIVE_LIBS = $(shell \
     PKG_CONFIG_PATH=$(STATIC_PKG_CONFIG_PATH) \
     PKG_CONFIG_LIBDIR=$(STATIC_PKG_CONFIG_PATH) \
     PKG_CONFIG_SYSROOT_DIR= \
     pkg-config --static --libs libarchive 2>/dev/null)
 
-ifeq ($(NEED_BUILD_CONFIG),1)
-    ifeq ($(wildcard $(CURL_CONFIG)),)
-        $(error Missing $(CURL_CONFIG). Run 'make PLATFORM=$(PLATFORM) deps' first.)
-    endif
-    ifeq ($(strip $(CURL_LIBS)),)
-        $(error curl-config did not return pinned static link flags)
-    endif
-    ifeq ($(strip $(ARCHIVE_LIBS)),)
-        $(error pkg-config did not return pinned static libarchive link flags)
-    endif
-    ifeq ($(strip $(ARGTABLE_LIB)),)
-        $(error Missing static Argtable3 archive in $(DEPS_PREFIX))
-    endif
-endif
+# Link metadata is deliberately recursive. Recipes that consume LDLIBS run only
+# after their dependency-verification prerequisites, so executable/generated
+# prefix metadata is never evaluated during an unrelated outer Make parse.
 
 DEPENDENCY_CPPFLAGS += -I$(DEPS_INCLUDE)
 DEPENDENCY_LDFLAGS += $(addprefix -L,$(DEPS_LIB_DIRS))
@@ -666,6 +608,9 @@ ifeq ($(CONFIGURATION),release)
     ifneq ($(filter $(PLATFORM),linux-x64 linux-arm64 windows-x64),)
         PLATFORM_LDFLAGS += -static
     endif
+    ifeq ($(PLATFORM),windows-x64)
+        PLATFORM_LDFLAGS += -Wl,--no-insert-timestamp
+    endif
 endif
 
 # These overrides deliberately ignore ambient/direct flag variables. The full
@@ -678,7 +623,7 @@ override CFLAGS := $(strip $(PROJECT_CFLAGS) $(PLATFORM_CFLAGS) \
 override LDFLAGS := $(strip $(PROJECT_LDFLAGS) $(PLATFORM_LDFLAGS) \
     $(CONFIG_LDFLAGS_$(CONFIGURATION)) $(DEPENDENCY_LDFLAGS) \
     $(EXTRA_LDFLAGS))
-override LDLIBS := $(strip $(PROJECT_LDLIBS) $(PLATFORM_LDLIBS) \
+override LDLIBS = $(strip $(PROJECT_LDLIBS) $(PLATFORM_LDLIBS) \
     $(CONFIG_LDLIBS_$(CONFIGURATION)) $(DEPENDENCY_LDLIBS) \
     $(EXTRA_LDLIBS))
 
@@ -771,49 +716,38 @@ BUILD_RECURSE = $(MAKE) --no-print-directory _build \
     PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
     CC='$(CC)' WINDRES='$(WINDRES)' \
     CUP_OFFICIAL_BUILD='$(CUP_OFFICIAL_BUILD)'
-CUP_INTERNAL_MAKE_FLAG_WORD := $(firstword $(MAKEFLAGS))
-CUP_INTERNAL_MAKE_SHORT_FLAGS := $(if $(filter -%,$(CUP_INTERNAL_MAKE_FLAG_WORD)),,$(CUP_INTERNAL_MAKE_FLAG_WORD))
-CUP_INTERNAL_MAKE_DRY_RUN := $(findstring n,$(CUP_INTERNAL_MAKE_SHORT_FLAGS)) \
-    $(filter -n --just-print --dry-run --recon,$(CUP_INTERNAL_MAKE_FLAG_WORD))
-ifneq ($(strip $(CUP_INTERNAL_MAKE_DRY_RUN)),)
-BUILD_LOCK_PREFIX =
-else
-BUILD_LOCK_PREFIX = . '$(PATH_SAFETY)'; cup_path_run_build '$(BUILD_ROOT)' --
-endif
-
 all: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=development
+	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=development
 
 build: all
 
 debug: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=debug
+	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=debug
 
 coverage: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=coverage
+	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=coverage
 
 sanitizers: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _build PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _build PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC=clang WINDRES='$(if $(filter windows-x64,$(PLATFORM)),llvm-windres,$(WINDRES))' \
 		CUP_BUILD_CONFIGURATION=sanitizers CUP_OFFICIAL_BUILD=0
 
 release: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=release
+	+@$(BUILD_RECURSE) CUP_BUILD_CONFIGURATION=release
 
 # Common assets and native candidates are generated only below the managed
 # build root. Official candidates consume an already verified dependency prefix.
 release-common-assets: $(BUILD_ROOT_MARKER)
-	@$(BUILD_LOCK_PREFIX) env VERSION='$(CUP_RELEASE_VERSION)' TAG='$(CUP_RELEASE_TAG)' SHA='$(CUP_RELEASE_COMMIT)' \
+	@env VERSION='$(CUP_RELEASE_VERSION)' TAG='$(CUP_RELEASE_TAG)' SHA='$(CUP_RELEASE_COMMIT)' \
 		SOURCE_REPOSITORY='$(SOURCE_REPOSITORY)' TESTS_RUN_ID='$(TESTS_RUN_ID)' \
 		TESTS_RUN_ATTEMPT='$(TESTS_RUN_ATTEMPT)' \
-		TESTS_EVIDENCE_INDEX_SHA256='$(TESTS_EVIDENCE_INDEX_SHA256)' \
-		RELEASE_RUN_ID='$(RELEASE_RUN_ID)' RELEASE_RUN_ATTEMPT='$(RELEASE_RUN_ATTEMPT)' \
+		RELEASE_RUN_ID='$(RELEASE_RUN_ID)' \
 		CUP_BUILD_ROOT='$(BUILD_ROOT)' \
 		./scripts/release/common-assets.sh '$(abspath $(RELEASE_COMMON_ROOT))'
 
 release-candidate: deps-check | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _release-output \
+	+@$(MAKE) --no-print-directory _release-output \
 		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)' CUP_BUILD_CONFIGURATION=release \
 		CUP_OFFICIAL_BUILD=1 CUP_RELEASE_VERSION='$(CUP_RELEASE_VERSION)' \
@@ -828,7 +762,7 @@ _release-output: _release-candidate
 		'$(abspath $(FINALIZED_ROOT))' '$(abspath $(RELEASE_PLATFORM_ROOT))'
 
 debug-artifact: deps-check | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _debug-artifact \
+	+@$(MAKE) --no-print-directory _debug-artifact \
 		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)' CUP_BUILD_CONFIGURATION=debug \
 		CUP_OFFICIAL_BUILD=0
@@ -934,31 +868,32 @@ check-toolchain:
 
 check-binary: check-development
 check-development: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=development CUP_OFFICIAL_BUILD=0
 check-debug: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=debug CUP_OFFICIAL_BUILD=0
 check-coverage: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=coverage CUP_OFFICIAL_BUILD=0
 check-sanitizers: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC=clang \
 		WINDRES='$(if $(filter windows-x64,$(PLATFORM)),llvm-windres,$(WINDRES))' \
 		CUP_BUILD_CONFIGURATION=sanitizers CUP_OFFICIAL_BUILD=0
 check-release: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
+	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
 		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=release CUP_OFFICIAL_BUILD=0
 
 _check-binary: $(BINARY_INSPECTION)
 	@cat "$(BINARY_INSPECTION)"
 
-$(BINARY_INSPECTION): $(TARGET) scripts/build/inspect-binary.sh | $(BUILD_ROOT_MARKER)
+$(BINARY_INSPECTION): $(TARGET) scripts/build/inspect-binary.sh \
+        scripts/lib/path-safety.sh scripts/lib/build-configuration.sh scripts/lib/sha256.sh | $(BUILD_ROOT_MARKER)
 	@CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/build/inspect-binary.sh \
 		'$(PLATFORM)' '$(CONFIGURATION)' '$(abspath $(TARGET))' '$(abspath $@)' build
 
@@ -981,15 +916,29 @@ _release-candidate: $(TARGET) $(BUILD_CONFIG) $(VERSION_METADATA) | $(BUILD_ROOT
 
 FORCE:
 
-$(VERSION_STAMP): FORCE VERSION scripts/version.sh | $(BUILD_ROOT_MARKER)
+$(VERSION_STAMP): FORCE VERSION scripts/version.sh scripts/lib/path-safety.sh \
+        scripts/lib/build-configuration.sh scripts/lib/git-identity.sh scripts/lib/semver.sh | $(BUILD_ROOT_MARKER)
 	@. '$(PATH_SAFETY)'; \
 		cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(GENERATED_DIR))' 'generated directory'
-	@CUP_BUILD_ROOT='$(BUILD_ROOT)' CUP_OFFICIAL_BUILD='$(VERSION_OFFICIAL_BUILD)' \
+	@. '$(PATH_SAFETY)'; \
+		staging=$$(cup_path_create_unique_directory \
+			'$(BUILD_ROOT)/.version-generate.XXXXXX' 'version generation directory') || exit 1; \
+		cleanup() { cup_path_remove_child_tree '$(BUILD_ROOT)' "$$staging" \
+			'version generation directory' >/dev/null 2>&1 || true; }; \
+		trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		CUP_BUILD_ROOT='$(BUILD_ROOT)' CUP_OFFICIAL_BUILD='$(VERSION_OFFICIAL_BUILD)' \
 		CUP_BUILD_CONFIGURATION='$(CONFIGURATION)' \
 		CUP_RELEASE_VERSION='$(CUP_RELEASE_VERSION)' \
 		CUP_RELEASE_TAG='$(CUP_RELEASE_TAG)' \
 		CUP_RELEASE_COMMIT='$(CUP_RELEASE_COMMIT)' \
-		./scripts/version.sh generate "$(GENERATED_DIR)"
+		./scripts/version.sh generate "$$staging" || exit 1; \
+		for file in version.h version.rc release.txt; do \
+			cup_path_require_regular_file "$$staging/$$file" "generated $$file" || exit 1; \
+		done; \
+		cup_path_copy_file "$$staging/version.h" '$(abspath $(VERSION_HEADER))' 0644 if-different || exit 1; \
+		cup_path_copy_file "$$staging/version.rc" '$(abspath $(VERSION_RESOURCE))' 0644 if-different || exit 1; \
+		cup_path_copy_file "$$staging/release.txt" '$(abspath $(VERSION_METADATA))' 0644 if-different || exit 1; \
+		cleanup; trap - EXIT HUP INT TERM
 	@. '$(PATH_SAFETY)'; : | cup_path_write_file '$(abspath $@)' 0644 replace
 
 $(VERSION_HEADER) $(VERSION_RESOURCE) $(VERSION_METADATA): $(VERSION_STAMP)
@@ -1000,10 +949,24 @@ $(VERSION_HEADER) $(VERSION_RESOURCE) $(VERSION_METADATA): $(VERSION_STAMP)
 	fi
 
 $(CA_BUNDLE_STAMP): certs/cacert.pem certs/cacert.meta \
-        scripts/certs/check-ca-bundle.sh scripts/certs/generate-ca-bundle.sh | $(BUILD_ROOT_MARKER)
+        scripts/certs/check-ca-bundle.sh scripts/certs/generate-ca-bundle.sh \
+        scripts/lib/path-safety.sh scripts/lib/text-file.sh scripts/lib/sha256.sh | $(BUILD_ROOT_MARKER)
 	@. '$(PATH_SAFETY)'; \
 		cup_path_prepare_child_directory '$(BUILD_ROOT)' '$(abspath $(GENERATED_DIR))' 'generated directory'
-	@CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/certs/generate-ca-bundle.sh certs/cacert.pem "$(GENERATED_DIR)"
+	@. '$(PATH_SAFETY)'; \
+		staging=$$(cup_path_create_unique_directory \
+			'$(BUILD_ROOT)/.ca-generate.XXXXXX' 'CA generation directory') || exit 1; \
+		cleanup() { cup_path_remove_child_tree '$(BUILD_ROOT)' "$$staging" \
+			'CA generation directory' >/dev/null 2>&1 || true; }; \
+		trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		CUP_BUILD_ROOT='$(BUILD_ROOT)' \
+			./scripts/certs/generate-ca-bundle.sh certs/cacert.pem "$$staging" || exit 1; \
+		for file in ca_bundle.h ca_bundle.c; do \
+			cup_path_require_regular_file "$$staging/$$file" "generated $$file" || exit 1; \
+		done; \
+		cup_path_copy_file "$$staging/ca_bundle.h" '$(abspath $(CA_BUNDLE_HEADER))' 0644 if-different || exit 1; \
+		cup_path_copy_file "$$staging/ca_bundle.c" '$(abspath $(CA_BUNDLE_SOURCE))' 0644 if-different || exit 1; \
+		cleanup; trap - EXIT HUP INT TERM
 	@. '$(PATH_SAFETY)'; : | cup_path_write_file '$(abspath $@)' 0644 replace
 
 $(CA_BUNDLE_HEADER) $(CA_BUNDLE_SOURCE): $(CA_BUNDLE_STAMP)
@@ -1013,7 +976,8 @@ $(CA_BUNDLE_HEADER) $(CA_BUNDLE_SOURCE): $(CA_BUNDLE_STAMP)
 		$(MAKE) "$(CA_BUNDLE_STAMP)"; \
 	fi
 
-$(BUILD_CONFIG): FORCE Makefile scripts/build/write-config.sh | $(BUILD_ROOT_MARKER) deps-check check-toolchain
+$(BUILD_CONFIG): FORCE Makefile scripts/build/write-config.sh scripts/lib/path-safety.sh \
+        scripts/lib/text-file.sh scripts/lib/sha256.sh | $(BUILD_ROOT_MARKER) deps-check check-toolchain
 	@CUP_BUILD_PLATFORM='$(PLATFORM)' CUP_BUILD_CONFIGURATION='$(CONFIGURATION)' \
 		CUP_BUILD_CC='$(CC)' CUP_BUILD_WINDRES='$(WINDRES)' \
 		CUP_BUILD_CPPFLAGS='$(CPPFLAGS)' CUP_BUILD_CFLAGS='$(CFLAGS)' \
@@ -1045,7 +1009,7 @@ $(RESOURCE_OBJ): $(VERSION_RESOURCE) $(VERSION_HEADER) $(BUILD_CONFIG) Makefile
 endif
 
 version: | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _version \
+	+@$(MAKE) --no-print-directory _version \
 		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)'
 
@@ -1058,7 +1022,7 @@ validate-release:
 		CUP_RELEASE_COMMIT='$(CUP_RELEASE_COMMIT)' ./scripts/version.sh validate-release
 
 release-metadata: | $(BUILD_ROOT_MARKER)
-	+@$(BUILD_LOCK_PREFIX) $(MAKE) --no-print-directory _release-metadata \
+	+@$(MAKE) --no-print-directory _release-metadata \
 		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)'
 
@@ -1129,10 +1093,9 @@ reset-dev-home:
 		'$(HOME)' "$$selected_root" 'development root' || exit 1
 
 # Platform wrappers choose their platform before validating prepared dependencies.
-CUP_TEST_CONFIGURATION ?= development
 
 test-unit-build: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
-	@$(BUILD_LOCK_PREFIX) env CUP_TEST_PLATFORM='$(PLATFORM)' CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
+	@env CUP_TEST_PLATFORM='$(PLATFORM)' CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 		CUP_TEST_BUILD_ROOT='$(BUILD_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CPPFLAGS='$(strip $(TEST_CPPFLAGS))' \
 		CUP_TEST_CFLAGS='$(strip $(TEST_CFLAGS))' \
@@ -1144,7 +1107,7 @@ test-helpers: $(CUP_INTERNAL_DEPS_TARGET)
 		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)'
 
 _test-helpers: deps-check | $(BUILD_ROOT_MARKER)
-	@$(BUILD_LOCK_PREFIX) env CUP_TEST_PLATFORM='$(PLATFORM)' CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
+	@env CUP_TEST_PLATFORM='$(PLATFORM)' CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)' \
 		CUP_TEST_BUILD_ROOT='$(BUILD_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' \
 		CUP_TEST_CPPFLAGS='$(strip $(TEST_CPPFLAGS))' \
 		CUP_TEST_CFLAGS='$(strip $(TEST_CFLAGS))' \
