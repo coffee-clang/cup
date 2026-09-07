@@ -960,13 +960,13 @@ esac
 EOF_CLANG
 cat >"$IDENTITY_BIN/ar" <<'EOF_AR'
 #!/bin/sh
-[ "${1:-}" = --version ] || exit 2
-printf '%s\n' 'Apple ar 1.0'
+printf '%s\n' 'Apple ar has no version query' >&2
+exit 2
 EOF_AR
 cat >"$IDENTITY_BIN/ranlib" <<'EOF_RANLIB'
 #!/bin/sh
-[ "${1:-}" = --version ] || exit 2
-printf '%s\n' 'Apple ranlib 1.0'
+printf '%s\n' 'Apple ranlib has no version query' >&2
+exit 2
 EOF_RANLIB
 cat >"$IDENTITY_BIN/xcrun" <<'EOF_XCRUN'
 #!/bin/sh
@@ -1009,6 +1009,28 @@ metadata_ambient=$(
 )
 [ "$metadata_unset" = "$metadata_ambient" ] ||
     fail 'macOS dependency metadata depends on non-canonical ambient state'
+cp "$IDENTITY_BIN/ar" "$TMP_ROOT/apple-ar-original"
+printf '%s\n' '# changed archiver bytes' >> "$IDENTITY_BIN/ar"
+identity_archiver_changed=$(
+    PATH="$IDENTITY_BIN:$PATH" bash -eu -c \
+        '. "$1"; dependency_cache_key macos-x64 apple-clang' \
+        sh "$DEPENDENCY_COMMON"
+)
+[ "$identity_archiver_changed" != "$identity_unset" ] ||
+    fail 'macOS dependency cache key ignored archiver identity'
+mv "$TMP_ROOT/apple-ar-original" "$IDENTITY_BIN/ar"
+chmod +x "$IDENTITY_BIN/ar"
+cp "$IDENTITY_BIN/ranlib" "$TMP_ROOT/apple-ranlib-original"
+printf '%s\n' '# changed ranlib bytes' >> "$IDENTITY_BIN/ranlib"
+identity_ranlib_changed=$(
+    PATH="$IDENTITY_BIN:$PATH" bash -eu -c \
+        '. "$1"; dependency_cache_key macos-x64 apple-clang' \
+        sh "$DEPENDENCY_COMMON"
+)
+[ "$identity_ranlib_changed" != "$identity_unset" ] ||
+    fail 'macOS dependency cache key ignored ranlib identity'
+mv "$TMP_ROOT/apple-ranlib-original" "$IDENTITY_BIN/ranlib"
+chmod +x "$IDENTITY_BIN/ranlib"
 canonical_macos_target=$(
     PATH="$IDENTITY_BIN:$PATH" bash -eu -c '
         . "$1"

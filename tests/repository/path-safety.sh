@@ -17,6 +17,14 @@ assert_rejected() {
     fi
 }
 
+create_test_symlink() {
+    case "$(uname -s 2>/dev/null || true)" in
+        MSYS*|MINGW*) MSYS=winsymlinks:sys ln -s "$1" "$2" ;;
+        *) ln -s "$1" "$2" ;;
+    esac
+    [ -L "$2" ] || fail "symlink fixture was not created as a real link: $2"
+}
+
 # Managed paths are canonical absolute shell paths.
 assert_rejected cup_path_validate_absolute_clean relative 'relative path'
 assert_rejected cup_path_validate_absolute_clean / 'filesystem root'
@@ -44,7 +52,7 @@ safe_parent=$TMP_ROOT/safe-parent
 mkdir "$safe_parent"
 external=$TMP_ROOT/external
 mkdir "$external"
-ln -s "$external" "$safe_parent/link"
+create_test_symlink "$external" "$safe_parent/link"
 assert_rejected cup_path_check_directory_chain "$safe_parent/link/child" 1 'linked path'
 printf '%s\n' data > "$safe_parent/file"
 assert_rejected cup_path_check_directory_chain "$safe_parent/file/child" 1 'file path'
@@ -96,7 +104,7 @@ assert_equals "$(cat "$copied_file")" payload
 [ -x "$copied_file" ] || fail 'copy-file did not apply requested executable mode'
 
 # Existing output symlinks are rejected instead of being followed.
-ln -s "$external" "$owned/symlink-output"
+create_test_symlink "$external" "$owned/symlink-output"
 assert_rejected cup_path_prepare_child_file "$owned" "$owned/symlink-output" 'symlink output'
 
 # Tree copies accept regular files/directories and reject links/special entries.
@@ -107,7 +115,7 @@ printf '%s\n' tree > "$tree_source/file"
 cup_path_require_safe_tree "$tree_source" 'safe tree'
 cup_path_copy_tree "$tree_source" "$tree_destination"
 assert_equals "$(cat "$tree_destination/file")" tree
-ln -s "$external" "$tree_source/link"
+create_test_symlink "$external" "$tree_source/link"
 assert_rejected cup_path_require_safe_tree "$tree_source" 'linked tree'
 rm "$tree_source/link"
 mkfifo "$tree_source/fifo"
@@ -133,7 +141,7 @@ assert_rejected cup_path_prepare_build_root "${HOME%/}"
 
 # An evident linked parent cannot redirect build-root creation.
 linked_parent=$TMP_ROOT/linked-parent
-ln -s "$external" "$linked_parent"
+create_test_symlink "$external" "$linked_parent"
 assert_rejected cup_path_prepare_build_root "$linked_parent/build"
 assert_missing "$external/build"
 

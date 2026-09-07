@@ -97,6 +97,20 @@ dependency_tool_version_line() {
     printf '%s\n' "$output"
 }
 
+dependency_tool_binary_sha256() {
+    local tool="$1" path digest
+
+    path=$(command -v "$tool") || {
+        echo "Error: required tool '$tool' was not found while fingerprinting the toolchain." >&2
+        return 1
+    }
+    digest=$(cup_sha256_file "$path") || {
+        echo "Error: could not fingerprint tool '$tool'." >&2
+        return 1
+    }
+    printf '%s\n' "$digest"
+}
+
 dependency_toolchain_sha256() {
     local platform="$1" profile="$2"
     local compiler archiver ranlib target compiler_version archiver_version ranlib_version sdk=none
@@ -114,8 +128,19 @@ dependency_toolchain_sha256() {
     esac
     target=$("$compiler" -dumpmachine 2>/dev/null || "$compiler" -print-target-triple 2>/dev/null) || return 1
     compiler_version=$(dependency_tool_version_line "$compiler") || return 1
-    archiver_version=$(dependency_tool_version_line "$archiver") || return 1
-    ranlib_version=$(dependency_tool_version_line "$ranlib") || return 1
+    case "$profile" in
+        apple-clang)
+            # Apple's ar/ranlib do not provide a stable version-query CLI. Hash the
+            # exact tools invoked by the dependency builder instead of accepting
+            # failed probe output or dropping them from the cache identity.
+            archiver_version=$(dependency_tool_binary_sha256 "$archiver") || return 1
+            ranlib_version=$(dependency_tool_binary_sha256 "$ranlib") || return 1
+            ;;
+        *)
+            archiver_version=$(dependency_tool_version_line "$archiver") || return 1
+            ranlib_version=$(dependency_tool_version_line "$ranlib") || return 1
+            ;;
+    esac
     case "$platform" in
         macos-*)
             command -v xcrun >/dev/null 2>&1 || return 1

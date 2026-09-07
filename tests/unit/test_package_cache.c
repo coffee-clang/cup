@@ -209,14 +209,17 @@ CupError verified_artifact_verify_expected(VerifiedArtifact *artifact,
 }
 
 CupError verified_artifact_discard(VerifiedArtifact *artifact) {
+    CupError result = artifact_discard_result;
+
     artifact_discard_calls++;
     if (artifact != NULL) {
-        if (artifact->path[0] != '\0') {
-            (void)remove(artifact->path);
+        if (result == CUP_OK && artifact->path[0] != '\0' &&
+            test_remove_tree(artifact->path) != 0) {
+            result = CUP_ERR_FILESYSTEM;
         }
         memset(artifact, 0, sizeof(*artifact));
     }
-    return artifact_discard_result;
+    return result;
 }
 
 void package_catalog_init(PackageCatalog *catalog) {
