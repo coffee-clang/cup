@@ -100,13 +100,13 @@ jobs:
           DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          CUP_SOURCE_BUILD_CONFIG: ${{ runner.temp }}/cup-source-build-config.txt
+          CUP_SOURCE_BUILD_CONFIG: ${{ runner.temp }}/build-config.txt
           CUP_CI_BUILD_REPOSITORY_TESTS: 1
         run: scripts/ci/source-posix.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cup-source-build-config.txt
+          path: ${{ runner.temp }}/build-config.txt
           if-no-files-found: error
           retention-days: 14
 

@@ -605,7 +605,7 @@ try {
         throw "Windows installer did not create $installed"
     }
     # A zero-warning doctor run models the shell in which the current canonical root is on PATH.
-    $env:Path = "$(Split-Path -Parent $installed);$($env:Path)"
+    # Keep that PATH change local so later installer cases can exercise root selection independently.
     $installedVersion = & $installed --version
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup --version failed with exit code $LASTEXITCODE"
@@ -617,8 +617,14 @@ try {
     if ($installedHash -ne $candidateHash) {
         throw "Installed cup does not match the tested release candidate"
     }
-    $doctorOutput = @(& $installed doctor 2>&1)
-    $doctorStatus = $LASTEXITCODE
+    $savedInstalledPath = $env:Path
+    try {
+        $env:Path = "$(Split-Path -Parent $installed);$savedInstalledPath"
+        $doctorOutput = @(& $installed doctor 2>&1)
+        $doctorStatus = $LASTEXITCODE
+    } finally {
+        $env:Path = $savedInstalledPath
+    }
     $doctorText = $doctorOutput -join [Environment]::NewLine
     if (-not [string]::IsNullOrEmpty($doctorText)) {
         Write-Host $doctorText

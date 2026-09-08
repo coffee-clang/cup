@@ -99,6 +99,11 @@ fi
 grep -Fq 'name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ github.run_attempt }}' \
     "$workflows/tests.yml" ||
     fail 'Tests workflow does not publish run-attempt-bound source build identity'
+grep -Fq 'CUP_SOURCE_BUILD_CONFIG: ${{ runner.temp }}/build-config.txt' \
+    "$workflows/tests.yml" ||
+    fail 'POSIX source tests do not preserve the canonical build-config artifact basename'
+grep -Fq 'path: ${{ runner.temp }}/build-config.txt' "$workflows/tests.yml" ||
+    fail 'Tests workflow does not upload the canonical source build-config basename'
 grep -Fq 'name: cup-source-build-config-${{ matrix.platform }}-attempt-${{ needs.metadata.outputs.tests_run_attempt }}' \
     "$workflows/release.yml" ||
     fail 'release workflow does not select source build identity from the tested run attempt'
