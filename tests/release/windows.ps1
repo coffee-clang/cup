@@ -1014,8 +1014,14 @@ try {
     if ($updatedInstalledVersion -cne "cup $nextVersion") {
         throw "installed cup was not usable after update"
     }
-    $updatedDoctorOutput = @(& $installed doctor 2>&1)
-    $updatedDoctorStatus = $LASTEXITCODE
+    $savedUpdatedPath = $env:Path
+    try {
+        $env:Path = "$(Split-Path -Parent $installed);$savedUpdatedPath"
+        $updatedDoctorOutput = @(& $installed doctor 2>&1)
+        $updatedDoctorStatus = $LASTEXITCODE
+    } finally {
+        $env:Path = $savedUpdatedPath
+    }
     $updatedDoctorText = $updatedDoctorOutput -join [Environment]::NewLine
     if (-not [string]::IsNullOrEmpty($updatedDoctorText)) {
         Write-Host $updatedDoctorText
