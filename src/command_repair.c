@@ -595,8 +595,6 @@ static CupError adopt_scanned_packages(CupState *state,
     for (i = 0; i < packages->count; ++i) {
         const PackageIdentity *package = &packages->items[i];
         char selector[MAX_SELECTOR_LEN];
-        char install_path[MAX_PATH_LEN];
-        int is_read_only;
 
         {
             CupError err = package_identity_format_selector(package, selector, sizeof(selector));
@@ -615,22 +613,6 @@ static CupError adopt_scanned_packages(CupState *state,
             *state_changed = 1;
         }
 
-        {
-            CupError err = layout_build_install_path(install_path, sizeof(install_path), package);
-            if (err != CUP_OK) {
-                return err;
-            }
-            if (package_metadata_is_read_only(install_path, &is_read_only) != CUP_OK ||
-                !is_read_only) {
-                err = package_set_metadata_read_only(install_path);
-                if (err != CUP_OK) {
-                    return err;
-                }
-                printf("Restored read-only protection for %s@%s metadata.\n",
-                       package->tool,
-                       package->version);
-            }
-        }
     }
 
     return CUP_OK;

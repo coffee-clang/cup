@@ -257,6 +257,10 @@ CA_METADATA
 package_name="clang-99.0.0-$PLATFORM-$PLATFORM"
 package_directory="$PACKAGE_ROOT/$package_name"
 release_directory="$SERVER_ROOT/99.0.0-$PLATFORM-$PLATFORM"
+case "$PLATFORM" in
+    linux-x64) package_triple=x86_64-linux-gnu ;;
+    linux-arm64) package_triple=aarch64-linux-gnu ;;
+esac
 mkdir -p "$package_directory/bin" "$release_directory"
 cat >"$package_directory/info.txt" <<METADATA
 package.component=compiler
@@ -266,16 +270,17 @@ package.mode=self-contained
 package.formats=tar.xz,tar.gz,zip
 platform.host=$PLATFORM
 platform.target=$PLATFORM
-platform.host_triple=${PLATFORM}-fixture
-platform.target_triple=${PLATFORM}-fixture
-platform.family=fixture
-platform.runtime=fixture
-platform.thread_model=fixture
+platform.host_triple=$package_triple
+platform.target_triple=$package_triple
+platform.family=gnu
+platform.runtime=glibc
+platform.thread_model=posix
 build.environment=test
 build.source_policy=fixture
-source.primary.name=clang
+source.primary.name=llvm-project
 source.primary.version=99.0.0
-source.primary.url=https://example.invalid/clang-99.0.0.tar.xz
+source.primary.url=https://example.invalid/llvm-project-99.0.0.tar.xz
+source.primary.sha256=0000000000000000000000000000000000000000000000000000000000000000
 entry.clang=bin/clang
 METADATA
 cat >"$package_directory/bin/clang" <<'PROGRAM'
@@ -283,6 +288,15 @@ cat >"$package_directory/bin/clang" <<'PROGRAM'
 printf '%s\n' portable-clang
 PROGRAM
 chmod +x "$package_directory/bin/clang"
+{
+    printf 'format=2\n'
+    printf 'd\t0755\t-\tbin\n'
+    printf 'f\t0755\t%s\tbin/clang\n' \
+        "$(sha256sum "$package_directory/bin/clang" | awk '{print $1}')"
+    printf 'f\t0644\t%s\tinfo.txt\n' \
+        "$(sha256sum "$package_directory/info.txt" | awk '{print $1}')"
+} > "$package_directory/manifest.txt"
+chmod 0644 "$package_directory/manifest.txt"
 tar -czf "$release_directory/$package_name.tar.gz" \
     -C "$PACKAGE_ROOT" "$package_name"
 (

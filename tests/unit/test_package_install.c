@@ -54,7 +54,6 @@ static CupError safe_point_results[MAX_STEPS];
 static CupError discard_result;
 static CupError remove_results[MAX_STEPS];
 static CupError ensure_dir_result;
-static CupError read_only_result;
 static CupError parent_result;
 static CupError move_results[MAX_STEPS];
 static SystemCommitState move_states[MAX_STEPS];
@@ -114,7 +113,6 @@ static void reset_scenario(void) {
     checksum_url_result = CUP_OK;
     discard_result = CUP_OK;
     ensure_dir_result = CUP_OK;
-    read_only_result = CUP_OK;
     parent_result = CUP_OK;
     add_state_result = CUP_OK;
     current_default = NULL;
@@ -558,7 +556,7 @@ CupError interrupt_safe_point(void) {
 
 
 
-CupError package_validate(const char *base_path,
+CupError package_validate_integrity(const char *base_path,
                           const PackageIdentity *identity,
                           FILE *diagnostics) {
     (void)diagnostics;
@@ -606,11 +604,6 @@ CupError filesystem_ensure_directory(const char *path) {
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", path);
     ensure_dir_calls++;
     return ensure_dir_result;
-}
-
-CupError package_set_metadata_read_only(const char *base_path) {
-    TEST_ASSERT_EQUAL_STRING("/tmp/staging", base_path);
-    return read_only_result;
 }
 
 CupError layout_ensure_package_parent(const PackageIdentity *identity) {
@@ -1045,10 +1038,6 @@ static void test_fetch_failures(void) {
     reset_scenario();
     interrupt_values[1] = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, install_test_artifact());
-
-    reset_scenario();
-    read_only_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
 
     reset_scenario();
     parent_result = CUP_ERR_FILESYSTEM;

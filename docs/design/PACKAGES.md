@@ -15,7 +15,7 @@ Security checks related to downloads and extraction are collected in
 building each tool
 choosing build features
 including the required runtime files
-generating info.txt
+generating info.txt and manifest.txt
 creating archives
 publishing SHA256SUMS
 ```
@@ -28,7 +28,7 @@ selecting one package tuple
 downloading and checking the archive
 validating archive paths and types
 extracting into staging
-validating info.txt and declared executable entries
+validating info.txt, manifest.txt and declared executable entries
 installing under the managed root
 updating state and defaults
 ```
@@ -333,12 +333,24 @@ platform.host
 platform.target
 ```
 
-Every package must declare at least one executable entry using an `entry.*`
-field. Optional groups may include:
+The common producer contract also declares package mode and archive formats, platform
+triples/runtime information, build/source provenance and `source.primary.sha256`. GCC
+packages additionally carry `package.revision`, which must agree with the `-revN` suffix
+of the concrete package version. cup validates the fields that belong to consumer identity,
+admission and schema; producer-specific capability meaning remains owned by
+`cup-components`. `requires.*` records explicit platform-owned prerequisites that are not
+package payload, while `bundle.*` records producer composition such as GCC's bundled
+Binutils/MinGW sources. cup preserves and exposes those fields without reconstructing the
+producer's capability policy.
+
+Every package must declare at least one executable entry using an `entry.*` field.
+Descriptive producer-owned groups may include:
 
 ```text
 features.*
 contents.*
+bundle.*
+requires.*
 config.*
 ```
 
@@ -363,6 +375,38 @@ exceed the configured limits.
 The identity in `info.txt` must match the installed path and the request that
 selected the package.
 
+
+## `manifest.txt`
+
+Every finalized package contains `manifest.txt` with schema `format=2`. It is the exact
+logical inventory of every package descendant except the manifest itself. Records are
+ordered by relative path and use tab-separated fields:
+
+```text
+d<TAB>0755<TAB>-<TAB><path>
+f<TAB>0644|0755<TAB><sha256><TAB><path>
+l<TAB>-<TAB><sha256-of-link-target-text><TAB><path>
+```
+
+Directory and regular-file modes are normalized by `cup-components`. Link records exist
+only on POSIX and describe the exact relative symbolic-link target text. Windows package
+manifests contain only directories and regular files. Case-fold path collisions are not
+valid package identity.
+
+The manifest is generated after the package tree and `info.txt` are final.
+`cup-components` regenerates it after extracting each published archive format; therefore
+the tar.xz, tar.gz and ZIP artifacts must describe the same logical package. Hardlink inode
+identity is not part of this contract: final package files are independent regular files and
+raw archive hardlink entries are not admitted by cup.
+
+During installation cup validates metadata first and then verifies the complete staged tree
+against `manifest.txt`: declared objects must exist with the expected type, mode and digest,
+and undeclared objects are rejected. For each POSIX link record, this full integrity pass also
+requires physical resolution to remain beneath the package root and end at a regular file;
+archive extraction itself only needs the earlier lexical confinement needed to construct the
+staged tree safely. The same integrity check is used by package scanning, `doctor` and repair
+admission. Lightweight metadata queries do not re-hash complete package trees.
+
 ## Executable entries and wrappers
 
 Each `entry.<name>` value must be a safe relative path inside the package. On
@@ -385,25 +429,19 @@ identity.
 
 ## Package validation
 
-A package is accepted only when:
+A package is accepted for installation or integrity scanning only when:
 
 1. its identity fields are valid;
 2. the root is a real directory;
 3. `info.txt` is a bounded regular file that parses successfully;
-4. metadata matches the selected identity;
+4. consumer-owned metadata matches the selected identity and common package schema;
 5. each declared executable entry is a safe package-relative path whose admitted
-   platform resolution ends at a present regular executable file inside the
-   package root;
-6. the package root and `info.txt` still name the same filesystem objects
-   observed during validation.
+   platform resolution ends at a present regular executable file inside the package root;
+6. `manifest.txt` is valid `format=2` and exactly matches the complete package tree.
 
-`ValidatedPackage` owns the parsed metadata used for the decision. Commands such
-as `inspect`, `default`, `doctor` and wrapper planning all use this same
-validation path.
-
-The read-only protection applied to `info.txt` is a managed permission rule. A
-permission change is reported by `doctor` and can be restored by `repair`, but
-the package still has the same semantic identity.
+`ValidatedPackage` owns one parsed metadata snapshot for callers that need metadata. The
+manifest is the integrity authority for package bytes and normalized modes, so cup does not
+apply a separate read-only policy to `info.txt` after installation.
 
 ## Scanning and repair
 

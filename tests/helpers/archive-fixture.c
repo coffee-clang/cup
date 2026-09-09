@@ -2,6 +2,8 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include "third_party/sha256.h"
+
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,35 +140,90 @@ static int parse_options(int argc, char **argv, FixtureOptions *options) {
     return strcmp(options->mode, "extra-file") == 0 ? argc == 9 : argc == 7;
 }
 
+static const char *platform_triple(const char *platform) {
+    if (strcmp(platform, "linux-x64") == 0) return "x86_64-linux-gnu";
+    if (strcmp(platform, "linux-arm64") == 0) return "aarch64-linux-gnu";
+    if (strcmp(platform, "windows-x64") == 0) return "x86_64-w64-mingw32";
+    if (strcmp(platform, "macos-x64") == 0) return "x86_64-apple-darwin";
+    if (strcmp(platform, "macos-arm64") == 0) return "arm64-apple-darwin";
+    return NULL;
+}
+
+static const char *platform_family(const char *platform) {
+    return strncmp(platform, "macos-", 6) == 0 ? "darwin" : "gnu";
+}
+
+static const char *platform_runtime(const char *platform) {
+    if (strncmp(platform, "linux-", 6) == 0) return "glibc";
+    if (strncmp(platform, "windows-", 8) == 0) return "ucrt";
+    if (strncmp(platform, "macos-", 6) == 0) return "libSystem";
+    return NULL;
+}
+
+static void sha256_hex(const void *data, size_t size, char output[65]) {
+    static const char hex[] = "0123456789abcdef";
+    Sha256Context context;
+    unsigned char digest[SHA256_DIGEST_SIZE];
+    size_t i;
+
+    sha256_init(&context);
+    sha256_update(&context, data, size);
+    sha256_final(&context, digest);
+    for (i = 0; i < SHA256_DIGEST_SIZE; ++i) {
+        output[i * 2] = hex[digest[i] >> 4];
+        output[i * 2 + 1] = hex[digest[i] & 0x0fu];
+    }
+    output[64] = '\0';
+}
+
 static size_t build_metadata(const FixtureOptions *options, char *info, size_t info_size) {
-    int written = snprintf(info,
-                           info_size,
-                           "package.component=compiler\n"
-                           "package.tool=clang\n"
-                           "package.version=%s\n"
-                           "package.mode=self-contained\n"
-                           "package.formats=tar.xz,tar.gz,zip\n"
-                           "platform.host=%s\n"
-                           "platform.target=%s\n"
-                           "platform.host_triple=fixture-host-triple\n"
-                           "platform.target_triple=fixture-target-triple\n"
-                           "platform.family=fixture\n"
-                           "platform.runtime=fixture\n"
-                           "platform.thread_model=fixture\n"
-                           "build.environment=test\n"
-                           "build.source_policy=fixture\n"
-                           "source.primary.name=clang\n"
-                           "source.primary.version=%s\n"
-                           "source.primary.url=https://example.invalid/clang-%s.tar.xz\n"
-                           "entry.clang=%s\n",
-                           options->version,
-                           options->host,
-                           options->target,
-                           options->version,
-                           options->version,
-                           strcmp(options->target, "windows-x64") == 0
-                               ? "bin/clang.cmd"
-                               : "bin/clang");
+    const char *host_triple = platform_triple(options->host);
+    const char *target_triple = platform_triple(options->target);
+    const char *runtime = platform_runtime(options->target);
+    const char *formats = strcmp(options->host, "windows-x64") == 0
+                              ? "zip,tar.xz,tar.gz"
+                              : "tar.xz,tar.gz,zip";
+    int written;
+
+    if (host_triple == NULL || target_triple == NULL || runtime == NULL) {
+        fprintf(stderr, "unsupported fixture platform\n");
+        exit(2);
+    }
+    written = snprintf(info,
+                       info_size,
+                       "package.component=compiler\n"
+                       "package.tool=clang\n"
+                       "package.version=%s\n"
+                       "package.mode=self-contained\n"
+                       "package.formats=%s\n"
+                       "platform.host=%s\n"
+                       "platform.target=%s\n"
+                       "platform.host_triple=%s\n"
+                       "platform.target_triple=%s\n"
+                       "platform.family=%s\n"
+                       "platform.runtime=%s\n"
+                       "platform.thread_model=posix\n"
+                       "build.environment=test\n"
+                       "build.source_policy=fixture\n"
+                       "source.primary.name=llvm-project\n"
+                       "source.primary.version=%s\n"
+                       "source.primary.url=https://example.invalid/clang-%s.tar.xz\n"
+                       "source.primary.sha256="
+                       "0000000000000000000000000000000000000000000000000000000000000000\n"
+                       "entry.clang=%s\n",
+                       options->version,
+                       formats,
+                       options->host,
+                       options->target,
+                       host_triple,
+                       target_triple,
+                       platform_family(options->target),
+                       runtime,
+                       options->version,
+                       options->version,
+                       strcmp(options->target, "windows-x64") == 0
+                           ? "bin/clang.cmd"
+                           : "bin/clang");
 
     if (written < 0 || (size_t)written >= info_size) {
         fprintf(stderr, "fixture metadata is too long\n");
@@ -213,10 +270,30 @@ static void add_common_package(struct archive *archive,
                                const char *info,
                                size_t info_size) {
     static const char posix_script[] = "#!/bin/sh\nprintf '%s\\n' unsafe\n";
-    char windows_script[256];
+    char windows_script[256] = "";
+    char manifest[4096];
+    char info_digest[65];
+    char command_digest[65];
+    char link_digest[65];
     char path[1024];
+    const char *command_data = posix_script;
+    size_t command_size = sizeof(posix_script) - 1;
     int windows_package = strcmp(options->target, "windows-x64") == 0;
     int written;
+
+    if (windows_package) {
+        written = snprintf(windows_script,
+                           sizeof(windows_script),
+                           "@echo off\r\necho clang-%s-%s:clang\r\n",
+                           options->version,
+                           options->target);
+        if (written < 0 || (size_t)written >= sizeof(windows_script)) {
+            fprintf(stderr, "Windows command fixture is too long\n");
+            exit(2);
+        }
+        command_data = windows_script;
+        command_size = (size_t)written;
+    }
 
     if (strcmp(options->mode, "root-file") == 0) {
         add_file(archive, options->package_root, "not a directory\n", 16, 0644);
@@ -230,27 +307,56 @@ static void add_common_package(struct archive *archive,
 
     if (windows_package) {
         join_path(path, sizeof(path), options->package_root, "bin/clang.cmd");
-        written = snprintf(windows_script,
-                           sizeof(windows_script),
-                           "@echo off\r\necho clang-%s-%s:clang\r\n",
-                           options->version,
-                           options->target);
-        if (written < 0 || (size_t)written >= sizeof(windows_script)) {
-            fprintf(stderr, "Windows command fixture is too long\n");
-            exit(2);
-        }
-        add_file(archive, path, windows_script, (size_t)written, 0644);
+        add_file(archive, path, command_data, command_size, 0755);
     } else if (strcmp(options->mode, "safe-symlink") == 0) {
         char target[1024];
 
         join_path(target, sizeof(target), options->package_root, "bin/clang-22");
-        add_file(archive, target, posix_script, sizeof(posix_script) - 1, 0755);
+        add_file(archive, target, command_data, command_size, 0755);
         join_path(path, sizeof(path), options->package_root, "bin/clang");
         add_link(archive, path, "clang-22", 0);
     } else {
         join_path(path, sizeof(path), options->package_root, "bin/clang");
-        add_file(archive, path, posix_script, sizeof(posix_script) - 1, 0755);
+        add_file(archive, path, command_data, command_size, 0755);
     }
+
+    if (strcmp(options->mode, "valid") != 0 &&
+        strcmp(options->mode, "safe-symlink") != 0) {
+        return;
+    }
+
+    sha256_hex(info, info_size, info_digest);
+    sha256_hex(command_data, command_size, command_digest);
+    if (strcmp(options->mode, "safe-symlink") == 0) {
+        sha256_hex("clang-22", strlen("clang-22"), link_digest);
+        written = snprintf(manifest,
+                           sizeof(manifest),
+                           "format=2\n"
+                           "d\t0755\t-\tbin\n"
+                           "l\t-\t%s\tbin/clang\n"
+                           "f\t0755\t%s\tbin/clang-22\n"
+                           "f\t0644\t%s\tinfo.txt\n",
+                           link_digest,
+                           command_digest,
+                           info_digest);
+    } else {
+        written = snprintf(manifest,
+                           sizeof(manifest),
+                           "format=2\n"
+                           "d\t0755\t-\tbin\n"
+                           "f\t%s\t%s\t%s\n"
+                           "f\t0644\t%s\tinfo.txt\n",
+                           "0755",
+                           command_digest,
+                           windows_package ? "bin/clang.cmd" : "bin/clang",
+                           info_digest);
+    }
+    if (written < 0 || (size_t)written >= sizeof(manifest)) {
+        fprintf(stderr, "fixture manifest is too long\n");
+        exit(2);
+    }
+    join_path(path, sizeof(path), options->package_root, "manifest.txt");
+    add_file(archive, path, manifest, (size_t)written, 0644);
 }
 
 /* Mode-specific entries model one archive-safety condition per invocation. */

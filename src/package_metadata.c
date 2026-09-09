@@ -48,7 +48,9 @@ static int value_is_safe(const char *value) {
 }
 
 static int key_is_safe(const char *key) {
-    static const char *const groups[] = {"entry.", "features.", "contents.", "config."};
+    static const char *const groups[] = {
+        "entry.", "features.", "contents.", "bundle.", "requires.", "config."
+    };
     size_t i;
 
     if (!path_is_safe_identifier(key)) {

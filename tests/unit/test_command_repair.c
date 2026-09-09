@@ -78,8 +78,6 @@ static CupError backup_result;
 static CupError state_path_result;
 static CupError staging_path_result;
 static CupError transaction_path_result;
-static int metadata_read_only;
-static CupError set_metadata_result;
 static int assets_read_only;
 static int assets_executable;
 static int verify_matches;
@@ -101,7 +99,6 @@ static int quarantine_calls;
 static int plan_build_calls;
 static int plan_apply_calls;
 static int cleanup_calls;
-static int set_metadata_calls;
 static int set_read_only_calls;
 static int set_executable_calls;
 static int destination_exists;
@@ -135,7 +132,6 @@ static int checksum_staged_remove_failure;
 static int checksum_destination_read_only_failure;
 static int checksum_destination_writable;
 static CupError identity_format_result;
-static CupError install_path_result;
 static int platform_common_verify_override;
 static int platform_common_verify_matches[2];
 static size_t platform_common_verify_calls;
@@ -187,8 +183,6 @@ static void reset_scenario(void) {
     state_path_result = CUP_OK;
     staging_path_result = CUP_OK;
     transaction_path_result = CUP_OK;
-    metadata_read_only = 1;
-    set_metadata_result = CUP_OK;
     assets_read_only = 1;
     assets_executable = 1;
     verify_matches = 1;
@@ -213,7 +207,6 @@ static void reset_scenario(void) {
     plan_build_calls = 0;
     plan_apply_calls = 0;
     cleanup_calls = 0;
-    set_metadata_calls = 0;
     set_read_only_calls = 0;
     set_executable_calls = 0;
     destination_exists = 0;
@@ -251,7 +244,6 @@ static void reset_scenario(void) {
     checksum_destination_read_only_failure = 0;
     checksum_destination_writable = 0;
     identity_format_result = CUP_OK;
-    install_path_result = CUP_OK;
     platform_common_verify_override = 0;
     platform_common_verify_matches[0] = 1;
     platform_common_verify_matches[1] = 1;
@@ -718,26 +710,6 @@ CupError state_clear_matching_default(CupState *state, const PackageIdentity *id
     return CUP_OK;
 }
 
-CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *package) {
-    if (install_path_result != CUP_OK) {
-        return install_path_result;
-    }
-    return buffer_write_result(
-        snprintf(buffer, size, "/tmp/%s-%s", package->tool, package->version), size);
-}
-
-CupError package_metadata_is_read_only(const char *base_path, int *is_read_only) {
-    (void)base_path;
-    *is_read_only = metadata_read_only;
-    return CUP_OK;
-}
-
-CupError package_set_metadata_read_only(const char *base_path) {
-    (void)base_path;
-    set_metadata_calls++;
-    return set_metadata_result;
-}
-
 CupError package_quarantine(const PackageIssue *issue, char *recovery_path, size_t recovery_size) {
     TEST_ASSERT_NOT_NULL(issue);
     quarantine_calls++;
@@ -1153,11 +1125,9 @@ static void test_success_reconciles(void) {
     loaded_state.defaults[loaded_state.default_count++] = state_entry("clang@1.0.0");
     packages->items[packages->count++] = package_identity("2.0.0");
     packages->total_count = packages->count;
-    metadata_read_only = 0;
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_repair());
     TEST_ASSERT_EQUAL_INT(1, save_calls);
-    TEST_ASSERT_EQUAL_INT(1, set_metadata_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_build_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_apply_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
@@ -1354,24 +1324,10 @@ static void test_package_repair_failures(void) {
     reset_scenario();
     scan_lists[0].items[scan_lists[0].count++] = package_identity("2.0.0");
     scan_lists[0].total_count = scan_lists[0].count;
-    metadata_read_only = 0;
-    set_metadata_result = CUP_ERR_ROLLBACK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_ROLLBACK, command_repair());
-    TEST_ASSERT_EQUAL_INT(1, set_metadata_calls);
-
-    reset_scenario();
-    scan_lists[0].items[scan_lists[0].count++] = package_identity("2.0.0");
-    scan_lists[0].total_count = scan_lists[0].count;
     identity_format_result = CUP_ERR_BUFFER_TOO_SMALL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, command_repair());
     TEST_ASSERT_EQUAL_INT(0, save_calls);
 
-    reset_scenario();
-    scan_lists[0].items[scan_lists[0].count++] = package_identity("2.0.0");
-    scan_lists[0].total_count = scan_lists[0].count;
-    install_path_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, command_repair());
-    TEST_ASSERT_EQUAL_INT(0, save_calls);
 }
 
 static void prepare_installed_assets(void);

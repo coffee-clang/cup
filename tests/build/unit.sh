@@ -365,9 +365,24 @@ case "$PLATFORM" in
         PACKAGE_SYSTEM_LIBS=
         ;;
 esac
+compile_test test_package_manifest \
+    "$ROOT/tests/unit/test_package_manifest.c" \
+    "$ROOT/src/package_manifest.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/filesystem.c" \
+    "$ROOT/src/third_party/sha256.c" \
+    "$ROOT/src/interrupt.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c" \
+    "$ROOT/src/system.c" \
+    "$PACKAGE_SYSTEM_SOURCE" \
+    $PACKAGE_SYSTEM_LIBS
+
 compile_test test_package \
     "$ROOT/tests/unit/test_package.c" \
     "$ROOT/src/package.c" \
+    "$ROOT/src/checksum.c" \
+    "$ROOT/src/third_party/sha256.c" \
     "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/interrupt.c" \
     "$ROOT/src/package_selector.c" \

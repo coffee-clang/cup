@@ -45,6 +45,7 @@ CLI arguments
   -> download/cache verification
   -> single-pass staged archive validation/extraction
   -> package metadata and executable-entry validation
+  -> manifest integrity validation
   -> transaction journal
   -> state commit
   -> wrapper rebuild and cleanup
@@ -314,6 +315,7 @@ The C source files are grouped below by responsibility.
 | `package.c` | package identity, semantic validation and installed-tree scanning |
 | `installed_package.c` | validation of installed package roots |
 | `package_metadata.c` | `info.txt` parsing |
+| `package_manifest.c` | `manifest.txt` package-tree integrity verification |
 | `package_artifact.c` | artifact coordinates and verified stream ownership |
 | `package_cache.c` | cache lookup, refresh and verified download |
 | `checksum.c` | checksum-document parsing |

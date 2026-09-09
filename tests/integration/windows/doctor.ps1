@@ -19,7 +19,49 @@ try {
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $pathWarning = Invoke-Cup -CommandArgs @("doctor")
     Assert-Contains $pathWarning "current CUP command directory is not in PATH"
-    $env:Path = "$(Join-Path $cupRoot 'bin');$env:Path"
+    $binPath = Join-Path $cupRoot 'bin'
+    Assert-ContainsPathText $pathWarning (
+        "PowerShell:     `$env:Path = '$binPath' + ';' + `$env:Path")
+    Assert-ContainsPathText $pathWarning ('Command Prompt: set "PATH=' + $binPath + ';%PATH%"')
+
+    $savedTestHome = $Script:CupTestHome
+    $savedUserProfile = $env:USERPROFILE
+    try {
+        $Script:CupTestHome = Join-Path $Script:CupTestRoot 'home;separator'
+        $env:USERPROFILE = $Script:CupTestHome
+        New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
+        Invoke-Cup -CommandArgs @('repair') | Out-Null
+        $separatorWarning = Invoke-Cup -CommandArgs @('doctor')
+        Assert-Contains $separatorWarning 'current CUP command directory is not in PATH'
+        Assert-Contains $separatorWarning (
+            "contains ';' and cannot be represented as one PATH entry")
+        Assert-NotContains $separatorWarning 'PowerShell:'
+        Assert-NotContains $separatorWarning 'Command Prompt:'
+
+        $Script:CupTestHome = Join-Path $Script:CupTestRoot "home'quote"
+        $env:USERPROFILE = $Script:CupTestHome
+        New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
+        Invoke-Cup -CommandArgs @('repair') | Out-Null
+        $quoteWarning = Invoke-Cup -CommandArgs @('doctor')
+        $quoteBin = Join-Path $Script:CupTestHome '.cup\bin'
+        $escapedQuoteBin = $quoteBin.Replace("'", "''")
+        Assert-ContainsPathText $quoteWarning (
+            "PowerShell:     `$env:Path = '$escapedQuoteBin' + ';' + `$env:Path")
+
+        $Script:CupTestHome = Join-Path $Script:CupTestRoot 'home%literal%'
+        $env:USERPROFILE = $Script:CupTestHome
+        New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
+        Invoke-Cup -CommandArgs @('repair') | Out-Null
+        $percentWarning = Invoke-Cup -CommandArgs @('doctor')
+        Assert-Contains $percentWarning 'PowerShell:'
+        Assert-Contains $percentWarning 'Command Prompt: use the PowerShell command above'
+        Assert-NotContains $percentWarning ('set "PATH=' + (Join-Path $Script:CupTestHome '.cup\bin'))
+    } finally {
+        $Script:CupTestHome = $savedTestHome
+        $env:USERPROFILE = $savedUserProfile
+    }
+
+    $env:Path = "$binPath;$env:Path"
     $statePath = Join-Path $cupRoot "state.txt"
     $transactionPath = Join-Path $cupRoot "transaction.txt"
 
@@ -27,6 +69,9 @@ try {
         -Version "99.0.0" -Entries @("clang")
     $debuggerRoot = New-InstalledPackageFixture -Component "debugger" -Tool "lldb" `
         -Version "23.1.0" -Entries @("lldb")
+    $compilerInfo = Join-Path $compilerRoot "info.txt"
+    Add-Content -LiteralPath $compilerInfo -Encoding ascii -Value "fixture.note=changed-after-manifest"
+    $compilerInfoHash = (Get-FileHash -LiteralPath $compilerInfo -Algorithm SHA256).Hash
     $invalidPackage = Join-Path $cupRoot (
         "components\linker\lld\windows-x64\windows-x64\22.1.5")
     New-Item -ItemType Directory -Force -Path $invalidPackage | Out-Null
@@ -43,8 +88,8 @@ try {
     $issues = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
     Assert-Contains $issues "transaction journal is invalid"
     Assert-Contains $issues "installed state record 'linter:clang-tidy@22.1.5' has no valid package"
-    Assert-Contains $issues "package metadata for 'compiler:clang@99.0.0' is not read-only"
     Assert-Contains $issues "installed package 'compiler:clang@99.0.0' is not listed"
+    Assert-ContainsPathText $issues "package path '$compilerRoot' is invalid"
     Assert-Contains $issues (
         "valid package 'lldb@23.1.0' exists in components but is absent " +
         "from state.txt")
@@ -55,20 +100,18 @@ try {
     Assert-Equals (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash $stateHash
     Assert-PathExists $invalidPackage
     Assert-PathExists $leftover
-    if ((Get-Item -LiteralPath (Join-Path $compilerRoot "info.txt")).IsReadOnly) {
-        Fail-Test "doctor changed package metadata permissions"
-    }
+    Assert-Equals (Get-FileHash -LiteralPath $compilerInfo -Algorithm SHA256).Hash `
+        $compilerInfoHash
 
     Remove-Item -LiteralPath $transactionPath -Force
     Remove-Item -LiteralPath $leftover, $invalidPackage -Recurse -Force
+    $compilerRoot = New-InstalledPackageFixture -Component "compiler" -Tool "clang" `
+        -Version "99.0.0" -Entries @("clang")
     Write-Utf8NoBom -Path $statePath -Lines @(
         "format=1",
         "installed.compiler.windows-x64.windows-x64=clang@99.0.0",
         "installed.debugger.windows-x64.windows-x64=lldb@23.1.0"
     )
-    (Get-Item -LiteralPath (Join-Path $compilerRoot "info.txt")).IsReadOnly = $true
-    (Get-Item -LiteralPath (Join-Path $debuggerRoot "info.txt")).IsReadOnly = $true
-
     $cachePath = Join-Path $cupRoot "cache"
     Remove-Item -LiteralPath $cachePath -Recurse -Force
     Assert-Contains (Invoke-Cup -CommandArgs @("doctor") -ExpectFailure) `

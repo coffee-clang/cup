@@ -16,6 +16,7 @@
 #include "platform.h"
 #include "state.h"
 #include "system.h"
+#include "text.h"
 #include "package_transaction.h"
 #include "update_journal.h"
 #include "runtime_journal.h"
@@ -30,6 +31,8 @@ typedef struct {
     int issue_count;
     int warning_count;
     int incomplete_count;
+    int path_hint;
+    char path_directory[MAX_PATH_LEN];
 } DoctorReport;
 
 static void report_incomplete(DoctorReport *report, const char *description) {
@@ -143,7 +146,6 @@ static void check_state_packages(const CupState *state,
         const PackageIdentity *package = &state->installed[i];
         char selector[MAX_SELECTOR_LEN] = "(invalid identity)";
         char install_path[MAX_PATH_LEN];
-        int is_read_only;
         int is_available;
         CupError err;
 
@@ -178,21 +180,6 @@ static void check_state_packages(const CupState *state,
                    selector);
             report->incomplete_count++;
             continue;
-        }
-
-        /* Metadata protection is diagnostic and does not suppress catalog checks. */
-        err = package_metadata_is_read_only(install_path, &is_read_only);
-        if (err != CUP_OK) {
-            printf("Incomplete: package metadata protection for '%s:%s' "
-                   "could not be checked.\n",
-                   package->component,
-                   selector);
-            report->incomplete_count++;
-        } else if (!is_read_only) {
-            printf("Issue: package metadata for '%s:%s' is not read-only.\n",
-                   package->component,
-                   selector);
-            report->issue_count++;
         }
 
         /* Catalog availability is a warning because installed concrete versions remain usable. */
@@ -269,31 +256,107 @@ static void check_scanned_packages(const PackageList *packages,
     }
 }
 
+static int path_hint_has_entry_separator(const char *directory) {
+#if defined(_WIN32)
+    return strchr(directory, ';') != NULL;
+#else
+    return strchr(directory, ':') != NULL;
+#endif
+}
+
+#if defined(_WIN32)
+static void print_powershell_literal(const char *text) {
+    const char *cursor;
+
+    putchar('\'');
+    for (cursor = text; *cursor != '\0'; ++cursor) {
+        if (*cursor == '\'') {
+            fputs("''", stdout);
+        } else {
+            putchar((unsigned char)*cursor);
+        }
+    }
+    putchar('\'');
+}
+#else
+static void print_posix_shell_literal(const char *text) {
+    const char *cursor;
+
+    putchar('\'');
+    for (cursor = text; *cursor != '\0'; ++cursor) {
+        if (*cursor == '\'') {
+            fputs("'\"'\"'", stdout);
+        } else {
+            putchar((unsigned char)*cursor);
+        }
+    }
+    putchar('\'');
+}
+#endif
+
+static void print_path_hint(const DoctorReport *report) {
+    const char *directory;
+
+    if (!report->path_hint || report->path_directory[0] == '\0') {
+        return;
+    }
+    directory = report->path_directory;
+    if (path_hint_has_entry_separator(directory)) {
+#if defined(_WIN32)
+        printf("This cup command directory contains ';' and cannot be represented as one "
+               "PATH entry. Use the full path to cup.exe or relocate the CUP root.\n");
+#else
+        printf("This cup command directory contains ':' and cannot be represented as one "
+               "PATH entry. Use the full path to cup or relocate the CUP root.\n");
+#endif
+        return;
+    }
+
+#if defined(_WIN32)
+    printf("To add this cup installation to PATH for the current session, run:\n");
+    printf("  PowerShell:     $env:Path = ");
+    print_powershell_literal(directory);
+    printf(" + ';' + $env:Path\n");
+    if (strchr(directory, '%') == NULL && strchr(directory, '!') == NULL) {
+        printf("  Command Prompt: set \"PATH=%s;%%PATH%%\"\n", directory);
+    } else {
+        printf("  Command Prompt: use the PowerShell command above or the full path to cup.exe.\n");
+    }
+#else
+    printf("To add this cup installation to PATH for the current shell, run:\n");
+    printf("  export PATH=");
+    print_posix_shell_literal(directory);
+    printf(":\"$PATH\"\n");
+#endif
+}
+
 /* Final report and exit-status selection. */
 static CupError print_doctor_summary(const DoctorReport *report) {
+    CupError result;
+
     if (report->incomplete_count > 0) {
         printf("Doctor found %d issue(s), %d warning(s), and %d "
                "incomplete check(s).\n",
                report->issue_count,
                report->warning_count,
                report->incomplete_count);
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
-
-    if (report->issue_count == 0 && report->warning_count == 0) {
+        result = CUP_ERR_INCONSISTENT_STATE;
+    } else if (report->issue_count == 0 && report->warning_count == 0) {
         printf("Doctor found no issues.\n");
-        return CUP_OK;
-    }
-    if (report->issue_count == 0) {
+        result = CUP_OK;
+    } else if (report->issue_count == 0) {
         printf("Doctor found %d warning(s), but no blocking issues.\n", report->warning_count);
-        return CUP_OK;
+        result = CUP_OK;
+    } else {
+        printf("Doctor found %d issue(s) and %d warning(s). "
+               "Run 'cup repair' after reviewing them.\n",
+               report->issue_count,
+               report->warning_count);
+        result = CUP_ERR_INCONSISTENT_STATE;
     }
 
-    printf("Doctor found %d issue(s) and %d warning(s). "
-           "Run 'cup repair' after reviewing them.\n",
-           report->issue_count,
-           report->warning_count);
-    return CUP_ERR_INCONSISTENT_STATE;
+    print_path_hint(report);
+    return result;
 }
 
 typedef enum {
@@ -588,6 +651,9 @@ static void check_path_integration(DoctorReport *report) {
     if (!path_contains_directory(path_value, bin_dir)) {
         printf("Warning: current CUP command directory is not in PATH: '%s'.\n", bin_dir);
         report->warning_count++;
+        if (text_copy(report->path_directory, sizeof(report->path_directory), bin_dir) == CUP_OK) {
+            report->path_hint = 1;
+        }
     }
 }
 
@@ -628,7 +694,7 @@ static void check_staging_leftovers(DoctorReport *report) {
 
 /* Ordered read-only diagnostic pipeline. */
 CupError command_doctor(void) {
-    DoctorReport report = {0, 0, 0};
+    DoctorReport report = {0};
     PackageCatalog catalog;
     CupState state;
     SystemLock lock = {0};

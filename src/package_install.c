@@ -286,7 +286,8 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
     }
 
     printf("==> Validating package...\n");
-    return package_validate(operation->staging_path, &operation->artifact_spec.identity, stderr);
+    return package_validate_integrity(
+        operation->staging_path, &operation->artifact_spec.identity, stderr);
 }
 
 static CupError discard_invalid_cache(InstallOperation *operation, CupError original_error) {
@@ -356,11 +357,6 @@ static CupError extract_install_package(InstallOperation *operation) {
     }
 
     verified_artifact_release(&operation->artifact);
-    err = package_set_metadata_read_only(operation->staging_path);
-    if (err != CUP_OK) {
-        return err;
-    }
-
     return layout_ensure_package_parent(&operation->artifact_spec.identity);
 }
 

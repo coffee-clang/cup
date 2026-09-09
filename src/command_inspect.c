@@ -62,11 +62,32 @@ static void print_package_info(const PackageMetadata *metadata) {
     print_metadata_field(metadata, "package.component", "component");
     print_metadata_field(metadata, "package.tool", "tool");
     print_metadata_field(metadata, "package.version", "version");
+    print_metadata_field(metadata, "package.revision", "revision");
+    print_metadata_field(metadata, "package.mode", "mode");
+    print_metadata_field(metadata, "package.formats", "formats");
+
+    printf("\nPlatform:\n");
     print_metadata_field(metadata, "platform.host", "host");
     print_metadata_field(metadata, "platform.target", "target");
+    print_metadata_field(metadata, "platform.host_triple", "host triple");
+    print_metadata_field(metadata, "platform.target_triple", "target triple");
+    print_metadata_field(metadata, "platform.family", "family");
+    print_metadata_field(metadata, "platform.runtime", "runtime");
+    print_metadata_field(metadata, "platform.thread_model", "thread model");
+
+    printf("\nSource/build:\n");
+    print_metadata_field(metadata, "build.environment", "environment");
+    print_metadata_field(metadata, "build.source_policy", "source policy");
+    print_metadata_field(metadata, "source.primary.name", "source");
+    print_metadata_field(metadata, "source.primary.version", "source version");
+    print_metadata_field(metadata, "source.primary.url", "source URL");
+    print_metadata_field(metadata, "source.primary.sha256", "source SHA-256");
+
     print_package_commands(metadata);
     print_metadata_group(metadata, "Features", "features.");
     print_metadata_group(metadata, "Contents", "contents.");
+    print_metadata_group(metadata, "Bundle", "bundle.");
+    print_metadata_group(metadata, "Requirements", "requires.");
     print_metadata_group(metadata, "Build/config", "config.");
 }
 

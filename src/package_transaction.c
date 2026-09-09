@@ -307,7 +307,7 @@ static CupError inspect_package_validity(const char *path,
         return CUP_OK;
     }
 
-    err = package_validate(path, package, stderr);
+    err = package_validate_integrity(path, package, stderr);
     if (err == CUP_OK) {
         *valid = 1;
         return CUP_OK;

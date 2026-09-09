@@ -338,6 +338,7 @@ COMMON_SRC := \
     src/install_policy.c \
     src/tool_preferences.c \
     src/package_metadata.c \
+    src/package_manifest.c \
     src/checksum.c \
     src/third_party/sha256.c \
     src/assets.c \

@@ -840,6 +840,8 @@ static void test_inspect_output(void) {
     add_info("entry.clang", "bin/clang");
     add_info("features.cxx", "enabled");
     add_info("contents.runtime", "included");
+    add_info("bundle.components", "binutils");
+    add_info("requires.macos_sdk", "true");
     add_info("config.flags", "--static");
 
     output = capture_result(run_inspect, &result);
@@ -848,6 +850,8 @@ static void test_inspect_output(void) {
     TEST_ASSERT_NOT_NULL(strstr(output, "Commands:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "Features:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "Contents:"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "Bundle:"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "Requirements:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "Build/config:"));
     free(output);
 

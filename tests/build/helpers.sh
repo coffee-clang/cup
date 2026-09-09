@@ -142,7 +142,7 @@ compile_helper() {
 archive_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= pkg-config --static --libs libarchive)
 compile_helper all archive-fixture "$ROOT/tests/helpers/archive-fixture.c" \
-    $archive_libs
+    "$ROOT/src/third_party/sha256.c" -I"$ROOT/include" $archive_libs
 
 event_libs=$(PKG_CONFIG_PATH="$pkg_path" PKG_CONFIG_LIBDIR="$pkg_path" \
     PKG_CONFIG_SYSROOT_DIR= \

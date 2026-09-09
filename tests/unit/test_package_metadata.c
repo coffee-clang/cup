@@ -119,6 +119,14 @@ static void test_invalid_fields(void) {
     write_text(path, "features.=yes\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
 
+    build_path(path, sizeof(path), "empty-bundle-group.txt");
+    write_text(path, "bundle.=value\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+
+    build_path(path, sizeof(path), "empty-requires-group.txt");
+    write_text(path, "requires.=true\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));
+
     build_path(path, sizeof(path), "empty-value.txt");
     write_text(path, "package.component=\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_metadata_load(&info, path, stderr));

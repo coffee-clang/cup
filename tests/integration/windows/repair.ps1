@@ -11,16 +11,17 @@ function Test-PackageAdoption {
     $Script:RepairCompilerRoot = New-InstalledPackageFixture `
         -Component "compiler" -Tool "clang" -Version "23.1.0" -Entries @("clang")
 
+    $infoPath = Join-Path $Script:RepairCompilerRoot "info.txt"
+    $manifestPath = Join-Path $Script:RepairCompilerRoot "manifest.txt"
+    $infoHash = (Get-FileHash -LiteralPath $infoPath -Algorithm SHA256).Hash
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
     $adopted = Invoke-Cup -CommandArgs @("repair")
     Assert-Contains $adopted "Prepared state repair: adopt valid package 'compiler:clang@23.1.0'"
-    Assert-Contains $adopted "Restored read-only protection for clang@23.1.0 metadata."
     Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
         "installed.compiler.windows-x64.windows-x64=clang@23.1.0"
 
-    $infoPath = Join-Path $Script:RepairCompilerRoot "info.txt"
-    if (-not (Get-Item -LiteralPath $infoPath).IsReadOnly) {
-        Fail-Test "repair did not protect adopted package metadata"
-    }
+    Assert-Equals (Get-FileHash -LiteralPath $infoPath -Algorithm SHA256).Hash $infoHash
+    Assert-Equals (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash $manifestHash
 }
 
 function Test-StaleStateRemoval {

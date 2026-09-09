@@ -139,6 +139,55 @@ EOF_PACKAGE_CATALOG
 }
 
 
+package_fixture_triple() {
+    case "$1" in
+        linux-x64) printf '%s\n' x86_64-linux-gnu ;;
+        linux-arm64) printf '%s\n' aarch64-linux-gnu ;;
+        windows-x64) printf '%s\n' x86_64-w64-mingw32 ;;
+        macos-x64) printf '%s\n' x86_64-apple-darwin ;;
+        macos-arm64) printf '%s\n' arm64-apple-darwin ;;
+        *) fail "unsupported fixture platform: $1" ;;
+    esac
+}
+
+package_fixture_family() {
+    case "$1" in
+        linux-*|windows-*) printf '%s\n' gnu ;;
+        macos-*) printf '%s\n' darwin ;;
+        *) fail "unsupported fixture platform: $1" ;;
+    esac
+}
+
+package_fixture_runtime() {
+    case "$1" in
+        linux-*) printf '%s\n' glibc ;;
+        windows-*) printf '%s\n' ucrt ;;
+        macos-*) printf '%s\n' libSystem ;;
+        *) fail "unsupported fixture platform: $1" ;;
+    esac
+}
+
+package_fixture_source_name() {
+    case "$1" in
+        gcc) printf '%s\n' gcc ;;
+        gdb) printf '%s\n' gdb ;;
+        ld) printf '%s\n' binutils ;;
+        clang|lld|lldb|clangd|clang-format|clang-tidy) printf '%s\n' llvm-project ;;
+        valgrind) printf '%s\n' valgrind ;;
+        *) fail "unsupported fixture tool: $1" ;;
+    esac
+}
+
+package_fixture_source_version() {
+    tool=$1
+    version=$2
+    if [ "$tool" = gcc ]; then
+        printf '%s\n' "${version%%-rev*}"
+    else
+        printf '%s\n' "$version"
+    fi
+}
+
 write_package_revision() {
     tool=$1
     version=$2
@@ -152,6 +201,37 @@ write_package_revision() {
         ''|0*|*[!0-9]*) fail "invalid GCC fixture revision: $version" ;;
     esac
     printf 'package.revision=%s\n' "$revision"
+}
+
+write_package_manifest() {
+    package_root=$1
+    path_list=$package_root/.manifest.paths
+
+    (
+        cd "$package_root"
+        find . ! -path . ! -path './manifest.txt' ! -path './.manifest.paths' -print |
+            sed 's#^\./##' | LC_ALL=C sort
+    ) > "$path_list"
+    {
+        printf 'format=2\n'
+        while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            path=$package_root/$relative
+            if [ -L "$path" ]; then
+                target=$(readlink "$path") || fail "could not read fixture symlink: $relative"
+                printf 'l\t-\t%s\t%s\n' "$(hash_text "$target")" "$relative"
+            elif [ -d "$path" ]; then
+                printf 'd\t0755\t-\t%s\n' "$relative"
+            elif [ -f "$path" ]; then
+                if [ -x "$path" ]; then mode=0755; else mode=0644; fi
+                printf 'f\t%s\t%s\t%s\n' "$mode" "$(hash_file "$path")" "$relative"
+            else
+                fail "unsupported fixture package object: $relative"
+            fi
+        done < "$path_list"
+    } > "$package_root/manifest.txt"
+    rm -f "$path_list"
+    chmod 0644 "$package_root/manifest.txt"
 }
 
 make_package() {
@@ -188,16 +268,17 @@ make_package_format() {
         printf 'package.formats=tar.xz,tar.gz,zip\n'
         printf 'platform.host=%s\n' "$host"
         printf 'platform.target=%s\n' "$target"
-        printf 'platform.host_triple=%s-fixture\n' "$host"
-        printf 'platform.target_triple=%s-fixture\n' "$target"
-        printf 'platform.family=fixture\n'
-        printf 'platform.runtime=fixture\n'
-        printf 'platform.thread_model=fixture\n'
+        printf 'platform.host_triple=%s\n' "$(package_fixture_triple "$host")"
+        printf 'platform.target_triple=%s\n' "$(package_fixture_triple "$target")"
+        printf 'platform.family=%s\n' "$(package_fixture_family "$target")"
+        printf 'platform.runtime=%s\n' "$(package_fixture_runtime "$target")"
+        printf 'platform.thread_model=posix\n'
         printf 'build.environment=test\n'
         printf 'build.source_policy=fixture\n'
-        printf 'source.primary.name=%s\n' "$tool"
-        printf 'source.primary.version=%s\n' "$version"
+        printf 'source.primary.name=%s\n' "$(package_fixture_source_name "$tool")"
+        printf 'source.primary.version=%s\n' "$(package_fixture_source_version "$tool" "$version")"
         printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
+        printf 'source.primary.sha256=%064d\n' 0
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"
         done
@@ -210,6 +291,7 @@ printf '%s\n' '$tool-$version-$target:$entry'
 SCRIPT
         chmod +x "$package_root/bin/$entry"
     done
+    write_package_manifest "$package_root"
 
     case "$format" in
         tar.gz)
@@ -250,16 +332,17 @@ make_installed_package() {
         printf 'package.formats=tar.xz,tar.gz,zip\n'
         printf 'platform.host=%s\n' "$TEST_PLATFORM"
         printf 'platform.target=%s\n' "$target"
-        printf 'platform.host_triple=%s-fixture\n' "$TEST_PLATFORM"
-        printf 'platform.target_triple=%s-fixture\n' "$target"
-        printf 'platform.family=fixture\n'
-        printf 'platform.runtime=fixture\n'
-        printf 'platform.thread_model=fixture\n'
+        printf 'platform.host_triple=%s\n' "$(package_fixture_triple "$TEST_PLATFORM")"
+        printf 'platform.target_triple=%s\n' "$(package_fixture_triple "$target")"
+        printf 'platform.family=%s\n' "$(package_fixture_family "$target")"
+        printf 'platform.runtime=%s\n' "$(package_fixture_runtime "$target")"
+        printf 'platform.thread_model=posix\n'
         printf 'build.environment=test\n'
         printf 'build.source_policy=fixture\n'
-        printf 'source.primary.name=%s\n' "$tool"
-        printf 'source.primary.version=%s\n' "$version"
+        printf 'source.primary.name=%s\n' "$(package_fixture_source_name "$tool")"
+        printf 'source.primary.version=%s\n' "$(package_fixture_source_version "$tool" "$version")"
         printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
+        printf 'source.primary.sha256=%064d\n' 0
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"
         done
@@ -272,6 +355,7 @@ exit 0
 SCRIPT
         chmod +x "$root/bin/$entry"
     done
+    write_package_manifest "$root"
 }
 
 native_wrapper_path() {

@@ -247,15 +247,25 @@ payload may already have been partially removed before a cleanup failure, so
 These checks reduce the risk of deleting an unrelated directory that happens to
 look similar to cup state.
 
-## Package metadata
+## Package metadata and manifest
 
-`info.txt` is parsed with bounded file-size, line, key and value limits. Its identity
-must match the component/tool/host/target/version path selected by the command.
-Declared executable entries must remain inside the package root and point to
-regular executable files.
+`info.txt` is parsed with bounded file-size, line, key and value limits. Its consumer-owned
+identity must match the component/tool/host/target/version path selected by the command.
+Declared executable entries must remain inside the package root and resolve to regular
+executable files. Producer-owned capability and composition fields, including `features.*`, `contents.*`,
+`bundle.*`, `requires.*` and `config.*`, remain descriptive data rather than a second
+capability verifier inside cup.
 
-Commands use one `ValidatedPackage` result instead of implementing separate
-metadata rules.
+`manifest.txt` `format=2` is the package integrity inventory. cup verifies every declared
+regular-file digest, normalized mode, directory and admitted POSIX symbolic-link target, and
+rejects missing or undeclared package objects. Windows package content cannot use symbolic
+links. Raw archive hardlink entries remain outside the consumer archive contract; hardlink
+inode sharing is not package identity.
+
+Commands use the shared package validation owners instead of implementing separate metadata
+or integrity rules. Full manifest hashing is reserved for integrity-sensitive paths such as
+installation, scanning, `doctor` and repair admission rather than ordinary lightweight
+queries.
 
 ## State and journal files
 

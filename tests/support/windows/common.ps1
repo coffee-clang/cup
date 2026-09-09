@@ -667,6 +667,95 @@ function Set-PackageCatalogField {
 }
 
 
+function Get-TestPlatformTriple([string]$Platform) {
+    switch ($Platform) {
+        'linux-x64' { return 'x86_64-linux-gnu' }
+        'linux-arm64' { return 'aarch64-linux-gnu' }
+        'windows-x64' { return 'x86_64-w64-mingw32' }
+        'macos-x64' { return 'x86_64-apple-darwin' }
+        'macos-arm64' { return 'arm64-apple-darwin' }
+        default { Fail-Test "unsupported fixture platform: $Platform" }
+    }
+}
+
+function Get-TestPlatformFamily([string]$Platform) {
+    if ($Platform.StartsWith('macos-', [StringComparison]::Ordinal)) { return 'darwin' }
+    if ($Platform.StartsWith('linux-', [StringComparison]::Ordinal) -or
+        $Platform.StartsWith('windows-', [StringComparison]::Ordinal)) { return 'gnu' }
+    Fail-Test "unsupported fixture platform: $Platform"
+}
+
+function Get-TestPlatformRuntime([string]$Platform) {
+    if ($Platform.StartsWith('linux-', [StringComparison]::Ordinal)) { return 'glibc' }
+    if ($Platform.StartsWith('windows-', [StringComparison]::Ordinal)) { return 'ucrt' }
+    if ($Platform.StartsWith('macos-', [StringComparison]::Ordinal)) { return 'libSystem' }
+    Fail-Test "unsupported fixture platform: $Platform"
+}
+
+function Get-TestPrimarySourceName([string]$Tool) {
+    switch ($Tool) {
+        'gcc' { return 'gcc' }
+        'gdb' { return 'gdb' }
+        'ld' { return 'binutils' }
+        { $_ -in @('clang', 'lld', 'lldb', 'clangd', 'clang-format', 'clang-tidy') } {
+            return 'llvm-project'
+        }
+        'valgrind' { return 'valgrind' }
+        default { Fail-Test "unsupported fixture tool: $Tool" }
+    }
+}
+
+function Get-TestPrimarySourceVersion([string]$Tool, [string]$Version) {
+    if ($Tool -eq 'gcc') {
+        if ($Version -notmatch '^(.+)-rev[1-9][0-9]*$') {
+            Fail-Test "invalid GCC fixture revision: $Version"
+        }
+        return $Matches[1]
+    }
+    return $Version
+}
+
+function Write-TestPackageManifest([string]$PackageRoot) {
+    $root = [IO.Path]::GetFullPath($PackageRoot).TrimEnd([char[]]'\\/')
+    [string[]]$relativePaths = @(
+        Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force | ForEach-Object {
+            $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+        } | Where-Object { $_ -cne 'manifest.txt' -and $_ -cne '.manifest.paths' }
+    )
+    [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('format=2')
+    foreach ($relative in $relativePaths) {
+        $native = Join-Path $PackageRoot ($relative.Replace('/', '\'))
+        $item = Get-Item -LiteralPath $native -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail-Test "Windows fixture package contains a reparse point: $relative"
+        }
+        if ($item.PSIsContainer) {
+            $lines.Add("d`t0755`t-`t$relative")
+            continue
+        }
+
+        $extension = [IO.Path]::GetExtension($item.Name).ToLowerInvariant()
+        $executable = @('.exe', '.com', '.bat', '.cmd', '.dll', '.pyd') -contains $extension
+        if (-not $executable) {
+            $stream = [IO.File]::OpenRead($item.FullName)
+            try {
+                $first = $stream.ReadByte()
+                $second = $stream.ReadByte()
+                $executable = $first -eq [int][char]'#' -and $second -eq [int][char]'!'
+            } finally {
+                $stream.Dispose()
+            }
+        }
+        $mode = if ($executable) { '0755' } else { '0644' }
+        $digest = Get-Sha256Lower -Path $item.FullName
+        $lines.Add("f`t$mode`t$digest`t$relative")
+    }
+    Write-Utf8NoBom -Path (Join-Path $PackageRoot 'manifest.txt') -Lines $lines
+}
+
 function New-TestPackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -707,19 +796,20 @@ function New-TestPackage {
         $info.Add("package.revision=$($Matches[1])")
     }
     $info.Add("package.mode=self-contained")
-    $info.Add("package.formats=tar.xz,tar.gz,zip")
+    $info.Add("package.formats=zip,tar.xz,tar.gz")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
-    $info.Add("platform.host_triple=$HostPlatform-fixture")
-    $info.Add("platform.target_triple=$TargetPlatform-fixture")
-    $info.Add("platform.family=fixture")
-    $info.Add("platform.runtime=fixture")
-    $info.Add("platform.thread_model=fixture")
+    $info.Add("platform.host_triple=$(Get-TestPlatformTriple $HostPlatform)")
+    $info.Add("platform.target_triple=$(Get-TestPlatformTriple $TargetPlatform)")
+    $info.Add("platform.family=$(Get-TestPlatformFamily $TargetPlatform)")
+    $info.Add("platform.runtime=$(Get-TestPlatformRuntime $TargetPlatform)")
+    $info.Add("platform.thread_model=posix")
     $info.Add("build.environment=test")
     $info.Add("build.source_policy=fixture")
-    $info.Add("source.primary.name=$Tool")
-    $info.Add("source.primary.version=$Version")
+    $info.Add("source.primary.name=$(Get-TestPrimarySourceName $Tool)")
+    $info.Add("source.primary.version=$(Get-TestPrimarySourceVersion $Tool $Version)")
     $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
+    $info.Add("source.primary.sha256=$('0' * 64)")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
         $body = "@echo off`r`necho $Tool-$Version-${TargetPlatform}:$entry`r`n"
@@ -731,6 +821,7 @@ function New-TestPackage {
             -NoNewline
     }
     Write-Utf8NoBom -Path (Join-Path $packageRoot "info.txt") -Lines $info
+    Write-TestPackageManifest -PackageRoot $packageRoot
 
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive
@@ -758,9 +849,7 @@ function New-InstalledPackageFixture {
 
         [string]$HostPlatform = "windows-x64",
 
-        [string]$TargetPlatform = "windows-x64",
-
-        [switch]$ProtectMetadata
+        [string]$TargetPlatform = "windows-x64"
     )
 
     $packageRoot = Join-Path $Script:CupTestHome (
@@ -772,20 +861,27 @@ function New-InstalledPackageFixture {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
+    if ($Tool -eq "gcc") {
+        if ($Version -notmatch "-rev([1-9][0-9]*)$") {
+            Fail-Test "invalid GCC fixture revision: $Version"
+        }
+        $info.Add("package.revision=$($Matches[1])")
+    }
     $info.Add("package.mode=self-contained")
-    $info.Add("package.formats=tar.xz,tar.gz,zip")
+    $info.Add("package.formats=zip,tar.xz,tar.gz")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
-    $info.Add("platform.host_triple=$HostPlatform-fixture")
-    $info.Add("platform.target_triple=$TargetPlatform-fixture")
-    $info.Add("platform.family=fixture")
-    $info.Add("platform.runtime=fixture")
-    $info.Add("platform.thread_model=fixture")
+    $info.Add("platform.host_triple=$(Get-TestPlatformTriple $HostPlatform)")
+    $info.Add("platform.target_triple=$(Get-TestPlatformTriple $TargetPlatform)")
+    $info.Add("platform.family=$(Get-TestPlatformFamily $TargetPlatform)")
+    $info.Add("platform.runtime=$(Get-TestPlatformRuntime $TargetPlatform)")
+    $info.Add("platform.thread_model=posix")
     $info.Add("build.environment=test")
     $info.Add("build.source_policy=fixture")
-    $info.Add("source.primary.name=$Tool")
-    $info.Add("source.primary.version=$Version")
+    $info.Add("source.primary.name=$(Get-TestPrimarySourceName $Tool)")
+    $info.Add("source.primary.version=$(Get-TestPrimarySourceVersion $Tool $Version)")
     $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
+    $info.Add("source.primary.sha256=$('0' * 64)")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
         $body = "@echo off`r`necho $Tool-$Version-${TargetPlatform}:$entry`r`n"
@@ -795,9 +891,7 @@ function New-InstalledPackageFixture {
 
     $infoPath = Join-Path $packageRoot "info.txt"
     Write-Utf8NoBom -Path $infoPath -Lines $info
-    if ($ProtectMetadata) {
-        (Get-Item -LiteralPath $infoPath).IsReadOnly = $true
-    }
+    Write-TestPackageManifest -PackageRoot $packageRoot
     return $packageRoot
 }
 

@@ -59,8 +59,6 @@ typedef struct {
     CupError identity_result;
     CupError install_path_result;
     CupError package_result;
-    CupError package_metadata_protection_result;
-    int package_metadata_read_only;
     CupError package_catalog_check_result;
     int package_catalog_available;
     CupError plan_build_result;
@@ -85,7 +83,6 @@ static int root_snapshot_end_calls;
 static int lock_release_calls;
 static int plan_free_calls;
 static int runtime_check_calls;
-static int package_metadata_protection_calls;
 static int package_catalog_check_calls;
 static int plan_build_calls;
 static int tmp_count_calls;
@@ -121,7 +118,6 @@ static void reset_scenario(void) {
     scenario.update_recovery = CUP_UPDATE_FAILURE_NONE;
     scenario.uninstall_status = UNINSTALL_JOURNAL_MISSING;
     scenario.uninstall_phase = UNINSTALL_PHASE_SCHEDULED;
-    scenario.package_metadata_read_only = 1;
     scenario.package_catalog_available = 1;
     scenario.packages.complete = 1;
     scenario.tmp_exists = 1;
@@ -135,7 +131,6 @@ static void reset_scenario(void) {
     lock_release_calls = 0;
     plan_free_calls = 0;
     runtime_check_calls = 0;
-    package_metadata_protection_calls = 0;
     package_catalog_check_calls = 0;
     plan_build_calls = 0;
     tmp_count_calls = 0;
@@ -500,15 +495,6 @@ CupError package_validate(const char *path, const PackageIdentity *identity, FIL
     return scenario.package_result;
 }
 
-CupError package_metadata_is_read_only(const char *path, int *is_read_only) {
-    package_metadata_protection_calls++;
-    (void)path;
-    if (is_read_only != NULL) {
-        *is_read_only = scenario.package_metadata_read_only;
-    }
-    return scenario.package_metadata_protection_result;
-}
-
 CupError package_scan(PackageList *packages, FILE *diagnostics) {
     TEST_ASSERT_NULL(diagnostics);
     if (scenario.scan_result == CUP_OK) {
@@ -661,7 +647,6 @@ static void test_package_issues(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.package_metadata_read_only = 0;
     scenario.wrapper_issues = 2;
     scenario.include_state_package = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
@@ -705,13 +690,11 @@ static void test_warning_only(void) {
 
 static void test_incomplete_checks(void) {
     scenario.runtime_check_result = CUP_ERR_FILESYSTEM;
-    scenario.package_metadata_protection_result = CUP_ERR_FILESYSTEM;
     scenario.package_catalog_check_result = CUP_ERR_VALIDATION;
     scenario.plan_build_result = CUP_ERR_VALIDATION;
     scenario.tmp_count_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
     TEST_ASSERT_EQUAL_INT(1, runtime_check_calls);
-    TEST_ASSERT_EQUAL_INT(1, package_metadata_protection_calls);
     TEST_ASSERT_EQUAL_INT(1, package_catalog_check_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_build_calls);
     TEST_ASSERT_EQUAL_INT(1, tmp_count_calls);

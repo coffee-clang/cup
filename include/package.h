@@ -135,10 +135,10 @@ CupError validated_package_load(ValidatedPackage *package,
 CupError package_validate(const char *base_path,
                           const PackageIdentity *identity,
                           FILE *diagnostics);
-
-/* Inspect or restore the managed read-only protection applied to info.txt. */
-CupError package_metadata_is_read_only(const char *base_path, int *is_read_only);
-CupError package_set_metadata_read_only(const char *base_path);
+/* Validate the complete producer-owned manifest inventory in addition to info.txt semantics. */
+CupError package_validate_integrity(const char *base_path,
+                                    const PackageIdentity *identity,
+                                    FILE *diagnostics);
 
 /* Check whether the canonical package path exists, regardless of path type. */
 CupError package_path_exists(const PackageIdentity *identity, int *exists);

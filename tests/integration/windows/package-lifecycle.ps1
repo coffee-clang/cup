@@ -152,6 +152,13 @@ function Test-Updates {
     Assert-Contains $packageInfo "Package information for compiler clang@stable -> clang@23.1.0"
     Assert-Contains $packageInfo "component          compiler"
     Assert-Contains $packageInfo "version            23.1.0"
+    Assert-Contains $packageInfo "mode               self-contained"
+    Assert-Contains $packageInfo "formats            zip,tar.xz,tar.gz"
+    Assert-Contains $packageInfo "Platform:"
+    Assert-Contains $packageInfo "host triple        x86_64-w64-mingw32"
+    Assert-Contains $packageInfo "Source/build:"
+    Assert-Contains $packageInfo "source             llvm-project"
+    Assert-Contains $packageInfo ("source SHA-256     " + ('0' * 64))
 
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@22.1.5") | Out-Null
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `

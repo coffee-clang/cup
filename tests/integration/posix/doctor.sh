@@ -20,15 +20,46 @@ run_cup repair >/dev/null
 run_cup doctor > "$TMP_ROOT/doctor-path.out"
 assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
     'current CUP command directory is not in PATH'
+assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
+    "export PATH='$TEST_HOME/.cup/bin':\"\$PATH\""
+
+# A valid root whose bin path contains the PATH separator cannot be represented as one entry.
+(
+    TEST_HOME="$TMP_ROOT/home:separator"
+    export TEST_HOME
+    mkdir -p "$TEST_HOME"
+    run_cup repair >/dev/null
+    separator_output=$(run_cup doctor)
+    assert_contains "$separator_output" 'current CUP command directory is not in PATH'
+    assert_contains "$separator_output" \
+        "contains ':' and cannot be represented as one PATH entry"
+    assert_not_contains "$separator_output" 'export PATH='
+)
+
+# Shell-significant characters that are valid inside one PATH entry are quoted exactly.
+(
+    TEST_HOME="$TMP_ROOT/home'quote"
+    export TEST_HOME
+    mkdir -p "$TEST_HOME"
+    run_cup repair >/dev/null
+    quote_output=$(run_cup doctor)
+    assert_contains "$quote_output" \
+        "export PATH='$TMP_ROOT/home'\"'\"'quote/.cup/bin':\"\$PATH\""
+)
+
 PATH="$TEST_HOME/.cup/bin:$PATH"
 export PATH
 state_file=$TEST_HOME/.cup/state.txt
 
 # Create independent diagnostic conditions. The package is deliberately not in
-# state, another state record has no package, one valid package is unprotected
-# and absent from the current catalog, and runtime leftovers are present.
+# state, another state record has no package, one installed package is changed
+# after its manifest was generated and is absent from the current catalog, and
+# runtime leftovers are present.
 make_installed_package compiler clang 99.0.0 "$TEST_PLATFORM" clang
 make_installed_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
+compiler_info=$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0/info.txt
+printf 'fixture.note=changed-after-manifest\n' >> "$compiler_info"
+compiler_info_hash=$(hash_file "$compiler_info")
 invalid_package=$TEST_HOME/.cup/components/linker/lld/$TEST_PLATFORM/$TEST_PLATFORM/22.1.5
 mkdir -p "$invalid_package"
 chmod u+w "$state_file"
@@ -45,8 +76,9 @@ run_cup_expect_failure "$TMP_ROOT/doctor-issues.out" doctor
 output=$(cat "$TMP_ROOT/doctor-issues.out")
 assert_contains "$output" 'transaction journal is invalid'
 assert_contains "$output" "installed state record 'linter:clang-tidy@22.1.5' has no valid package"
-assert_contains "$output" "package metadata for 'compiler:clang@99.0.0' is not read-only"
 assert_contains "$output" "installed package 'compiler:clang@99.0.0' is not listed"
+assert_contains "$output" \
+    "package path '$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0' is invalid"
 assert_contains "$output" \
     "valid package 'lldb@23.1.0' exists in components but is absent from state.txt"
 assert_contains "$output" "package path '$invalid_package' is invalid"
@@ -57,27 +89,17 @@ assert_contains "$output" 'Run '\''cup repair'\'' after reviewing them.'
 assert_equals "$(hash_file "$state_file")" "$state_hash"
 [ -d "$invalid_package" ] || fail 'doctor modified invalid package path'
 [ -d "$TEST_HOME/.cup/staging/leftover" ] || fail 'doctor removed staging data'
-package_metadata="$TEST_HOME/.cup/components/compiler/clang"
-package_metadata="$package_metadata/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0/info.txt"
-package_metadata_mode=$(ls -ld "$package_metadata" | awk '{print $1}')
-case "$package_metadata_mode" in
-    *w*) ;;
-    *)
-        fail 'doctor changed package metadata permissions'
-        ;;
-esac
+assert_equals "$(hash_file "$compiler_info")" "$compiler_info_hash"
 
 rm -f "$TEST_HOME/.cup/transaction.txt"
 rm -rf "$TEST_HOME/.cup/staging/leftover" "$invalid_package"
+make_installed_package compiler clang 99.0.0 "$TEST_PLATFORM" clang
 chmod u+w "$state_file"
 cat > "$state_file" <<STATE
 format=1
 installed.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@99.0.0
 installed.debugger.$TEST_PLATFORM.$TEST_PLATFORM=lldb@23.1.0
 STATE
-chmod 0444 "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/99.0.0/info.txt"
-chmod 0444 "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0/info.txt"
-
 # An incomplete runtime is reported, and a missing lock prevents an unsafe
 # snapshot from being treated as coherent.
 rm -rf "$TEST_HOME/.cup/cache"

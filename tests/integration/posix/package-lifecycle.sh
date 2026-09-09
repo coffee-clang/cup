@@ -123,6 +123,13 @@ test_updates() {
         'Package information for compiler clang@stable -> clang@23.1.0'
     assert_contains "$package_info" 'component          compiler'
     assert_contains "$package_info" 'version            23.1.0'
+    assert_contains "$package_info" 'mode               self-contained'
+    assert_contains "$package_info" 'formats            tar.xz,tar.gz,zip'
+    assert_contains "$package_info" 'Platform:'
+    assert_contains "$package_info" "host triple        $(package_fixture_triple "$TEST_PLATFORM")"
+    assert_contains "$package_info" 'Source/build:'
+    assert_contains "$package_info" 'source             llvm-project'
+    assert_contains "$package_info" 'source SHA-256     0000000000000000000000000000000000000000000000000000000000000000'
 
     run_cup default compiler clang@22.1.5 >/dev/null
     assert_contains "$(run_cup info compiler)" \

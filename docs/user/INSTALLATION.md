@@ -105,13 +105,16 @@ the System/Machine PATH. Non-interactive installation does not depend on stdin o
 PATH change.
 
 Normal CUP commands do not warn merely because the current root is absent from PATH.
-`cup doctor` diagnoses that condition. Moving a root does not automatically rewrite PATH,
-and `cup uninstall` deliberately leaves existing PATH configuration unchanged.
+`cup doctor` diagnoses that condition and, when the current `bin` directory can be represented
+as one PATH entry, prints a correctly quoted command for the running shell session. It never
+applies that change itself. Moving a root does not automatically rewrite PATH, and
+`cup uninstall` deliberately leaves existing PATH configuration unchanged.
 
 A valid CUP root is not rejected merely because its `bin` path contains the PATH
 entry separator (`:` on POSIX or `;` on Windows). Such a path cannot be represented
-as one PATH entry, so the installer keeps the installation and skips only the
-automatic PATH convenience, explaining that PATH must be handled manually.
+as one PATH entry, so the installer skips automatic PATH integration and `cup doctor` does
+not print a misleading PATH command; both instead leave the installation usable through its
+full executable path or after relocation.
 
 ## Existing and unrecognized directories
 

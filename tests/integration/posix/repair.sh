@@ -14,22 +14,18 @@ run_cup repair >/dev/null
 state_file=$TEST_HOME/.cup/state.txt
 transaction_file=$TEST_HOME/.cup/transaction.txt
 
-# A valid package found on disk is adopted. Its managed read-only metadata
-# protection is also restored by repair rather than by a test-specific helper.
+# A valid package found on disk is adopted without rewriting producer-owned package metadata.
 make_installed_package compiler clang 23.1.0 "$TEST_PLATFORM" clang
+package_metadata="$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0/info.txt"
+package_manifest="$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0/manifest.txt"
+metadata_hash=$(hash_file "$package_metadata")
+manifest_hash=$(hash_file "$package_manifest")
 output=$(run_cup repair)
 assert_contains "$output" "Prepared state repair: adopt valid package 'compiler:clang@23.1.0'"
-assert_contains "$output" 'Restored read-only protection for clang@23.1.0 metadata.'
 assert_contains "$(cat "$state_file")" \
     "installed.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@23.1.0"
-package_metadata="$TEST_HOME/.cup/components/compiler/clang"
-package_metadata="$package_metadata/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0/info.txt"
-package_metadata_mode=$(ls -ld "$package_metadata" | awk '{print $1}')
-case "$package_metadata_mode" in
-    *w*)
-        fail 'repair did not protect adopted package metadata'
-        ;;
-esac
+assert_equals "$(hash_file "$package_metadata")" "$metadata_hash"
+assert_equals "$(hash_file "$package_manifest")" "$manifest_hash"
 
 # State entries that no longer have a package are removed together with their
 # defaults. This is different from transaction recovery and belongs here.

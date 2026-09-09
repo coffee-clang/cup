@@ -5,6 +5,7 @@
 
 #include "error.h"
 #include "package.h"
+#include "package_manifest.h"
 #include "platform.h"
 #include "registry.h"
 #include "system.h"
@@ -36,25 +37,45 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 #define TEST_PACKAGE_BODY "#!/bin/sh\nexit 0\n"
 #endif
 
-#define TEST_PACKAGE_COMMON_METADATA \
+#if defined(_WIN32)
+#define TEST_PACKAGE_FORMATS "zip,tar.xz,tar.gz"
+#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz,zip"
+#define TEST_PACKAGE_TRIPLE "x86_64-w64-mingw32"
+#define TEST_PACKAGE_RUNTIME "ucrt"
+#else
+#define TEST_PACKAGE_FORMATS "tar.xz,tar.gz,zip"
+#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz"
+#define TEST_PACKAGE_TRIPLE "x86_64-linux-gnu"
+#define TEST_PACKAGE_RUNTIME "glibc"
+#endif
+
+#define TEST_PACKAGE_SHA \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+#define TEST_PACKAGE_COMMON_METADATA_WITH(formats, sha) \
     "package.mode=self-contained\n" \
-    "package.formats=tar.xz,tar.gz,zip\n" \
-    "platform.host_triple=fixture-host-triple\n" \
-    "platform.target_triple=fixture-target-triple\n" \
-    "platform.family=fixture\n" \
-    "platform.runtime=fixture\n" \
-    "platform.thread_model=fixture\n" \
+    "package.formats=" formats "\n" \
+    "platform.host_triple=" TEST_PACKAGE_TRIPLE "\n" \
+    "platform.target_triple=" TEST_PACKAGE_TRIPLE "\n" \
+    "platform.family=gnu\n" \
+    "platform.runtime=" TEST_PACKAGE_RUNTIME "\n" \
+    "platform.thread_model=posix\n" \
     "build.environment=test\n" \
     "build.source_policy=fixture\n" \
-    "source.primary.name=clang\n" \
+    "source.primary.name=llvm-project\n" \
     "source.primary.version=22.1.5\n" \
-    "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n"
+    "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n" \
+    "source.primary.sha256=" sha "\n"
+#define TEST_PACKAGE_COMMON_METADATA \
+    TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
+
 static unsigned int recovery_serial;
 static CupError install_path_result;
 static CupError components_path_result;
 static CupError recovery_result;
 static CupError cleanup_result;
 static int cleanup_calls;
+static CupError manifest_result;
+static int manifest_calls;
 
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     int written;
@@ -108,12 +129,24 @@ CupError filesystem_remove_tree(const char *path) {
     return cleanup_result;
 }
 
+CupError package_manifest_verify(const char *base_path,
+                                 const char *host_platform,
+                                 FILE *diagnostics) {
+    (void)base_path;
+    (void)host_platform;
+    (void)diagnostics;
+    manifest_calls++;
+    return manifest_result;
+}
+
 void setUp(void) {
     install_path_result = CUP_OK;
     components_path_result = CUP_OK;
     recovery_result = CUP_OK;
     cleanup_result = CUP_OK;
     cleanup_calls = 0;
+    manifest_result = CUP_OK;
+    manifest_calls = 0;
 }
 
 void tearDown(void) {
@@ -171,7 +204,10 @@ static void make_valid_package_for_platform(const char *root,
     char bin_dir[512];
     char tool_path[512];
     char package_metadata_path[512];
-    char metadata[1024];
+    char metadata[2048];
+    const char *formats = strcmp(host, "windows-x64") == 0
+                              ? "zip,tar.xz,tar.gz"
+                              : "tar.xz,tar.gz,zip";
     int written;
 
     join_path(bin_dir, sizeof(bin_dir), root, "bin");
@@ -187,10 +223,24 @@ static void make_valid_package_for_platform(const char *root,
                        "package.component=compiler\n"
                        "package.tool=clang\n"
                        "package.version=22.1.5\n"
+                       "package.mode=self-contained\n"
+                       "package.formats=%s\n"
                        "platform.host=%s\n"
                        "platform.target=%s\n"
-                       TEST_PACKAGE_COMMON_METADATA
+                       "platform.host_triple=fixture-host\n"
+                       "platform.target_triple=fixture-target\n"
+                       "platform.family=fixture\n"
+                       "platform.runtime=fixture\n"
+                       "platform.thread_model=posix\n"
+                       "build.environment=test\n"
+                       "build.source_policy=fixture\n"
+                       "source.primary.name=llvm-project\n"
+                       "source.primary.version=22.1.5\n"
+                       "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n"
+                       "source.primary.sha256="
+                       "0000000000000000000000000000000000000000000000000000000000000000\n"
                        "entry.clang=" TEST_PACKAGE_ENTRY "\n",
+                       formats,
                        host,
                        target);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(metadata));
@@ -432,6 +482,95 @@ static void test_valid_package(void) {
 }
 
 
+static void test_common_metadata_contract(void) {
+    PackageIdentity identity;
+    char root[512];
+    char info[512];
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
+
+    build_path(root, sizeof(root), "wrong-package-formats");
+    make_valid_package(root);
+    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_WRONG_FORMATS, TEST_PACKAGE_SHA)
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    build_path(root, sizeof(root), "reordered-package-formats");
+    make_valid_package(root);
+    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA_WITH("zip,tar.gz,tar.xz", TEST_PACKAGE_SHA)
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
+
+    build_path(root, sizeof(root), "invalid-source-digest");
+    make_valid_package(root);
+    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA_WITH(
+                   TEST_PACKAGE_FORMATS,
+                   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    build_path(root, sizeof(root), "gcc-revision-contract");
+    make_valid_package(root);
+    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=gcc\n"
+               "package.version=16.2.0-rev1\n"
+               "package.revision=1\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
+               "entry.gcc=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity,
+                              "compiler",
+                              "gcc",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "16.2.0-rev1"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
+
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=gcc\n"
+               "package.version=16.2.0-rev1\n"
+               "package.revision=2\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
+               "entry.gcc=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+}
+
 static void test_validated_package_snapshot(void) {
     PackageIdentity identity;
     ValidatedPackage package;
@@ -632,31 +771,13 @@ static void test_invalid_package(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 }
 
-static void test_metadata_paths(void) {
+static void test_integrity_validation(void) {
     PackageIdentity identity;
     char root[512];
-    char package_metadata_path[512];
-    char install_path[512];
-    int value;
+    char metadata_path[512];
 
-    build_path(root, sizeof(root), "permission-package");
+    build_path(root, sizeof(root), "integrity-package");
     make_valid_package(root);
-    join_path(package_metadata_path, sizeof(package_metadata_path), root, "info.txt");
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_is_read_only(root, &value));
-    TEST_ASSERT_FALSE(value);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_set_metadata_read_only(root));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_is_read_only(root, &value));
-    TEST_ASSERT_TRUE(value);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(package_metadata_path, 0));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_is_read_only(root, &value));
-    TEST_ASSERT_FALSE(value);
-    value = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_is_read_only(NULL, &value));
-    TEST_ASSERT_FALSE(value);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_metadata_is_read_only(root, NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_set_metadata_read_only(NULL));
-
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         package_identity_init(&identity,
@@ -665,16 +786,21 @@ static void test_metadata_paths(void) {
                               TEST_PACKAGE_HOST,
                               TEST_PACKAGE_HOST,
                               "22.1.5"));
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_build_install_path(install_path, sizeof(install_path), &identity));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_path_exists(&identity, &value));
-    TEST_ASSERT_FALSE(value);
-    make_parent_chain("install");
-    make_dir(install_path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_path_exists(&identity, &value));
-    TEST_ASSERT_TRUE(value);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_path_exists(NULL, &value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_path_exists(&identity, NULL));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate_integrity(root, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(1, manifest_calls);
+
+    manifest_result = CUP_ERR_VALIDATION;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          package_validate_integrity(root, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(2, manifest_calls);
+
+    join_path(metadata_path, sizeof(metadata_path), root, CUP_INFO_FILENAME);
+    write_text(metadata_path, "invalid\n");
+    manifest_calls = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          package_validate_integrity(root, &identity, stderr));
+    TEST_ASSERT_EQUAL_INT(0, manifest_calls);
 }
 
 static void test_scan_roots(void) {
@@ -980,9 +1106,10 @@ int main(void) {
     RUN_TEST(test_identity_validation);
     RUN_TEST(test_identity_argument_contracts);
     RUN_TEST(test_valid_package);
+    RUN_TEST(test_common_metadata_contract);
     RUN_TEST(test_validated_package_snapshot);
     RUN_TEST(test_invalid_package);
-    RUN_TEST(test_metadata_paths);
+    RUN_TEST(test_integrity_validation);
     RUN_TEST(test_scan_roots);
     RUN_TEST(test_path_failures);
     RUN_TEST(test_scan_issues);

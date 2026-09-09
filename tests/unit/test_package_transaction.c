@@ -347,9 +347,9 @@ CupError package_identity_init(PackageIdentity *identity,
     return CUP_OK;
 }
 
-CupError package_validate(const char *base_path,
-                          const PackageIdentity *identity,
-                          FILE *diagnostics) {
+CupError package_validate_integrity(const char *base_path,
+                                    const PackageIdentity *identity,
+                                    FILE *diagnostics) {
     (void)diagnostics;
     char marker[MAX_PATH_LEN];
     (void)identity;

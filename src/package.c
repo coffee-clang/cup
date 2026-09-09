@@ -5,10 +5,11 @@
 
 #include "package.h"
 
+#include "checksum.h"
 #include "package_selector.h"
-#include "package_archive.h"
 #include "filesystem.h"
 #include "package_metadata.h"
+#include "package_manifest.h"
 #include "layout.h"
 #include "path.h"
 #include "platform.h"
@@ -333,6 +334,38 @@ static CupError require_metadata_present(const PackageMetadata *metadata,
     return CUP_OK;
 }
 
+static CupError validate_package_formats(const PackageMetadata *metadata, FILE *diagnostics) {
+    const char *value = package_metadata_get(metadata, "package.formats");
+    const char *cursor = value;
+    unsigned seen = 0;
+
+    while (cursor != NULL && *cursor != '\0') {
+        const char *comma = strchr(cursor, ',');
+        size_t length = comma != NULL ? (size_t)(comma - cursor) : strlen(cursor);
+        unsigned bit = 0;
+
+        if (length == strlen("tar.xz") && strncmp(cursor, "tar.xz", length) == 0) {
+            bit = 1u;
+        } else if (length == strlen("tar.gz") && strncmp(cursor, "tar.gz", length) == 0) {
+            bit = 2u;
+        } else if (length == strlen("zip") && strncmp(cursor, "zip", length) == 0) {
+            bit = 4u;
+        }
+        if (bit == 0 || (seen & bit) != 0) {
+            break;
+        }
+        seen |= bit;
+        cursor = comma != NULL ? comma + 1 : NULL;
+    }
+
+    if (seen != 7u || cursor != NULL) {
+        package_diagnostic(diagnostics,
+                           "Error: package metadata field 'package.formats' is missing or invalid.\n");
+        return CUP_ERR_VALIDATION;
+    }
+    return CUP_OK;
+}
+
 static int package_revision_is_canonical_positive(const char *value) {
     const unsigned char *cursor;
 
@@ -353,9 +386,13 @@ static CupError validate_package_revision(const PackageMetadata *metadata,
     const char *revision = package_metadata_get(metadata, "package.revision");
 
     if (strcmp(identity->tool, "gcc") == 0) {
-        if (!package_revision_is_canonical_positive(revision)) {
+        const char *marker = strstr(identity->version, "-rev");
+        const char *expected = marker != NULL ? marker + 4 : NULL;
+
+        if (!package_revision_is_canonical_positive(revision) ||
+            expected == NULL || strcmp(revision, expected) != 0) {
             package_diagnostic(
-                diagnostics, "Error: GCC package metadata requires a positive canonical revision.\n");
+                diagnostics, "Error: GCC package metadata revision does not match package.version.\n");
             return CUP_ERR_VALIDATION;
         }
     } else if (revision != NULL) {
@@ -382,17 +419,25 @@ static CupError validate_package_common_metadata(const PackageMetadata *metadata
         "source.primary.version",
         "source.primary.url"
     };
+    const char *source_digest;
     size_t i;
     CupError err;
 
     err = require_metadata_value(metadata, "package.mode", "self-contained", diagnostics);
     if (err == CUP_OK) {
-        err = require_metadata_value(
-            metadata, "package.formats", package_archive_formats_csv(), diagnostics);
+        err = validate_package_formats(metadata, diagnostics);
     }
     for (i = 0; err == CUP_OK && i < sizeof(required_declarations) / sizeof(required_declarations[0]);
          ++i) {
         err = require_metadata_present(metadata, required_declarations[i], diagnostics);
+    }
+    if (err == CUP_OK) {
+        source_digest = package_metadata_get(metadata, "source.primary.sha256");
+        if (!checksum_digest_is_canonical(source_digest)) {
+            package_diagnostic(diagnostics,
+                               "Error: package metadata field 'source.primary.sha256' is missing or invalid.\n");
+            err = CUP_ERR_VALIDATION;
+        }
     }
     if (err == CUP_OK) {
         err = validate_package_revision(metadata, identity, diagnostics);
@@ -612,37 +657,15 @@ CupError package_validate(const char *base_path,
     return err;
 }
 
-CupError package_metadata_is_read_only(const char *base_path, int *is_read_only) {
-    char package_metadata_path[MAX_PATH_LEN];
-    CupError err;
+CupError package_validate_integrity(const char *base_path,
+                                    const PackageIdentity *identity,
+                                    FILE *diagnostics) {
+    CupError err = package_validate(base_path, identity, diagnostics);
 
-    if (is_read_only == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *is_read_only = 0;
-    if (text_is_empty(base_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = path_join(
-        package_metadata_path, sizeof(package_metadata_path), base_path, CUP_INFO_FILENAME);
     if (err != CUP_OK) {
         return err;
     }
-    return system_is_read_only(package_metadata_path, is_read_only);
-}
-
-CupError package_set_metadata_read_only(const char *base_path) {
-    char package_metadata_path[MAX_PATH_LEN];
-    CupError err;
-
-    if (text_is_empty(base_path)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = path_join(
-        package_metadata_path, sizeof(package_metadata_path), base_path, CUP_INFO_FILENAME);
-    return err == CUP_OK ? system_set_read_only(package_metadata_path, 1) : err;
+    return package_manifest_verify(base_path, identity->host_platform, diagnostics);
 }
 
 CupError package_path_exists(const PackageIdentity *identity, int *exists) {
@@ -804,7 +827,7 @@ static CupError scan_version_path(PackageScanContext *context,
         return CUP_OK;
     }
 
-    err = package_validate(path, &package, context->diagnostics);
+    err = package_validate_integrity(path, &package, context->diagnostics);
     if (err == CUP_ERR_VALIDATION) {
         record_scan_issue(
             context, path, PACKAGE_ISSUE_INVALID_CONTENT, 1, &package, path_identity);
