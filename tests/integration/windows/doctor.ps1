@@ -70,7 +70,9 @@ try {
     $debuggerRoot = New-InstalledPackageFixture -Component "debugger" -Tool "lldb" `
         -Version "23.1.0" -Entries @("lldb")
     $compilerInfo = Join-Path $compilerRoot "info.txt"
-    Add-Content -LiteralPath $compilerInfo -Encoding ascii -Value "fixture.note=changed-after-manifest"
+    $compilerInfoLines = @(Get-Content -LiteralPath $compilerInfo)
+    Write-Utf8NoBom -Path $compilerInfo -Lines @(
+        $compilerInfoLines + "fixture.note=changed-after-manifest")
     $compilerInfoHash = (Get-FileHash -LiteralPath $compilerInfo -Algorithm SHA256).Hash
     $invalidPackage = Join-Path $cupRoot (
         "components\linker\lld\windows-x64\windows-x64\22.1.5")

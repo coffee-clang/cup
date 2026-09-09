@@ -185,7 +185,9 @@ function New-ZipPackageFixture {
         [string]$ExtraPath,
 
         [AllowEmptyString()]
-        [string]$ExtraContent
+        [string]$ExtraContent,
+
+        [switch]$ValidExtraFile
     )
 
     $hasExtraPath = $PSBoundParameters.ContainsKey('ExtraPath')
@@ -195,6 +197,9 @@ function New-ZipPackageFixture {
     }
     if ($hasExtraPath -and [string]::IsNullOrWhiteSpace($ExtraPath)) {
         Fail-Test 'ZIP fixture extra path must not be empty'
+    }
+    if ($ValidExtraFile -and -not $hasExtraPath) {
+        Fail-Test 'valid ZIP fixture extra file requires a path and content'
     }
 
     $platform = 'windows-x64'
@@ -207,7 +212,8 @@ function New-ZipPackageFixture {
 
     $arguments = @($packageName, $Version, $platform, $platform, $archive)
     if ($hasExtraPath) {
-        $arguments += @('extra-file', $ExtraPath, $ExtraContent)
+        $mode = if ($ValidExtraFile) { 'valid-extra-file' } else { 'extra-file' }
+        $arguments += @($mode, $ExtraPath, $ExtraContent)
     } else {
         $arguments += 'valid'
     }

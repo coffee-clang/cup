@@ -137,7 +137,10 @@ static int parse_options(int argc, char **argv, FixtureOptions *options) {
         options->extra_path = argv[7];
         options->extra_content = argv[8];
     }
-    return strcmp(options->mode, "extra-file") == 0 ? argc == 9 : argc == 7;
+    return strcmp(options->mode, "extra-file") == 0 ||
+                   strcmp(options->mode, "valid-extra-file") == 0
+               ? argc == 9
+               : argc == 7;
 }
 
 static const char *platform_triple(const char *platform) {
@@ -274,6 +277,7 @@ static void add_common_package(struct archive *archive,
     char manifest[4096];
     char info_digest[65];
     char command_digest[65];
+    char extra_digest[65];
     char link_digest[65];
     char path[1024];
     const char *command_data = posix_script;
@@ -321,7 +325,8 @@ static void add_common_package(struct archive *archive,
     }
 
     if (strcmp(options->mode, "valid") != 0 &&
-        strcmp(options->mode, "safe-symlink") != 0) {
+        strcmp(options->mode, "safe-symlink") != 0 &&
+        strcmp(options->mode, "valid-extra-file") != 0) {
         return;
     }
 
@@ -338,6 +343,34 @@ static void add_common_package(struct archive *archive,
                            "f\t0644\t%s\tinfo.txt\n",
                            link_digest,
                            command_digest,
+                           info_digest);
+    } else if (strcmp(options->mode, "valid-extra-file") == 0) {
+        const char *command_path = windows_package ? "bin/clang.cmd" : "bin/clang";
+        const char *extra_relative;
+        size_t root_size = strlen(options->package_root);
+
+        if (options->extra_path == NULL || options->extra_content == NULL ||
+            strncmp(options->extra_path, options->package_root, root_size) != 0 ||
+            options->extra_path[root_size] != '/' ||
+            (extra_relative = options->extra_path + root_size + 1)[0] == '\0' ||
+            strncmp(extra_relative, "bin/", 4) != 0 ||
+            strchr(extra_relative + 4, '/') != NULL ||
+            strcmp(extra_relative, command_path) <= 0 || strcmp(extra_relative, "info.txt") >= 0) {
+            fprintf(stderr, "valid extra fixture path is not a sorted file below bin\n");
+            exit(2);
+        }
+        sha256_hex(options->extra_content, strlen(options->extra_content), extra_digest);
+        written = snprintf(manifest,
+                           sizeof(manifest),
+                           "format=2\n"
+                           "d\t0755\t-\tbin\n"
+                           "f\t0755\t%s\t%s\n"
+                           "f\t0644\t%s\t%s\n"
+                           "f\t0644\t%s\tinfo.txt\n",
+                           command_digest,
+                           command_path,
+                           extra_digest,
+                           extra_relative,
                            info_digest);
     } else {
         written = snprintf(manifest,
@@ -367,7 +400,8 @@ static int add_mode_entries(struct archive *archive, const FixtureOptions *optio
         strcmp(options->mode, "safe-symlink") == 0) {
         return 1;
     }
-    if (strcmp(options->mode, "extra-file") == 0) {
+    if (strcmp(options->mode, "extra-file") == 0 ||
+        strcmp(options->mode, "valid-extra-file") == 0) {
         size_t content_size;
 
         if (options->extra_path == NULL || options->extra_content == NULL) {

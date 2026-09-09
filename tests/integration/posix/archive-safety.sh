@@ -68,35 +68,13 @@ create_plain_tar_disguised_as_gzip() {
     version=$1
     package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions "$version" prepend
     package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz replace
+    make_package_format compiler clang "$version" "$TEST_PLATFORM" tar.gz clang
 
     package_name=clang-$version-$TEST_PLATFORM-$TEST_PLATFORM
     package_root=$TMP_ROOT/packages/$package_name
     cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$version
     archive=$cache_dir/$package_name.tar.gz
-    rm -rf "$package_root"
-    mkdir -p "$package_root/bin" "$cache_dir"
-    cat > "$package_root/info.txt" <<EOF_INFO
-package.component=compiler
-package.tool=clang
-package.version=$version
-package.mode=self-contained
-package.formats=tar.xz,tar.gz,zip
-platform.host=$TEST_PLATFORM
-platform.target=$TEST_PLATFORM
-platform.host_triple=${TEST_PLATFORM}-fixture
-platform.target_triple=${TEST_PLATFORM}-fixture
-platform.family=fixture
-platform.runtime=fixture
-platform.thread_model=fixture
-build.environment=test
-build.source_policy=fixture
-source.primary.name=clang
-source.primary.version=$version
-source.primary.url=https://example.invalid/clang-$version.tar.xz
-entry.clang=bin/clang
-EOF_INFO
-    printf '#!/bin/sh\nexit 0\n' > "$package_root/bin/clang"
-    chmod +x "$package_root/bin/clang"
+    rm -f "$archive"
     tar -cf "$archive" -C "$TMP_ROOT/packages" "$package_name"
     printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")" \
         > "$cache_dir/SHA256SUMS"
@@ -106,7 +84,7 @@ create_mismatched_archive 98.1.1 tar.xz tar.gz
 run_cup_expect_failure "$TMP_ROOT/archive-format-mismatch.out" \
     install compiler clang@98.1.1
 assert_contains "$(cat "$TMP_ROOT/archive-format-mismatch.out")" \
-    "failed to download"
+    "archive content does not match declared format 'tar.xz'"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" 'compiler:clang@98.1.1'
 assert_missing "$declared"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
@@ -116,7 +94,7 @@ create_plain_tar_disguised_as_gzip 98.1.2
 run_cup_expect_failure "$TMP_ROOT/archive-plain-tar.out" \
     install compiler clang@98.1.2
 assert_contains "$(cat "$TMP_ROOT/archive-plain-tar.out")" \
-    "failed to download"
+    "archive content does not match declared format 'tar.gz'"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" 'compiler:clang@98.1.2'
 assert_missing "$archive"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
@@ -163,6 +141,32 @@ for case in traversal absolute symlink symlink-parent duplicate case-collision \
     create_unsafe_archive "$version" "$case"
     run_cup_expect_failure "$TMP_ROOT/archive-$case.out" \
         install compiler "clang@$version"
+    output=$(cat "$TMP_ROOT/archive-$case.out")
+    case "$case" in
+        traversal|reserved)
+            expected='archive contains an unsafe path'
+            ;;
+        unicode)
+            expected=
+            ;;
+        absolute)
+            expected='archive contains multiple or unsafe top-level roots'
+            ;;
+        symlink)
+            expected='archive symbolic link escapes the package root'
+            ;;
+        symlink-parent|duplicate|case-collision|file-directory)
+            expected='archive contains a duplicate, case-colliding, or path-type-colliding path'
+            ;;
+        special|hardlink-forward)
+            expected='archive contains unsupported entry type'
+            ;;
+        root-file)
+            expected='archive top-level root is not a directory'
+            ;;
+    esac
+    [ -z "$expected" ] || assert_contains "$output" "$expected"
+    assert_not_contains "$output" '==> Validating package...'
     assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" "compiler:clang@$version"
     assert_missing "$TMP_ROOT/outside.txt"
     assert_missing "$absolute_escape"

@@ -27,15 +27,14 @@ try {
         -Field "available_versions" `
         -Value $longVersion `
         -Mode "Prepend"
-    $segments = 1..18 | ForEach-Object { "segment$($_.ToString('00'))abcdef" }
-    $relativeLongPath = "share\" + (($segments -join '\') + "\payload.txt")
-    $zipLongPath = (
-        "clang-$longVersion-windows-x64-windows-x64/" +
-        $relativeLongPath.Replace('\', '/'))
+    $longFileName = "long-" + [string]::new([char]'x', 220) + ".txt"
+    $relativeLongPath = "bin\$longFileName"
+    $zipLongPath = "clang-$longVersion-windows-x64-windows-x64/bin/$longFileName"
     [void](New-ZipPackageFixture `
         -Version $longVersion `
         -ExtraPath $zipLongPath `
-        -ExtraContent "long path payload`n")
+        -ExtraContent "long path payload`n" `
+        -ValidExtraFile)
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@$longVersion") | Out-Null
     $longPackageRoot = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\$longVersion")

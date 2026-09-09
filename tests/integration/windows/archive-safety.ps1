@@ -7,11 +7,18 @@ param(
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 
-function Assert-InstallRejected([string]$Version) {
+function Assert-InstallRejected(
+    [string]$Version,
+    [string]$ExpectedDiagnostic = ""
+) {
     $output = Invoke-Cup `
         -CommandArgs @('install', 'compiler', "clang@$Version") `
         -ExpectFailure
     Assert-Contains $output 'Cached package is invalid; downloading it again...'
+    Assert-NotContains $output '==> Validating package...'
+    if (-not [string]::IsNullOrEmpty($ExpectedDiagnostic)) {
+        Assert-Contains $output $ExpectedDiagnostic
+    }
     Assert-NotContains `
         (Invoke-Cup -CommandArgs @('list', 'compiler')) `
         "compiler:clang@$Version"
@@ -56,7 +63,8 @@ try {
         -Version $caseVersion `
         -ExtraPath "$casePackage/bin/CLANG.cmd" `
         -ExtraContent "collision`n")
-    [void](Assert-InstallRejected $caseVersion)
+    [void](Assert-InstallRejected $caseVersion `
+        'archive contains a duplicate, case-colliding, or path-type-colliding path')
 
     $traversalVersion = "30.1.2"
     Set-PackageCatalogField `
@@ -70,7 +78,7 @@ try {
         -Version $traversalVersion `
         -ExtraPath "$traversalPackage/../escape.txt" `
         -ExtraContent "escape`n")
-    [void](Assert-InstallRejected $traversalVersion)
+    [void](Assert-InstallRejected $traversalVersion 'archive contains an unsafe path')
     $escapedPath = Join-Path $cupRoot (
         "components\compiler\clang\windows-x64\windows-x64\escape.txt")
     Assert-PathMissing $escapedPath
@@ -88,7 +96,8 @@ try {
         -Version $backslashVersion `
         -ExtraPath $backslashEntry `
         -ExtraContent "escape`n")
-    [void](Assert-InstallRejected $backslashVersion)
+    [void](Assert-InstallRejected $backslashVersion `
+        'archive contains multiple or unsafe top-level roots')
 
     $mismatchVersion = "30.1.3"
     Set-PackageCatalogField `
@@ -110,7 +119,8 @@ try {
     $mismatchHash = Get-Sha256Lower -Path $mismatchArchive
     Write-Utf8NoBom -Path (Join-Path (Split-Path -Parent $mismatchArchive) "SHA256SUMS") -Lines @(
         "$mismatchHash  $(Split-Path -Leaf $mismatchArchive)")
-    $mismatchOutput = Assert-InstallRejected $mismatchVersion
+    $mismatchOutput = Assert-InstallRejected $mismatchVersion `
+        "archive content does not match declared format 'tar.gz'"
     Assert-Contains $mismatchOutput "failed to download"
 
     Set-PackageCatalogField `
