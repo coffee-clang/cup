@@ -55,11 +55,13 @@ static void file_digest(const char *path, char digest[65]) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, checksum_sha256_file(path, digest, 65));
 }
 
+#if !defined(_WIN32)
 static void text_digest(const char *text, char digest[65]) {
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         checksum_sha256_bytes((const unsigned char *)text, strlen(text), digest, 65));
 }
+#endif
 
 static void create_basic_tree(char *tool_path, size_t tool_path_size) {
     char bin[1024];

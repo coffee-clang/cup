@@ -472,6 +472,7 @@ compile_test test_storage \
     "$ROOT/src/tool_preferences.c" \
     "$ROOT/src/state.c" \
     "$ROOT/src/package.c" \
+    "$ROOT/src/package_manifest.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/package_metadata.c" \
     "$ROOT/src/registry.c" \
@@ -504,6 +505,7 @@ compile_test test_storage_windows \
     "$ROOT/src/tool_preferences.c" \
     "$ROOT/src/state.c" \
     "$ROOT/src/package.c" \
+    "$ROOT/src/package_manifest.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/package_metadata.c" \
     "$ROOT/src/registry.c" \
