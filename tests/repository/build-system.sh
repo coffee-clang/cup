@@ -1209,6 +1209,7 @@ assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
 helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
 assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
+assert_contains "$helper_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
 assert_contains "$helper_builder_text" 'compile_command=("$CC"'
 assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
 assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
@@ -1510,6 +1511,12 @@ cat > "$test_build_fixture/bin/fakecc" <<'EOF_FAKE_TEST_CC'
 set -eu
 output=
 while [ "$#" -gt 0 ]; do
+    case "$1" in
+        "$CUP_TEST_PROJECT_ROOT"/*.c)
+            printf 'absolute repository source operand: %s\n' "$1" >&2
+            exit 8
+            ;;
+    esac
     if [ "$1" = -o ]; then
         [ "$#" -ge 2 ] || exit 2
         output=$2

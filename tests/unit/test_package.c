@@ -39,15 +39,15 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 #if defined(_WIN32)
 #define TEST_PACKAGE_FORMATS "zip,tar.xz,tar.gz"
-#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz,zip"
 #define TEST_PACKAGE_TRIPLE "x86_64-w64-mingw32"
 #define TEST_PACKAGE_RUNTIME "ucrt"
 #else
 #define TEST_PACKAGE_FORMATS "tar.xz,tar.gz,zip"
-#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz"
 #define TEST_PACKAGE_TRIPLE "x86_64-linux-gnu"
 #define TEST_PACKAGE_RUNTIME "glibc"
 #endif
+
+#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz"
 
 #define TEST_PACKAGE_SHA \
     "0000000000000000000000000000000000000000000000000000000000000000"

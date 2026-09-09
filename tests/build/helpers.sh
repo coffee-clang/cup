@@ -107,6 +107,13 @@ compile_helper() {
     case "$source" in
         "$ROOT"/*) source=${source#"$ROOT"/} ;;
     esac
+    compile_args=()
+    for compile_arg in "$@"; do
+        case "$compile_arg" in
+            "$ROOT"/*) compile_args+=("${compile_arg#"$ROOT"/}") ;;
+            *) compile_args+=("$compile_arg") ;;
+        esac
+    done
     output="$OUT/$name$EXE_SUFFIX"
     [ ! -e "$output" ] || {
         printf 'Duplicate test-helper output: %s\n' "$name" >&2
@@ -130,12 +137,12 @@ compile_helper() {
             "-Dmain=$entry_name" \
             "-DCUP_COVERAGE_ENTRY=$entry_name" \
             -I"$DEPS_PREFIX/include" \
-            "$source" "$coverage_entry_source" "${TEST_LDFLAGS[@]}" "$@" \
-            -o "$output_arg")
+            "$source" "$coverage_entry_source" "${TEST_LDFLAGS[@]}" \
+            "${compile_args[@]}" -o "$output_arg")
     else
         (cd "$ROOT" && "${compile_command[@]}" \
-            -I"$DEPS_PREFIX/include" "$source" "${TEST_LDFLAGS[@]}" "$@" \
-            -o "$output_arg")
+            -I"$DEPS_PREFIX/include" "$source" "${TEST_LDFLAGS[@]}" \
+            "${compile_args[@]}" -o "$output_arg")
     fi
 }
 
