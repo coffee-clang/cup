@@ -85,6 +85,30 @@ function New-BootstrapSource {
     )
 }
 
+function Get-AclDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $sections = [Security.AccessControl.AccessControlSections]::Access -bor
+            [Security.AccessControl.AccessControlSections]::Owner -bor
+            [Security.AccessControl.AccessControlSections]::Group
+        return @(
+            "path=$Path",
+            "current_user_sid=$currentSid",
+            "owner=$($acl.Owner)",
+            "access_rules_protected=$($acl.AreAccessRulesProtected)",
+            "sddl=$($acl.GetSecurityDescriptorSddlForm($sections))"
+        ) -join "`n"
+    } catch {
+        return "path=$Path`nacl_snapshot_error=$($_.Exception.Message)"
+    }
+}
+
 function Test-BootstrapStagingEmpty {
     param(
         [Parameter(Mandatory = $true)]
@@ -204,6 +228,8 @@ try {
     $relocatedBase = Join-Path $Script:CupTestRoot "relocated base"
     New-Item -ItemType Directory -Path $relocatedBase | Out-Null
     $relocatedRoot = Join-Path $relocatedBase ".cup"
+    $aclBeforeMove = Get-AclDiagnostic -Path $root
+    $relocatedBaseAcl = Get-AclDiagnostic -Path $relocatedBase
     Move-Item -LiteralPath $root -Destination $relocatedRoot
     $installed = Join-Path $relocatedRoot "bin\cup.exe"
     $version = Invoke-NativeProcess -FilePath $installed -Arguments @("--version") `
@@ -220,7 +246,20 @@ try {
         $env:Path = $savedPath
     }
     if ($doctor.ExitCode -ne 0) {
-        Fail-Test "relocated bootstrap binary failed doctor`n$($doctor.Output)"
+        $aclAfterDoctor = Get-AclDiagnostic -Path $relocatedRoot
+        Fail-Test @"
+relocated bootstrap binary failed doctor
+$($doctor.Output)
+
+ACL before Move-Item:
+$aclBeforeMove
+
+Destination parent ACL before Move-Item:
+$relocatedBaseAcl
+
+ACL after failed doctor:
+$aclAfterDoctor
+"@
     }
     Assert-Contains $doctor.Output "Doctor found no issues."
     Assert-PathMissing $root
