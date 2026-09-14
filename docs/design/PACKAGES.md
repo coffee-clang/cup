@@ -286,25 +286,22 @@ A package archive contains one top-level directory. cup does not trust that
 directory name as the package identity; `info.txt` must still match the package
 selected from the command and catalog.
 
-Archive entry paths must use safe portable segments. They cannot:
+Archive entry paths use one bounded cross-platform grammar. They must be relative,
+slash-separated printable-ASCII paths whose segments are non-empty and are neither `.` nor `..`.
+Whitespace, backslashes, colons, Windows-reserved punctuation/device names and trailing dots are
+rejected. Paths also cannot collide after ASCII case folding, alias a file as a directory, or
+represent hard links or special filesystem objects.
 
-- be absolute;
-- contain `.` or `..` segments;
-- contain control characters;
-- collide after ASCII case folding;
-- describe the same path as both a file and a directory;
-- contain hard links or special filesystem objects.
+During archive extraction, POSIX packages may additionally contain relative symbolic links.
+CUP rejects absolute or lexically escaping targets and a link may not become the parent of a
+later archive write. Resolution is deliberately deferred until package-integrity validation:
+every finalized link must then resolve inside the package to a regular file, while declared
+`entry.*` paths must resolve to executable regular files. Windows package content cannot use
+symbolic links or reparse-style objects.
 
-POSIX packages may additionally contain relative symbolic links. CUP rejects absolute or
-lexically escaping link targets and a link may not become the parent of a later archive
-write. CUP otherwise preserves producer-owned link topology without requiring every link to
-resolve, terminate at a regular file or be acyclic. The declared public `entry.*` paths are
-validated separately through the real filesystem and must resolve to executable regular
-files physically beneath the package root.
-
-Raw hard-link archive entries remain rejected: the producer normalizes hard links to
-independent regular files, so the consumer has no hard-link topology to reconstruct or own.
-Windows packages continue to reject symbolic links and other reparse-style package content.
+Raw hard-link archive entries remain rejected: the producer materializes staging hard links
+as independent regular files, so the consumer has no hard-link topology to reconstruct or
+own.
 
 A package may contain tool-specific directories such as:
 
@@ -333,26 +330,28 @@ platform.host
 platform.target
 ```
 
-The common producer contract also declares package mode and archive formats, platform
-triples/runtime information, build/source provenance and `source.primary.sha256`. GCC
-packages additionally carry `package.revision`, which must agree with the `-revN` suffix
-of the concrete package version. cup validates the fields that belong to consumer identity,
-admission and schema; producer-specific capability meaning remains owned by
-`cup-components`. `requires.*` records explicit platform-owned prerequisites that are not
-package payload, while `bundle.*` records producer composition such as GCC's bundled
-Binutils/MinGW sources. cup preserves and exposes those fields without reconstructing the
-producer's capability policy.
+Beyond identity, cup requires `package.mode`, `package.formats`,
+`platform.{host_triple,target_triple,family,runtime,thread_model}`,
+`build.{environment,source_policy}` and
+`source.primary.{name,version,url,sha256}`. `package.mode` must be `self-contained`,
+`package.formats` must contain exactly the set `{tar.xz, tar.gz, zip}` in any order, and the
+source digest must be canonical SHA-256. GCC additionally carries `package.revision`, which must
+match the `-revN` suffix of its concrete package version. These are common consumer-admission
+rules; tool-specific capability policy remains owned by `cup-components`.
 
-Every package must declare at least one executable entry using an `entry.*` field.
-Descriptive producer-owned groups may include:
+Every package declares at least one public command through `entry.*`. Producer-owned metadata
+uses the following groups:
 
 ```text
-features.*
-contents.*
-bundle.*
-requires.*
-config.*
+features.*     behavioral capabilities deliberately promised by the producer
+contents.*     important payload groups
+bundle.*       composed source/toolchain inputs, such as GCC Binutils/MinGW material
+requires.*     explicit platform-owned prerequisites that are not package payload
+config.*       build choices useful for interpreting the package
 ```
+
+cup validates the metadata syntax, preserves these fields and exposes them through `inspect`;
+the producer remains responsible for their tool-specific meaning and native qualification.
 
 Example:
 
@@ -390,8 +389,7 @@ l<TAB>-<TAB><sha256-of-link-target-text><TAB><path>
 
 Directory and regular-file modes are normalized by `cup-components`. Link records exist
 only on POSIX and describe the exact relative symbolic-link target text. Windows package
-manifests contain only directories and regular files. Case-fold path collisions are not
-valid package identity.
+manifests contain only directories and regular files. Case-fold path collisions are rejected.
 
 The manifest is generated after the package tree and `info.txt` are final.
 `cup-components` regenerates it after extracting each published archive format; therefore

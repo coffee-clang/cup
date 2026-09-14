@@ -1,8 +1,8 @@
 /*
  * Extracts one bounded package archive below an anchored staging directory. Archive paths use a
- * portable ASCII grammar, case-fold collisions and path aliases are rejected, POSIX packages may
- * contain confined relative symbolic links, and permissions are normalized rather than trusted
- * from the archive.
+ * portable ASCII grammar, case-fold collisions and path aliases are rejected, POSIX archives may
+ * contain lexically confined relative symbolic links, and permissions are normalized rather than
+ * trusted from the archive. Complete link resolution belongs to manifest integrity validation.
  */
 
 #include "package_extract.h"
@@ -281,9 +281,9 @@ static CupError normalize_entry_path(const char *input, char *output, size_t siz
 }
 
 #if !defined(_WIN32)
-/* A symlink may be producer-owned and need not resolve during installation, but its lexical target
- * must remain within the package root. This prevents an installed package from deliberately
- * pointing outside its own tree without making CUP own the producer's internal topology. */
+/* A producer-owned symlink need not resolve while archive entries are being extracted, but its
+ * lexical target must remain inside the package. Complete resolution is deferred to manifest
+ * integrity validation; extraction owns only safe construction of the staged tree. */
 static CupError validate_symlink_target(const char *relative_path, const char *target) {
     char combined[MAX_PATH_LEN];
     char parent[MAX_PATH_LEN];

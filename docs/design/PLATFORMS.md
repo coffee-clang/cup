@@ -193,13 +193,13 @@ CUP control trees such as state, staging control data and runtime metadata do no
 use symbolic links, junctions or other reparse points as structural shortcuts.
 Windows package content follows the same no-reparse rule.
 
-POSIX package archives may contain relative symbolic links. Their targets must not be
-absolute or lexically escape the package, and a link may not act as the parent of a later
-archive write. CUP does not otherwise own producer link topology: dangling links, cycles and
-links to non-regular internal objects are not rejected merely for that topology. Declared
-`entry.*` paths are still resolved physically beneath the package and must end at executable
-regular files. Raw hard-link entries, device files, FIFOs and sockets remain rejected; the
-producer normalizes hard links to independent regular files.
+POSIX package archives may contain relative symbolic links. Extraction requires lexical
+confinement and forbids using a link as the parent of a later archive write; it does not need
+to resolve the link while the tree is still being constructed. Final manifest validation is
+stricter: every link must resolve physically inside the package to a regular file, and every
+`entry.*` path must resolve to an executable regular file. Raw hard-link entries, device files,
+FIFOs and sockets remain rejected; the producer materializes hard links as independent regular
+files.
 
 When an operation enumerates a directory, the observed child identity is passed
 to later copy or removal work. The later operation checks that it opened the

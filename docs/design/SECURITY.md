@@ -167,28 +167,25 @@ checks that:
 - names do not collide after ASCII case folding or file/directory normalization;
 - depth, per-file size and total resource limits remain within bounds.
 
-On POSIX, relative symbolic links are an additional admitted object type. Their
-targets must remain lexically inside the package, and a symbolic link cannot be
-used as the parent of a later archive write. CUP otherwise preserves
-producer-owned link topology without requiring every link to resolve, terminate
-at a regular file or be acyclic. Declared executable entries are validated
-separately through the real filesystem and must resolve to executable regular
-files physically beneath the package root. Windows continues to reject symbolic
-links in package content. Raw hard-link entries remain unsupported because the
-producer normalizes them to independent regular files.
+On POSIX, relative symbolic links are an additional archive object type. During extraction
+their targets need only remain lexically inside the package, and a symbolic link cannot be
+used as the parent of a later archive write. Complete link resolution is a later integrity
+check: every finalized symbolic link must resolve inside the package to a regular file, and
+declared executable entries must resolve to executable regular files. Windows rejects symbolic
+links in package content. Raw hard-link entries remain unsupported because the producer
+materializes them as independent regular files before publication.
 
 Regular files and directories are created without following pre-existing links.
 Existing unexpected objects cause a failure instead of being reused. Size and
 format checks are repeated here because extraction is a new decoder/read/write
 pass, not a second validation of an unchanged in-memory result.
 
-The extracted package is not installed immediately. cup first validates the
-package root, the semantic identity in `info.txt` and every declared executable
-entry. POSIX entry resolution may cross only package-owned symbolic links and must
-terminate at a regular executable physically beneath that root; Windows keeps
-no-reparse entry traversal. Validation and publication operate on one fresh
-private staging directory while the command holds exclusive CUP mutation
-authority; publication refuses a pre-existing installed destination.
+The extracted package is not installed immediately. cup validates the package root,
+`info.txt` identity/common schema and declared executable entries, then verifies the complete
+staged tree against `manifest.txt`. That integrity pass also resolves every POSIX manifest link
+inside the package to a regular file. Windows keeps no-reparse traversal. Validation and
+publication operate on one fresh private staging directory while the command holds exclusive
+CUP mutation authority; publication refuses a pre-existing installed destination.
 
 ## Filesystem identity
 
@@ -257,10 +254,11 @@ executable files. Producer-owned capability and composition fields, including `f
 capability verifier inside cup.
 
 `manifest.txt` `format=2` is the package integrity inventory. cup verifies every declared
-regular-file digest, normalized mode, directory and admitted POSIX symbolic-link target, and
-rejects missing or undeclared package objects. Windows package content cannot use symbolic
-links. Raw archive hardlink entries remain outside the consumer archive contract; hardlink
-inode sharing is not package identity.
+regular-file digest and normalized mode, every directory, and the exact target text of each
+POSIX symbolic link; each such link must also resolve inside the package to a regular file.
+Missing or undeclared objects are rejected. Windows package content cannot use symbolic links.
+Raw archive hardlinks remain outside the consumer contract; hardlink inode sharing is not
+package identity.
 
 Commands use the shared package validation owners instead of implementing separate metadata
 or integrity rules. Full manifest hashing is reserved for integrity-sensitive paths such as

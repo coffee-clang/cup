@@ -4,7 +4,8 @@
 /*
  * Verifies the producer-owned manifest.txt format=2 inventory of one extracted package.
  * The manifest itself is deliberately outside the inventory; every other package object must be
- * declared exactly once with its logical type, mode and SHA-256 identity.
+ * declared exactly once with its type/mode/digest contract. POSIX link records bind target text
+ * and must resolve inside the package to a regular file.
  */
 
 #include <stdio.h>

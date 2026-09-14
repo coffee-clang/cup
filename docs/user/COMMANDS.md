@@ -97,10 +97,12 @@ cup inspect <component> <tool>@<release>
 cup inspect <component> <tool>@<release> --target <platform>
 ```
 
-Reads the metadata of one installed package. A specific version is looked up
-locally. With `stable`, `cup` first resolves the current stable version from the
-catalog and then checks that the resulting package is already installed.
-`inspect` never downloads a package.
+Reads validated `info.txt` metadata for one installed package. Output includes common package,
+platform and source/build fields plus producer-owned command, capability, content, bundle,
+requirement and configuration groups when present. A specific version is looked up locally;
+with `stable`, cup first resolves the current stable version from the catalog. `inspect` never
+downloads a package and does not perform the full manifest tree hash used by integrity-sensitive
+commands such as `doctor` and `repair`.
 
 ## Installation preferences
 

@@ -3,7 +3,8 @@
 
 /*
  * Extracts one supported package archive into a fresh caller-owned staging directory. Entry paths
- * are checked against every supported filesystem model so they cannot escape or alias each other.
+ * are checked against every supported filesystem model so they cannot escape or alias each other;
+ * semantic metadata and final manifest/link integrity are validated after extraction.
  */
 
 #include "error.h"

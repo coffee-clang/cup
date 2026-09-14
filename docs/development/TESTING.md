@@ -123,6 +123,11 @@ The integration layer covers:
 - malformed or incomplete transactions;
 - `doctor`, `repair` and uninstall effects.
 
+Archive-safety integration fixtures use causal oracles: an unsafe archive must be rejected
+before package semantic/manifest validation, so a second fixture defect cannot hide an
+extraction regression. Unit tests retain the exact error mapping where the integration layer
+only needs to prove the public phase boundary.
+
 Network scenarios use local fixtures. They do not depend on a public server.
 The helper is built from the test dependency prefix and keeps the tests
 repeatable. Readiness files with payload are published only after the complete
