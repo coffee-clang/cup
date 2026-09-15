@@ -92,7 +92,7 @@ static void print_package_info(const PackageMetadata *metadata) {
 }
 
 CupError command_inspect(const char *component, const char *selector, const char *target_override) {
-    CommandContext context = {0};
+    CommandContext context;
     PackageRequest request;
     PackageIdentity package;
     ValidatedPackage validated;
@@ -103,12 +103,11 @@ CupError command_inspect(const char *component, const char *selector, const char
     }
 
     /* Parse the public selector before opening any runtime resources. */
-    validated_package_init(&validated);
-
     err = package_request_parse(component, selector, &request);
     if (err != CUP_OK) {
-        goto done;
+        return err;
     }
+    validated_package_init(&validated);
 
     err = command_context_begin_read_only(&context, target_override);
     if (err != CUP_OK) {

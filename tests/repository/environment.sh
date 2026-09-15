@@ -18,12 +18,14 @@ NATIVE_BUILD_PLATFORM=$(cup_test_detect_platform) ||
 # TERM. The shared helper escalates after a bounded grace period and reaps the
 # direct child before returning.
 stop_ready=$TMP_ROOT/stop-process.ready
+stop_pipe=$TMP_ROOT/stop-process.pipe
+mkfifo "$stop_pipe" || fail 'could not create TERM-resistant fixture pipe'
 (
     trap '' TERM
     : >"$stop_ready"
-    while :; do
-        sleep 10
-    done
+    # Block in this shell without spawning a child. A sleep subprocess would be
+    # orphaned when the TERM-resistant shell is force-killed.
+    read -r _ <"$stop_pipe" || :
 ) &
 stubborn_pid=$!
 stop_attempt=0

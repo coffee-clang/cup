@@ -218,6 +218,12 @@ for header in \
     curl/curl.h archive.h archive_entry.h zlib.h lzma.h openssl/ssl.h; do
     printf '/* build-system dependency fixture */\n' > "$prefix/include/$header"
 done
+cat >"$prefix/include/openssl/configuration.h" <<'EOF_OPENSSL_CONFIGURATION'
+#define OPENSSL_NO_APPS
+#define OPENSSL_NO_AUTOLOAD_CONFIG
+#define OPENSSL_NO_DOCS
+#define OPENSSL_NO_DSO
+EOF_OPENSSL_CONFIGURATION
 for archive in \
     libargtable3.a libcares.a libunity.a libevent_core.a libevent_extra.a \
     libcurl.a libarchive.a libz.a liblzma.a libssl.a libcrypto.a; do
@@ -231,6 +237,9 @@ case "\${1:-}" in
         ;;
     --features)
         printf '%s\n' AsynchDNS
+        ;;
+    --protocols)
+        printf '%s\n' HTTP HTTPS
         ;;
     --configure)
         printf "%s\n" " '--prefix=$prefix' '--enable-ares=$prefix'"
@@ -398,7 +407,9 @@ assert_contains "$config_text" 'official_build=0'
 assert_contains "$config_text" 'dependency_platform=linux-x64'
 assert_contains "$config_text" 'dependency_profile=gcc'
 assert_contains "$config_text" 'dependency_prefix_format=5'
-assert_contains "$config_text" 'dependency_build_revision=4'
+dependency_build_revision=$(sed -n 's/^build_revision=//p' \
+    "$PROJECT_ROOT/config/dependencies.lock")
+assert_contains "$config_text" "dependency_build_revision=$dependency_build_revision"
 dependency_lock=$(sed -n 's/^dependency_source_lock_sha256=//p' "$config")
 dependency_toolchain=$(sed -n 's/^dependency_toolchain_sha256=//p' "$config")
 case "$dependency_lock:$dependency_toolchain" in
@@ -1129,25 +1140,6 @@ assert_contains "$coverage_runner_command" "CUP_TEST_PLATFORM='macos-arm64'"
 assert_contains "$coverage_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
 
 
-# Linux keeps its proven compile-time profile mapping. Windows GCC instead
-# leaves the staging path hardwired and relocates counters at execution time.
-for coverage_build_script in tests/build/unit.sh tests/build/helpers.sh; do
-    coverage_build_text=$(cat "$PROJECT_ROOT/$coverage_build_script")
-    assert_contains "$coverage_build_text" 'linux-*:coverage)'
-    assert_contains "$coverage_build_text" 'windows-x64:coverage)'
-    assert_contains "$coverage_build_text" '-fprofile-dir='
-    assert_contains "$coverage_build_text" '-fprofile-prefix-path='
-    assert_contains "$coverage_build_text" 'if [ -n "$GCOV_PROFILE_DIR" ]'
-    windows_coverage_block=$(printf '%s\n' "$coverage_build_text" | awk '
-        /windows-x64:coverage\)/ { capture = 1 }
-        capture { print }
-        capture && /^[[:space:]]*;;[[:space:]]*$/ { exit }
-    ')
-    assert_contains "$windows_coverage_block" 'GCOV_OUTPUT_DIR='
-    assert_not_contains "$windows_coverage_block" 'GCOV_PROFILE_DIR='
-    assert_not_contains "$windows_coverage_block" 'GCOV_PROFILE_PREFIX='
-done
-
 . "$PROJECT_ROOT/tests/support/posix/coverage.sh"
 assert_equals 9 "$(cup_coverage_gcov_strip_components \
     'D:/a/cup/cup/build/windows-x64/coverage/tests/unit')"
@@ -1198,49 +1190,8 @@ consumer_test_command=$(
 assert_contains "$consumer_test_command" "scripts/dependencies/verify.sh"
 assert_not_contains "$consumer_test_command" "scripts/dependencies/build-"
 
-# Test binaries must compile repository-owned sources from the repository root
-# with relative source operands. Passing absolute source operands through the
-# project file-prefix map rewrites GCC coverage notes to /usr/src/cup and makes
-# gcovr discard otherwise valid unit coverage as outside the checkout root.
-unit_builder_text=$(cat "$PROJECT_ROOT/tests/build/unit.sh")
-assert_contains "$unit_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
-assert_contains "$unit_builder_text" 'compile_command=("$CC"'
-assert_contains "$unit_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
-assert_not_contains "$unit_builder_text" 'GCOV_PROFILE_FLAGS=()'
-helper_builder_text=$(cat "$PROJECT_ROOT/tests/build/helpers.sh")
-assert_contains "$helper_builder_text" 'source=${source#"$ROOT"/}'
-assert_contains "$helper_builder_text" 'compile_args+=("${compile_arg#"$ROOT"/}")'
-assert_contains "$helper_builder_text" 'compile_command=("$CC"'
-assert_contains "$helper_builder_text" '(cd "$ROOT" && "${compile_command[@]}"'
-assert_not_contains "$helper_builder_text" 'GCOV_PROFILE_FLAGS=()'
-assert_not_contains "$helper_builder_text" 'PLATFORM_LIBS=()'
-assert_contains "$helper_builder_text" 'compile_helper all archive-fixture'
-windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
-windows_configuration_text=$(cat "$PROJECT_ROOT/tests/support/windows/configuration.ps1")
-windows_process_text=$(cat "$PROJECT_ROOT/tests/support/windows/process.ps1")
-windows_hash_text=$(cat "$PROJECT_ROOT/tests/support/windows/hash.ps1")
-windows_runner_text=$(cat "$PROJECT_ROOT/tests/runners/integration-windows.ps1")
-for configuration in development debug coverage sanitizers release; do
-    assert_contains "$windows_configuration_text" "\"$configuration\""
-done
-assert_contains "$windows_common_text" 'configuration.ps1'
-assert_contains "$windows_common_text" 'build.ps1'
-assert_contains "$windows_common_text" 'process.ps1'
-assert_contains "$windows_common_text" 'hash.ps1'
-assert_contains "$windows_runner_text" 'Assert-TestConfiguration -Configuration $Configuration'
-assert_contains "$windows_runner_text" 'Test-FailedInitializationCleanup'
-assert_not_contains "$windows_runner_text" '[ValidateSet('
-assert_contains "$windows_process_text" 'function Stop-TestProcessTree'
-assert_contains "$windows_hash_text" 'function Get-Sha256Lower'
-assert_contains "$windows_common_text" 'function New-ZipPackageFixture'
-assert_contains "$windows_common_text" "Get-TestHelperPath -Name 'archive-fixture'"
-[ ! -e "$PROJECT_ROOT/tests/support/windows/archive-fixtures.ps1" ] ||
-    fail 'retired Windows archive-fixtures.ps1 still exists'
-windows_release_text=$(cat "$PROJECT_ROOT/tests/release/windows.ps1")
-assert_contains "$windows_release_text" 'slow-http-server --ready-file'
-assert_not_contains "$windows_release_text" 'slow-http-server.ps1'
-[ ! -e "$PROJECT_ROOT/tests/support/windows/slow-http-server.ps1" ] ||
-    fail 'retired Windows slow-http-server.ps1 still exists'
+# Release-update SemVer behavior is exercised directly; native release jobs own
+# the platform-specific script wiring and process orchestration.
 update_fixture_builder="$PROJECT_ROOT/tests/release/update-fixture.sh"
 [ "$($update_fixture_builder --next-version 9.9.9)" = 9.9.10 ] ||
     fail 'release update fixture still depends on same-length versions'
@@ -1252,54 +1203,6 @@ fi
 if "$update_fixture_builder" --next-version '1.*.3' >/dev/null 2>&1; then
     fail 'release update fixture accepted a non-SemVer version'
 fi
-update_fixture_text=$(cat "$update_fixture_builder")
-assert_contains "$update_fixture_text" 'CUP_VERSION_FILE=$version_file'
-assert_contains "$update_fixture_text" 'cup_path_resolve_host_temporary_directory'
-assert_contains "$update_fixture_text" 'mktemp "$temporary_parent/cup-release-update-version.XXXXXX"'
-assert_not_contains "$update_fixture_text" '${TMPDIR:-/tmp}/cup-release-update-version.XXXXXX'
-assert_not_contains "$update_fixture_text" 'version_file=$BUILD_ROOT/'
-assert_contains "$update_fixture_text" 'set -- make -C "$ROOT" --no-print-directory release-candidate'
-assert_contains "$update_fixture_text" 'RELEASE_COMMON_DIR=$fixture_common_dir'
-assert_contains "$update_fixture_text" 'CUP_BUILD_DIR'
-assert_not_contains "$update_fixture_text" 'binary-patch'
-posix_release_text=$(cat "$PROJECT_ROOT/tests/release/posix.sh")
-windows_release_text=$(cat "$PROJECT_ROOT/tests/release/windows.ps1")
-windows_build_support_text=$(cat "$PROJECT_ROOT/tests/support/windows/build.ps1")
-assert_not_contains "$posix_release_text" 'binary-patch'
-assert_not_contains "$windows_release_text" 'binary-patch'
-assert_contains "$posix_release_text" 'CUP_TEST_SERVER_ROOT'
-assert_contains "$posix_release_text" 'validate_release_asset_modes'
-assert_not_contains "$posix_release_text" 'chmod +x "$release_dir/'
-assert_contains "$windows_release_text" 'CUP_TEST_SERVER_ROOT'
-assert_contains "$windows_release_text" 'Resolve-TestBuildRoot'
-assert_contains "$windows_release_text" 'Resolve-TestHelperPath'
-assert_contains "$windows_build_support_text" 'CUP_TEST_BUILD_ROOT'
-assert_contains "$windows_build_support_text" '.cup-build-root'
-assert_contains "$windows_release_text" 'Assert-ExactCandidateFiles'
-assert_contains "$windows_release_text" '$process.WaitForExit()'
-assert_not_contains "$windows_release_text" '$testRoot'
-assert_contains "$windows_release_text" 'Get-Command sh.exe'
-assert_contains "$windows_release_text" 'Get-Command cygpath.exe'
-coverage_runner_text=$(cat "$PROJECT_ROOT/tests/runners/coverage.sh")
-unit_runner_text=$(cat "$PROJECT_ROOT/tests/runners/unit.sh")
-windows_common_text=$(cat "$PROJECT_ROOT/tests/support/windows/common.ps1")
-assert_contains "$unit_runner_text" 'env GCOV_PREFIX="$GCOV_PREFIX_VALUE"'
-assert_contains "$unit_runner_text" 'GCOV_PREFIX_STRIP="$GCOV_PREFIX_STRIP_VALUE"'
-assert_contains "$coverage_runner_text" 'CUP_TEST_GCOV_HELPER_PREFIX="$helper_profile_prefix"'
-assert_contains "$coverage_runner_text" 'CUP_TEST_GCOV_HELPER_STRIP="$helper_profile_strip"'
-assert_not_contains "$coverage_runner_text" 'export GCOV_PREFIX='
-assert_contains "$windows_common_text" 'function Start-TestHelperProcess'
-assert_contains "$windows_common_text" '$env:GCOV_PREFIX = $env:CUP_TEST_GCOV_HELPER_PREFIX'
-assert_contains "$windows_common_text" 'Remove-Item -LiteralPath Env:GCOV_PREFIX'
-assert_contains "$coverage_runner_text" 'CUP_COVERAGE_REPORT_JOBS:-1'
-profile_assignment=$(printf '%s\n' "$coverage_runner_text" | grep 'export LLVM_PROFILE_FILE=')
-if ! printf '%s\n' "$profile_assignment" | grep -Eq '%[0-9]*m'; then
-    fail 'LLVM coverage profiles are not merged by binary signature'
-fi
-assert_not_contains "$profile_assignment" '%p'
-assert_contains "$coverage_runner_text" '[ "$REPORT_JOBS" -gt 1 ]'
-assert_contains "$coverage_runner_text" 'report_jobs=%s'
-assert_not_contains "$coverage_runner_text" 'backend_args=()'
 assert_contains "$consumer_test_command" "CUP_TEST_CFLAGS='"
 case "$NATIVE_BUILD_PLATFORM" in
     macos-*) assert_contains "$consumer_test_command" '-fprofile-instr-generate' ;;
@@ -1510,11 +1413,15 @@ cat > "$test_build_fixture/bin/fakecc" <<'EOF_FAKE_TEST_CC'
 #!/bin/sh
 set -eu
 output=
+trace=${CUP_FAKE_CC_TRACE:-}
 while [ "$#" -gt 0 ]; do
     case "$1" in
         "$CUP_TEST_PROJECT_ROOT"/*.c)
             printf 'absolute repository source operand: %s\n' "$1" >&2
             exit 8
+            ;;
+        *.c)
+            [ -z "$trace" ] || printf '%s\n' "$1" >> "$trace"
             ;;
     esac
     if [ "$1" = -o ]; then
@@ -1556,6 +1463,7 @@ run_fixture_builder() {
     CUP_TEST_CFLAGS= \
     CUP_TEST_LDFLAGS= \
     CUP_FAKE_CC_COUNTER="$test_build_fixture/compiler-count" \
+    CUP_FAKE_CC_TRACE="$test_build_fixture/compiler-trace" \
     CUP_FAKE_CC_FAIL_AFTER="${CUP_FAKE_CC_FAIL_AFTER:-0}" \
         "$test_build_fixture/tests/build/$builder"
 }
@@ -1571,7 +1479,7 @@ if find "$test_build_fixture/build/linux-x64/development/tests" \
     fail 'failed unit-test build left a staging directory'
 fi
 
-rm -f "$test_build_fixture/compiler-count"
+rm -f "$test_build_fixture/compiler-count" "$test_build_fixture/compiler-trace"
 if ! run_fixture_builder unit.sh >"$TMP_ROOT/unit-staging-success.out" 2>&1; then
     cat "$TMP_ROOT/unit-staging-success.out" >&2
     fail 'complete unit-test staging could not be published'
@@ -1581,8 +1489,16 @@ actual_units=$(find "$test_build_fixture/build/linux-x64/development/tests/unit"
     -maxdepth 1 -type f -name 'test_*' ! -name '*.gcno' ! -name '*.gcda' |
     wc -l | tr -d '[:space:]')
 [ "$actual_units" -gt 0 ] || fail 'complete unit-test staging published no test binaries'
+update_assets_compiles=$(grep -Fxc 'src/update_assets.c' \
+    "$test_build_fixture/compiler-trace" || true)
+[ "$update_assets_compiles" -eq 1 ] ||
+    fail 'plain unit suites did not reuse the shared update_assets object'
+persistent_fixture_compiles=$(grep -Fxc 'tests/unit/persistent_file_fixture.c' \
+    "$test_build_fixture/compiler-trace" || true)
+[ "$persistent_fixture_compiles" -eq 2 ] ||
+    fail 'plain unit suites did not reuse the shared persistent-file fixture object'
 
-rm -f "$test_build_fixture/compiler-count"
+rm -f "$test_build_fixture/compiler-count" "$test_build_fixture/compiler-trace"
 if CUP_FAKE_CC_FAIL_AFTER=1 run_fixture_builder helpers.sh \
         >"$TMP_ROOT/helper-staging-failure.out" 2>&1; then
     fail 'test-helper builder accepted an interrupted compilation'

@@ -30,7 +30,7 @@ typedef struct {
     ConcreteRelease version;
 } PackageIdentity;
 
-/* One fully validated package generation with owned reusable metadata. */
+/* One semantically validated package generation with owned reusable metadata. */
 typedef struct {
     PackageMetadata metadata;
 } ValidatedPackage;

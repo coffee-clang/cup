@@ -312,7 +312,8 @@ second_key=$("$ROOT/scripts/dependencies/verify.sh" linux-x64 --print-cache-key)
     echo 'dependency cache key is not deterministic' >&2
     exit 1
 }
-if [[ ! "$first_key" =~ ^cup-deps-f5-linux-x64-gcc-b4-[0-9a-f]{64}-[0-9a-f]{64}$ ]]; then
+current_build_revision=$(sed -n 's/^build_revision=//p' "$ROOT/config/dependencies.lock")
+if [[ ! "$first_key" =~ ^cup-deps-f5-linux-x64-gcc-b${current_build_revision}-[0-9a-f]{64}-[0-9a-f]{64}$ ]]; then
     echo "unexpected dependency cache key: $first_key" >&2
     exit 1
 fi
@@ -392,27 +393,6 @@ changed_revision_key=$(CUP_DEPENDENCY_LOCK_FILE="$lock_copy" \
     exit 1
 }
 
-grep -Fq 'no-apps no-docs no-autoload-config no-dso' \
-    "$ROOT/scripts/dependencies/build-posix.sh" || {
-    echo 'OpenSSL builder does not limit output to consumed development artifacts' >&2
-    exit 1
-}
-grep -Fq 'make -j"$JOBS" build_libs' \
-    "$ROOT/scripts/dependencies/build-posix.sh" || {
-    echo 'OpenSSL builder does not build only static libraries' >&2
-    exit 1
-}
-grep -Fq 'make install_dev DESTDIR="$install_root"' \
-    "$ROOT/scripts/dependencies/build-posix.sh" || {
-    echo 'OpenSSL builder does not install only development artifacts' >&2
-    exit 1
-}
-if grep -Fq 'make install_sw DESTDIR="$install_root"' \
-        "$ROOT/scripts/dependencies/build-posix.sh"; then
-    echo 'OpenSSL builder still installs runtime programs or modules' >&2
-    exit 1
-fi
-
 for package in zlib xz openssl cares curl libarchive argtable3 uthash unity libevent; do
     case "$(source_url_for_package "$package")" in
         https://*)
@@ -459,6 +439,12 @@ bash -eu -o pipefail -c '
             zlib.h lzma.h openssl/ssl.h; do
             printf "/* dependency fixture */\n" > "$prefix/include/$header"
         done
+        cat >"$prefix/include/openssl/configuration.h" <<'EOF_OPENSSL_CONFIGURATION'
+#define OPENSSL_NO_APPS
+#define OPENSSL_NO_AUTOLOAD_CONFIG
+#define OPENSSL_NO_DOCS
+#define OPENSSL_NO_DSO
+EOF_OPENSSL_CONFIGURATION
         for archive in \
             libargtable3.a libcares.a libunity.a libevent_core.a \
             libevent_extra.a libcurl.a libarchive.a libz.a liblzma.a \
@@ -469,6 +455,7 @@ bash -eu -o pipefail -c '
 #!/bin/sh
 case "\${1:-}" in
     --features) printf "%s\n" AsynchDNS ;;
+    --protocols) printf "%s\n" HTTP HTTPS ;;
     --static-libs|"") printf "%s\n" "-L$embedded_prefix/lib -lcurl -lcares" ;;
     --configure)
         printf " \047--prefix=$embedded_prefix\047"
@@ -525,6 +512,30 @@ build_revision=$DEPENDENCY_BUILD_REVISION
 source_lock_sha256=$source_lock_sha256
 toolchain_sha256=$toolchain_sha256" ]
     dependency_metadata_valid "$metadata"
+
+    forbidden_fixture="${final%/install}.forbidden-programs"
+    mkdir -p "$forbidden_fixture/bin"
+    for program in \
+            openssl xz xzdec lzmadec lzmainfo \
+            xzdiff xzgrep xzless xzmore \
+            bsdtar bsdcpio bsdcat bsdunzip; do
+        : > "$forbidden_fixture/bin/$program"
+        if dependency_unused_programs_absent "$forbidden_fixture"; then
+            fail "dependency prefix accepted forbidden program: $program"
+        fi
+        rm "$forbidden_fixture/bin/$program"
+    done
+    dependency_unused_programs_absent "$forbidden_fixture"
+
+    openssl_fixture="${final%/install}.openssl-configuration"
+    create_complete "$openssl_fixture" "$openssl_fixture"
+    dependency_openssl_configuration_valid "$openssl_fixture"
+    sed -i.bak '/OPENSSL_NO_AUTOLOAD_CONFIG/d' \
+        "$openssl_fixture/include/openssl/configuration.h"
+    rm -f "$openssl_fixture/include/openssl/configuration.h.bak"
+    if dependency_openssl_configuration_valid "$openssl_fixture"; then
+        fail "dependency prefix accepted OpenSSL with automatic config loading enabled"
+    fi
 
     foreign_root="${final%/install}.foreign"
     mkdir -p "$foreign_root/install"
@@ -1202,13 +1213,4 @@ for dependency_script in scripts/dependencies/build-posix.sh scripts/dependencie
 done
 grep -F 'require_tool cmp' scripts/dependencies/verify.sh >/dev/null ||
     fail 'dependency verifier does not declare its cmp requirement'
-for builder in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
-    for option in --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-scripts --disable-doc; do
-        grep -F -- "$option" "$builder" >/dev/null || {
-            echo "$builder does not restrict XZ to the consumed liblzma payload ($option missing)" >&2
-            exit 1
-        }
-    done
-done
-
 printf '%s\n' 'Dependency contract tests passed.'

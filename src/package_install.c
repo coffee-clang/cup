@@ -402,7 +402,7 @@ static CupError prepare_default_change(InstallOperation *operation,
     return CUP_OK;
 }
 
-static CupError save_default_change(InstallOperation *operation, const CupState *candidate) {
+static CupError save_default_change(InstallOperation *operation) {
     CupError err;
 
     if (!operation->made_default && !operation->default_moved) {
@@ -413,7 +413,6 @@ static CupError save_default_change(InstallOperation *operation, const CupState 
     if (err != CUP_OK) {
         return err;
     }
-    operation->context.state = *candidate;
     err = state_save(&operation->context.state,
                      &operation->context.state_identity,
                      &operation->context.state_identity);
@@ -438,18 +437,16 @@ static CupError save_default_change(InstallOperation *operation, const CupState 
 
 /* Commit and rollback. state.txt is the package commit point. */
 static CupError commit_existing_update(InstallOperation *operation) {
-    CupState candidate = operation->context.state;
     CupError err;
 
-    err = prepare_default_change(operation, &candidate, 0);
+    err = prepare_default_change(operation, &operation->context.state, 0);
     if (err != CUP_OK) {
         return err;
     }
-    return save_default_change(operation, &candidate);
+    return save_default_change(operation);
 }
 
 static CupError commit_install(InstallOperation *operation) {
-    CupState candidate;
     CupError err;
     int cleanup_failed = 0;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
@@ -477,18 +474,16 @@ static CupError commit_install(InstallOperation *operation) {
     }
     operation->package_moved = 1;
 
-    candidate = operation->context.state;
-    err = state_add_installed(&candidate, &operation->artifact_spec.identity);
+    err = state_add_installed(&operation->context.state, &operation->artifact_spec.identity);
     if (err != CUP_OK) {
         return err;
     }
 
-    err = prepare_default_change(operation, &candidate, 1);
+    err = prepare_default_change(operation, &operation->context.state, 1);
     if (err != CUP_OK) {
         return err;
     }
 
-    operation->context.state = candidate;
     err = state_save(&operation->context.state,
                      &operation->context.state_identity,
                      &operation->context.state_identity);

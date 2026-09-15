@@ -170,7 +170,7 @@ CupError command_config(const char *action_input,
                         const char *name_input,
                         const char *value_input,
                         const char *target_override) {
-    CommandContext context = {0};
+    CommandContext context;
     InstallPolicy policy;
     ToolPreferences preferences;
     CupError err;
@@ -179,7 +179,6 @@ CupError command_config(const char *action_input,
     const char *value = value_input;
     int is_view;
 
-    install_policy_init(&policy);
     tool_preferences_init(&preferences);
     is_view = text_is_empty(action);
 

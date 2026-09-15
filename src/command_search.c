@@ -153,7 +153,7 @@ static void print_package_catalog(const PackageCatalog *catalog,
 
 /* Search is read-only: it loads only the catalog and never initializes runtime state. */
 CupError command_search(const char *component, const char *target_override) {
-    CommandContext context = {0};
+    CommandContext context;
     CupError err;
     const char *target = NULL;
 

@@ -382,7 +382,6 @@ static CupError fetch_verified_generation(const UpdateFiles *files, const Update
     }
 
     package_catalog_init(&catalog);
-    install_policy_init(&install_policy);
     err = package_catalog_load_path(&catalog, files->staged_catalog);
     if (err == CUP_OK) {
         err = install_policy_load_path(&install_policy, files->staged_install_policy);
@@ -411,7 +410,7 @@ static CupError prepare_staged_executables(const UpdateFiles *files) {
 
 /* Public command used by `cup update cup` and by global update. */
 CupError self_update_start(void) {
-    CommandContext context = {0};
+    CommandContext context;
     UpdateFiles files;
     UpdateUrls urls;
     ReleaseMetadata latest_metadata;

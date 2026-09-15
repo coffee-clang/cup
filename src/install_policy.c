@@ -339,14 +339,13 @@ CupError install_policy_load(InstallPolicy *policy) {
     if (policy == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    install_policy_init(policy);
     err = layout_get_install_policy_path(path, sizeof(path));
     if (err != CUP_OK) {
-        return err;
+        goto failed;
     }
     err = system_path_exists(path, &exists);
     if (err != CUP_OK) {
-        return err;
+        goto failed;
     }
     if (exists) {
         return install_policy_load_path(policy, path);
@@ -354,7 +353,7 @@ CupError install_policy_load(InstallPolicy *policy) {
 #if !CUP_VERSION_OFFICIAL
     err = system_path_exists(CUP_DEVELOPMENT_INSTALL_POLICY_PATH, &exists);
     if (err != CUP_OK) {
-        return err;
+        goto failed;
     }
     if (exists) {
         return install_policy_load_development(policy);
@@ -363,5 +362,9 @@ CupError install_policy_load(InstallPolicy *policy) {
     fprintf(stderr,
             "Error: installation policy not found. "
             "Run 'cup repair' to restore official configuration assets.\n");
-    return CUP_ERR_VALIDATION;
+    err = CUP_ERR_VALIDATION;
+
+failed:
+    install_policy_init(policy);
+    return err;
 }

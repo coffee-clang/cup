@@ -952,6 +952,23 @@ static void test_cache_source_results(void) {
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-network-stale-metadata");
+    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    TEST_ASSERT_EQUAL_INT(0, test_unlink(archive_path));
+    document_load_result = CUP_OK;
+    document_find_result = CUP_OK;
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_MISSING);
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
+    push_artifact_revalidation(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    TEST_ASSERT_EQUAL_size_t(2, artifact_open_index);
+    TEST_ASSERT_EQUAL_size_t(1, artifact_revalidate_index);
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
     spec = artifact_spec_for("22.1.5-typed-network-reject");
     document_load_result = CUP_OK;
     document_find_result = CUP_OK;

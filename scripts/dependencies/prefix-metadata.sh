@@ -230,6 +230,45 @@ dependency_tree_has_no_symlinks() {
     ! find "$1" -type l -print -quit | grep -q .
 }
 
+dependency_unused_programs_absent() {
+    local prefix="$1" program
+
+    for program in \
+            openssl \
+            xz xzdec lzmadec lzmainfo \
+            xzdiff xzgrep xzless xzmore \
+            bsdtar bsdcpio bsdcat bsdunzip; do
+        [ ! -e "$prefix/bin/$program" ] && [ ! -L "$prefix/bin/$program" ] || return 1
+        [ ! -e "$prefix/bin/$program.exe" ] && [ ! -L "$prefix/bin/$program.exe" ] || return 1
+    done
+}
+
+dependency_curl_protocols_valid() {
+    local prefix="$1" protocols protocol
+
+    protocols=$("$prefix/bin/curl-config" --protocols 2>/dev/null) || return 1
+    set -- $protocols
+    [ "$#" -eq 2 ] || return 1
+    for protocol in HTTP HTTPS; do
+        printf '%s\n' "$protocols" | grep -Fx "$protocol" >/dev/null || return 1
+    done
+}
+
+dependency_openssl_configuration_valid() {
+    local prefix="$1" configuration macro
+
+    configuration="$prefix/include/openssl/configuration.h"
+    dependency_regular_nonempty_file "$configuration" || return 1
+    for macro in \
+            OPENSSL_NO_APPS \
+            OPENSSL_NO_AUTOLOAD_CONFIG \
+            OPENSSL_NO_DOCS \
+            OPENSSL_NO_DSO; do
+        grep -Eq "^[[:space:]]*#[[:space:]]*define[[:space:]]+$macro([[:space:]]|$)" \
+            "$configuration" || return 1
+    done
+}
+
 application_dependency_prefix_complete() {
     local prefix="$1"
 
@@ -466,10 +505,12 @@ dependency_prefix_complete() {
             ;;
     esac
     dependency_tree_has_no_symlinks "$prefix" &&
+        dependency_unused_programs_absent "$prefix" &&
         application_dependency_prefix_complete "$prefix" &&
         test_dependency_prefix_complete "$prefix" &&
         dependency_regular_nonempty_file "$prefix/bin/curl-config" &&
         [ -x "$prefix/bin/curl-config" ] &&
+        dependency_curl_protocols_valid "$prefix" &&
         dependency_regular_nonempty_file "$prefix/include/curl/curl.h" &&
         dependency_regular_nonempty_file "$prefix/include/archive.h" &&
         dependency_regular_nonempty_file "$prefix/include/archive_entry.h" &&
@@ -487,6 +528,7 @@ dependency_prefix_complete() {
 
     if [ "$use_openssl" = 1 ]; then
         dependency_regular_nonempty_file "$prefix/include/openssl/ssl.h" &&
+            dependency_openssl_configuration_valid "$prefix" &&
             dependency_library_exists "$prefix" ssl &&
             dependency_library_exists "$prefix" crypto
     fi

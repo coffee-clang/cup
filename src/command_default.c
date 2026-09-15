@@ -63,12 +63,11 @@ static CupError resolve_default_identity(CommandContext *context,
 static CupError commit_default(CommandContext *context,
                                const PackageIdentity *package,
                                WrapperPlan *wrappers) {
-    CupState candidate = context->state;
     CupError err;
 
-    err = state_set_default(&candidate, package);
+    err = state_set_default(&context->state, package);
     if (err == CUP_OK) {
-        err = wrapper_plan_build(wrappers, &candidate);
+        err = wrapper_plan_build(wrappers, &context->state);
     }
     if (err != CUP_OK) {
         return err;
@@ -79,7 +78,6 @@ static CupError commit_default(CommandContext *context,
     if (err != CUP_OK) {
         return err;
     }
-    context->state = candidate;
     err = state_save(
         &context->state, &context->state_identity, &context->state_identity);
     if (err == CUP_ERR_COMMIT) {
@@ -102,21 +100,22 @@ static CupError commit_default(CommandContext *context,
 }
 
 CupError command_default(const char *component, const char *selector, const char *target_override) {
-    CommandContext context = {0};
+    CommandContext context;
     PackageRequest request;
     PackageIdentity package;
     WrapperPlan wrappers;
     CupError err;
 
-    wrapper_plan_init(&wrappers);
     if (component == NULL || selector == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-
     err = package_request_parse(component, selector, &request);
-    if (err == CUP_OK) {
-        err = load_default_context(&context, &request, target_override);
+    if (err != CUP_OK) {
+        return err;
     }
+
+    wrapper_plan_init(&wrappers);
+    err = load_default_context(&context, &request, target_override);
     if (err == CUP_OK) {
         err = resolve_default_identity(&context, component, &request, &package);
     }

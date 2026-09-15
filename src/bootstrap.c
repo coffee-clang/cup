@@ -190,7 +190,6 @@ static CupError verify_source(const BootstrapSource *source, const char *running
     checksum_document_init(&platform_document);
     checksum_document_init(&common_document);
     package_catalog_init(&catalog);
-    install_policy_init(&policy);
 
     err = assets_platform_checksum_required_names(&platform_required);
     if (err != CUP_OK || strcmp(platform_required.binary, source->binary_name) != 0) {
@@ -301,7 +300,6 @@ static CupError ensure_bootstrap_state(void) {
     StateFileStatus status;
     CupError err;
 
-    memset(&state, 0, sizeof(state));
     err = state_load(&state, &status, NULL, stderr);
     if (err != CUP_OK) {
         return err;

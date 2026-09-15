@@ -18,7 +18,7 @@ CupError installed_package_load_validated(const CupState *state,
                                           const PackageIdentity *package,
                                           ValidatedPackage *validated);
 
-/* Require an installed package to pass full on-disk validation. */
+/* Require an installed package to pass semantic metadata and executable-entry validation. */
 CupError installed_package_require_valid(const CupState *state, const PackageIdentity *package);
 
 /* Require a package to be absent both from state and disk. */

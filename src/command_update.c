@@ -14,6 +14,7 @@
 #include "text.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Stable-update plan built from one consistent state snapshot. */
@@ -24,9 +25,15 @@ typedef struct {
 } UpdatePlanItem;
 
 typedef struct {
-    UpdatePlanItem items[MAX_INSTALLED];
+    UpdatePlanItem *items;
     size_t count;
+    size_t capacity;
 } UpdatePlan;
+
+static void update_plan_free(UpdatePlan *plan) {
+    free(plan->items);
+    memset(plan, 0, sizeof(*plan));
+}
 
 static int update_plan_find(const UpdatePlan *plan,
                             const char *component,
@@ -57,8 +64,23 @@ static CupError update_plan_add(UpdatePlan *plan,
             plan, installed->component, installed->tool, installed->target_platform) >= 0) {
         return CUP_OK;
     }
-    if (plan->count >= MAX_INSTALLED) {
-        return CUP_ERR_STATE_FULL;
+    if (plan->count == plan->capacity) {
+        UpdatePlanItem *items;
+        size_t capacity;
+
+        if (plan->count >= MAX_INSTALLED) {
+            return CUP_ERR_STATE_FULL;
+        }
+        capacity = plan->capacity == 0 ? 8 : plan->capacity * 2;
+        if (capacity > MAX_INSTALLED) {
+            capacity = MAX_INSTALLED;
+        }
+        items = realloc(plan->items, capacity * sizeof(*items));
+        if (items == NULL) {
+            return CUP_ERR_TEMPORARY;
+        }
+        plan->items = items;
+        plan->capacity = capacity;
     }
 
     err = package_scope_init(
@@ -88,7 +110,7 @@ static CupError update_plan_add(UpdatePlan *plan,
 
 /* Initial read-only scan of installed scopes. */
 static CupError update_plan_build(const char *name, UpdatePlan *plan) {
-    CommandContext context = {0};
+    CommandContext context;
     CupError err;
     char requested_component[MAX_IDENTIFIER_LEN] = "";
     char requested_tool[MAX_IDENTIFIER_LEN] = "";
@@ -151,7 +173,7 @@ done:
 
 /* Per-scope revalidation and update execution. */
 CupError command_update(const char *selector) {
-    UpdatePlan plan;
+    UpdatePlan plan = {0};
     CupError err;
     const char *name = selector;
     const char *label;
@@ -167,6 +189,7 @@ CupError command_update(const char *selector) {
     label = text_is_empty(name) ? "all installed tools" : name;
     err = update_plan_build(text_is_empty(name) ? NULL : name, &plan);
     if (err != CUP_OK) {
+        update_plan_free(&plan);
         return err;
     }
     if (plan.count == 0) {
@@ -175,6 +198,7 @@ CupError command_update(const char *selector) {
         } else {
             printf("No installed packages match '%s'.\n", name);
         }
+        update_plan_free(&plan);
         return CUP_OK;
     }
 
@@ -210,6 +234,7 @@ CupError command_update(const char *selector) {
                     installed_count,
                     moved_default_count,
                     skipped_count);
+            update_plan_free(&plan);
             return err;
         }
         installed_count += (size_t)installed;
@@ -223,5 +248,6 @@ CupError command_update(const char *selector) {
            installed_count,
            moved_default_count,
            skipped_count);
+    update_plan_free(&plan);
     return CUP_OK;
 }

@@ -380,7 +380,7 @@ CupError command_install(const char *selector,
                          const char *value,
                          const char *target_override,
                          const char *format_override) {
-    CommandContext context = {0};
+    CommandContext context;
     InstallPolicy config;
     ToolPreferences preferences;
     InstallPlan plan;
@@ -391,13 +391,10 @@ CupError command_install(const char *selector,
     size_t installed_count = 0;
     size_t skipped_count = 0;
 
-    /* Public grammar is canonical before dispatch; determine which policy inputs the plan needs. */
     if (text_is_empty(selector)) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    install_policy_init(&config);
-    tool_preferences_init(&preferences);
     need_config = (registry_is_component(selector) && text_is_empty(value)) ||
                   strcmp(selector, "profile") == 0 || strcmp(selector, "toolchain") == 0;
     need_preferences =
@@ -420,8 +417,8 @@ CupError command_install(const char *selector,
     }
     if (err == CUP_OK) {
         err = install_plan_build(&plan,
-                                 &config,
-                                 &preferences,
+                                 need_config ? &config : NULL,
+                                 need_preferences ? &preferences : NULL,
                                  context.host_platform,
                                  context.target_platform,
                                  selector,

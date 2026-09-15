@@ -140,7 +140,7 @@ build_zlib() {
         --prefix="$INSTALL_PREFIX" \
         --static
 
-    make -j"$JOBS"
+    make -j"$JOBS" libz.a
     make install DESTDIR="$DESTDIR"
 }
 
@@ -241,6 +241,11 @@ build_curl() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
+        --disable-docs \
+        --disable-file \
+        --disable-ftp \
+        --disable-ipfs \
+        --disable-websockets \
         --with-openssl="$PREFIX" \
         --enable-ares="$PREFIX" \
         --with-zlib="$PREFIX" \
@@ -296,6 +301,10 @@ build_libarchive() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
+        --disable-bsdtar \
+        --disable-bsdcpio \
+        --disable-bsdcat \
+        --disable-bsdunzip \
         --disable-acl \
         --without-bz2lib \
         --without-lzo2 \

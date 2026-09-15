@@ -140,8 +140,7 @@ static int print_package_annotations(const CommandContext *context,
 
 /* Validate each selected state entry against disk while continuing to report later entries. */
 CupError command_list(const char *component, const char *target_override) {
-    CommandContext context = {0};
-    PackageIdentity entries[MAX_INSTALLED];
+    CommandContext context;
     size_t entry_count = 0;
     CupError err;
     CupError catalog_err = CUP_OK;
@@ -154,9 +153,7 @@ CupError command_list(const char *component, const char *target_override) {
         goto done;
     }
 
-    if (!context.runtime_available) {
-        memset(&context.state, 0, sizeof(context.state));
-    } else {
+    if (context.runtime_available) {
         err = command_context_load_state(&context);
         if (err != CUP_OK) {
             goto done;
@@ -164,18 +161,16 @@ CupError command_list(const char *component, const char *target_override) {
     }
     catalog_err = command_context_load_catalog(&context);
 
-    /* Snapshot and sort matching records before any filesystem inspection or output. */
+    /* Sort the private state snapshot directly; no persistent state is modified. */
+    package_identity_sort(context.state.installed, context.state.installed_count);
     for (i = 0; i < context.state.installed_count; ++i) {
-        const PackageIdentity *candidate = &context.state.installed[i];
-
-        if (package_identity_matches(candidate,
+        if (package_identity_matches(&context.state.installed[i],
                                      context.host_platform,
                                      target_override == NULL ? NULL : context.target_platform,
                                      component)) {
-            entries[entry_count++] = *candidate;
+            entry_count++;
         }
     }
-    package_identity_sort(entries, entry_count);
 
     if (entry_count == 0) {
         print_empty_list(&context, component, target_override);
@@ -184,11 +179,19 @@ CupError command_list(const char *component, const char *target_override) {
     }
 
     print_list_heading(&context, component, target_override);
-    for (i = 0; i < entry_count; ++i) {
-        if (!print_package_health(&entries[i], target_override, &degraded)) {
+    for (i = 0; i < context.state.installed_count; ++i) {
+        PackageIdentity *entry = &context.state.installed[i];
+
+        if (!package_identity_matches(entry,
+                                      context.host_platform,
+                                      target_override == NULL ? NULL : context.target_platform,
+                                      component)) {
             continue;
         }
-        if (!print_package_annotations(&context, &entries[i])) {
+        if (!print_package_health(entry, target_override, &degraded)) {
+            continue;
+        }
+        if (!print_package_annotations(&context, entry)) {
             degraded = 1;
         }
     }

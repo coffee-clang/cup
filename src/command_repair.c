@@ -412,7 +412,6 @@ static CupError repair_install_policy(void) {
         checksum_verify_file(
             checksums_path, CUP_INSTALL_POLICY_FILENAME, config_path, &matches) == CUP_OK &&
         matches) {
-        install_policy_init(&config);
         err = install_policy_load_path(&config, config_path);
         if (err == CUP_OK) {
             err = system_is_read_only(config_path, &is_read_only);
@@ -442,7 +441,6 @@ static CupError repair_install_policy(void) {
         return CUP_ERR_VALIDATION;
     }
 
-    install_policy_init(&config);
     err = install_policy_load_path(&config, staged_path);
     if (err != CUP_OK || system_set_read_only(staged_path, 1) != CUP_OK) {
         system_remove_file(staged_path);
@@ -652,32 +650,28 @@ static CupError reconcile_state(CupState *state,
                                 const PackageList *packages,
                                 const char *current_host,
                                 int *state_changed) {
-    CupState candidate;
     CupError err;
-    int candidate_changed = 0;
+    int changed = 0;
 
     if (state == NULL || packages == NULL || state_changed == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    candidate = *state;
 
-    err = remove_stale_installed_entries(
-        &candidate, packages, current_host, &candidate_changed);
+    err = remove_stale_installed_entries(state, packages, current_host, &changed);
     if (err == CUP_OK) {
-        err = adopt_scanned_packages(&candidate, packages, &candidate_changed);
+        err = adopt_scanned_packages(state, packages, &changed);
     }
     if (err == CUP_OK) {
-        err = remove_stale_defaults(&candidate, current_host, &candidate_changed);
+        err = remove_stale_defaults(state, current_host, &changed);
     }
     if (err == CUP_OK) {
-        err = state_validate(&candidate, NULL);
+        err = state_validate(state, NULL);
     }
     if (err != CUP_OK) {
         return err;
     }
 
-    *state = candidate;
-    *state_changed = *state_changed || candidate_changed;
+    *state_changed = *state_changed || changed;
     return CUP_OK;
 }
 
@@ -764,7 +758,6 @@ static CupError repair_load_state(RepairContext *context) {
     }
 
     if (load_error == CUP_OK && context->state_status == STATE_FILE_MISSING) {
-        memset(&context->state, 0, sizeof(context->state));
         context->state_changed = 1;
         return CUP_OK;
     }

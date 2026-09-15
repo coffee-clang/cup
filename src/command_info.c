@@ -14,28 +14,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Snapshot matching defaults before rendering so state insertion order cannot affect output. */
-static size_t collect_info_entries(const CommandContext *context,
-                                   const char *component,
-                                   const char *target_override,
-                                   PackageIdentity *entries) {
-    size_t count = 0;
-    size_t i;
-
-    for (i = 0; i < context->state.default_count; ++i) {
-        const PackageIdentity *candidate = &context->state.defaults[i];
-
-        if (package_identity_matches(candidate,
-                                     context->host_platform,
-                                     target_override == NULL ? NULL : context->target_platform,
-                                     component)) {
-            entries[count++] = *candidate;
-        }
-    }
-    package_identity_sort(entries, count);
-    return count;
-}
-
 static void print_info_heading(const CommandContext *context,
                                const char *component,
                                const char *target_override) {
@@ -140,15 +118,22 @@ static CupError print_info_entry(const CommandContext *context,
 }
 
 static int print_info_entries(const CommandContext *context,
-                              const PackageIdentity *entries,
-                              size_t entry_count) {
+                              const char *component,
+                              const char *target_override) {
     int invalid = 0;
     size_t i;
 
-    for (i = 0; i < entry_count; ++i) {
-        const PackageIdentity *entry = &entries[i];
-        CupError err = print_info_entry(context, entry);
+    for (i = 0; i < context->state.default_count; ++i) {
+        const PackageIdentity *entry = &context->state.defaults[i];
+        CupError err;
 
+        if (!package_identity_matches(entry,
+                                      context->host_platform,
+                                      target_override == NULL ? NULL : context->target_platform,
+                                      component)) {
+            continue;
+        }
+        err = print_info_entry(context, entry);
         if (err != CUP_OK) {
             char selector[MAX_SELECTOR_LEN] = "(invalid identity)";
 
@@ -164,9 +149,9 @@ static int print_info_entries(const CommandContext *context,
 }
 
 CupError command_info(const char *component, const char *target_override) {
-    CommandContext context = {0};
-    PackageIdentity entries[MAX_INSTALLED];
-    size_t entry_count;
+    CommandContext context;
+    size_t entry_count = 0;
+    size_t i;
     CupError err;
     CupError catalog_err = CUP_OK;
     int invalid;
@@ -176,9 +161,7 @@ CupError command_info(const char *component, const char *target_override) {
         goto done;
     }
 
-    if (!context.runtime_available) {
-        memset(&context.state, 0, sizeof(context.state));
-    } else {
+    if (context.runtime_available) {
         err = command_context_load_state(&context);
         if (err != CUP_OK) {
             goto done;
@@ -186,7 +169,15 @@ CupError command_info(const char *component, const char *target_override) {
     }
     catalog_err = command_context_load_catalog(&context);
 
-    entry_count = collect_info_entries(&context, component, target_override, entries);
+    package_identity_sort(context.state.defaults, context.state.default_count);
+    for (i = 0; i < context.state.default_count; ++i) {
+        if (package_identity_matches(&context.state.defaults[i],
+                                     context.host_platform,
+                                     target_override == NULL ? NULL : context.target_platform,
+                                     component)) {
+            entry_count++;
+        }
+    }
     if (entry_count == 0) {
         print_empty_info(&context, component, target_override);
         err = catalog_err;
@@ -194,7 +185,7 @@ CupError command_info(const char *component, const char *target_override) {
     }
 
     print_info_heading(&context, component, target_override);
-    invalid = print_info_entries(&context, entries, entry_count);
+    invalid = print_info_entries(&context, component, target_override);
     err = invalid ? CUP_ERR_INCONSISTENT_STATE : catalog_err;
 
 done:

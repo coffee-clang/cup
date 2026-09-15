@@ -120,6 +120,30 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+UNIT_OBJECT_CACHE=
+if [ "$TEST_CONFIGURATION" != coverage ]; then
+    UNIT_OBJECT_CACHE="$TEST_BUILD_DIR/.objects"
+fi
+CACHED_OBJECT=
+
+# Plain suites compile production sources with identical flags. Cache those objects
+# inside this private staging generation; suites with extra flags or libraries keep
+# the original one-shot compile so their compile semantics cannot drift.
+compile_cached_unit_object() {
+    local source=$1
+    local object="$UNIT_OBJECT_CACHE/${source%.c}.o"
+
+    if [ ! -f "$object" ]; then
+        mkdir -p "$(dirname -- "$object")"
+        printf '==> Compiling shared unit object: %s\n' "$source"
+        (cd "$ROOT" && "$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}" \
+            -I"$ROOT/tests/unit/fixtures" \
+            -I"$ROOT/include" -I"$DEPS_PREFIX/include" \
+            -c "$source" -o "$object")
+    fi
+    CACHED_OBJECT=$object
+}
+
 # Compile one registered Unity suite with the same project flags and pinned libraries as cup.
 compile_test() {
     name=$1
@@ -139,6 +163,28 @@ compile_test() {
             *) compile_args+=("$compile_arg") ;;
         esac
     done
+    if [ -n "$UNIT_OBJECT_CACHE" ]; then
+        cacheable=1
+        for compile_arg in "${compile_args[@]}"; do
+            case "$compile_arg" in
+                *.c) ;;
+                *) cacheable=0; break ;;
+            esac
+        done
+        if [ "$cacheable" -eq 1 ]; then
+            cached_args=()
+            for compile_arg in "${compile_args[@]}"; do
+                case "$compile_arg" in
+                    src/*.c|tests/unit/persistent_file_fixture.c)
+                        compile_cached_unit_object "$compile_arg"
+                        cached_args+=("$CACHED_OBJECT")
+                        ;;
+                    *) cached_args+=("$compile_arg") ;;
+                esac
+            done
+            compile_args=("${cached_args[@]}")
+        fi
+    fi
     printf '==> Compiling C unit test: %s\n' "$name"
     compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
     if [ -n "$GCOV_PROFILE_DIR" ]; then
@@ -565,6 +611,12 @@ compile_test test_command_uninstall \
     "$ROOT/src/command_uninstall.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
+
+if [ -n "$UNIT_OBJECT_CACHE" ] && \
+        { [ -e "$UNIT_OBJECT_CACHE" ] || [ -L "$UNIT_OBJECT_CACHE" ]; }; then
+    cup_path_remove_child_tree "$TEST_BUILD_ROOT" "$UNIT_OBJECT_CACHE" \
+        'unit-test object cache' || exit 1
+fi
 
 if [ -e "$TEST_BUILD_FINAL" ] || [ -L "$TEST_BUILD_FINAL" ]; then
     cup_path_check_directory_chain "$TEST_BUILD_FINAL" 0 \

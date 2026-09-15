@@ -184,7 +184,6 @@ static CupError inspect_install_policy_asset(const InstalledAssetPaths *paths,
         return err;
     }
 
-    install_policy_init(&install_policy);
     err = install_policy_load_path(&install_policy, paths->install_policy);
     if (err == CUP_ERR_VALIDATION || inspection->common_checksums != CUP_ASSET_VALID) {
         inspection->install_policy = CUP_ASSET_INVALID;
@@ -331,7 +330,6 @@ static CupError inspect_development_assets(AssetsInspection *inspection) {
         return err;
     }
 
-    install_policy_init(&install_policy);
     err = install_policy_load_development(&install_policy);
     if (err == CUP_OK) {
         inspection->development_install_policy_valid = 1;

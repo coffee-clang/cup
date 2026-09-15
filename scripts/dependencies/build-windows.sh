@@ -143,6 +143,11 @@ build_curl() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
+        --disable-docs \
+        --disable-file \
+        --disable-ftp \
+        --disable-ipfs \
+        --disable-websockets \
         --with-schannel \
         --without-openssl \
         --enable-ares="$PREFIX" \
@@ -199,6 +204,10 @@ build_libarchive() {
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
         --enable-static \
+        --disable-bsdtar \
+        --disable-bsdcpio \
+        --disable-bsdcat \
+        --disable-bsdunzip \
         --disable-acl \
         --without-bz2lib \
         --without-lzo2 \
