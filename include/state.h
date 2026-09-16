@@ -28,15 +28,8 @@ typedef enum {
     STATE_FILE_LOADED
 } StateFileStatus;
 
-/*
- * Load the complete file after syntax validation. Missing state is reported separately, and
- * malformed input is never accepted partially. Call state_validate() when semantic consistency
- * is required. When a physical state snapshot is read successfully, source_identity receives its
- * exact regular-file identity even if later parsing fails; otherwise the optional output is
- * cleared. Provided model/status outputs are initialized to empty/MISSING before path access.
- * Repair uses the observed identity to preserve the object it actually diagnosed. Pass NULL
- * diagnostics when the caller aggregates its own messages.
- */
+/* Load one syntactically valid snapshot. `source_identity` identifies the file even on parse
+ * failure so repair can target it; call state_validate() for semantics. */
 CupError state_load(CupState *state,
                     StateFileStatus *status,
                     SystemPathIdentity *source_identity,
@@ -53,11 +46,8 @@ CupError state_validate_current_host(const CupState *state,
                                      const char *current_host,
                                      FILE *diagnostics);
 
-/*
- * Publish the complete state. NULL expected_identity means create-only initialization; otherwise
- * the exact loaded regular file must still be present. published_identity is cleared on failure
- * and receives the new state-file identity on success; it may alias expected_identity.
- */
+/* Publish the complete state. NULL `expected_identity` is create-only; replacement requires the
+ * exact loaded file. On success `published_identity` receives the new file identity. */
 CupError state_save(const CupState *state,
                     const SystemPathIdentity *expected_identity,
                     SystemPathIdentity *published_identity);

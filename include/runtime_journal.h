@@ -1,11 +1,8 @@
 #ifndef CUP_RUNTIME_JOURNAL_H
 #define CUP_RUNTIME_JOURNAL_H
 
-/*
- * Package operations, detached cup updates and uninstall share one physical transaction.txt.
- * This module owns reading, durable publication and identity-bound removal of that file.
- * Typed journal modules own their schemas, consistency rules and recovery behavior.
- */
+/* Shared transaction.txt transport. This module owns durable I/O and identity-bound removal;
+ * typed journal modules own schema, consistency and recovery. */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -28,11 +25,8 @@ typedef CupError (*RuntimeJournalFieldVisitor)(const char *key,
 /* Shared transaction-token grammar used by detached update and uninstall journals. */
 int runtime_journal_token_is_valid(const char *token);
 
-/*
- * Parse the common key=value envelope and delegate owner-specific fields to a typed visitor.
- * When ordered_keys is non-NULL, the parser also enforces the complete declared field order.
- * Journal values use a closed token grammar and therefore cannot contain spaces.
- */
+/* Parse the common key=value envelope and delegate typed fields to the visitor. `ordered_keys`
+ * optionally enforces the complete field order. */
 CupError runtime_journal_parse_at(const char *root,
                                   const char *const *ordered_keys,
                                   size_t ordered_key_count,
@@ -47,13 +41,8 @@ CupError runtime_journal_parse(const char *const *ordered_keys,
                                SystemPathIdentity *identity,
                                int *missing);
 
-/*
- * Serialize one typed journal into a temporary file in the caller-provided managed directory and
- * publish it as transaction.txt.
- * expected_identity is NULL for first publication and mandatory for identity-bound replacement.
- * CUP_ERR_COMMIT means the new file may be visible and published_identity is populated when its
- * identity can still be proven.
- */
+/* Publish through a temporary file. NULL `expected_identity` is create-only; replacement is
+ * identity-bound. CUP_ERR_COMMIT may still return a proven new identity. */
 CupError runtime_journal_publish_at(const char *root,
                                     const char *temporary_directory,
                                     const char *temporary_prefix,
@@ -71,10 +60,8 @@ CupError runtime_journal_publish(const char *temporary_directory,
 /* Detect the owner of transaction.txt without interpreting owner-specific fields. */
 CupError runtime_journal_detect(RuntimeJournalKind *kind);
 
-/*
- * Remove only the regular-file journal identity retained by its typed parser or creator.
- * CUP_ERR_COMMIT means deletion was applied but parent-directory durability could not be proved.
- */
+/* Remove only the retained regular-file journal identity. CUP_ERR_COMMIT means deletion was
+ * applied but parent-directory durability is uncertain. */
 CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity);
 
 /* Reject operational commands while any valid or invalid journal is present. */

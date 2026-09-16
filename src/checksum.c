@@ -1,8 +1,4 @@
-/*
- * Owns immutable SHA256SUMS snapshots and compares selected assets with the adapted
- * third-party SHA-256
- * implementation. One parsed document is reused for exact-set validation and later lookups.
- */
+/* Parse immutable SHA256SUMS snapshots once for exact-set validation and later asset lookups. */
 
 #include "checksum.h"
 

@@ -1,10 +1,8 @@
 #ifndef CUP_SYSTEM_H
 #define CUP_SYSTEM_H
 
-/*
- * Portable operating-system contract for paths, permissions, locks, durable replacement and
- * detached helpers. Higher layers own policy; this layer reports what the OS actually applied.
- */
+/* Native OS boundary for paths, identity, permissions, locks, durable publication and helpers.
+ * Higher layers own policy; this layer reports what the OS applied. */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,8 +10,7 @@
 
 #include "error.h"
 
-/* Path type of the final entry. A final symbolic link or reparse point is classified as a link
- * rather than followed; APIs that require trusted traversal pin parent components separately. */
+/* Type of the final entry without following a final symlink/reparse point. */
 typedef enum {
     SYSTEM_PATH_MISSING,
     SYSTEM_PATH_REGULAR_FILE,
@@ -22,9 +19,8 @@ typedef enum {
     SYSTEM_PATH_OTHER
 } SystemPathKind;
 
-/* Native identity snapshot used to detect pathname replacement across a command. `object` is
- * the low 64 bits; platforms with wider native IDs store the upper 64 bits in `object_high`. A
- * backend may refresh this snapshot after an operation when its filesystem can change file IDs. */
+/* Native object identity used to detect pathname replacement. Wider object IDs use
+ * `object_high`; backends may refresh identity after operations that can change it. */
 typedef struct {
     uint64_t volume;
     uint64_t object;
@@ -33,14 +29,8 @@ typedef struct {
     int valid;
 } SystemPathIdentity;
 
-/*
- * Result boundary for move and replace operations.
- *
- * NOT_APPLIED means the destination was not changed. APPLIED means the new
- * destination may already be visible but parent-directory durability could
- * not be confirmed. DURABLE means both replacement and required persistence
- * completed. Callers must not blindly roll back an APPLIED operation.
- */
+/* Publication state: NOT_APPLIED changed nothing; APPLIED may be visible without durable
+ * confirmation; DURABLE completed persistence. Do not blindly roll back APPLIED. */
 typedef enum {
     SYSTEM_COMMIT_NOT_APPLIED,
     SYSTEM_COMMIT_APPLIED,
@@ -57,19 +47,16 @@ typedef enum {
     SYSTEM_LOCK_EXCLUSIVE
 } SystemLockMode;
 
-/* Lock handle. Retaining the acquired mode lets handoff code verify that an active lock really
- * carries exclusive mutation authority instead of relying on a caller-side assertion. Initialize
- * storage to zero before first acquisition and never reacquire while active. */
+/* Active lock plus acquired mode, retained so helper handoff can prove exclusive authority.
+ * Zero-initialize before first acquisition; do not reacquire while active. */
 typedef struct {
     intptr_t handle;
     SystemLockMode mode;
     int active;
 } SystemLock;
 
-/* Temporary exclusive authority used while one process hands an operation to another.
- * POSIX carries the original lock open-file description across exec. Windows uses a named kernel
- * object keyed by root-parent identity and canonical root slot because LockFileEx ownership cannot
- * be transferred between processes. */
+/* Detached-helper authority. POSIX transfers the flock description; Windows uses a root-scoped
+ * kernel object because LockFileEx ownership cannot transfer. */
 typedef struct {
     intptr_t handle;
     int active;
@@ -80,15 +67,8 @@ void system_set_restrictive_umask(void);
 CupError system_get_home_dir(char *buffer, size_t size);
 unsigned long system_get_process_id(void);
 
-/* Detached process handoff. The parent must still own the active exclusive canonical lock when
- * starting a helper. Every helper receives distinct parent-lifetime and authority objects; Windows
- * uninstall additionally inherits the exact deferred-cleanup handle for its temporary executable.
- * Success consumes the caller-visible SystemLock while the parent retains a process-lifetime
- * authority reference: POSIX keeps the shared flock description; Windows releases cup.lock only
- * after parent and child both own the external authority. Detached helpers do not inherit the
- * caller's standard streams. Root arguments cross the Windows process boundary without changing
- * cup's normalized internal path spelling. Root admission checks system_handoff_active() before
- * inspection and again after locking. */
+/* Start a detached helper under the canonical exclusive lock. Success transfers authority
+ * without an admission gap; Windows uninstall also transfers its pre-armed cleanup handle. */
 CupError system_start_update_helper(const char *helper,
                                     const char *root,
                                     const char *token,
@@ -99,29 +79,23 @@ CupError system_start_uninstall_helper(const char *helper,
                                        const char *token,
                                        SystemLock *lock);
 #if defined(_WIN32)
-/* Validate the inherited DELETE_ON_CLOSE handle against the exact running uninstall helper. The
- * parent has already armed a separate cleanup carrier that waits on this process object; the helper
- * closes its inherited cleanup-handle copy after the identity proof and before accepting handoff. */
+/* Prove the inherited DELETE_ON_CLOSE handle names this running uninstall helper before
+ * accepting handoff; the parent-side carrier owns cleanup after termination. */
 CupError system_validate_uninstall_helper_cleanup(const char *cleanup_handle_value);
 #endif
 CupError system_handoff_accept(SystemHandoff *handoff,
                                const char *parent_signal_value,
                                const char *authority_value);
-/* Update returns from temporary handoff authority to the canonical lock. On POSIX this transfers
- * the inherited original lock; on Windows it acquires cup.lock before releasing the external
- * authority. */
+/* Return from temporary handoff authority to the canonical lock without an authority gap. */
 CupError system_handoff_acquire_lock(SystemHandoff *handoff,
                                      SystemLock *lock,
                                      const char *lock_path);
 void system_handoff_release(SystemHandoff *handoff);
-/* Report whether the backend needs root admission to stop for an in-flight handoff. POSIX
- * carries authority in cup.lock itself and reports inactive; Windows reports its external
- * authority. */
+/* Report backend-specific external handoff authority that must block root admission. */
 CupError system_handoff_active(const char *root, int *active);
 
-/* Resolve the running executable. POSIX temporary helpers can also unlink the exact running
- * pathname while the process continues; Windows uninstall instead uses deferred DELETE_ON_CLOSE
- * cleanup because a mapped executable image cannot be assumed to support POSIX-style unlink. */
+/* Resolve the running executable. POSIX may unlink its exact running helper path; Windows uses
+ * deferred DELETE_ON_CLOSE cleanup for mapped helper images. */
 CupError system_get_executable_path(char *buffer, size_t size);
 #if !defined(_WIN32)
 CupError system_unlink_running_executable(const char *path);
@@ -211,9 +185,8 @@ CupError system_open_regular_file(const char *path,
                                   SystemPathIdentity *identity,
                                   uint64_t *file_size,
                                   int *missing);
-/* Open a regular file reached through a safe relative path below a package root. POSIX may
- * resolve package-owned symlinks, but the resolved object must remain physically beneath root;
- * Windows retains the no-reparse traversal policy. */
+/* Open a regular file below a package root. POSIX may resolve package-owned symlinks only when
+ * the final object remains beneath the root; Windows keeps no-reparse traversal. */
 CupError system_open_regular_file_beneath(const char *root,
                                           const char *relative_path,
                                           FILE **file,
@@ -239,9 +212,8 @@ CupError system_set_executable(const char *path, int executable);
 /* List direct children without following links. */
 CupError system_list_directory(const char *path, SystemDirectoryCallback callback, void *userdata);
 
-/* Acquire and release a nonblocking advisory lock owned by the SystemLock handle. Exclusive
- * acquisition may create the lock file; shared acquisition is read-only and requires the file to
- * exist. */
+/* Nonblocking advisory lock. Exclusive acquisition may create the lock file; shared
+ * acquisition is read-only and requires an existing file. */
 CupError system_lock_acquire(SystemLock *lock, const char *path, SystemLockMode mode);
 void system_lock_release(SystemLock *lock);
 

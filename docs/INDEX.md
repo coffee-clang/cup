@@ -1,54 +1,58 @@
-# cup documentation
+# CUP documentation
 
-These documents describe cup as implemented in this repository. They are divided by
-audience so the user guide stays separate from internal design and from the
-build/release process.
+CUP is a userspace manager for prebuilt C development tools. This manual is
+organized around what a reader needs to understand rather than around the order
+of files in the repository.
 
-The documentation follows the product and repository contracts present here. It
-does not describe `cup-components` internals or proposed package formats.
+If you are new to CUP, read **Getting started** and **Concepts** first. The design
+pages document the persistent formats and internal contracts; the development
+pages describe how this repository is built, tested and released.
 
-## User guide
+## Use CUP
 
-- [Installation](user/INSTALLATION.md) explains the public installers, the
-  selected root, PATH handling, updates and uninstall.
-- [Commands](user/COMMANDS.md) lists every public command, its arguments and the
-  main failure cases.
+- [Getting started](user/GETTING_STARTED.md) — install CUP and complete the first
+  package/default workflow.
+- [Concepts](user/CONCEPTS.md) — components, tools, packages, host/target scopes,
+  versions, preferences, defaults, profiles, toolchains and wrappers.
+- [Installation](user/INSTALLATION.md) — supported hosts, installation root,
+  PATH behavior, relocation, update, reinstall and uninstall.
+- [Commands](user/COMMANDS.md) — public CLI syntax, effects and exit statuses.
 
-These two pages are enough for someone who only wants to use cup.
+These pages are sufficient for normal use. `cup help` and `cup help <command>`
+remain the version-specific CLI reference shipped by the executable.
 
-## Design
+## Understand the design
 
-- [Architecture](design/ARCHITECTURE.md) gives the overall structure and maps the
-  C modules and script families to their responsibilities.
-- [Packages](design/PACKAGES.md) explains the catalog, package identity, archive
-  layout, metadata and cache.
-- [State](design/STATE.md) describes the managed root, `state.txt`, preferences,
-  wrappers and cup assets.
-- [Transactions](design/TRANSACTIONS.md) explains `transaction.txt`, commit
-  points, recovery and detached helpers.
-- [Platforms](design/PLATFORMS.md) covers Linux, macOS and Windows differences.
-- [Security](design/SECURITY.md) collects the trust, download, archive and path
-  checks used by the project.
+- [Architecture](design/ARCHITECTURE.md) — repository boundary, runtime layers,
+  command flow and module ownership.
+- [Packages](design/PACKAGES.md) — catalog, package identity, metadata, manifest,
+  archive admission, cache and the contract with `cup-components`.
+- [State](design/STATE.md) — managed root, `state.txt`, preferences, defaults,
+  wrappers and installed assets.
+- [Transactions](design/TRANSACTIONS.md) — locking, commit points, package
+  transactions, self-update, uninstall and recovery.
+- [Platforms](design/PLATFORMS.md) — Linux/macOS/Windows differences and native
+  filesystem/process behavior.
+- [Security](design/SECURITY.md) — trust boundaries, transport, checksums,
+  archive/filesystem validation and supply-chain limits.
 
-## Development
+The design pages describe contracts that matter across modules. Function-level
+implementation details stay in the source unless they are required to explain a
+persistent format, platform boundary or recovery rule.
 
-- [Build](development/BUILD.md) covers Make targets, dependencies, generated
-  files, binary inspection and the documentation target.
-- [Testing](development/TESTING.md) explains test levels, local commands,
-  coverage, sanitizers and CI.
-- [Releases](development/RELEASES.md) describes versioning, tested build identity,
-  candidate assembly, native validation and publication.
+## Develop CUP
 
-## Project limits
+- [Build](development/BUILD.md) — configurations, native toolchains, pinned
+  dependencies, linking policy and public Make targets.
+- [Testing](development/TESTING.md) — unit, integration, repository, coverage,
+  sanitizer, portability and release tests.
+- [Releases](development/RELEASES.md) — versioning, source-tested build identity,
+  candidate construction, native validation and publication.
 
-The current project intentionally keeps a small scope:
+## Scope
 
-- cup works in user space and never requires `sudo` or administrator rights;
-- it installs complete prebuilt packages instead of building tools locally;
-- it does not manage a global sysroot;
-- it never requires or modifies a system-wide PATH; the installer may optionally
-  update the current user's PATH;
-- it uses one local root and one transaction file;
-- it supports only the platforms and tools listed by the built-in registry;
-- `stable` is the only symbolic release selector;
-- package production remains in `cup-components`.
+CUP intentionally does not require privilege elevation, build component tools
+from source during `cup install`, maintain a system-wide package database, manage
+a global sysroot or rewrite the system PATH. Package availability is limited to
+the built-in component/tool domain and the installed catalog. `stable` is the
+only symbolic package release selector.

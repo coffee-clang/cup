@@ -1,8 +1,5 @@
-/*
- * Implements one package installation scope, including cache validation, staged extraction,
- * transaction persistence, state commit and managed-wrapper reconciliation. The same scoped
- * operation is reused by stable updates.
- */
+/* Install one package scope through cache validation, staged extraction, journaling, state
+ * commit and wrapper reconciliation; stable update reuses the same operation. */
 
 #include "package_install.h"
 #include "installed_package.h"

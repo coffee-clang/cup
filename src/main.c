@@ -1161,9 +1161,8 @@ int main(int argc, char *argv[]) {
     (void)setvbuf(stdout, NULL, _IOLBF, 0);
     system_set_restrictive_umask();
 
-    /* Installer-only root operations are owned by the verified native binary. The script may
-     * discover a candidate or collect a base path, but it cannot authenticate or appropriate a
-     * managed root by itself. */
+    /* Installer scripts may discover paths, but only the verified native binary may
+     * authenticate or adopt a managed root. */
     if (argc == 3 && strcmp(argv[1], "--internal-select-root") == 0) {
         char selected[MAX_PATH_LEN];
 
@@ -1212,9 +1211,8 @@ int main(int argc, char *argv[]) {
         return status;
     }
 
-    /* The installer uses the normal read-only command context as a completion probe. Success
-     * means the canonical runtime can be locked and validated after the detached helper releases
-     * its exclusive authority; it does not require an otherwise issue-free doctor report. */
+    /* Installer completion probes the normal read-only command context: success means the
+     * runtime can be locked and validated after helper handoff completes. */
     if (argc == 2 && strcmp(argv[1], "--internal-runtime-ready") == 0) {
         CommandContext context;
         int context_active = 0;
@@ -1236,10 +1234,8 @@ int main(int argc, char *argv[]) {
         return exit_status_from_error(result);
     }
 
-    /* Internal helper modes bypass the public CLI. Handoff acceptance waits for parent exit and
-     * carries exclusive authority before either helper mutates managed state. Windows uninstall
-     * also receives the parent's deferred-cleanup handle so the temporary helper can disappear
-     * after its executable image is no longer mapped. */
+    /* Internal helper modes bypass public parsing. They accept handoff and wait for parent exit
+     * before mutation; Windows uninstall also receives deferred helper-cleanup authority. */
     if (argc == 6 && strcmp(argv[1], CUP_INTERNAL_UPDATE_HELPER_ARGUMENT) == 0) {
         result = update_helper_run(argv[2], argv[3], argv[4], argv[5]);
         return exit_status_from_error(result);

@@ -1,11 +1,8 @@
 #ifndef CUP_COMMANDS_H
 #define CUP_COMMANDS_H
 
-/*
- * Public CLI command handlers receive canonical arguments from the parser. They own runtime
- * policy/state validation, locking, output and state transitions; they do not reinterpret public
- * grammar.
- */
+/* Public command handlers receive canonical parser output and own runtime policy,
+ * locking, state transitions and user-visible output. */
 
 #include "error.h"
 

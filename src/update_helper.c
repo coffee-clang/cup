@@ -181,9 +181,8 @@ static CupError commit_update(UpdateJournal *journal, const char *staging) {
     if (err == CUP_OK) {
         err = backup_destinations(staging, assets, sizeof(assets) / sizeof(assets[0]));
     }
-    /* COMMITTING is published only after every destination has durable rollback evidence. Until
-     * this publication succeeds, canonical CUP assets are unchanged and scheduled recovery may
-     * discard the staging tree without trying to restore it. */
+    /* Publish COMMITTING only after every destination has durable rollback evidence. Before
+     * then, canonical assets are unchanged and recovery may discard staging. */
     if (err == CUP_OK) {
         err = update_journal_set_phase(journal, CUP_UPDATE_PHASE_COMMITTING, 0);
     }
@@ -197,9 +196,8 @@ static CupError commit_update(UpdateJournal *journal, const char *staging) {
     if (err == CUP_OK) {
         err = update_write_generation_marker(staging, journal->version, staged_binary);
     }
-    /* The executable is replaced last, after every supporting asset and the durable marker are in
-     * place. Until that final replacement, the old executable remains present and the journal plus
-     * backups describe a deterministic rollback. */
+    /* Replace the executable last, after supporting assets and the durable marker. Until then,
+     * journal/backups still describe deterministic rollback. */
     if (err == CUP_OK) {
         err = install_staged_asset(staging, &assets[0]);
     }

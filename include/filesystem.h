@@ -27,11 +27,8 @@ CupError filesystem_snapshot_read(const char *path,
                                   PersistentFileSnapshot *snapshot,
                                   int *missing);
 
-/*
- * Serialize one managed file through a sibling temporary file and sync it before publication.
- * The create form never replaces an existing destination; the replace form does so atomically.
- * CUP_ERR_COMMIT means the new file may be visible, but directory durability is uncertain.
- */
+/* Serialize through a synced sibling temporary file. Create never replaces; replace is atomic.
+ * CUP_ERR_COMMIT means publication may be visible but directory durability is uncertain. */
 CupError filesystem_publish_new_file(const char *directory,
                                      const char *temporary_prefix,
                                      const char *destination,

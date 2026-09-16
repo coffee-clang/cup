@@ -1,12 +1,8 @@
 #ifndef CUP_PACKAGE_MANIFEST_H
 #define CUP_PACKAGE_MANIFEST_H
 
-/*
- * Verifies the producer-owned manifest.txt format=2 inventory of one extracted package.
- * The manifest itself is deliberately outside the inventory; every other package object must be
- * declared exactly once with its type/mode/digest contract. POSIX link records bind target text
- * and must resolve inside the package to a regular file.
- */
+/* Verify manifest.txt format=2: every other package object appears exactly once, and POSIX
+ * links resolve inside the package to regular files. */
 
 #include <stdio.h>
 

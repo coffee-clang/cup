@@ -44,12 +44,8 @@ typedef struct {
 void package_catalog_init(PackageCatalog *catalog);
 void package_catalog_free(PackageCatalog *catalog);
 
-/*
- * Load the current catalog. The repository copy is a development fallback
- * only when the installed catalog is absent, never when it is invalid. A
- * valid load attempt replaces the previous catalog; operational failure leaves
- * the initialized output empty.
- */
+/* Load the installed catalog, falling back to the repository copy only when it is absent.
+ * Success replaces the model; failure leaves it empty. */
 CupError package_catalog_load(PackageCatalog *catalog);
 
 /* Load one explicitly selected source and validate the complete document. */

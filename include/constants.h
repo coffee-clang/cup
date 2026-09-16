@@ -5,11 +5,8 @@
 
 /* Central capacities, transfer/archive limits, and canonical cup asset filenames. */
 
-/*
- * Bounded in-memory state. Several concrete versions may coexist for one tool,
- * host and target, so installed-package capacity is an explicit resource limit.
- * At most one default exists for each component, host and target.
- */
+/* Bounded state capacity: packages may keep multiple concrete versions, while defaults remain
+ * one-per component/host/target scope. */
 #define MAX_INSTALLED 256
 #define MAX_STATE_DEFAULTS CUP_GLOBAL_SCOPE_COUNT
 

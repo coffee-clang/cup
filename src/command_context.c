@@ -126,9 +126,8 @@ static CupError inspect_locked_runtime(LayoutRuntimeStatus *status) {
     return err;
 }
 
-/* A missing root cannot contain cup.lock. Create only that absent bootstrap root, then retry the
- * canonical exclusive lock. Existing roots are always locked before marker, mode or runtime
- * repair. */
+/* Only a proven-missing root may be created before locking. Existing roots are always locked
+ * before repair or initialization. */
 static CupError acquire_bootstrap_lock(CommandContext *context) {
     CupError err = acquire_runtime_lock(context, SYSTEM_LOCK_EXCLUSIVE);
     SystemPathKind root_kind;
@@ -138,9 +137,8 @@ static CupError acquire_bootstrap_lock(CommandContext *context) {
         return err;
     }
 
-    /* A filesystem error is not proof that the root is absent: cup.lock may be the wrong kind or
-     * an existing root may be inaccessible. Only a no-follow missing-root classification permits
-     * creation before the canonical lock exists. */
+    /* Do not treat a filesystem error as absence. Pre-lock creation is allowed only after a
+     * no-follow missing-root classification. */
     err = layout_get_root(root_path, sizeof(root_path));
     if (err == CUP_OK) {
         err = system_get_path_kind(root_path, &root_kind);
@@ -263,9 +261,8 @@ CupError command_context_begin(CommandContext *context,
     }
 
     if (lock_mode == SYSTEM_LOCK_EXCLUSIVE) {
-        /* The pre-lock asset check only avoids creating an unusable bootstrap root. Installed or
-         * development assets are revalidated under the final exclusive snapshot before they can
-         * authorize runtime initialization. */
+        /* The pre-lock asset check only gates bootstrap creation; assets are revalidated under
+         * the final exclusive snapshot before initialization. */
         if (runtime_status == LAYOUT_RUNTIME_MISSING) {
             err = validate_assets();
         }

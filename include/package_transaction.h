@@ -35,12 +35,8 @@ CupError package_transaction_begin(PackageOperation operation,
                                    PackageTransaction *created);
 CupError package_transaction_load(PackageTransaction *transaction,
                                   PackageTransactionStatus *status);
-/*
- * Recover only a transaction produced by begin/load against state that already passed
- * state_validate(). Recovery retains transaction.txt unless the state-determined filesystem result
- * is complete and the exact loaded journal identity can be removed durably. Retryable partial
- * filesystem progress is reported as CUP_ERR_COMMIT; explicit restoration failure is preserved.
- */
+/* Recover against validated state. Keep transaction.txt until completion and durable
+ * identity-bound removal; partial progress returns CUP_ERR_COMMIT. */
 CupError package_transaction_recover(const PackageTransaction *transaction, CupState *state);
 
 /* Stable diagnostic name for one package operation. */

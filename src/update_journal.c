@@ -701,9 +701,8 @@ static CupError restore_asset(const char *staging,
         return CUP_ERR_TRANSACTION;
     }
 
-    /* Keep the sole rollback backup intact until the complete recovery succeeds. The copy
-     * primitive publishes through its own sibling temporary, so an interrupted repair can retry
-     * from the same .old evidence instead of consuming it during the first restore attempt. */
+    /* Keep the rollback backup until recovery completes. Restoration publishes through its own
+     * temporary file, so interrupted repair can retry from the same `.old` evidence. */
     err = system_copy_file(backup, asset->destination);
     if (err != CUP_OK) {
         return err == CUP_ERR_COMMIT ? CUP_ERR_COMMIT : CUP_ERR_ROLLBACK;

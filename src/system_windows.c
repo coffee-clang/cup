@@ -423,9 +423,8 @@ static HANDLE handoff_parent_signal = NULL;
 static HANDLE handoff_parent_authority = NULL;
 static const DWORD uninstall_carrier_ready_timeout_ms = 30000u;
 
-/* The root itself may be renamed away during uninstall, so the handoff authority is keyed by
- * the stable parent-directory identity plus the canonical root slot. Independent CUP roots under
- * different bases, and .cup/.coffee-cup under one base, therefore never share authority. */
+/* Key uninstall handoff by stable parent identity plus canonical root slot because the root
+ * itself may be renamed. Distinct roots therefore never share authority. */
 static CupError build_handoff_name(const char *root, wchar_t *name, size_t capacity) {
     char parent[MAX_PATH_LEN];
     const char *leaf;
@@ -620,9 +619,8 @@ static CupError open_uninstall_cleanup_handle(const char *helper, HANDLE *cleanu
         return err;
     }
 
-    /* First open and prove the exact no-follow file object without delete-on-close. ReOpenFile then
-     * attaches cleanup semantics to that same object, avoiding a second pathname lookup between
-     * identity proof and DELETE_ON_CLOSE ownership. */
+    /* Prove the no-follow file object first, then use ReOpenFile to attach DELETE_ON_CLOSE to
+     * that same object without a second pathname lookup. */
     verified = CreateFileW(wide_helper,
                            FILE_READ_ATTRIBUTES,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -746,12 +744,8 @@ static CupError start_uninstall_cleanup_carrier(HANDLE helper_process,
         goto cleanup;
     }
 
-    /*
-     * The carrier wraps the process and readiness handles with non-owning SafeWaitHandle instances.
-     * A zero-time process wait proves that the inherited process handle is waitable before readiness
-     * is signaled. Windows signals that process object after termination, so the carrier's inherited
-     * DELETE_ON_CLOSE handle outlives helper image teardown.
-     */
+    /* Use non-owning SafeWaitHandle wrappers. Prove the inherited process handle is waitable
+     * before readiness; its signal then keeps DELETE_ON_CLOSE alive until helper termination. */
     written = _snwprintf(
         command,
         sizeof(command) / sizeof(command[0]),
@@ -995,9 +989,8 @@ static CupError start_handoff_helper(const char *helper,
     CloseHandle(read_handle);
     read_handle = NULL;
 
-    /* The child already owns the external authority. Release cup.lock only after that overlap
-     * exists. Keep the parent authority alive until this process exits so an early child failure
-     * cannot open an admission gap. */
+    /* Release cup.lock only after the child owns external authority, and retain the parent's
+     * external reference until exit to avoid an admission gap. */
     system_lock_release(lock);
     handoff_parent_signal = write_handle;
     write_handle = NULL;
@@ -1114,9 +1107,8 @@ CupError system_validate_uninstall_helper_cleanup(const char *cleanup_handle_val
     }
     cleanup_handle = (HANDLE)cleanup_number;
 
-    /* The parent binds DELETE_ON_CLOSE to the reserved helper before launch. Rebind the inherited
-     * handle to this running image before accepting handoff; the child then closes its copy because
-     * the parent-side cleanup carrier owns the post-termination lifetime. */
+    /* The parent pre-arms DELETE_ON_CLOSE. Before handoff, prove the inherited handle names
+     * this running helper; the parent-side carrier then owns post-termination cleanup. */
     if (!GetFileInformationByHandle(cleanup_handle, &information)) {
         native_error = GetLastError();
         goto cleanup;
@@ -1212,9 +1204,8 @@ CupError system_handoff_acquire_lock(SystemHandoff *handoff,
         return CUP_ERR_INVALID_INPUT;
     }
 
-    /* A process that passed the pre-root handoff check just before handoff may briefly hold
-     * cup.lock, but its mandatory post-lock handoff check must make it retreat. Retry only that
-     * synchronization class and keep the wait finite. */
+    /* A process may acquire cup.lock just before handoff publication; the mandatory post-lock
+     * check makes it retreat. Retry only this bounded synchronization case. */
     for (attempt = 0; attempt < 500; ++attempt) {
         err = lock_acquire_existing(lock, lock_path, SYSTEM_LOCK_EXCLUSIVE);
         if (err != CUP_ERR_LOCK) {
@@ -1795,9 +1786,8 @@ static CupError identity_from_handle_information(
     return CUP_OK;
 }
 
-/* Hold a directory name stable while pathname-based enumeration uses it. Omitting
- * FILE_SHARE_DELETE prevents a concurrent rename/delete from replacing the final directory
- * entry until the pin is closed. */
+/* Pin the directory name during pathname-based enumeration by denying FILE_SHARE_DELETE until
+ * the handle closes. */
 static CupError open_directory_pin(const char *path,
                                    HANDLE *handle,
                                    SystemPathIdentity *identity,
@@ -2280,9 +2270,8 @@ CupError system_sync_parent_directory(const char *path) {
                          NULL);
     if (handle == INVALID_HANDLE_VALUE) {
         flush_error = GetLastError();
-        /* Windows has no portable directory-fsync contract. Treat only capability-style
-         * failures as best-effort; callers that need a stronger publication guarantee use
-         * write-through replacement/move primitives for the namespace change itself. */
+        /* Windows has no portable directory-fsync contract. Only capability-style sync failures
+         * are best-effort; stronger commits use write-through move/replace primitives. */
         if (flush_error == ERROR_ACCESS_DENIED || flush_error == ERROR_INVALID_FUNCTION ||
             flush_error == ERROR_NOT_SUPPORTED) {
             return CUP_OK;
@@ -2374,9 +2363,8 @@ CupError system_create_temp_directory(const char *directory,
     }
     err = validate_temp_directory(directory);
     if (err == CUP_OK) {
-        /* Match the owner-private mkdtemp contract on POSIX. Bootstrap and update staging
-         * generations are revalidated after copying, so an inherited Windows DACL is not
-         * sufficient even when the parent directory itself is private. */
+        /* Match POSIX owner-private temporary directories. Copied bootstrap/update generations
+         * are revalidated; an inherited parent DACL alone is not sufficient. */
         err = build_private_security_descriptor(&descriptor);
     }
     if (err != CUP_OK) {
@@ -3073,9 +3061,8 @@ static CupError lock_acquire_common(SystemLock *lock,
     if (mode == SYSTEM_LOCK_EXCLUSIVE) {
         flags |= LOCKFILE_EXCLUSIVE_LOCK;
     }
-    /* SystemLock is an advisory coordination primitive. Lock one sentinel byte
-     * beyond ordinary CUP lock-file contents so Windows byte-range locking does
-     * not make marker/config contents unreadable through independent handles. */
+    /* Lock a sentinel byte beyond ordinary cup.lock contents so Windows byte-range coordination
+     * does not block independent metadata reads. */
     ZeroMemory(&overlapped, sizeof(overlapped));
     overlapped.OffsetHigh = 1;
     if (!LockFileEx(handle, flags, 0, 1, 0, &overlapped)) {

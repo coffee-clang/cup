@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* libcurl owns URL syntax and decomposition. CUP keeps the test-only transport override deliberately
- * small: explicit opt-in, HTTP, 127.0.0.1, an explicit non-zero port and a plain path. */
+/* libcurl owns URL syntax. The test-only HTTP override is restricted to explicit 127.0.0.1 URLs
+ * with a non-zero port and plain path. */
 static CupError normalize_insecure_loopback_url(const char *url, char *normalized, size_t size) {
     CURLU *parsed = NULL;
     CURLUcode result;

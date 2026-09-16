@@ -1,9 +1,5 @@
-/*
- * Extracts one bounded package archive below an anchored staging directory. Archive paths use a
- * portable ASCII grammar, case-fold collisions and path aliases are rejected, POSIX archives may
- * contain lexically confined relative symbolic links, and permissions are normalized rather than
- * trusted from the archive. Complete link resolution belongs to manifest integrity validation.
- */
+/* Extract into anchored staging, rejecting escaping/aliasing paths and normalizing
+ * permissions. POSIX symlinks stay lexically confined; manifest validation resolves them. */
 
 #include "package_extract.h"
 
@@ -142,8 +138,8 @@ static CupError path_table_add(ExtractedPathTable *table,
     return CUP_OK;
 }
 
-/* Register one path before any disk write. Mutation failure is terminal for the extraction attempt,
- * so partial in-memory registration needs no rollback and the whole table is freed on exit. */
+/* Register each path before disk mutation. Extraction failure is terminal, so the in-memory
+ * path table needs no partial rollback. */
 static CupError path_table_register(ExtractedPathTable *table, const char *path, mode_t type) {
     char key[MAX_PATH_LEN];
     char *slash;
@@ -281,9 +277,8 @@ static CupError normalize_entry_path(const char *input, char *output, size_t siz
 }
 
 #if !defined(_WIN32)
-/* A producer-owned symlink need not resolve while archive entries are being extracted, but its
- * lexical target must remain inside the package. Complete resolution is deferred to manifest
- * integrity validation; extraction owns only safe construction of the staged tree. */
+/* A symlink need not resolve during extraction, but its lexical target must stay inside the
+ * package. Manifest validation owns complete resolution. */
 static CupError validate_symlink_target(const char *relative_path, const char *target) {
     char combined[MAX_PATH_LEN];
     char parent[MAX_PATH_LEN];

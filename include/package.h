@@ -120,11 +120,8 @@ CupError package_identity_from_selector(PackageIdentity *identity,
                                         const char *selector,
                                         FILE *diagnostics);
 
-/*
- * Validate the package root, captured info.txt object identity, semantic metadata
- * and every declared executable entry without trusting the directory name alone.
- * Diagnostic output is optional so doctor/repair can aggregate the same validation rules.
- */
+/* Validate the package root, pinned info.txt identity, semantic metadata and declared
+ * executables. Optional diagnostics let doctor/repair reuse the same rules. */
 void validated_package_init(ValidatedPackage *package);
 void validated_package_free(ValidatedPackage *package);
 /* `package` must have been initialized before the first load and remain owned by the caller. */

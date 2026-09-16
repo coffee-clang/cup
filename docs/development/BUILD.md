@@ -1,12 +1,18 @@
 # Build
 
-This chapter explains how `cup` is compiled, where build files are written and
-how the third-party libraries are prepared. The Makefile is the entry point for
-normal local work and for the CI jobs.
+This chapter describes the build contract for CUP: the supported native
+platforms, build configurations, pinned dependencies, generated identity and
+binary inspection rules. The repository `Makefile` is the normal entry point.
 
-## Selecting a platform
+For the command list, run:
 
-The public platform value is:
+```sh
+make help
+```
+
+## Native platforms
+
+CUP is built natively for five public platform identifiers:
 
 ```text
 linux-x64
@@ -16,7 +22,7 @@ macos-arm64
 windows-x64
 ```
 
-Use it through `PLATFORM`:
+Select one with `PLATFORM`:
 
 ```sh
 make PLATFORM=linux-x64
@@ -24,24 +30,13 @@ make PLATFORM=macos-arm64 debug
 make PLATFORM=windows-x64 test
 ```
 
-A build is always native. Linux builds run on Linux, macOS builds run on macOS
-and Windows builds run in MSYS2 on Windows. The project does not use one host to
-cross-compile the official five-platform release.
+Official builds do not cross-compile these targets from a different operating
+system. Linux builds run on Linux, macOS builds run on macOS and Windows builds
+run under MSYS2 on Windows.
 
 ## Build configurations
 
-Configurations are selected by targets instead of combinations of public flag
-variables:
-
-```sh
-make PLATFORM=linux-x64            # development
-make PLATFORM=linux-x64 debug
-make PLATFORM=linux-x64 coverage
-make PLATFORM=linux-x64 sanitizers
-make PLATFORM=linux-x64 release
-```
-
-They are kept in separate directories:
+CUP keeps each configuration in a separate build directory:
 
 ```text
 build/<platform>/development/
@@ -51,99 +46,94 @@ build/<platform>/sanitizers/
 build/<platform>/release/
 ```
 
-Objects from one configuration are therefore never reused by another one.
+The corresponding targets are:
 
-The normal `release` target selects release compiler flags, but it is still a
-local build. An official candidate is produced only by `release-candidate`, with
-an explicit version, tag and source commit supplied by the release workflow.
+```sh
+make PLATFORM=<platform>              # development
+make PLATFORM=<platform> debug
+make PLATFORM=<platform> coverage
+make PLATFORM=<platform> sanitizers
+make PLATFORM=<platform> release
+```
 
-## Build-root ownership
+Development and debug builds favor diagnostics. Coverage and sanitizer builds
+add their native instrumentation. Release builds use optimized release flags and
+binary policy, but a local `release` build is not an official published
+candidate. Official metadata and finalization are added by `release-candidate`
+inside the release workflow.
 
-`BUILD_DIR` selects the build root. A relative value is resolved from the
-repository root; an absolute value is accepted after validation.
+All project C sources are compiled as C11 and warnings are errors.
 
-Before writing anything, the build checks that:
+### Toolchain roles
 
-- the path is absolute after normalization;
-- it is not the repository root;
-- existing components are real directories rather than symbolic links;
-- the path does not contain `.` or `..` components;
-- the value can be passed safely through Make and the supported shells.
+| Role | Linux | macOS | Windows |
+|---|---|---|---|
+| Development / release | GCC | Apple Clang | MSYS2 UCRT64 GCC |
+| Additional compiler check | Clang where configured | Apple Clang | — |
+| Coverage | GCC/gcov | Apple Clang + LLVM coverage tools | UCRT64 GCC/gcov |
+| ASan/UBSan | Clang/Compiler-RT | Apple Clang | MSYS2 CLANG64 |
 
-A build root belongs to this repository only when it contains the expected
-`.cup-build-root` marker. For a new root, the shell path-safety owner validates
-and prepares the parent chain, creates the root, and writes the marker before the
-root is used. If marker creation fails, that newly created root is removed. An
-existing root must already carry the exact marker; an unmarked existing
-directory is not adopted, even when empty.
+`scripts/build/validate-toolchain.sh` verifies the selected host and compiler
+before compilation. Windows production builds require UCRT64; sanitizer builds
+use the separate CLANG64 environment.
 
-The repository assumes one independent mutation of a build root at a time.
-Parallel work inside one `make` invocation is coordinated by Make itself; cup
-does not add separate cross-process locking. `clean` first
-requires the exact marker and then removes that managed build root.
+The configured build baselines are macOS 13.0 and Windows 10. They are build
+inputs, not a broader compatibility guarantee than the native tests establish.
 
 ## Build identity
 
-Each configuration contains `build-config.txt`. It records the inputs that can
-change the generated binary:
+Every configuration writes `build-config.txt`. It records the inputs needed to
+identify the produced binary, including:
 
 - platform and configuration;
-- host architecture;
-- compiler command, resolved path, target and version;
-- Windows resource compiler identity where needed;
-- effective preprocessor, compiler, linker and library flags;
-- dependency-prefix compatibility information;
-- whether the build is official.
+- compiler identity and target;
+- effective compile and link flags;
+- dependency-prefix identity;
+- official/development build role.
 
-The file is replaced atomically only when its contents change. Objects depend on
-it, so changing the compiler, dependency prefix, local additions or official
-status causes the required objects to be rebuilt without rebuilding unrelated
-third-party libraries.
+Objects depend on this generated identity. A meaningful compiler, dependency or
+flag change therefore invalidates the affected build without requiring a manual
+cleanup.
 
-Version files are generated under the same configuration directory:
+The same configuration also generates:
 
 ```text
 version.h
 release.txt
-version.rc       Windows only
+version.rc       # Windows only
 ```
 
-When the source has no `.git` directory, the development version remains
-human-readable as `dev+archive`. The generated `release.txt` uses the reserved
-all-zero 40-character commit sentinel so that archive builds retain the same
-strict metadata schema. Official builds are accepted only from a Git checkout
-and record the real source commit.
-
-Version outputs are generated as one complete set in a private directory. The
-Make graph verifies every expected regular output before copying any of them into
-the canonical generated directory and only then refreshes the generation stamp.
-The CA source/header pair uses the same staged-set rule. A generator that returns
-success without producing its complete output set therefore cannot make stale
-canonical files appear freshly generated.
-
 `scripts/version.sh` reads the manually maintained `VERSION` file and Git state.
-Development builds include the tag distance, short commit and dirty state.
-Official builds use the exact `MAJOR.MINOR.PATCH` value and require an explicit
-source commit.
+Development builds expose Git-derived information. An archive without `.git`
+uses the explicit `dev+archive` identity and the reserved all-zero commit in
+`release.txt`. Official builds require a Git checkout and the exact source
+commit.
 
-## Compilers and flags
+Generated file sets are prepared in staging and published only after the
+complete expected set exists. A partially successful generator cannot make
+stale canonical outputs look current.
 
-The main compiler for each platform is fixed by role:
+## Build directories
 
-| Role | Linux | macOS | Windows |
-|---|---|---|---|
-| Development, integration and release | GCC | Apple Clang | MSYS2 UCRT64 GCC |
-| Additional compiler check | Clang on x64 | native compiler | CLANG64 for sanitizers |
-| Coverage | GCC/gcov | Clang source coverage | UCRT64 GCC/gcov |
-| ASan/UBSan | Clang/Compiler-RT | Apple Clang | CLANG64 Clang/Compiler-RT |
+`BUILD_DIR` may select another build root. Repository tooling validates it before
+using or deleting it and marks managed roots with `.cup-build-root`.
 
-All C sources use C11 and warnings are treated as errors. Development and debug
-builds use `-O0 -g3`; release uses `-O2 -g1 -DNDEBUG`. Coverage and sanitizer
-instrumentation remain inside their own configurations.
+The practical contract is:
 
-Mandatory flags are owned by the Makefile. Direct command-line replacement of
-`CPPFLAGS`, `CFLAGS`, `LDFLAGS` or `LDLIBS` is not the supported customization
-path. Local experiments use additive variables:
+- the effective path must be an acceptable absolute managed path;
+- CUP's repository root and the user's home directory cannot become build
+  cleanup targets;
+- existing managed roots must carry the expected marker;
+- destructive cleanup operates only on an owned build root.
+
+These rules prevent ordinary build/cleanup mistakes. They are repository tooling
+rules, not a duplicate of the stronger runtime filesystem-identity model used by
+CUP itself.
+
+## Local compiler additions
+
+The Makefile owns the mandatory build flags. Local experiments should add flags
+through:
 
 ```sh
 make EXTRA_CPPFLAGS=-DLOCAL_FEATURE
@@ -152,129 +142,46 @@ make EXTRA_LDFLAGS=-Wl,--build-id=none
 make EXTRA_LDLIBS=-lm
 ```
 
-Official candidates reject all `EXTRA_*` values.
+Official release candidates reject `EXTRA_*` values so their build identity is
+fully controlled by the repository.
 
-`scripts/build/validate-toolchain.sh` checks the host, target triple and resource
-compiler before compilation. Windows production builds require the UCRT64
-environment and reject the older MINGW64/MSVCRT runtime. Sanitizer jobs use the
-separate CLANG64 environment.
+## Pinned dependencies
 
-The current build baselines are macOS 13.0 and Windows 10
-(`_WIN32_WINNT=0x0A00`). They describe how CI builds the program; they should not
-be read as a final promise about the oldest operating-system version until the
-native compatibility tests establish that promise.
+`config/dependencies.lock` is the source/build lock for the private dependency
+prefix. It records:
 
-## Coverage backend
+- the lock format;
+- the dependency `build_revision`;
+- every pinned source version;
+- the expected SHA-256 for each source archive.
 
-`make PLATFORM=<platform> test-coverage` uses one report and threshold flow on
-all supported platforms. `gcovr` writes the text, XML, JSON, summary and HTML
-reports and applies the same saved-tracefile gates.
+`scripts/dependencies/sources.sh` maps those identities to their download
+locations. A recipe change that can alter the prefix increments
+`build_revision`, even when upstream versions do not change. This prevents a
+prefix produced by an older recipe from being accepted as current.
 
-The raw instrumentation remains native to the compiler:
+The application uses:
 
-| Platform | Raw counters | Report frontend |
-|---|---|---|
-| Linux | GCC `.gcda` | `gcovr` |
-| macOS | Clang `.profraw` with `llvm-profdata`/`llvm-cov` from `xcrun` | `gcovr` |
-| Windows | UCRT64 GCC `.gcda` | `gcovr` |
+- Argtable3 for argument parsing;
+- uthash while validating archive path sets;
+- libcurl for bounded HTTP/HTTPS downloads;
+- libarchive, zlib and liblzma for package archives;
+- c-ares in the POSIX curl build;
+- OpenSSL as the POSIX TLS backend.
 
-For macOS, cup and every instrumented test/helper use the common external
-coverage entry wrapper with a distinct internal entry symbol. This allows all
-executables to be supplied to the LLVM backend without merging incompatible
-`main` definitions. Repeated executions of one instrumented binary use LLVM's
-`%m` online raw-profile merging, so report generation receives one synchronized
-profile per binary signature instead of one file per process. Profile merging
-and object-reading failures are ordinary coverage failures; the gate relies on
-command status and report completeness rather than matching diagnostic text.
+Windows uses Schannel instead of OpenSSL for TLS. SHA-256 used by CUP is the
+repository implementation in `src/third_party/sha256.c`, not OpenSSL.
 
-## Third-party dependencies
+Unity and libevent are test dependencies: Unity is linked into unit tests and
+libevent into the local network helper.
 
-End users receive a built executable and do not need the dependency toolchain.
-The source build uses these libraries:
+### Prefix commands
 
-### Used by the application
+The default dependency location is platform-specific below `~/deps`; Windows
+CLANG64 sanitizer builds use a separate prefix. Custom roots can be supplied
+through the documented dependency environment variables used by the scripts.
 
-- **Argtable3** parses command-specific arguments.
-- **uthash** stores normalized archive paths while duplicates are checked.
-- **libcurl** performs bounded HTTP and HTTPS downloads. CUP requires libcurl
-  8.20.0 or newer because the download-size limit must also apply after HTTP
-  content decoding; the dependency lock currently pins a newer compatible
-  release.
-- **libarchive** validates and extracts package archives.
-- **zlib** and **XZ/liblzma** are part of the archive stack.
-- **c-ares** is libcurl's resolver on the supported builds.
-- **OpenSSL** is the POSIX TLS backend. Windows uses Schannel instead.
-
-SHA-256 for cup files is implemented by `src/third_party/sha256.c`. OpenSSL is
-not used as a second checksum implementation.
-
-### Used only by tests
-
-- **Unity** is linked into C unit-test programs.
-- **libevent** is linked into the local network test helper.
-
-Coverage tools, sanitizer runtimes, compilers and binary-inspection utilities are
-host tools. They are not part of the application dependency prefix or the
-published executable.
-
-## Dependency lock and source definitions
-
-`config/dependencies.lock` is the authority for the lock format, manual build
-revision, active source versions and SHA-256 values.
-`scripts/dependencies/sources.sh` owns the corresponding source identities and
-download URLs.
-The remaining shared code is split by responsibility:
-
-- `environment.sh` prepares deterministic tools and flags;
-- `root-transaction.sh` owns dependency-root validation, staging recovery and cleanup;
-- `prefix-metadata.sh` reads, validates and writes prefix metadata;
-- `source-build.sh` owns common download, extraction and build operations;
-- `common.sh` loads those modules and defines their shared constants.
-
-`build-posix.sh` and `build-windows.sh` are the native prefix producers;
-`verify.sh` is the standalone compatibility/cache-key/cleanup entry point used by
-Make and CI. All three load the same shared dependency model through `common.sh`.
-
-`scripts/dependencies/THIRD_PARTY_NOTICES.txt` contains the corresponding
-license notices and is included in releases. It is documentation, not a second
-source of dependency versions.
-
-When a build recipe changes without a source-version change,
-`build_revision` is incremented. This prevents an older prefix produced by a
-different recipe from being reused as compatible. Dependency builders also
-force a fixed nonzero `SOURCE_DATE_EPOCH`; generated build metadata therefore
-does not depend on the wall clock or on an ambient caller setting.
-
-## Dependency roots and profiles
-
-The normal prefix is:
-
-```text
-~/deps/<platform>/install
-```
-
-Windows sanitizers use a separate CLANG64 prefix:
-
-```text
-~/deps/windows-x64-clang64/install
-```
-
-`DEPS_ROOT` and `DEPS_PREFIX` may select another absolute, whitespace-free
-location. `DEPS_ROOT` must not be the user home directory or contain the cup
-checkout. Dependency roots have their own ownership marker and no-follow path
-checks. A prefix is reusable only when its recorded data matches:
-
-- prefix format;
-- platform and build profile;
-- dependency build revision;
-- semantic digest of the source lock;
-- native compiler/toolchain fingerprint.
-
-Toolchain metadata is derived from the canonical platform/profile build contract.
-Comments or harmless formatting changes do not invalidate a prefix. A changed
-version, digest, recipe revision, platform, profile or compiler does.
-
-The main dependency commands are:
+The normal commands are:
 
 ```sh
 JOBS=4 make PLATFORM=<platform> deps
@@ -283,167 +190,174 @@ make PLATFORM=<platform> deps-force
 make PLATFORM=<platform> deps-clean
 ```
 
-`deps` reuses a compatible prefix or builds a new one. `deps-check` only
-validates and never repairs it. `deps-force` performs a new transactional build.
-`deps-clean` removes only a marked dependency root.
+`deps` reuses a compatible prefix or builds one. `deps-check` is read-only.
+`deps-force` rebuilds transactionally. `deps-clean` removes only a marked
+managed dependency root.
 
-A dependency root is owned by its exact `.cup-dependencies-root` marker. A new
-root is marked before use; an existing empty unmarked directory may be adopted,
-while a non-empty unmarked root is preserved and rejected. As with build roots,
-the repository assumes one independent mutation of a dependency root at a time
-rather than maintaining a separate cross-process lock state machine.
+Prefix compatibility depends on the platform/profile, source-lock digest,
+build revision and native toolchain fingerprint. Source archives are verified
+before extraction, libraries are installed into staging, and the completed
+prefix is verified before publication.
 
-Source archives are downloaded to a managed cache, checked against the source
-lock and extracted into private staging directories. Libraries are built into a
-staged prefix. Startup removes an interrupted canonical staging directory below
-an already owned root, and the complete prefix is verified before it replaces
-the final prefix. A failed build therefore does not expose a half-updated prefix.
+An offline source cache may provide the exact archives named by
+`config/dependencies.lock` under the managed dependency root's `src/`
+directory. The normal builder still verifies their SHA-256 values.
 
-An offline cache is a dependency root containing the canonical
-`.cup-dependencies-root` marker and a `src/` directory with the archives named by
-`config/dependencies.lock`. It may omit `build/` and `install/`; `make deps`
-creates those transactionally. Extra or stale archives should not be shipped in
-the cache even though the builder ignores names that are not present in the
-lock.
+### Prefix product contract
 
-The dependency prefix is an internal build cache, not a cup release package.
-Compatibility is defined by the pinned headers, static archives and metadata
-that cup and its tests consume. Some upstream `make install` steps may also
-leave support programs that cup never executes; the repository does not add a
-second pruning layer merely to minimize this private cache. Features that would
-change the dependency graph, such as shared libraries or runtime OpenSSL
-modules, remain disabled by the build recipes and verifier.
+The prefix verifier checks what CUP actually consumes rather than merely
+checking that upstream build commands returned success. Among the current
+contract properties:
+
+- zlib's static library is present;
+- libcurl exposes exactly the required HTTP and HTTPS protocols;
+- libarchive libraries are present while its unused command-line utilities are
+  absent;
+- the generated OpenSSL configuration records the required no-apps,
+  no-autoload-config, no-docs and no-DSO build properties;
+- the required static archives, headers, pkg-config/curl-config metadata and
+  test-only libraries are present for the selected profile.
+
+This is why dependency validation is part of the build contract rather than a
+cache-existence check.
 
 ## Linking policy
 
-All configurations use the same pinned headers and static third-party archives
-from `DEPS_PREFIX`.
+Pinned third-party libraries are linked statically from the dependency prefix.
+Operating-system linkage differs by platform:
 
-- Argtable3 is linked by its exact archive path.
-- `curl-config --static-libs` supplies curl and its pinned transitive graph.
-- prefix-scoped `pkg-config --static --libs libarchive` supplies libarchive.
-- Unity is linked only into unit-test executables.
-- prefix-scoped libevent metadata is used only by the network helper.
+- **Linux:** the release executable is fully static.
+- **macOS:** third-party libraries are static; approved Apple system libraries
+  and frameworks remain dynamic.
+- **Windows:** third-party/compiler runtime pieces are static; only approved
+  Windows system DLLs are imported.
 
-Development, debug, coverage and sanitizer configurations do not apply a global
-`-static` flag. Their third-party dependencies are still static, while ordinary
-operating-system libraries keep their native linkage.
+Development, debug, coverage and sanitizer configurations do not force the same
+global release-link mode, but still consume the pinned third-party prefix.
 
-The release policy depends on the platform:
+## Coverage and sanitizer builds
 
-- Linux produces a fully static ELF executable.
-- macOS links pinned third-party libraries statically but uses approved Apple
-  system libraries and frameworks dynamically.
-- Windows links third-party and compiler runtimes statically and imports only
-  the approved Windows system DLLs.
+`make PLATFORM=<platform> test-coverage` builds, executes and reports coverage
+using the native instrumentation backend:
 
-## Repository path safety
+| Platform | Instrumentation | Report frontend |
+|---|---|---|
+| Linux | GCC/gcov | gcovr |
+| macOS | Apple Clang/LLVM | gcovr over LLVM-produced data |
+| Windows | UCRT64 GCC/gcov | gcovr |
 
-Repository tooling uses `scripts/lib/path-safety.sh` as the shared shell owner
-for managed build, dependency and release paths. It validates canonical absolute
-paths, rejects evident symbolic-link components, checks containment and exact
-ownership markers, and provides the staging/publication and destructive cleanup
-operations used by the scripts.
+The default gates are 85% lines, 70% branches and 97% functions. The report
+runner saves machine-readable status and report artifacts in the coverage build
+area.
 
-These checks protect normal repository workflows from path mistakes and from
-cleaning or publishing through an obviously replaced path. They are deliberately
-not a second implementation of the cup runtime's descriptor/handle identity
-model, nor a promise to defeat a process with full control of the same developer
-account. Product mutations that require same-object identity continue to use the
-native C `system`/`filesystem` layers at their actual mutation authority.
+`make PLATFORM=<platform> test-sanitizers` runs the ASan/UBSan configuration.
+Linux additionally enables leak detection; platform-specific sanitizer options
+live in the test runner rather than in application code.
 
-## Embedded certificate authority (CA) bundle
+Testing strategy and unit-build reuse are described in [Testing](TESTING.md).
 
-cup contains a CA bundle for HTTPS validation. The tracked inputs are:
+## Binary inspection
+
+Every native configuration can be inspected with:
+
+```sh
+make PLATFORM=<platform> check-binary
+make PLATFORM=<platform> check-debug
+make PLATFORM=<platform> check-coverage
+make PLATFORM=<platform> check-sanitizers
+make PLATFORM=<platform> check-release
+```
+
+The inspector writes `binary-inspection.txt` beside the build output. It checks
+the native file format, architecture, dependency/import policy and properties
+specific to the selected configuration.
+
+Release inspection additionally enforces the public binary policy:
+
+- Linux release binaries must satisfy the static-runtime contract;
+- macOS binaries may reference only the approved system libraries/frameworks,
+  must match the requested architecture/deployment target and must not carry an
+  `LC_RPATH`;
+- Windows binaries must be PE32+ x86-64, contain the expected version resource
+  and mitigation flags, and import only approved system DLLs.
+
+Release finalization also separates native debug symbols and checks the stripped
+public executable for build-path leakage. Debug artifacts intentionally retain
+symbol/debug metadata and are a separate CI product.
+
+## Embedded CA bundle
+
+HTTPS verification uses the tracked CA inputs:
 
 ```text
 certs/cacert.pem
 certs/cacert.meta
 ```
 
-`scripts/certs/generate-ca-bundle.sh` creates `ca_bundle.h` and `ca_bundle.c`
-inside the build directory. Managed builds keep CA scratch data under the build
-root; standalone tools use the shared safe temporary-path handling. The metadata
-records the source, source date, SHA-256, certificate count and accepted age.
-
-Use:
+The build generates C source/header data from them. Use:
 
 ```sh
 make check-ca-bundle
 make update-ca-bundle
 ```
 
-The first command works offline. The second acquires a candidate over HTTPS,
-validates its X.509 structure, source date, certificate count and freshness,
-computes the SHA-256 of the accepted bytes and records that digest in the new metadata. It
-then compiles the generated source and replaces the PEM and metadata only after
-the complete candidate passes. The new download is not compared with a
-pre-existing upstream digest; the recorded digest becomes the tracked byte
-authority for later builds and offline checks.
+`check-ca-bundle` validates the checked-in bytes and metadata offline.
+`update-ca-bundle` downloads and validates a replacement candidate before the
+tracked PEM and metadata are replaced.
 
-## Public Make targets
+## Main Make targets
 
-`make help` lists the supported targets. The main groups are shown below.
+The target groups below are the normal development interface. `make help` is the
+version-specific reference.
 
-### Build and inspection
+### Build targets
 
 ```sh
-make PLATFORM=<platform>
-make PLATFORM=<platform> debug
-make PLATFORM=<platform> coverage
-make PLATFORM=<platform> sanitizers
-make PLATFORM=<platform> release
-make PLATFORM=<platform> check-toolchain
-make PLATFORM=<platform> check-binary
-make PLATFORM=<platform> check-debug
-make PLATFORM=<platform> check-coverage
-make PLATFORM=<platform> check-sanitizers
-make PLATFORM=<platform> check-release
+make
+make debug
+make coverage
+make sanitizers
+make release
+make check-toolchain
+make check-binary
+make check-{debug,coverage,sanitizers,release}
 make clean
 ```
 
-`check-binary` and the configuration-specific variants inspect the produced
-binary and write `binary-inspection.txt` beside the build output.
-
-### Tests
+### Dependencies
 
 ```sh
-make PLATFORM=<platform> test
-make PLATFORM=<platform> test-unit
-make PLATFORM=<platform> test-integration
+make deps
+make deps-check
+make deps-force
+make deps-clean
+```
+
+### Tests and quality
+
+```sh
+make test
+make test-unit
+make test-integration
 make quality
-make PLATFORM=<platform> check
-make PLATFORM=<platform> test-coverage
-make PLATFORM=<platform> test-sanitizers
-make PLATFORM=linux-x64 test-portability-linux
+make check
+make test-coverage
+make test-sanitizers
+make test-portability-linux
 make test-windows
-make PLATFORM=<platform> test-release RELEASE_DIR=<candidate-directory>
+make test-release RELEASE_DIR=<candidate-directory>
 ```
 
-`test` runs unit and native integration tests. `quality` checks repository,
-build, dependency, workflow and release-script contracts. `check` runs both and
-enables the repository checks that need build output.
-
-The focused preparation targets are:
-
-```sh
-make test-unit-build
-make test-helpers
-make test-build
-```
-
-### Version and release preparation
+### Release preparation
 
 ```sh
 make version
 make validate-release
 make release-metadata
 make release-common-assets
-make PLATFORM=<platform> release-candidate
-make PLATFORM=<platform> debug-artifact
+make release-candidate
+make debug-artifact
 ```
-
-Release construction is explained in [Releases](RELEASES.md).
 
 ### Documentation and certificates
 
@@ -455,53 +369,23 @@ make check-ca-bundle
 make update-ca-bundle
 ```
 
-`docs-assets` runs the website helper that fetches the optional mdBook theme
-template. `docs` and `serve` depend on that target and then invoke mdBook. The
-website files and protected Pages workflow remain separate from cup's build,
-test and release mechanisms.
+`docs-assets` refreshes the optional remote mdBook theme asset. Documentation
+publication is independent of the CUP release workflow.
 
-Build roots are managed destructive workspaces. `BUILD_DIR` must not resolve to
-the user home directory; an ownership marker never authorizes cleaning HOME.
+## CI relationship
 
-### Guarded local cleanup
+The GitHub workflows use the same Make targets and dependency-prefix contract:
 
-```sh
-CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home
-```
+- `dependencies.yml` prepares pinned native prefixes;
+- `tests.yml` owns repository quality, native source tests, coverage and
+  sanitizers;
+- `debug.yml` packages native debug builds and symbols;
+- `release.yml` builds and tests official release candidates;
+- `static.yml` builds the documentation site.
 
-This command is intended only for a development home. It rejects a missing,
-relative or root `HOME`, and deletes only a candidate root whose strict marker
-identifies `coffee-clang/cup`. It stops when the ownership evidence is missing or
-ambiguous.
-
-## Binary inspection
-
-`scripts/build/inspect-binary.sh` checks the native format and writes a report
-with architecture, SHA-256 and linkage information.
-
-- Linux release binaries must have no ELF interpreter, `DT_NEEDED`, `RPATH` or
-  `RUNPATH` entries.
-- macOS binaries may reference only approved `/usr/lib` and
-  `/System/Library/Frameworks` locations, must match the selected architecture
-  and deployment target, and must not contain `LC_RPATH`. Debug symbols are
-  validated through the finalized dSYM.
-- Windows binaries must be PE32+ x86-64 console programs, import only approved
-  Windows system DLLs and contain the expected resource and mitigation flags.
-
-Release finalization also separates native symbols, strips the public executable
-and checks that repository, dependency and staging paths are not embedded in the
-published files. Platform-specific symbol validation is part of finalization.
-
-## Linux static-runtime test
-
-```sh
-make PLATFORM=linux-x64 test-portability-linux
-```
-
-This test builds an isolated static Linux release with a temporary CA. It then
-uses local servers to verify rejection of an unknown CA, acceptance of the
-embedded test CA, direct HTTPS downloads and HTTP CONNECT proxy tunnelling. It
-does not contact the public Internet.
+The release workflow does not redefine the build model. It supplies official
+identity/provenance and requires the source-tested build identity to match the
+candidate. See [Releases](RELEASES.md).
 
 ## Related chapters
 

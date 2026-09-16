@@ -20,11 +20,8 @@ typedef enum {
     LAYOUT_RUNTIME_INCOMPLETE
 } LayoutRuntimeStatus;
 
-/*
- * Freeze the selected root for one command. Only one snapshot may be active at a time. Existing
- * roots are identity-bound immediately. A selected missing root may only be created exclusively;
- * successful creation pins its new identity.
- */
+/* Freeze one command's selected root. Existing roots are identity-bound immediately; a
+ * missing root may only be created under exclusive authority and is then pinned. */
 CupError layout_root_snapshot_begin(void);
 /* Freeze one explicit canonical root. A missing root is permitted so bootstrap can create it
  * exclusively; an existing root must already be an authenticated CUP root. */

@@ -384,10 +384,8 @@ unsigned long system_get_process_id(void) {
     return (unsigned long)getpid();
 }
 
-/* A successful handoff consumes the caller-visible lock, but the parent keeps both its lifetime
- * signal and one reference to the shared flock authority until process exit. The child owns a
- * second reference, so either process may die without opening an authority gap before the parent
- * exits. */
+/* After handoff, parent and child retain independent references to the same flock authority
+ * until parent exit, preventing an admission gap if either process dies early. */
 static int handoff_parent_signal = -1;
 static int handoff_parent_authority = -1;
 
@@ -463,11 +461,8 @@ static CupError start_handoff_helper(const char *helper,
         close(parent_fds[1]);
         return CUP_ERR_FILESYSTEM;
     }
-    /* Keep both lifetime endpoints outside the standard descriptor range. Only this cup process
-     * owns the write end; prevent any later exec from extending the helper's
-     * parent-lifetime signal.
-     * The read end and duplicated lock authority stay inherited intentionally and are passed
-     * explicitly to the helper. */
+    /* Move lifetime descriptors outside stdio. Keep the write end close-on-exec; intentionally
+     * inherit only the read end and duplicated lock authority passed to the helper. */
     if (fcntl(parent_fds[1], F_SETFD, FD_CLOEXEC) != 0) {
         close(parent_fds[0]);
         close(parent_fds[1]);
@@ -572,9 +567,8 @@ static CupError start_handoff_helper(const char *helper,
         return CUP_ERR_FILESYSTEM;
     }
 
-    /* The child owns a duplicate of the same flock open-file description. Consume the public
-     * SystemLock without closing or unlocking its descriptor: the parent retains that reference
-     * until exit, while the child retains the duplicated authority independently. */
+    /* The child owns a duplicate of the same flock description. Consume SystemLock without
+     * unlocking it so parent and child retain independent authority references. */
     handoff_parent_authority = (int)lock->handle;
     lock->handle = -1;
     lock->mode = SYSTEM_LOCK_SHARED;
@@ -1000,9 +994,8 @@ static CupError move_path_common(const char *source,
         }
     }
 
-    /* Revalidate the source name immediately before the single rename commit. A parent-relative
-     * rename cannot atomically bind to a file descriptor, so the name must still identify exactly
-     * the object observed above; post-commit verification closes the remaining narrow race. */
+    /* Revalidate the source name immediately before rename because parent-relative rename
+     * cannot bind atomically to the previously observed descriptor. */
     system_test_pause("before-move-commit");
     {
         struct stat current_source;
@@ -1302,9 +1295,8 @@ static CupError remove_entry_at(int parent_fd,
             !stat_identity_equal(&observed, &current)) {
             return CUP_ERR_FILESYSTEM;
         }
-        /* Recursive deletion is intentionally interruptible between destructive steps.
-         * Re-check after the children have been removed and immediately before removing
-         * the now-empty directory, rather than treating the entry-start check as sufficient. */
+        /* Deletion is interruptible between steps; recheck cancellation after children are
+         * removed and before removing the directory itself. */
         if (cancelled != NULL && cancelled()) {
             return CUP_ERR_INTERRUPT;
         }
@@ -1314,9 +1306,8 @@ static CupError remove_entry_at(int parent_fd,
         return CUP_OK;
     }
 
-    /* Revalidate the final name immediately before unlink. Deletion is authorized by the
-     * parent directory, not by read access to the entry, so do not require an O_RDONLY
-     * descriptor that would make an otherwise removable mode-000 file undeletable. */
+    /* Revalidate the final name before unlink. Parent-directory authority is sufficient;
+     * requiring read access would make removable mode-000 files undeletable. */
     if (fstatat(parent_fd, name, &current, AT_SYMLINK_NOFOLLOW) != 0 ||
         !stat_identity_equal(&observed, &current)) {
         return CUP_ERR_FILESYSTEM;
@@ -1365,9 +1356,8 @@ static CupError remove_file_common(const char *path,
         return CUP_ERR_TRANSACTION;
     }
     system_test_pause("before-remove-file-component");
-    /* The parent descriptor owns unlink authority. Revalidate the exact final entry immediately
-     * before deletion without opening it for data access, so unreadable regular files remain
-     * removable while symlinks and other non-directory entries keep their no-follow identity. */
+    /* The parent descriptor owns unlink authority. Revalidate the final entry no-follow without
+     * requiring data access, preserving removability of unreadable files. */
     if (fstatat(parent_fd, entry, &current, AT_SYMLINK_NOFOLLOW) != 0 ||
         !stat_identity_equal(&observed, &current)) {
         close(parent_fd);
@@ -1782,9 +1772,7 @@ CupError system_create_temp_directory(const char *directory,
         return err;
     }
 
-    /* mkdtemp creates the directory with owner-only mode 0700. Do not apply a
-     * second pathname-based chmod after creation: the created name is already
-     * the exclusive object returned by the primitive. */
+    /* mkdtemp already returns an exclusive 0700 directory; avoid a second pathname-based chmod. */
     return mkdtemp(path) != NULL ? CUP_OK : CUP_ERR_TEMPORARY;
 }
 

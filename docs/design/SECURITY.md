@@ -1,101 +1,75 @@
 # Security model
 
-cup downloads executables and changes a user-managed toolchain, so it treats
-remote data, archive paths and existing filesystem objects as untrusted until
-they have been checked.
+CUP downloads executable packages and mutates a user-managed toolchain root. Its
+security model therefore concentrates on four boundaries: remote transport,
+package admission, filesystem identity and release provenance.
 
-This page explains the protections used by cup. It does not claim protection
-against a user or process that already has full control of the same account and
-can modify cup memory while it runs.
+It does **not** claim to defend against a process that already has arbitrary
+control of the same user account and can alter CUP's memory while it runs.
 
 ## Trust boundaries
 
-cup trusts:
+CUP starts from these trusted inputs:
 
-- its own running code and compiled registry;
-- official HTTPS endpoints configured in the installed assets;
-- release checksum files after their own checksum chain has been verified;
-- filesystem objects only while their recorded identity still matches.
+- the running CUP code and its compiled component/tool/platform domain;
+- official endpoint/configuration data only after the installed release assets
+  that contain it have passed their checksum chain;
+- a filesystem object only while the native identity retained by the operation
+  still refers to that object;
+- source-build identity only when it comes from the selected successful Tests run
+  attempt and matches the official candidate's build identity.
 
-cup does not trust:
+Everything else is parsed/validated before use. In particular CUP does not trust
+catalog values, response filenames, cached archives, archive paths/types,
+familiar directory names or a pathname that may now refer to another object.
 
-- package catalog values before parsing;
-- URL path segments or response filenames;
-- cached archives before hashing;
-- archive entry names or types;
-- a familiar directory name as proof of ownership;
-- a pathname after another operation may have replaced the object behind it;
-- cross-workflow source build identity unless it comes from the selected Tests
-  run attempt and matches the official candidate's build identity.
+## HTTPS and TLS
 
-## HTTPS policy
+Normal product downloads and redirects require HTTPS. Package/archive URLs come
+from `packages.cfg`, but the catalog parser validates the scheme and template
+placeholders before a request is built.
 
-Normal remote URLs and every redirect must use HTTPS.
+Network operations are bounded by connection/overall/low-speed limits, response
+size limits and interrupt checks. Product code permits insecure HTTP only for the
+explicit loopback test mode and only under its restricted loopback host/port
+rules; this path is not usable for normal remote package URLs.
 
-Component archive and checksum URLs come from `packages.cfg`, but the parser
-checks the scheme and required placeholders before a request is created. The
-public installers apply the same transport rule, impose an overall timeout and
-low-speed limit, and stop if a binary exceeds 256 MiB or a text asset exceeds
-16 MiB.
+The public installers implement the same normal HTTPS requirement before CUP is
+installed and keep their own explicit loopback-only test override.
 
-The cup release base URL is fixed for official builds. The application-level
-test override accepts loopback HTTP only with the explicit insecure-test flag,
-the literal host `127.0.0.1` and an explicit non-zero port. It does not accept
-`localhost` as an equivalent product URL.
+### CA bundle and TLS backends
 
-The public installer scripts have their own test-only transport override because
-they are exercised before CUP exists. With the same explicit opt-in, those
-scripts accept only their documented loopback host spellings with an explicit
-port and keep redirects inside that loopback transport. Neither path permits a
-non-loopback HTTP endpoint.
+POSIX builds use OpenSSL with an embedded tracked CA bundle. The certificate
+inputs in `certs/` are validated and converted to generated C data during the
+build; the runtime does not load a CA file from the build machine.
 
-## Embedded certificate authority (CA) bundle
+The pinned OpenSSL build disables automatic configuration loading and runtime DSO
+modules. Windows uses Schannel rather than OpenSSL as libcurl's TLS backend.
 
-cup links libcurl statically and embeds a CA bundle generated from the repository
-certificate input.
+## SHA-256 and checksum documents
 
-The build scripts:
+CUP uses the incremental SHA-256 implementation in
+`src/third_party/sha256.c`. Higher-level checksum policy stays in
+`checksum.c`/the package and release consumers.
 
-1. read the source certificate bundle and metadata;
-2. check size, text format and age policy;
-3. generate the C header used by the application;
-4. compare the generated output during repository tests;
-5. reject stale or unexpected generated data.
+Checksum documents are parsed as data. Accepted records require safe expected
+filenames, canonical lowercase 64-hex digests, no duplicate expected name and no
+unknown member in the exact set being validated.
 
-The release binary therefore does not depend on a certificate file from the
-build machine.
+Where possible, digest calculation operates on an already opened regular-file
+stream so later consumers can continue with the same object instead of reopening
+a pathname.
 
-OpenSSL is configured without automatic configuration loading and without
-runtime DSO modules. Windows uses Schannel instead of the bundled OpenSSL TLS
-backend.
+## CUP release checksum chain
 
-## SHA-256
-
-Application SHA-256 uses the incremental implementation in `src/third_party/sha256.c`.
-Checksum helpers accept an already opened stream where possible so callers can
-keep the file identity fixed from digest calculation to later use.
-
-Hash text must contain 64 lowercase hexadecimal characters.
-
-Checksum files are parsed as data, not passed to a shell. cup checks:
-
-- one expected filename per record;
-- no duplicate expected names;
-- no unknown entry in the accepted set;
-- lowercase SHA-256 values;
-- LF-terminated bounded text;
-- a safe basename rather than an arbitrary path.
-
-## cup installer checksum chain
-
-An official installer verifies two checksum files:
+Official bootstrap/self-update uses two checksum documents:
 
 ```text
 SHA256SUMS.common
 SHA256SUMS.<platform>
 ```
 
-The common file covers:
+The common checksum covers:
 
 ```text
 packages.cfg
@@ -104,7 +78,7 @@ install.sh
 install.ps1
 ```
 
-The platform file covers:
+The platform checksum covers:
 
 ```text
 cup or cup.exe
@@ -112,270 +86,169 @@ release.txt
 SHA256SUMS.common
 ```
 
-Because the platform file also hashes the common file, files from two different
-release generations cannot be mixed into one accepted install.
+Because the platform checksum authenticates the exact common checksum document,
+assets from different CUP release generations cannot be mixed into one accepted
+installation.
 
-The hidden bootstrap repeats the relevant checks before changing the managed
+The public installer validates this chain before invoking bootstrap; hidden
+bootstrap validates the relevant generation again before changing the managed
 root.
 
-## Package downloads and cache
+## Package download and cache
 
-Package URLs are built from validated catalog values and locally validated
-identity fields. The cache filename is constructed locally; a server cannot
-choose a path through `Content-Disposition` or a URL basename.
+Package URLs are expanded from validated catalog templates and locally validated
+identity values. The local cache path is constructed by CUP; remote response
+names never choose a filesystem destination.
 
-Downloads have:
+A cached archive is reusable only after its digest matches the package
+`SHA256SUMS`. The resulting `VerifiedArtifact` owns the open file used for digest
+calculation and archive extraction.
 
-```text
-connection timeout
-overall timeout
-low-speed timeout
-maximum response size
-interrupt checks
-```
-
-A cached archive is accepted only after its digest matches the release checksum
-file.
-
-The cache returns `VerifiedArtifact`, which owns the open archive stream. Extraction
-uses that same stream. This removes the gap where a program verifies a pathname
-and later opens whatever file happens to be there.
-
-A bad cached archive is removed only when the pathname still identifies the
-same file object that was opened. cup then performs one fresh download. A second
-failure is returned to the user.
+If a bad cached artifact must be removed, CUP first proves that the cache path
+still refers to the object it opened. It then performs at most one fresh network
+attempt; repeated invalid data is surfaced as a failure rather than retried
+without bound.
 
 ## Archive admission
 
-`package_archive` configures libarchive to accept only cup-supported formats and
-filters. The extraction pass then performs format, structure and bounded-resource
-admission while consuming the already-open verified stream. There is no separate
-complete decoder preflight pass.
+A verified digest is not sufficient to make an archive safe to extract.
+Libarchive is configured for CUP's supported formats, then the extraction pass
+checks structure while consuming the already verified stream.
 
-## Archive extraction
+Before writing an entry CUP enforces, among other limits:
 
-Extraction writes only inside a private staging directory created for the
-selected package identity.
+- one safe top-level package root;
+- portable relative path grammar and depth/resource bounds;
+- no case-fold/file-directory aliases;
+- no hard-link or special-object archive entries;
+- creation beneath fresh private staging rather than reuse of unexpected objects.
 
-The extraction pass owns structural admission. Before writing an entry, it
-checks that:
+POSIX package archives may contain confined relative symbolic links. During
+construction a link cannot escape lexically or become the parent of a later
+write. Final manifest validation then proves that each link resolves physically
+inside the package to a regular file. Windows package content rejects symbolic
+links/reparse objects.
 
-- the archive has one safe top-level directory;
-- portable entries are directories or regular files;
-- hard links and special objects are absent;
-- relative paths satisfy the portable path grammar;
-- names do not collide after ASCII case folding or file/directory normalization;
-- depth, per-file size and total resource limits remain within bounds.
+Archive admission and package integrity are separate boundaries. After extraction
+CUP validates `info.txt`, executable entries and the complete staged tree against
+`manifest.txt` before canonical publication.
 
-On POSIX, relative symbolic links are an additional archive object type. During extraction
-their targets need only remain lexically inside the package, and a symbolic link cannot be
-used as the parent of a later archive write. Complete link resolution is a later integrity
-check: every finalized symbolic link must resolve inside the package to a regular file, and
-declared executable entries must resolve to executable regular files. Windows rejects symbolic
-links in package content. Raw hard-link entries remain unsupported because the producer
-materializes them as independent regular files before publication.
-
-Regular files and directories are created without following pre-existing links.
-Existing unexpected objects cause a failure instead of being reused. Size and
-format checks are repeated here because extraction is a new decoder/read/write
-pass, not a second validation of an unchanged in-memory result.
-
-The extracted package is not installed immediately. cup validates the package root,
-`info.txt` identity/common schema and declared executable entries, then verifies the complete
-staged tree against `manifest.txt`. That integrity pass also resolves every POSIX manifest link
-inside the package to a regular file. Windows keeps no-reparse traversal. Validation and
-publication operate on one fresh private staging directory while the command holds exclusive
-CUP mutation authority; publication refuses a pre-existing installed destination.
-
-## Filesystem identity
-
-Where an earlier filesystem observation is mutation authority, cup records the
-native file or directory identity and passes it to the later move, replacement
-or removal operation. Short rechecks remain immediately at destructive
-boundaries; private staging does not retain identity merely as extra same-user
-hardening.
-
-This matters in a sequence such as:
-
-```text
-enumerate child
-validate child
-open or remove child
-```
-
-The final operation rechecks that it is still acting on the object seen during
-enumeration. A replacement with the same name is not accepted automatically.
-These checks happen immediately before the native mutation. They are not a
-kernel-level pathname compare-and-swap against a hostile process controlling the
-same user account; that case is outside the threat model described above.
-
-Native recursive operations never traverse links or reparse points. They retain
-the identity of observed entries and refuse to cross a device or volume
-boundary. Enumeration reports those entries to policy callers; recursive
-removal may remove the link entry itself without following it.
-
-Uninstall detach and cleanup use the native C filesystem layer on every supported
-platform. The copied helper receives continuous handoff authority, validates the
-exact root and token-bound journal, performs an identity-bound namespace move,
-and removes the detached tree without following links or reparse points or
-crossing a filesystem/volume boundary.
-
-Atomic publication inside cup uses native no-replace or replace operations. cup
-does not simulate no-replace with a separate existence check followed by a
-move.
-
-## Root ownership
-
-A valid `root.txt` is the normal proof that cup owns a directory.
-
-A markerless cup-like root is never adopted automatically because familiar
-filenames or a `state.txt` header do not prove ownership. Such a root is
-preserved for explicit recovery or reinstallation. Recovery first moves the
-unknown root outside the `.cup` / `.coffee-cup` candidate names, then installs a
-clean current generation and restores only data accepted by current parsers.
-`cup repair` does not make the ownership decision and `root.txt` must not be
-manufactured manually.
-
-A detached uninstall directory is recognized only when its reserved sibling name
-and strict token-bound `detaching/detach` transaction journal agree. Managed
-payload may already have been partially removed before a cleanup failure, so
-`root.txt` and the executable are not required to survive together.
-
-These checks reduce the risk of deleting an unrelated directory that happens to
-look similar to cup state.
+See [Packages](PACKAGES.md) for the full package format.
 
 ## Package metadata and manifest
 
-`info.txt` is parsed with bounded file-size, line, key and value limits. Its consumer-owned
-identity must match the component/tool/host/target/version path selected by the command.
-Declared executable entries must remain inside the package root and resolve to regular
-executable files. Producer-owned capability and composition fields, including `features.*`, `contents.*`,
-`bundle.*`, `requires.*` and `config.*`, remain descriptive data rather than a second
-capability verifier inside cup.
+`info.txt` is bounded line-based metadata. Consumer-owned identity fields must
+match the selected component/tool/host/target/version and the canonical package
+path. Declared entry paths must remain within the package and resolve to
+executable regular files.
 
-`manifest.txt` `format=2` is the package integrity inventory. cup verifies every declared
-regular-file digest and normalized mode, every directory, and the exact target text of each
-POSIX symbolic link; each such link must also resolve inside the package to a regular file.
-Missing or undeclared objects are rejected. Windows package content cannot use symbolic links.
-Raw archive hardlinks remain outside the consumer contract; hardlink inode sharing is not
-package identity.
+Producer-owned `features.*`, `contents.*`, `bundle.*`, `requires.*` and
+`config.*` fields remain descriptive; CUP does not invent a second tool-specific
+validation layer for them.
 
-Commands use the shared package validation owners instead of implementing separate metadata
-or integrity rules. Full manifest hashing is reserved for integrity-sensitive paths such as
-installation, scanning, `doctor` and repair admission rather than ordinary lightweight
-queries.
+`manifest.txt` `format=2` is the package-byte integrity inventory. CUP verifies
+every regular-file digest/mode, every directory and the exact target text of POSIX
+links, rejects undeclared objects and verifies final link confinement. Raw hard
+links are outside the consumer contract.
 
-## State and journal files
+Full manifest hashing is used when package integrity is being admitted or
+diagnosed (installation/scanning/`doctor`/repair). Lightweight metadata queries
+do not re-hash entire installed toolchains.
 
-Persistent text files are read from one bounded snapshot. The snapshot records
-the opened object's identity and contains all bytes used by parsing and hashing.
+## Filesystem identity and path mutation
 
-Writers create a sibling temporary file, set its mode, synchronize it and publish
-it atomically. Replacement and deletion are tied to the expected destination
-identity when an existing file is being advanced.
+When a later destructive operation relies on an earlier observation, CUP retains
+native identity and revalidates the object at the mutation boundary. A different
+object that appears under the same pathname is not automatically accepted.
 
-`transaction.txt` remains in place when recovery cannot decide safely. cup does
-not clear transaction data only to make normal commands available again.
-
-## `cup update cup`
-
-cup downloads the installed release assets from one official release, verifies them
-and stages them before writing the update journal.
-
-The update helper is regenerated from the current executable before each update
-and its digest is checked. The parent establishes continuous handoff authority
-before it can release the canonical lock. The detached child does not retain the
-caller's standard streams. After parent exit, the helper returns to `cup.lock`
-under that authority and replaces the main executable last.
-
-Before the commit marker, the old complete generation can be restored. Mixed or
-incomplete rollback data is preserved for manual recovery instead of being
-combined.
-
-## Uninstall
-
-Uninstall does not delete the running root in place. A copied native helper
-receives continuous handoff authority, validates the exact root and transaction,
-detaches that root to its reserved sibling path and then performs native
-no-follow cleanup.
-
-The temporary helper executable has its own identity and lifetime checks. POSIX
-proves the reserved pathname is the running helper before unlinking it. Windows
-instead binds a `DELETE_ON_CLOSE` handle to the exact helper file before launch,
-and the child proves that inherited handle against its own running executable.
-The handle therefore cannot become cleanup authority for an unrelated file.
-
-Windows keeps that verified cleanup handle alive in the built-in Windows
-PowerShell process resolved from the system directory. The carrier receives only
-the helper process handle, cleanup handle and readiness event; it receives no
-root path, uninstall token, transaction data or handoff authority. The parent
-requires the readiness event before releasing the canonical lock. If the carrier
-cannot be armed, the child is stopped while still pre-handoff and uninstall
-returns before root mutation. Once armed, temporary-helper cleanup is independent
-of whether detached-root payload cleanup later succeeds.
-
-On POSIX, handoff authority is the original flock open-file description. On Windows, it
-is a named kernel object keyed by the native identity of the root parent plus the canonical
-`.cup`/`.coffee-cup` slot. Both mechanisms preserve exclusive mutation authority while the
-parent exits and the child takes over.
-
-Cleanup keeps `transaction.txt` until every other managed entry is gone. If
-cleanup fails while managed payload remains, that strict journal remains as
-ownership evidence; `root.txt` and the executable may already have been removed.
-A later installer does not automatically adopt or delete the detached sibling.
-
-The exact ordering and recovery cases are documented in
-[Transactions](TRANSACTIONS.md).
-
-## CI and release data
-
-Project-owned workflows use readable numeric GitHub Action version references.
-Version changes are reviewed explicitly in workflow diffs, and the repository
-does not use an automatic dependency-update bot. The separate Pages workflow
-belongs to the protected website surface and does not participate in the cup
-build, test or release trust chain.
-
-Checkout credentials are disabled in the cup build, test and release
-workflows.
-
-The Tests workflow has a final gate over dependency preparation, repository
-quality, native source tests, coverage and sanitizers. Each source job also
-publishes its canonical `build-config.txt` under a name bound to the current
-Tests run attempt.
-
-Release selects one successful Tests run for the exact source commit and
-downloads only that attempt's source build config for each release platform. An
-independent verifier requires the candidate to use the same dependency
-profile/build revision/source-lock/toolchain identity and compiler command,
-normalized target and numeric version; Windows applies the same rule to the
-resource compiler. Dependency caches are accepted only after the canonical
-prefix verifier succeeds rather than through a second cross-workflow artifact.
-
-Internal Release artifacts use stable names within one Release run so a failed
-publisher or candidate job can be retried without changing provenance merely
-because `run_attempt` increased. `provenance.txt` records the selected Tests run
-and attempt plus the stable Release run ID.
-
-Candidate assembly accepts the complete expected asset set. Publication checks
-tag/commit identity, draft provenance and existing asset bytes before making a
-release public.
-
-## Workflow permissions
-
-Workflows declare permissions explicitly. `contents: write` is limited to the
-release publication job. Other jobs use read access plus only the artifact,
-cache, Pages or identity-token permissions they require.
-
-The Pages workflow and files under `www/` are maintained separately from cup
-implementation changes.
-
-## Read-only behavior
-
-These operations do not modify the managed root:
+Typical shape:
 
 ```text
-help
---version
+enumerate/open object
+validate object and retain identity
+...
+reopen/mutate only if identity still matches
+```
+
+Native recursive cleanup never follows links/reparse points and refuses to cross
+the starting device/volume boundary. No-replace publication uses a real native
+primitive rather than “check that destination is absent, then rename”.
+
+These mechanisms reduce accidental/racing mutation of unrelated objects within
+the supported threat model. They are not a kernel-level pathname compare-and-
+swap guarantee against a hostile process with complete control of the same user.
+
+## Root ownership
+
+`root.txt` is the normal proof that CUP owns a managed root. A directory is not
+adopted merely because it is named `.cup` or contains recognizable state files.
+Markerless CUP-like roots are preserved for explicit recovery/reinstallation.
+
+Detached uninstall residue has a different ownership proof because ordinary root
+files may already have been removed: the reserved token-bound sibling name and a
+strict matching uninstall transaction must agree. Installers do not adopt or
+remove such detached directories automatically.
+
+## Persistent state and transactions
+
+Persistent state/journal/config text is read from one bounded regular-file
+snapshot. Atomic writers publish through sibling temporary files and tie
+replacement/deletion to the expected existing identity where applicable.
+
+`transaction.txt` is deliberately preserved when recovery is ambiguous. CUP does
+not discard recovery evidence only to make subsequent commands runnable.
+
+Self-update and uninstall carry exclusive mutation ownership from parent to a
+native helper before the parent releases its normal lock. The helper validates
+the root/token/journal before mutation. See [Transactions](TRANSACTIONS.md) for
+commit ordering and [Platforms](PLATFORMS.md) for POSIX/Windows handoff details.
+
+## Self-update and uninstall
+
+For `cup update cup`, all five installed generation assets are downloaded and
+verified before the journal is scheduled. The helper records complete rollback
+evidence, commits support assets, writes the commit marker and replaces the main
+executable last.
+
+Uninstall does not recursively delete the running root in place. A copied native
+helper validates and detaches the exact root, then performs no-follow cleanup.
+Temporary-helper deletion is independently bound to that helper executable:
+POSIX can unlink the verified running path; Windows uses an exact
+`DELETE_ON_CLOSE` handle kept alive until helper-process termination.
+
+The Windows lifetime carrier has no root path, transaction token or mutation
+authority, so it cannot become a second implementation of uninstall.
+
+## Build and release provenance
+
+CUP's CI/release chain separates source verification from candidate publication:
+
+1. dependencies are restored/built and verified against the canonical prefix
+   metadata/source/toolchain identity;
+2. Tests performs repository checks, native source tests, coverage and
+   sanitizers;
+3. each release platform publishes its source-tested `build-config.txt` for that
+   exact Tests run attempt;
+4. Release selects one successful Tests run for the source commit and verifies
+   candidate build identity against those source-tested configs;
+5. each official candidate is tested natively without rebuilding it;
+6. publication validates the complete expected asset set/checksums/provenance and
+   remote tag/release state before making a release public.
+
+Resolved runner paths and harmless vendor wording are diagnostic data, not
+cross-runner equality keys. Dependency prefix format/profile/build revision,
+source lock, toolchain identity and compiler identity are equality keys; Windows
+also verifies the resource compiler.
+
+Only the publication job receives release write permission. Website/Pages
+workflow data is outside the application release authorization chain.
+
+## Read-only operations
+
+These public operations do not modify the managed root:
+
+```text
+help / help options / --version
 search
 list
 info
@@ -383,19 +256,18 @@ inspect
 doctor
 ```
 
-A read-only command does not acknowledge or remove a transaction file. `doctor`
-reports the bytes and state it observes.
+`doctor` may inspect a pending transaction but never acknowledges it. `repair`
+is the public recovery command and mutates only where the recorded state yields a
+safe result.
 
-`repair` is the only public recovery command and changes files only when the
-saved state gives one safe result.
+## Limits of the model
 
-## Current limits
+CUP currently relies on HTTPS plus published SHA-256 checksum chains. It does not
+implement a separate package-signing key infrastructure or transparency log.
 
-The project currently relies on HTTPS and published SHA-256 files. It does not
-implement a separate package-signing or transparency-log system.
-
-This is a deliberate project limit, not a claim that checksums alone solve every
-software-supply-chain problem.
+Checksums, identity checks and recovery ordering are protections within the
+project's stated trust model; they are not presented as a complete answer to all
+software supply-chain threats.
 
 ## Related documents
 

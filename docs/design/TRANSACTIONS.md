@@ -1,127 +1,84 @@
 # Transactions and recovery
 
-cup uses a transaction journal whenever an operation can leave persistent files
-half changed. This page explains the shared rules and the three transaction
-types: package changes, cup executable updates and uninstall.
+CUP records a transaction whenever a persistent mutation can outlive one
+process or leave filesystem/state changes only partly completed. The journal is
+not an event log; it contains the minimum operation identity and phase needed to
+prove what recovery may safely do next.
 
-The root layout and `state.txt` are described in [State](STATE.md).
+The root and `state.txt` model are documented in [State](STATE.md).
 
-## Terms used on this page
+## Shared model
 
-| Term | Meaning |
-|---|---|
-| canonical root | the active managed root, normally `.cup` |
-| detached root | the token-named sibling used after uninstall moves the root |
-| native helper | a copied cup executable that continues update or uninstall after the parent exits |
-| handoff authority | temporary exclusive ownership held while work moves from parent to helper |
-| cleanup carrier | Windows-only process that holds the helper deletion handle until the helper has terminated |
-
-These terms describe ownership and process lifetime. They do not create separate
-user-visible commands or additional transaction files.
-
-## Shared transaction file
-
-Every operation uses:
+Every runtime transaction uses:
 
 ```text
 <cup-root>/transaction.txt
 ```
 
-Package and executable-update staging directories are placed below:
+Package/self-update staging lives below:
 
 ```text
 <cup-root>/staging/
 ```
 
-Only one mutating command may own the root at a time. The runtime lock prevents
-live processes from changing the installation together, while
-`transaction.txt` keeps the information needed after a process exits or crashes.
+Only one mutating command can own a CUP root. The runtime lock coordinates live
+processes; `transaction.txt` survives a crash/exit and coordinates the next one.
+A new mutation refuses to start when a journal already exists.
 
-The file is written before the first recoverable change. Each operation has its
-own `format=1` schema. Unknown, missing, duplicated or inconsistent fields make
-the journal invalid.
+Each transaction type owns its versioned schema. Unknown, missing, duplicate or
+inconsistent fields invalidate the journal. Invalid transaction data is
+preserved rather than renamed or cleared just to unblock normal commands.
 
-Invalid transaction data is left at the same path. cup does not rename it out of
-the way or guess which fields were intended.
+## Physical journal operations
 
-## Physical journal handling
-
-While cup is running, `runtime_journal.c` owns the common file operations:
+`runtime_journal.c` owns mechanics shared by every transaction type:
 
 ```text
-bounded snapshot reading
-key=value line iteration
+bounded regular-file snapshot
+key=value iteration
 create-only first publication
-identity-checked replacement
-identity-checked deletion
-file and parent synchronization
+identity-bound replacement
+identity-bound deletion
+file/parent persistence handling
 ```
 
-The package, update and uninstall modules own their fields and recovery rules.
-This avoids three copies of the same physical file lifecycle without merging
-three different transaction meanings.
+`package_transaction.c`, `update_journal.c` and `uninstall_journal.c` define the
+meaning of their fields and the corresponding recovery decisions.
 
-Update and uninstall continuation is native on every supported platform. A
-copied cup executable runs the internal helper mode, so journal publication,
-identity checks, long-path handling and no-follow cleanup continue to use the
-same C filesystem contract as the parent process.
+First publication is create-only. Later replacement/deletion is permitted only
+while the pathname still names the journal identity already observed by the
+command. A different file that appears under `transaction.txt` is never adopted
+as the transaction being advanced.
 
-The first journal write is create-only. If `transaction.txt` already exists,
-the new operation stops and preserves it.
+## Commands while recovery is pending
 
-When an operation advances the same journal, replacement is allowed only when
-the path still names the file identity that was opened earlier. Deletion uses
-the same check. A different file that appears at the same pathname is preserved.
-If identity-bound deletion succeeds but synchronization of the parent directory
-cannot be proved, the journal is already gone and the result is a commit error.
-
-## Which commands are allowed
-
-| Command | Behavior when a journal exists |
+| Command family | With `transaction.txt` present |
 |---|---|
-| `help`, `--help`, `--version` | run without opening the cup root |
-| `doctor` | read-only inspection |
-| `repair` | recovery or resolution when the result can be proved |
-| every other command | blocked |
+| `help`, help options, `--version` | do not open the root |
+| `doctor` | inspect and report |
+| `repair` | attempt only provably safe recovery |
+| other normal commands | blocked |
 
-A read-only command never clears or rewrites the transaction file.
+Read-only diagnosis does not acknowledge or modify the saved transaction.
 
-## Root snapshot used by one command
+## Root and lock snapshot
 
-A public command selects the cup root once. The command context stores the path
-and, when the root exists, its native identity.
+A command selects one root and retains its path/native identity for that command
+lifetime. A mutating command then acquires the exclusive lock and validates the
+same root before changing persistent data.
 
-After a mutating command acquires the lock, it checks that the same root still
-exists. Layout functions then reuse the stored selection instead of performing a
-second root search.
+A genuinely missing bootstrap root may be created in order to create its first
+lock. An existing root is not initialized or permission-rewritten before the
+canonical lock is held.
 
-When the selected root did not exist, cup creates it exclusively. If another
-process creates the path first, cup does not adopt that new directory during the
-same command.
+For group installs, shared preflight resolves package artifacts first. Each
+package later reacquires exclusive ownership and revalidates mutable local state.
+The already resolved package artifact remains pinned; `stable` is not
+reinterpreted halfway through the command.
 
-## Package plan before mutation
+## Package transactions
 
-Package selection produces a `PackageArtifactSpec` containing only:
-
-```text
-concrete package identity
-archive format
-package URL
-checksum URL
-```
-
-Install, profile and toolchain preflight resolve these values from one shared
-state/catalog snapshot before the first package mutation. The shared preflight
-context is then released. Each package installation acquires its own exclusive
-context and revalidates mutable state. `stable` is not resolved again for an
-already pinned artifact.
-
-The cache returns a `VerifiedArtifact` with the archive still open. Preflight and
-extraction consume the same file that was hashed.
-
-## Package transaction
-
-Package journals use:
+Package journals record:
 
 ```text
 format=1
@@ -134,104 +91,82 @@ package_version=<concrete-version>
 temporary_name=<identity-based-name>
 ```
 
-`stable` never appears in the file. The operation, identity and staging name must
-agree.
+The package identity and staging name must agree. `stable` never appears because
+selection has already resolved a concrete release.
 
-### Commit point
+Download, cache verification, extraction and full package validation happen
+before the journal because they only build disposable private staging. The
+journal starts immediately before the first canonical package-tree mutation.
 
-For package install, update and remove, the deciding step is replacement of `state.txt`.
-Download, cache verification, extraction and package validation are
-reconstructible work, so they do not need a package journal. The journal begins
-immediately before the first canonical package mutation:
+### Package commit point
+
+For install, update and remove, `state.txt` is the deciding commit:
 
 ```text
 prepare/validate staging
-write journal
+write transaction.txt
 change canonical package filesystem
-replace state.txt              commit point
-perform operation-specific post-commit cleanup
-clear the journal when its owned recovery data is no longer needed
-rebuild or clean wrappers as required by the command
+replace state.txt                 <- commit point
+perform post-commit cleanup
+clear transaction.txt when its recovery data is no longer needed
+reconcile launchers
 ```
 
-A valid `state.txt` therefore tells recovery whether the package change became
-committed.
+Recovery uses the valid committed state to decide which filesystem result should
+exist. If state is missing or invalid beside a package journal, CUP cannot prove
+which side won and preserves the transaction/package/staging evidence.
 
-If state is missing or invalid beside a package journal, cup cannot safely decide
-whether to finish or undo the package change. `repair` leaves the journal,
-staging, package paths and wrappers unchanged.
-
-### Install recovery
+### Install/update recovery
 
 ```text
-package identity is present in valid state
-  -> keep or restore a valid installed package
+identity present in valid state
+  -> keep/restore one valid canonical package
 
-package identity is absent from valid state
-  -> remove the uncommitted installed/staged package
+identity absent from valid state
+  -> remove the uncommitted canonical/staged package
 ```
 
-When the state expects the package but the installed copy is damaged, a valid
-staged copy may replace it. The damaged object is first preserved under a unique
-`.invalid` name.
+When state expects the package but the installed object is damaged, recovery may
+replace it with a complete valid staged copy after preserving the damaged object.
 
 ### Remove recovery
 
 ```text
-package identity is present in valid state
+identity present in valid state
   -> restore the staged package
 
-package identity is absent from valid state
-  -> finish deleting staging
+identity absent from valid state
+  -> finish deleting removal staging
 ```
 
-A cleanup error after state commit is reported as a commit problem. cup does not
-blindly roll state back after the deciding write may already be visible. Directory
-creation and tree removal can stop after making only part of their filesystem
-change, so recovery preserves that uncertainty as a commit problem. A restoration
-that was attempted and failed is reported separately as a rollback error.
+A failure after the state commit is not handled by blindly restoring old state.
+Native publication reports whether a change was not applied, may already be
+visible, or is durably confirmed; ambiguous post-commit results remain recovery
+work.
 
-## Initial bootstrap
+## Initial installation
 
-The public POSIX and PowerShell installers only transport and verify release
-files. They download one release generation to a private directory and call:
+The public shell/PowerShell installers are transport frontends. They download
+and verify one release generation in private storage, then invoke the hidden C
+bootstrap mode:
 
 ```text
 cup --internal-bootstrap <verified-source-directory> <selected-base>
 ```
 
-The hidden command:
+Bootstrap validates the transported generation, selects/locks the managed root,
+prepares runtime directories and stages the same five installed assets used by
+self-update. It then writes the update-style transaction and hands continuation
+to the native update helper.
 
-1. verifies that the running executable belongs to the downloaded generation;
-2. validates the catalog, installation policy and checksums;
-3. selects `.cup` or `.coffee-cup` below the supplied base and freezes that root;
-4. acquires the normal exclusive lock;
-5. refuses an existing transaction file;
-6. prepares the runtime directories;
-7. stages the same installed cup assets used by `cup update cup`;
-8. writes the update-style journal;
-9. starts the native update helper and returns once the asynchronous handoff is
-   scheduled.
-
-The public POSIX and PowerShell installers own completion waiting: they wait for
-the journal/staging transition to finish and verify the exact installed version
-before reporting installation success.
-
-For rollback, each destination receives either an `.old` copy or an `.absent`
-marker. Fresh installation and `cup update cup` therefore use the same commit and
-recovery logic.
-
-There is no separate `.bootstrap` state directory or bootstrap journal.
+The public installer waits for that asynchronous transition and verifies the
+installed version before reporting success. Fresh installation and self-update
+therefore share one asset commit/recovery model instead of maintaining a separate
+bootstrap transaction format.
 
 ## `cup update cup`
 
-The public command is:
-
-```text
-cup update cup
-```
-
-The journal schema is:
+The update journal is:
 
 ```text
 format=1
@@ -244,91 +179,83 @@ error=0|<CupError>
 recovery=none|pending|rolled-back
 ```
 
-`<CupError>` is a nonzero value from the current internal `CupError` domain
-(`CUP_ERR_INVALID_INPUT` through `CUP_ERR_INTERRUPT`). Arbitrary positive
-integers are invalid.
-
-Field combinations must match:
+Valid phase/error relationships are:
 
 ```text
-scheduled or committing  error=0           recovery=none
-failed                   error=<CupError>  recovery=pending|rolled-back
+scheduled|committing  error=0           recovery=none
+failed                error=<CupError>  recovery=pending|rolled-back
 ```
 
-The staging generation contains:
+The staged installed generation contains:
 
 ```text
 cup or cup.exe
-platform checksum file
 packages.cfg
 install.cfg
-common checksum file
+SHA256SUMS.common
+SHA256SUMS.<platform>
 ```
 
-All installed assets come from one verified release before the journal is written.
+All five must come from one verified release before the journal is created.
 
-### Native helper and operation handoff
-
-The persistent update helper is derived from the installed executable and stored at:
+Immediately before the main executable is replaced, the helper writes a durable
+`committed` marker in update staging. It binds the intended version to the exact
+five staged/installed asset digests:
 
 ```text
-POSIX   <cup-root>/helpers/update-helper
-Windows <cup-root>\helpers\update-helper.exe
+format=1
+version=<MAJOR.MINOR.PATCH>
+binary_sha256=<sha256>
+platform_checksums_sha256=<sha256>
+packages_sha256=<sha256>
+install_policy_sha256=<sha256>
+common_checksums_sha256=<sha256>
 ```
 
-Before every update, cup refreshes that helper from the currently installed
-executable, restores executable permissions and verifies that the copy has the
-same SHA-256 digest.
+Recovery treats this marker as evidence only after parsing the complete fixed
+schema and rechecking the referenced generation; its presence alone is not a
+commit decision.
 
-The parent starts the helper while it still owns the exclusive canonical lock.
-The system backend establishes a parent-lifetime signal and child authority
-before the start call can succeed. A successful start consumes the caller-visible
-`SystemLock`, but the parent keeps a lifetime authority reference until it exits.
-At every point in the handoff, either the canonical lock or the inherited handoff
-authority remains held, so no third process can become the mutation owner.
+### Update helper and handoff
 
-The handoff is implemented differently only where the operating system requires it:
+The persistent helper is refreshed from the currently installed executable
+before each update:
 
 ```text
-POSIX    parent and child retain references to the same flock open-file description
-Windows  parent and child retain a named authority keyed by the root parent identity and canonical `.cup`/`.coffee-cup` slot
+POSIX    <cup-root>/helpers/update-helper
+Windows  <cup-root>\helpers\update-helper.exe
 ```
 
-The child waits for the inherited parent-lifetime object to close rather than
-polling a PID. It is detached from the initiating command's standard streams, so
-command capture receives EOF when the parent exits rather than when the helper
-finishes. On Windows, root path arguments retain CUP's normalized internal spelling
-through command-line serialization; only the helper executable itself is converted
-to an ordinary native process path. After parent exit, the update child returns to
-the canonical lock. On POSIX, it converts the inherited flock authority directly
-into its `SystemLock`. On Windows, it acquires `cup.lock` while the external
-authority is still active and then releases that temporary authority.
+The parent starts it while still holding exclusive root ownership. The platform
+backend establishes both parent-lifetime observation and continuous child
+handoff authority before launch can succeed. The child waits for the actual
+parent-lifetime object to close rather than polling a PID.
 
-Only after that transition does the helper:
+After parent exit, the update child returns to the canonical `cup.lock` while the
+handoff authority is still active. Only then does it advance the update:
 
 ```text
-reload and authenticate the token, scheduled journal and staging directory
-require each referenced staged asset to still be a regular file
-copy every current destination to `.old` or record `.absent` rollback evidence
-publish phase=committing only after that rollback evidence is complete
-install the four supporting assets
-write and synchronize the committed marker
-replace cup or cup.exe last             commit point
-validate the installed generation
+revalidate journal/token/staging
+record complete rollback evidence for current destinations
+publish phase=committing
+install four support assets
+write/synchronize committed marker
+replace cup/cup.exe last             <- update commit point
+validate installed generation
 remove transaction.txt
-clean staging when possible
+clean staging
 ```
 
-The main executable is replaced last so that the helper can restore the old
-complete generation before the commit marker when needed.
+Replacing the main executable last keeps rollback possible before the committed
+marker and avoids treating a mixed generation as complete.
 
-A successful update does not create a result sidecar. The initiating command
-reports that the transition was scheduled; a later `cup --version` shows the
-installed version.
+A successful initiating command means the update was scheduled; the detached
+helper completes it after the parent exits. The installed version is observable
+through the next `cup --version`.
 
-### Update failure and recovery
+### Update recovery
 
-A successful rollback leaves:
+A completed rollback records:
 
 ```text
 phase=failed
@@ -336,192 +263,125 @@ error=<original-error>
 recovery=rolled-back
 ```
 
-`doctor` reports this terminal journal. `repair` may remove it after checking
-that the staging directory no longer contains referenced recovery files.
+`doctor` reports it; `repair` can acknowledge/remove the terminal journal only
+after checking that referenced recovery data no longer needs it.
 
-With `recovery=pending`, `repair` chooses only from evidence it can prove:
+For `recovery=pending`, the safe choices are:
 
 ```text
 committed marker + valid new generation
-  -> finish the new generation
+  -> finish/accept the new generation
 
 no committed marker + complete old generation
   -> restore the old generation
 
-mixed, missing or invalid files
-  -> preserve everything and stop
+mixed or incomplete evidence
+  -> preserve everything
 ```
 
-The normal `repair` process never replaces its own running executable. If a safe
-recovery would require that step, the transaction remains for the detached
-helper or official installer.
+The normal repair process does not replace its own running executable. Recovery
+that needs that step remains assigned to the detached helper or official
+installer.
 
-## Uninstall transaction
+## Uninstall
 
-`cup uninstall` takes the exclusive canonical lock, validates the selected root,
-creates a unique detached sibling name and writes:
+The uninstall journal is:
 
 ```text
-format=1
+format=2
 operation=uninstall
 phase=scheduled|detaching|failed
 temporary_name=.cup-uninstall-<token>
 token=<token>
-stage=handoff|detach
 error=0|6
 ```
 
 Allowed combinations are:
 
 ```text
-scheduled  stage=handoff  error=0
-detaching  stage=detach   error=0
-failed     stage=detach   error=6
+scheduled   error=0
+detaching  error=0
+failed     error=6
 ```
 
-The parent then copies its running native executable to a reserved temporary
-sibling outside the managed root and starts it in the internal uninstall-helper
-mode. Starting the child uses the same continuous handoff rule as
-`cup update cup`: the parent still owns `cup.lock` when child authority is
-established, so there is no interval without a mutation owner.
+The parent validates the root under its exclusive lock, writes this transaction,
+creates one reserved temporary native helper outside the managed root and starts
+that helper with continuous handoff authority.
 
-Before the common uninstall transaction can change the root, the temporary
-helper must have a safe cleanup plan:
+The helper cannot safely delete its own executable the same way on every OS:
+
+- POSIX proves and unlinks the running helper pathname before continuing from the
+  mapped/open executable image;
+- Windows binds deferred deletion to the exact helper file and keeps that handle
+  alive until the helper process has terminated.
+
+This difference belongs to the system backend. The CUP uninstall transaction
+itself remains the same.
+
+After parent exit, the helper:
 
 ```text
-POSIX
-  prove reserved helper pathname == running executable
-  unlink that pathname
-  continue from the already-open executable image
-
-Windows
-  parent binds DELETE_ON_CLOSE to the exact helper file
-  parent starts the handle-only cleanup carrier and waits for its readiness event
-  child proves the inherited cleanup handle == its running executable
-  carrier waits on the helper process object itself
-  carrier releases the cleanup handle only after that process object is signaled
+validate root + journal + token + detached destination
+publish phase=detaching
+move canonical root -> token-named sibling    <- detach commit
+remove managed payload, keeping transaction.txt last
+remove transaction.txt by retained identity
+remove the empty detached root
 ```
 
-The Windows carrier is deliberately not a second uninstall implementation. It
-knows no root, token, journal or handoff authority and performs no cup filesystem
-walk. Its only job is to wait on the inherited helper process handle and keep the
-verified cleanup handle alive until that process has terminated. The parent
-requires an explicit readiness signal before it can release the canonical lock.
+The transaction moves with the root. While managed payload remains after a
+failure, the strict token-bound journal also remains as recovery/ownership
+evidence. `root.txt` and the main executable are not required to survive until
+that point because cleanup may already have removed them.
 
-After this platform preflight succeeds, the common transaction is:
+A later installer does not adopt or automatically delete a detached sibling.
+`repair` can cancel/acknowledge only stale **pre-detach** uninstall state still in
+the canonical root when it can also prove that no detached root owns the
+operation.
 
-1. accept handoff and wait for the parent to exit;
-2. validate the exact root, journal, token and detached destination;
-3. publish `detaching/detach`;
-4. move the canonical root to the detached sibling;
-5. remove managed payload while preserving `transaction.txt`;
-6. remove `transaction.txt` by its retained identity;
-7. remove the empty detached root.
-
-The important recovery boundaries are:
-
-- **Windows cleanup carrier cannot be armed:** the canonical root is untouched,
-  `scheduled/handoff` remains, and the exact token-bound helper may remain for
-  `repair`.
-- **Carrier armed, but failure occurs before a durable detach:** the canonical
-  root and journal remain; the temporary helper is still scheduled to disappear
-  when the helper process exits.
-- **Durable detach succeeds, but payload cleanup fails:** managed residue and the
-  detached `detaching/detach` journal remain together; temporary-helper cleanup
-  is independent and still completes after helper exit.
-
-Temporary-helper deletion is tied to actual helper-process termination, not to a
-successful exit status. Once the carrier has been armed, either a successful or
-failing helper termination signals the process object. The carrier then exits and
-releases the final cleanup handle.
-- **Complete success:** the canonical root is absent, the journal is removed
-  last, and the temporary helper disappears after its process lifetime ends.
-
-Before `repair` clears a stale canonical `scheduled/handoff` transaction it
-removes only the exact token-bound helper regular file by filesystem identity.
-Failure to prove or remove that file keeps the journal as a blocker.
-
-```text
-<cup-root> -> <root-parent>/.cup-uninstall-<token>
-```
-
-On POSIX the inherited authority is the original flock open-file description.
-On Windows it is a named kernel object keyed by the native identity of the root parent and
-the canonical `.cup`/`.coffee-cup` slot; normal root admission checks that authority before inspecting a candidate root and again
-after acquiring `cup.lock`. The Windows move retries only bounded transient
-sharing failures. All detach and cleanup filesystem work is native C on both
-platforms.
-
-The transaction file moves with the root. Once the move is durably proved, the
-helper removes all managed contents except `transaction.txt`, then removes that
-journal by its retained file identity, and finally removes the now-empty detached
-root by its retained directory identity.
-
-This ordering defines the recovery evidence:
-
-- while managed payload remains, the strict token-bound `transaction.txt` also remains;
-- once `transaction.txt` is removed, no managed payload remains; at most an empty
-  reserved-name directory shell can survive a final directory-removal failure.
-
-A cleanup failure therefore does **not** require `root.txt`, the executable and
-the journal to coexist. Earlier cleanup steps may already have removed either of
-the first two. The journal is the last persistent ownership evidence.
-
-A detached residue is recognized conservatively: the sibling must use the
-reserved token-bound name, be a real directory, and contain a coherent
-`detaching/detach` uninstall journal naming that same token and sibling. A
-matching prefix or familiar layout alone is not ownership proof. Installers do
-not adopt or delete detached siblings automatically.
-
-`repair` only resolves a journal still present in the canonical root. While it
-owns the canonical exclusive lock and no named detached sibling exists, a stale
-`scheduled/handoff` or `failed` pre-detach transaction can be cancelled or
-acknowledged. Any token-bound temporary native helper is removed first. If the
-detached sibling exists, helper ownership cannot be proved, or cleanup fails,
-evidence is preserved.
+See [Platforms](PLATFORMS.md) for the POSIX/Windows handoff mechanisms.
 
 ## Repair order
 
-`repair` is a sequence of smaller steps:
+`cup repair` deliberately runs recovery before general reconstruction:
 
 ```text
-validate state and journal relationship
+validate state/journal relationship
 recover or resolve one transaction
-restore checkable cup assets
-refresh the update helper
+restore checkable CUP support assets
+refresh update helper
 scan current-host packages
 preserve foreign-host packages
-quarantine identified invalid packages
-rebuild and save current-host state
-rebuild wrappers
+quarantine identifiable invalid packages
+rebuild/save current-host state
+rebuild launchers
 remove safe staging leftovers
 ```
 
-Each phase is designed to be repeatable. If one phase becomes ambiguous, later
-phases stop. For example, an invalid package journal prevents state rebuilding
-and wrapper changes.
+Each phase must leave a result that the next phase can trust. An ambiguous
+journal or incomplete scan stops later reconstruction instead of allowing CUP to
+build a plausible-looking state from partial evidence.
 
-## Interrupt handling
+## Interrupts
 
-Mutating commands install native interrupt handling before entering their main
-operation and restore the previous process behavior on exit.
+Mutating commands install native interrupt observation around their operation:
 
-- POSIX handles `SIGINT` and `SIGTERM`;
-- Windows handles console control events;
-- handlers only set a flag;
-- download, archive and filesystem loops check the flag at safe points;
-- code inside a commit step finishes or leaves the journal for recovery;
-- a handled cancellation returns exit status `130`.
+```text
+POSIX    SIGINT, SIGTERM
+Windows  console control events
+```
 
-After a helper has been started successfully, its handoff authority is continuous
-with the parent authority and the original command can no longer cancel work in
-that child. Both update and uninstall helpers wait for parent exit before their
-first authoritative mutation. Uninstall detach and cleanup are then owned entirely
-by the native child.
+Handlers record intent only. Download/archive/filesystem loops check at safe
+points, and a commit step either finishes or leaves recovery evidence. A handled
+cancellation maps to public status `130`.
 
-## Commit and durability results
+Once a detached helper has accepted continuous handoff, the initiating process no
+longer owns that child's transaction. The helper waits for parent exit before its
+first authoritative mutation and then completes or records failure independently.
 
-Native replacement functions report:
+## Commit-state results
+
+Native replace/move operations distinguish:
 
 ```text
 SYSTEM_COMMIT_NOT_APPLIED
@@ -529,42 +389,32 @@ SYSTEM_COMMIT_APPLIED
 SYSTEM_COMMIT_DURABLE
 ```
 
-These states distinguish an error before replacement from an error after the
-new destination may already be visible.
+`APPLIED` means the destination may already have changed even though required
+persistence could not be fully confirmed. Callers must not turn that into an
+indistinguishable pre-commit error and blindly roll back.
 
-Related cup errors include:
-
-```text
-CUP_ERR_TRANSACTION  invalid or ambiguous saved transaction data
-CUP_ERR_COMMIT       replacement may be visible or not fully synchronized
-CUP_ERR_ROLLBACK     restoration did not complete
-CUP_ERR_LOCK         another process owns the mutation lock
-CUP_ERR_INTERRUPT    cancellation was observed at a safe point
-```
-
-POSIX synchronizes the changed file or directory and then its parent directory.
-Windows uses `FlushFileBuffers` where the filesystem supports it. Some Windows
-filesystems reject directory flushing; cup reports the strongest result the
-platform can provide rather than treating it as POSIX durability.
+Relevant internal errors include transaction, commit, rollback, lock and
+interrupt failures. The public CLI maps them to the stable exit-status groups in
+[Commands](../user/COMMANDS.md#exit-status).
 
 ## Main implementation files
 
-```text
-runtime_journal.c          shared transaction-file operations
-package_transaction.c      package schema and state-based recovery
-update_journal.c           executable-update schema and recovery
-update_helper.c            detached executable-update commit
-uninstall_journal.c        uninstall schema and recovery
-uninstall_helper.c         native detach and cleanup
-command_doctor.c           read-only diagnosis
-command_repair.c           ordered recovery
-command_uninstall.c        uninstall planning and handoff
-interrupt.c                process interrupt state
-```
+| Module | Responsibility |
+|---|---|
+| `runtime_journal.c` | shared `transaction.txt` file lifecycle |
+| `package_transaction.c` | package schema/recovery |
+| `update_journal.c` | CUP-update schema/recovery |
+| `update_helper.c` | detached CUP update commit |
+| `uninstall_journal.c` | uninstall schema/recovery |
+| `uninstall_helper.c` | native root detach and cleanup |
+| `command_doctor.c` | read-only transaction diagnosis |
+| `command_repair.c` | ordered recovery/reconciliation |
+| `interrupt.c` | process interrupt observation |
 
 ## Related documents
 
 - [State](STATE.md)
+- [Packages](PACKAGES.md)
+- [Platforms](PLATFORMS.md)
 - [Security](SECURITY.md)
 - [Commands](../user/COMMANDS.md)
-- [Platforms](PLATFORMS.md)

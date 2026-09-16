@@ -1,41 +1,87 @@
 # Releases
 
-A cup release is built from one reviewed commit on `main`. The workflow first
-checks that the matching source tests succeeded, then builds one candidate for
-each supported platform, tests those exact files on native runners and finally
-publishes the common generation.
+A CUP release is one tested source commit turned into five native candidates and
+one immutable public generation. The release workflow does not rebuild or edit a
+candidate after it has been tested: the bytes accepted by native release tests
+are the bytes considered for publication.
 
-The important rule is that publication never rebuilds or edits a candidate.
-The files tested by the release jobs are the files compared and uploaded by the
-publisher.
+## Release model
 
-## Version numbers
+The release path is:
 
-`VERSION` contains the public version:
+```text
+source commit on main
+        ↓
+complete Tests workflow for that commit/attempt
+        ↓
+source-tested build identity for each platform
+        ↓
+five native official candidates
+        ↓
+native candidate tests
+        ↓
+one flat public release
+```
+
+The supported release platforms are:
+
+```text
+linux-x64
+linux-arm64
+macos-x64
+macos-arm64
+windows-x64
+```
+
+## Version and tag
+
+`VERSION` contains the manually selected public version:
 
 ```text
 MAJOR.MINOR.PATCH
 ```
 
-The value is changed manually. There is no automatic patch increment and there
-is no nightly channel.
-
-A local development build adds Git information to the version shown by the
-program. An official build uses the exact value from `VERSION` and also records
-the full source commit.
-
-The release tag is:
+The matching release tag is:
 
 ```text
 vMAJOR.MINOR.PATCH
 ```
 
-Before building, the workflow checks that the version, tag and selected commit
-agree and that the workflow was dispatched from `main`.
+There is no automatic patch increment or nightly release channel. An official
+release requires the version, tag and selected source commit to agree.
+
+Development builds may include Git/archive identity in `cup --version`.
+Official candidates expose exactly the public `VERSION` and record the full
+source commit in release metadata.
+
+## Source authorization
+
+`.github/workflows/tests.yml` owns source qualification. Before an official
+candidate can be built, Release resolves a successful Tests run for the exact
+source commit and fixes both its run ID and run attempt.
+
+Each native source-test job publishes its canonical `build-config.txt`. Release
+downloads the file from that selected attempt and compares the relevant identity
+with the official candidate build.
+
+The comparison includes the properties that must remain stable across source and
+release builds, such as:
+
+- platform/toolchain identity;
+- dependency-prefix format/profile/build revision;
+- dependency source-lock/toolchain digests;
+- compiler command, target and numeric version;
+- Windows resource compiler identity where applicable.
+
+Runner-specific paths and diagnostic version strings remain in `build-config.txt`
+for diagnosis but are not treated as cross-runner equality keys.
+
+If the selected Tests attempt does not contain its own expected source-build
+identity, Release fails rather than borrowing one from another attempt.
 
 ## Release metadata
 
-Each platform build generates `release.txt`:
+Every build generation includes `release.txt`:
 
 ```ini
 format=1
@@ -43,15 +89,10 @@ version=X.Y.Z
 commit=<full-source-commit>
 ```
 
-This is an exact three-line physical schema: comments, blank lines, duplicate
-records and trailing records are invalid.
+Official releases require a real source commit. Development archive builds use
+the reserved all-zero commit while identifying themselves as `dev+archive`.
 
-A development build generated from a source archive has no Git object to record.
-It keeps the same fixed schema and uses forty zeroes as the reserved commit
-sentinel. `cup --version` still identifies that build as `dev+archive`. Official
-release builds require a Git checkout and always record the real full commit.
-
-The assembled release also contains `provenance.txt`:
+The assembled public generation also contains `provenance.txt`:
 
 ```ini
 format=4
@@ -63,170 +104,79 @@ tests_run_attempt=<tests-workflow-attempt>
 release_run_id=<release-workflow-run-id>
 ```
 
-This file connects the public files to:
+This connects published bytes to the source repository/commit, the exact Tests
+attempt that authorized the release and the Release workflow that produced it.
+A retry of jobs inside the same Release run does not change that public
+provenance merely because the GitHub `run_attempt` number changed.
 
-- the repository and source commit;
-- the successful Tests run selected for that commit;
-- the exact Tests rerun attempt that supplied the source-tested build identity;
-- the Release run that built and tested the candidates.
+## Common assets
 
-The Tests attempt is part of the cross-workflow authorization. The Release
-attempt deliberately is not: retrying jobs inside the same Release run must not
-change the common release bytes merely because `github.run_attempt` increased.
-Internal Release artifacts therefore use stable names within that run and are
-uploaded with explicit overwrite semantics when an upstream job is rerun.
-
-## Workflow responsibilities
-
-The three application workflows involved in a release have separate jobs.
-
-### Dependencies
-
-`.github/workflows/dependencies.yml` prepares or restores a dependency prefix for
-one native platform/profile. Prefix compatibility is determined by the canonical
-metadata and verifier rather than by a separate cross-workflow artifact.
-The `primary` target selects the five profiles used for distributable CUP
-artifacts; `all` additionally includes Windows CLANG64 for test/sanitizer work.
-
-The normal profiles are:
+`scripts/release/common-assets.sh` creates the files shared by every platform:
 
 ```text
-linux-x64-gcc
-linux-arm64-gcc
-macos-x64-apple-clang
-macos-arm64-apple-clang
-windows-x64-ucrt64
-windows-x64-clang64
+packages.cfg
+install.cfg
+release.txt
+provenance.txt
+THIRD_PARTY_NOTICES.txt
+install.sh
+install.ps1
+SHA256SUMS.common
 ```
 
-The CLANG64 Windows prefix is used for sanitizers. The official Windows binary
-uses UCRT64 GCC.
+`packages.cfg` is the package catalog consumed by CUP. `install.cfg` carries the
+host/target component selection policy, including defaults, profiles and curated
+toolchains. These files cover the complete component model: compiler, debugger,
+linker, formatter, linter, language server and analyzer where packages are
+available.
 
-### Tests
+The installers are stamped with the exact version, tag and source commit before
+the common asset set is accepted.
 
-`.github/workflows/tests.yml` owns source verification. It runs repository
-quality, native source tests, coverage and sanitizers. Each successful source job
-also uploads the canonical source-tested `build-config.txt` for its release
-platform under a name bound to the current Tests run attempt. The final Tests
-gate requires every release-authorizing job family to succeed.
+## Native candidates
 
-### Release
+Each release-matrix job uses the verified dependency prefix for its platform,
+builds an official release configuration and runs binary inspection.
 
-`.github/workflows/release.yml` is manually dispatched. It:
+`scripts/build/finalize-release.sh` prepares the platform bundle in staging,
+separates native debug symbols, validates the finalized executable/metadata and
+only then replaces the previous finalized directory.
 
-1. selects the exact commit from `main`;
-2. finds a successful Tests run for that commit;
-3. fixes the selected Tests run ID and run attempt;
-4. downloads that attempt's source-tested build config for each release platform;
-5. builds common assets and five platform candidates from verified dependency prefixes;
-6. compares each candidate build identity with the corresponding source-tested build;
-7. tests each candidate on its native runner;
-8. publishes only after every required job succeeds.
-
-Repository quality, coverage and sanitizers are not repeated inside Release;
-the selected successful Tests run already owns those results. Candidate-specific
-build-identity and native tests remain in Release because they must examine the
-actual official files.
-
-The protected Pages workflow is unrelated to this process. Website deployment
-does not authorize a cup release and is not included in the release gate.
-
-## Source-tested build identity
-
-The cross-workflow artifact is the canonical `build-config.txt` produced by the
-source build itself; there is no second metadata envelope. Release accepts only
-the artifact name for the selected Tests run attempt and then independently
-validates the source-development config against the candidate-release config.
-
-Both files must have the exact current build-config schema and the expected
-platform, configuration and official-build role. Cross-runner equality is
-required for:
-
-- dependency prefix format, profile and build revision;
-- dependency source-lock and toolchain SHA-256 identities;
-- compiler command, normalized target and numeric version;
-- on Windows, the corresponding resource-compiler command, normalized target
-  and numeric version.
-
-Resolved paths, full vendor version lines and effective flags stay in
-`build-config.txt` for diagnosis, but are not equality keys because native runner
-locations and harmless vendor wording may differ. A source artifact from another
-Tests attempt is not substituted when the selected attempt lacks its own file;
-that condition fails closed.
-
-## Building common assets
-
-Common assets are created once for the whole release by:
+The public platform contribution is:
 
 ```text
-scripts/release/common-assets.sh
+cup-<platform>[.exe]
+SHA256SUMS.<platform>
 ```
 
-They include the package and installer configuration, public installers,
-release metadata, provenance, notices and common checksum file. Their values are
-built from the selected version, tag, source commit and workflow identities.
+Native symbol files (`cup.debug` or `cup.dSYM`) remain workflow artifacts for
+diagnostics and are not public release assets.
 
-The output is written below the managed build root and is not published directly.
-It is one input to candidate assembly.
+`scripts/release/build-platform.sh` combines the finalized native output with the
+common metadata required by native release tests. Generic flat merging is owned
+by `scripts/release/assemble-candidate.sh`, which rejects collisions instead of
+silently choosing one input.
 
-## Building platform candidates
+GitHub artifact transport does not preserve all POSIX modes, so release assembly
+restores the expected file modes before candidate testing and publication.
 
-The release matrix contains:
+## Public asset set
 
-```text
-linux-x64
-linux-arm64
-macos-x64
-macos-arm64
-windows-x64
-```
-
-Each native job uses the verified dependency prefix for its platform, builds an
-official release configuration and runs binary inspection. The platform output
-contains:
-
-- the native executable;
-- platform-specific checksum data;
-- native debug symbols (`cup.debug` on Linux/Windows and an UUID-matched,
-  `dwarfdump --verify`-validated `cup.dSYM` on macOS);
-- build and release metadata;
-- the files needed by the native release test.
-
-`scripts/build/finalize-release.sh` creates this platform bundle in a private
-sibling staging directory. It performs the late checks before replacing the
-previous finalized directory. A failed inspection or metadata step removes the
-staging directory and leaves the previous complete bundle unchanged.
-
-`scripts/release/build-platform.sh` combines the finalized platform output with
-the verified common assets. `scripts/release/assemble-candidate.sh` is the generic
-collision-safe flat merger used for common/platform parts; candidate-specific
-consumers such as native release tests and `publish.sh` enforce the exact public
-asset set.
-
-GitHub artifact transport does not preserve POSIX modes, so assembly restores
-them before testing and publication:
-
-- directories: `0755`;
-- POSIX executables and shell entry points: `0755`;
-- other public files: `0644`.
-
-## Public file set
-
-A complete public release contains:
+A published release contains exactly:
 
 ```text
+packages.cfg
+install.cfg
+release.txt
+provenance.txt
+THIRD_PARTY_NOTICES.txt
+install.sh
+install.ps1
 cup-linux-x64
 cup-linux-arm64
 cup-macos-x64
 cup-macos-arm64
 cup-windows-x64.exe
-packages.cfg
-install.cfg
-install.sh
-install.ps1
-release.txt
-provenance.txt
-THIRD_PARTY_NOTICES.txt
 SHA256SUMS.common
 SHA256SUMS.linux-x64
 SHA256SUMS.linux-arm64
@@ -235,199 +185,152 @@ SHA256SUMS.macos-arm64
 SHA256SUMS.windows-x64
 ```
 
-The checksum split is intentional:
+The common checksum file covers the versioned installer/configuration inputs.
+Each platform checksum file binds its binary to the common release metadata.
+Publication validates both membership and values; unexpected files are not
+silently accepted as part of the generation.
 
-- `SHA256SUMS.common` covers the shared installer/configuration inputs
-  (`packages.cfg`, `install.cfg`, `install.sh` and `install.ps1`);
-- each platform checksum covers its executable, `release.txt` and the exact
-  common checksum file.
+## Native candidate qualification
 
-This lets installers and `cup update cup` verify both the shared generation and
-the platform-specific files without trusting two unrelated manifests.
+Candidate jobs test the assembled files on their matching native runners without
+rebuilding or modifying the candidate.
 
-Component compiler/debugger/linter/linker packages are not part of this release.
-They are built and published by the separate `cup-components` project.
+The release suite checks the properties that matter specifically for published
+bytes, including:
 
-## Binary requirements
-
-Every official platform build runs binary inspection before assembly.
-
-### Linux
-
-The public ELF executable must be fully static. It must not contain:
-
-- an ELF interpreter;
-- `DT_NEEDED` entries;
-- `RPATH` or `RUNPATH`.
-
-### macOS
-
-Pinned third-party libraries are static. The Mach-O executable may reference
-only approved Apple libraries and frameworks, must match the requested
-architecture and deployment target, and must not contain `LC_RPATH` or Homebrew
-paths.
-
-### Windows
-
-The executable must be PE32+ x86-64, use the console subsystem, import only the
-approved Windows system DLLs and contain the expected version resource and
-mitigation flags. MinGW runtime DLL dependencies are rejected. Release linking
-disables the PE insertion timestamp, and Windows finalization forces
-`SOURCE_DATE_EPOCH=1` for the `objcopy`/`strip` writers so an ambient clock or
-caller epoch does not own the final PE/debug bytes. Native reproducibility tests
-still compare independent builds rather than treating these flags alone as proof.
-
-Native symbols are stored as workflow artifacts for debugging. They are not part
-of the public download set. The public executable is stripped after symbol
-separation, and path-leak checks reject repository, dependency and staging paths.
-
-## Native candidate tests
-
-The release jobs download the common files and only their matching platform
-artifact. They test that assembled candidate without rebuilding or rewriting its bytes.
-A private update fixture is built separately from the same checkout with a genuine
-newer official version so `cup update cup` can exercise a real version transition
-without patching or modifying the candidate under test.
-
-The native release suites check:
-
-- exact file membership;
-- checksum files and bytes;
-- `release.txt` and provenance identity;
+- exact file membership and checksums;
+- release/provenance identity;
 - executable version and startup;
-- installation into the default base and a custom user-manageable base;
-- complete canonical-root relocation and reinstall at the relocated base;
-- a successful `cup doctor` after installation;
-- relevant preservation, repair and uninstall behavior.
+- default and custom-root installation;
+- relocation and reinstall;
+- `cup doctor` on the installed generation;
+- relevant repair/preservation behavior;
+- uninstall.
 
-These suites are smaller than the source integration suites because their job is
-to validate the packaged generation, not to repeat every internal fault case.
-Publication depends on all native candidate results.
+A private newer-version fixture is built separately when self-update needs to
+exercise a genuine version transition. The candidate under test is never patched
+into a different version.
+
+Source unit/integration/coverage/sanitizer tests are not repeated wholesale in
+Release; the selected Tests workflow already owns them. Candidate-specific tests
+remain mandatory because only they observe the official finalized bytes.
+
+## Platform binary policy
+
+Release inspection enforces the linkage/format rules documented in
+[Platforms](../design/PLATFORMS.md):
+
+- Linux release executables satisfy the static-runtime contract;
+- macOS candidates contain statically linked third-party dependencies and only
+  approved dynamic system libraries/frameworks, with no runtime search path;
+- Windows candidates import only the approved system DLL set and contain the
+  expected resource/mitigation properties.
+
+Final public executables are stripped after symbol separation. Path-leak checks
+apply to the publishable binary; rich source/debug metadata belongs in the
+separate debug/symbol artifacts.
 
 ## Publication
 
-`scripts/release/publish.sh` owns the remote GitHub release operation. It first
-copies the completed local candidate to a private snapshot. Hashing, comparison
-and upload use only that snapshot.
+`scripts/release/publish.sh` is the only script that mutates the remote GitHub
+release. Before doing so it snapshots the completed local candidate and validates
+that snapshot. Hashing, comparison and upload then use that immutable local copy.
 
-Before changing remote state, the script validates:
+Only the publication job receives `contents: write`; build/test jobs remain
+read-only.
 
-- the complete public file set;
-- the exact `release.txt` and `provenance.txt` schemas;
-- checksum membership and values;
-- installer version, tag and source metadata;
-- the source commit selected for the tag;
-- public file permissions.
+The publisher handles four states deliberately:
 
-The publisher handles these cases:
+### No release exists
 
-### No tag or release exists
+A draft is created for the tested commit, the exact snapshot is uploaded and the
+remote asset set is downloaded/compared before publication.
 
-It creates a draft release targeted at the tested commit, uploads the snapshot,
-downloads the remote assets for comparison and publishes only after the exact
-set and bytes match. The publisher does not pre-create a tag for this path. If a
-tag becomes observable during the draft lifecycle it must resolve to the tested
-commit, and successful publication requires the published release to have that
-resolvable tag. A tag that existed before draft creation is validated before it
-is used.
+### Matching draft exists
 
-### A matching draft exists
+A draft is resumed only when its provenance identifies the same candidate
+generation. Expected missing/stale assets may then be corrected.
 
-It resumes the draft only when the remote provenance identifies the same
-candidate generation. Missing or stale expected assets can then be corrected.
-Unexpected assets are removed only after that ownership check.
+### Release appears concurrently
 
-### A release was created concurrently
+Remote state is read again. A concurrently created generation is accepted only
+when tag, asset set and bytes match the local snapshot.
 
-The state is read again before creation and publication. A concurrently created
-or published release is accepted only when its tag, exact asset set and bytes
-match the local snapshot.
+### Release is already published
 
-### The release is already published
+Published generations are read-only. Success means the existing remote assets
+already match exactly; the publisher does not edit them.
 
-A published release is treated as read-only. It is successful only when every
-remote asset matches the snapshot exactly. The script does not edit an already
-published generation.
+Ambiguous network/API results are failures, not “not found”. An unrecognized or
+ambiguous draft is preserved for inspection instead of being adopted or deleted.
 
-Network or API failures are not interpreted as “not found”. Ambiguous drafts or
-releases are preserved for manual inspection instead of being adopted or
-deleted.
+## Workflow responsibilities
 
-Only the publication job receives `contents: write`. Earlier jobs use read-only
-permissions.
+The release-related workflows have intentionally separate roles:
 
-## Concurrency
+- **Dependencies** (`dependencies.yml`) builds or validates native pinned
+  dependency prefixes. The normal release profiles are Linux GCC, macOS Apple
+  Clang and Windows UCRT64; Windows CLANG64 is additionally used for sanitizer
+  work.
+- **Tests** (`tests.yml`) owns repository quality, native source tests, coverage,
+  sanitizers and source-tested build identity.
+- **Release** (`release.yml`) resolves one successful Tests attempt, builds the
+  common assets and five official candidates, tests the candidates and publishes
+  only after the complete matrix succeeds.
+- **Docs** (`static.yml`) publishes documentation independently; Pages state does
+  not authorize an application release.
 
-Tests use a ref-specific concurrency group and may cancel an older run for the
-same ref. Release publication uses one non-cancelling `cup-release` group and the
-protected `release` environment.
-
-Candidate matrices use `fail-fast: false`, so an independent platform failure
-does not hide the remaining results. Publication still verifies remote state
-instead of relying on workflow serialization as its only protection.
+Release uses a non-cancelling `cup-release` concurrency group. Candidate matrices
+use `fail-fast: false` so one platform failure does not hide results from the
+others, but publication still requires the complete successful generation.
 
 ## Manual release sequence
 
-The intended sequence is:
+The intended operator sequence is:
 
 ```text
-update VERSION manually
-review and commit the source changes
-push the commit to main
-let Tests finish successfully for that exact commit
-dispatch Release from the same main commit
-verify the selected Tests run and source-build-config attempt
-build the five official candidates
-test the exact candidates on native runners
-publish the verified generation
+1. choose and update VERSION
+2. review/commit/push the source on main
+3. wait for Tests to succeed for that exact commit
+4. dispatch Release for the same main commit
+5. verify the selected Tests run/attempt
+6. build and test all five official candidates
+7. publish the verified generation
 ```
 
-If the release inputs or source commit change, the source Tests run must be
-repeated. A candidate is never reused for another source commit or a distinct
-Release run. A retry inside the same Release run may reuse an unchanged upstream
-artifact, which is why the internal artifact names and public provenance remain
-stable across `run_attempt` changes.
+Changing release-relevant source requires a new successful Tests run. A candidate
+is never reused for a different source commit.
 
-## Relationship with `cup update cup`
+## `cup update cup`
 
-`cup update cup` is available only in official builds. cup reads the public
-`latest/release.txt`, compares the version and then downloads immutable
-versioned assets.
+Official CUP builds can update themselves from the published generation. The
+running program reads the public release metadata, verifies the selected
+versioned assets and creates a byte-identical native helper copy of itself before
+scheduling replacement.
 
-Before scheduling the update, the running program creates a native helper copy
-from its own executable and verifies the two files byte for byte. The detached
-helper can then replace the installed executable even on Windows, where the
-running file cannot be replaced directly.
+The detached helper exists because the running executable cannot always replace
+itself directly, especially on Windows. It follows the update journal/commit
+model described in [Transactions](../design/TRANSACTIONS.md), replacing the main
+executable last and leaving recoverable evidence when completion becomes
+ambiguous.
 
-The helper:
-
-1. verifies the full staged generation;
-2. backs up the installed generation assets;
-3. replaces supporting files atomically;
-4. writes the durable commit marker;
-5. replaces `cup` or `cup.exe` last;
-6. completes cleanup or leaves enough evidence for recovery.
-
-The helper itself is operational data, not a seventh versioned generation file.
-`cup repair` does not replace its own running executable. When safe completion
-requires the detached helper, repair preserves the journal and staging data
-instead of pretending the update was completed.
+The helper is operational transaction data, not another versioned public release
+asset.
 
 ## Main release scripts
 
 | Script | Responsibility |
 |---|---|
-| `scripts/build/finalize-release.sh` | Finalize one inspected platform bundle |
-| `scripts/release/common-assets.sh` | Build files shared by every platform |
-| `scripts/release/build-platform.sh` | Combine one native bundle with common assets |
-| `scripts/release/assemble-candidate.sh` | Merge validated parts into one flat candidate |
-| `scripts/release/publish.sh` | Compare and publish the candidate on GitHub |
-
-None of these scripts rebuilds or rewrites a candidate after assembly.
+| `scripts/build/finalize-release.sh` | Finalize and inspect one native platform bundle |
+| `scripts/release/common-assets.sh` | Build the public files shared by every platform |
+| `scripts/release/build-platform.sh` | Prepare one platform contribution/candidate input |
+| `scripts/release/assemble-candidate.sh` | Merge validated release parts without collisions |
+| `scripts/release/publish.sh` | Validate, compare and publish the exact generation |
 
 ## Related chapters
 
 - [Build](BUILD.md)
 - [Testing](TESTING.md)
+- [Packages](../design/PACKAGES.md)
+- [Transactions](../design/TRANSACTIONS.md)
 - [Security](../design/SECURITY.md)
-- [Platforms](../design/PLATFORMS.md)

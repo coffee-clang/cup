@@ -1,10 +1,5 @@
-/*
- * Runs uninstall from a temporary native copy outside the managed root. The parent prepares all
- * persistent state and hands over exclusive authority. POSIX removes the helper pathname while it
- * is running; Windows instead arms deferred helper deletion before handoff. The helper then waits
- * for parent exit, detaches the exact root, removes managed payload without following links and
- * preserves the journal whenever cleanup cannot complete.
- */
+/* Run uninstall from a helper outside the root. After exclusive handoff and parent exit,
+ * detach and remove the exact root no-follow; preserve the journal on incomplete cleanup. */
 
 #include "uninstall_helper.h"
 
@@ -250,9 +245,8 @@ CupError uninstall_helper_run(const char *root,
     if (text_is_empty(cleanup_handle_value)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    /* The parent arms deferred helper deletion before releasing the canonical lock. Before
-     * accepting handoff or touching the managed root, prove that this inherited cleanup handle
-     * names the exact running executable, then close the helper's copy. */
+    /* Before handoff, prove the inherited cleanup handle names this running helper. The parent
+     * already owns deferred deletion, so close the helper's copy afterwards. */
     err = system_validate_uninstall_helper_cleanup(cleanup_handle_value);
     if (err != CUP_OK) {
         return err;
@@ -261,9 +255,8 @@ CupError uninstall_helper_run(const char *root,
     if (cleanup_handle_value != NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    /* POSIX can unlink the temporary helper pathname while the process continues using its already
-     * opened image. The backend binds the reserved pathname to this exact running executable before
-     * removing it. */
+    /* POSIX may unlink the running helper path; first prove the reserved pathname identifies
+     * this exact executable. */
     err = build_helper_path(helper, sizeof(helper), root, token);
     if (err != CUP_OK) {
         return err;
@@ -305,9 +298,8 @@ CupError uninstall_helper_run(const char *root,
             return journal_err == CUP_OK || journal_err == CUP_ERR_COMMIT ? err : journal_err;
         }
 
-        /* The namespace move happened but its durable/identity proof is incomplete. Do not touch
-         * the destination through an unproven pathname; the moved detach journal is the recovery
-         * evidence for repair. */
+        /* The detach move happened but its durable identity is uncertain. Do not mutate the
+         * unproven destination; preserve the moved journal for repair. */
         system_handoff_release(&handoff);
         return CUP_ERR_COMMIT;
     }

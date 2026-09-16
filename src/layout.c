@@ -1,8 +1,5 @@
-/*
- * Selects an authenticated CUP root and constructs every managed path below it. A caller may
- * choose the parent directory, but the managed leaf is always .cup or the deterministic
- * .coffee-cup fallback. Installed executables bind runtime operations to their own root.
- */
+/* Select and authenticate the CUP root, then construct all managed paths below its canonical
+ * leaf. Installed executables bind operations to their own root. */
 
 #include "layout.h"
 
@@ -64,9 +61,8 @@ typedef enum {
     ROOT_MARKER_INVALID
 } RootMarkerStatus;
 
-/* A detached helper may temporarily carry exclusive authority outside the canonical root. Root
- * admission checks that handoff before touching managed paths so a new process cannot enter while
- * authority is moving between processes. */
+/* A detached helper may temporarily hold authority outside the root. Check handoff before
+ * managed-path access so admission cannot overlap the transfer. */
 static CupError reject_active_handoff(const char *root) {
     int active = 0;
     CupError err;
@@ -151,11 +147,8 @@ static CupError candidate_path_kind(const char *root,
     return err == CUP_OK ? system_get_path_kind(path, kind) : err;
 }
 
-/*
- * Markerless roots are never adopted automatically. Any object at the canonical bin/cup path is
- * only a conservative preservation signal for a possible old or corrupted CUP installation; it is
- * not root authentication. Authentication remains root.txt plus the retained root identity.
- */
+/* Never auto-adopt a markerless root. A canonical cup binary path is only a preservation
+ * signal; authentication remains root.txt plus retained root identity. */
 static CupError candidate_has_cup_binary(const char *root, int *has_binary) {
     char path[MAX_PATH_LEN];
     SystemPathKind kind;
@@ -604,9 +597,8 @@ CupError layout_root_snapshot_validate(void) {
     if (!root_snapshot.active) {
         return CUP_ERR_TRANSACTION;
     }
-    /* Recheck after the final canonical lock acquisition and before touching the root again. A
-     * process that passed the pre-root barrier before another process published handoff
-     * authority is rejected here before it can become an authoritative mutator. */
+    /* Recheck handoff after the canonical lock: a process that crossed the pre-root barrier
+     * before handoff publication must retreat before mutation. */
     err = reject_active_handoff(root_snapshot.path);
     if (err != CUP_OK) {
         return err;
@@ -1176,9 +1168,8 @@ CupError layout_ensure_root(void) {
         goto done;
     }
 
-    /* A snapshot may predate handoff publication. Recheck immediately before root creation,
-     * permission repair or marker publication instead of treating the old snapshot as mutation
-     * authority. */
+    /* A snapshot may predate handoff publication; recheck before root creation, permission
+     * repair or marker publication. */
     err = reject_active_handoff(root);
     if (err != CUP_OK) {
         goto done;
@@ -1229,9 +1220,8 @@ CupError layout_ensure_root(void) {
         RootMarkerStatus marker_status = ROOT_MARKER_MISSING;
         CupError marker_err = inspect_root_marker(root, &marker_status);
 
-        /* A complete marker may already be visible when its parent sync failed. Keep that
-         * ownership proof and surface the original commit error. Otherwise roll an empty new
-         * root back rather than stranding a markerless candidate. */
+        /* If a complete marker is visible after parent-sync failure, preserve that ownership
+         * proof and return the commit error; otherwise remove the empty candidate root. */
         if (marker_err != CUP_OK || marker_status != ROOT_MARKER_VALID) {
             CupError rollback_err = marker_status == ROOT_MARKER_MISSING
                                         ? system_remove_directory(root)

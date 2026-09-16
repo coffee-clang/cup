@@ -32,12 +32,8 @@ typedef struct {
     size_t toolchain_count;
 } InstallPolicy;
 
-/*
- * Initialize and load one complete immutable policy source. A valid load
- * attempt replaces the previous model; operational failure leaves the output
- * initialized and empty. Read-only queries below require a model produced by a
- * successful load and not subsequently modified by the caller.
- */
+/* Load one complete immutable policy. Success replaces the model; failure leaves it empty.
+ * Query functions require a successfully loaded, unmodified model. */
 void install_policy_init(InstallPolicy *policy);
 CupError install_policy_load(InstallPolicy *policy);
 CupError install_policy_load_development(InstallPolicy *policy);

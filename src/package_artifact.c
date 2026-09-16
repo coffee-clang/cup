@@ -1,7 +1,5 @@
-/*
- * Pins catalog-derived package coordinates and owns one cache file from digest verification to
- * libarchive consumption. Pathname replacement after opening cannot change the bytes consumed.
- */
+/* Pin catalog-derived coordinates and keep one verified cache file open through archive
+ * consumption so pathname replacement cannot change the bytes used. */
 
 #include "package_artifact.h"
 

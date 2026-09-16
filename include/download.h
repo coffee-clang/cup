@@ -1,11 +1,8 @@
 #ifndef CUP_DOWNLOAD_H
 #define CUP_DOWNLOAD_H
 
-/*
- * Downloads one size-bounded asset through a sibling temporary file. The destination is replaced
- * only after transfer and content validation succeed. Production uses HTTPS; release tests may
- * explicitly allow HTTP for a loopback server.
- */
+/* Size-bounded downloads publish through a sibling temporary file only after validation.
+ * Production requires HTTPS; tests may explicitly allow loopback HTTP. */
 
 #include <stddef.h>
 

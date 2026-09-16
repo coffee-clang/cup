@@ -1,15 +1,38 @@
-# cup
+# CUP
 
-`cup` is a command-line tool for installing and managing prebuilt C development
-tools in a user-managed installation root. It follows a `rustup`-like model for
-C toolchains, while keeping package production in the separate
-[`cup-components`](https://github.com/coffee-clang/cup-components) repository.
+CUP is a userspace C toolchain manager. It installs and manages prebuilt C
+development tools without requiring administrator privileges or writing into
+system toolchain directories.
 
-`cup` works without administrator privileges and verifies downloaded packages before
-installing them. The installer can optionally add the selected CUP `bin` directory to the
-current user's PATH; CUP never requires system-wide PATH changes.
+A CUP installation can keep multiple tool versions side by side, select one
+default per component and target, and expose the commands provided by those
+defaults through its own `bin` directory. Package production is intentionally
+separate: [`cup-components`](https://github.com/coffee-clang/cup-components)
+builds and publishes the tool packages that CUP verifies and consumes.
 
-## Installation
+## What CUP manages
+
+CUP currently has first-class component categories for compilers, debuggers,
+linkers, formatters, linters, language servers and analyzers. The built-in domain
+contains GCC, Clang, GDB, LLDB, GNU `ld`, LLD, `clang-format`, `clang-tidy`,
+`clangd` and Valgrind; actual package availability depends on the host, target
+and current catalog.
+
+The core model is deliberately small:
+
+- packages are prebuilt and installed below one user-managed CUP root;
+- multiple concrete versions can coexist;
+- `stable` is resolved from the catalog before a package is installed;
+- defaults decide which installed package provides a component's commands;
+- preferences affect abbreviated future installs without changing current defaults;
+- profiles select several components, while toolchains select a curated set of tools;
+- package bytes, metadata and release assets are verified before they are committed;
+- interrupted mutations leave recovery information for `cup doctor` and `cup repair`.
+
+Supported CUP hosts are Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
+Cross-target packages are supported when they are present in the catalog.
+
+## Install
 
 Linux and macOS:
 
@@ -23,25 +46,42 @@ Windows PowerShell:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/coffee-clang/cup/releases/latest/download/install.ps1 | iex"
 ```
 
-The default installation root is `~/.cup` on Linux and macOS and
-`%USERPROFILE%\.cup` on Windows. The installer can use another existing user-writable
-base directory, but the managed leaf is always `.cup`, with `.coffee-cup` as the fallback
-when `.cup` is foreign.
+The default root is `~/.cup` on Linux/macOS and `%USERPROFILE%\.cup` on
+Windows. The installer may offer to add its `bin` directory to the current
+user's PATH; CUP itself does not require or modify a system-wide PATH.
 
-## Getting started
+## Quick start
 
 ```sh
 cup search
-cup install gcc
+cup install profile standard
 cup list
-cup default compiler gcc@stable
 cup info
+cup default compiler clang@stable
+cup doctor
 ```
 
-Use `cup help` for the command list and `cup help <command>` for command-specific
-syntax.
+`cup help` shows the complete command set and `cup help <command>` shows the
+syntax and effects of one command.
 
 ## Documentation
 
-The complete user and developer documentation starts at
-[docs/INDEX.md](docs/INDEX.md).
+Start with the [documentation index](docs/INDEX.md). In particular:
+
+- [Getting started](docs/user/GETTING_STARTED.md) walks through a first installation;
+- [Concepts](docs/user/CONCEPTS.md) explains components, packages, defaults,
+  profiles, toolchains, host/target scopes and the CUP root;
+- [Installation](docs/user/INSTALLATION.md) covers installers, PATH, relocation,
+  updates and uninstall;
+- [Commands](docs/user/COMMANDS.md) is the CLI reference;
+- [Architecture](docs/design/ARCHITECTURE.md) is the entry point for the internal design;
+- [Build](docs/development/BUILD.md), [Testing](docs/development/TESTING.md) and
+  [Releases](docs/development/RELEASES.md) cover repository development.
+
+## Project boundary
+
+CUP installs complete packages; it is not a source build system, system package
+manager or global sysroot manager. Tool-specific build choices and native
+native validation belong to `cup-components`. CUP owns package selection, download
+and admission, local state, defaults, command wrappers, recovery and its own
+release lifecycle.

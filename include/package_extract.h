@@ -1,11 +1,8 @@
 #ifndef CUP_PACKAGE_EXTRACT_H
 #define CUP_PACKAGE_EXTRACT_H
 
-/*
- * Extracts one supported package archive into a fresh caller-owned staging directory. Entry paths
- * are checked against every supported filesystem model so they cannot escape or alias each other;
- * semantic metadata and final manifest/link integrity are validated after extraction.
- */
+/* Extract one verified archive into fresh staging. Paths are validated against all supported
+ * filesystem models; semantic metadata and manifest/link integrity are checked afterwards. */
 
 #include "error.h"
 #include "package_artifact.h"

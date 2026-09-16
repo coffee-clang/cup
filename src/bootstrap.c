@@ -1,8 +1,5 @@
-/*
- * Validates one complete release generation before creating managed runtime state, then stages the
- * installed release assets and delegates the atomic post-exit commit to the canonical update
- * helper.
- */
+/* Validate a complete release generation, stage installed assets, then delegate the post-exit
+ * commit to the update helper. */
 
 #include "bootstrap.h"
 

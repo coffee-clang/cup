@@ -1,8 +1,5 @@
-/*
- * Inspects the installed cup assets and verifies canonical assets against the published checksum
- * files. Development fallbacks are reported separately and never treated as an installed cup
- * asset generation.
- */
+/* Inspect installed CUP assets against published checksums. Development fallbacks remain
+ * distinct and never authenticate an installed generation. */
 
 #include "assets.h"
 
@@ -37,8 +34,8 @@ static CupError inspect_regular_file(const char *path, AssetStatus *status) {
     return CUP_OK;
 }
 
-/* Classify an asset that exists below a missing/invalid trust prerequisite. A regular file is
- * present but cannot be authenticated, while an absent file must remain distinguishable as missing. */
+/* Keep unauthenticated regular files distinct from missing files when a trust prerequisite is
+ * absent or invalid. */
 static CupError inspect_untrusted_file(const char *path, AssetStatus *status) {
     CupError err = inspect_regular_file(path, status);
 

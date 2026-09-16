@@ -1,7 +1,5 @@
-/*
- * Performs read-only diagnosis of cup assets, runtime layout, state, packages, transactions and
- * managed wrappers. Failed inspections are reported as incomplete rather than silently ignored.
- */
+/* Read-only diagnosis of assets, layout, state, packages, transactions and wrappers. Failed
+ * inspections remain visible as incomplete results. */
 
 #include "commands.h"
 
@@ -731,9 +729,8 @@ CupError command_doctor(void) {
     }
     root_snapshot_active = 1;
 
-    /* Installed assets and their catalog belong to the same managed snapshot as state and
-     * packages. Only a genuinely missing runtime has no installed state to protect; a failed
-     * shared-lock acquisition must not fall back to pathname-based installed-asset reads. */
+    /* Installed assets/catalog must be read under the same managed snapshot as state/packages.
+     * A lock failure is not permission to fall back to pathname-only reads. */
     {
         DoctorRuntimeSnapshot snapshot = acquire_runtime_snapshot(&report, &lock);
 

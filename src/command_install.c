@@ -1,8 +1,5 @@
-/*
- * Resolves the public install grammar into one fully validated package plan. Profiles
- * intentionally use user preferences; toolchains are explicit plans and never consult those
- * preferences.
- */
+/* Resolve public install input into a validated plan. Profiles use preferences; curated
+ * toolchains remain explicit. */
 
 #include "commands.h"
 

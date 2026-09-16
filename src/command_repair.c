@@ -714,9 +714,8 @@ static CupError repair_load_state(RepairContext *context) {
         return CUP_ERR_TRANSACTION;
     }
 
-    /* Non-package journals do not own state, but their complete schema must still be validated
-     * before repair preserves or replaces an invalid state file. Classification by operation alone
-     * is not sufficient evidence for any mutation. Keep the parsed snapshot for recovery. */
+    /* Validate the complete non-package journal before using it to justify state repair;
+     * operation name alone is not mutation authority. */
     if (context->journal_kind == RUNTIME_JOURNAL_UPDATE) {
         UpdateJournalStatus status;
 
@@ -814,9 +813,8 @@ static CupError repair_pending_transaction(RepairContext *context) {
 
         err = layout_get_root(root, sizeof(root));
         if (err == CUP_OK) {
-            /* A child that failed before detach can leave only its reserved token-bound native
-             * copy outside the root. Remove it while this repair still owns canonical exclusivity,
-             * then clear the journal. If cleanup cannot be proved, keep the journal as blocker. */
+            /* Remove a pre-detach token-bound helper only while repair still owns canonical
+             * exclusivity. Keep the journal if cleanup cannot be proved. */
             err = uninstall_helper_remove_stale(
                 root, context->uninstall_journal.token, &context->lock);
         }
@@ -1005,9 +1003,8 @@ static CupError repair_cleanup_staging(const RepairContext *context) {
     return filesystem_clear_directory(staging_dir, transaction_path);
 }
 
-/* Repair is the only command allowed to recover an unusable cup.lock pathname. A wrong-kind
- * object is preserved as evidence before the canonical exclusive lock is created. Existing roots
- * are otherwise never marked, chmodded or initialized before that lock is held. */
+/* Only repair may recover an unusable cup.lock path. Preserve a wrong-kind object first;
+ * otherwise existing roots are never modified before the canonical lock is held. */
 static CupError acquire_repair_lock(RepairContext *context) {
     SystemPathKind root_kind;
     SystemPathKind lock_kind;

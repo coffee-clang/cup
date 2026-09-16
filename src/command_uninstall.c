@@ -1,8 +1,5 @@
-/*
- * Validates the managed root, records uninstall in transaction.txt and hands exclusive authority
- * to a temporary native copy. The helper owns root detach/cleanup after this process exits; on
- * Windows its temporary executable deletion is armed separately before the root can be mutated.
- */
+/* Validate and journal uninstall, then hand exclusive authority to a temporary native helper
+ * that owns post-exit detach and cleanup. */
 
 #include "commands.h"
 
@@ -205,9 +202,8 @@ CupError command_uninstall(int assume_yes) {
     if (err != CUP_OK) {
         goto done;
     }
-    /* Success consumes the canonical lock only after the child already owns equivalent handoff
-     * authority. From that point the helper owns journal recovery and root destruction; on Windows
-     * a separately armed carrier owns the helper's deferred DELETE_ON_CLOSE lifetime. */
+    /* Consume the canonical lock only after the child owns equivalent handoff authority. From
+     * then on the helper owns recovery and root destruction. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
         printf("Uninstall handoff accepted; cleanup continues in the background. "
@@ -218,11 +214,8 @@ CupError command_uninstall(int assume_yes) {
     }
 
 done:
-    /*
-     * A failure before the helper validates the handoff leaves the exact initial journal behind
-     * and it is safe to clear. Once the helper advances or records a failure, preserve that
-     * evidence for doctor/repair instead of erasing it from the parent.
-     */
+    /* Clear only the untouched initial journal after pre-handoff failure. Once the helper
+     * advances, preserve its journal for doctor/repair. */
     if (journal_created) {
         if (clear_unstarted_journal(root_path, temporary_path, token, &lock) != CUP_OK) {
             fprintf(stderr,

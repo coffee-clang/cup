@@ -1,11 +1,10 @@
 # Platforms
 
-cup keeps one public model across Linux, macOS and Windows, but filesystem,
-process and executable details are implemented natively on each platform.
+CUP exposes one product model across Linux, macOS and Windows. Platform-specific
+code exists only where filesystem, process, executable or toolchain semantics
+actually differ.
 
-## Platform identifiers
-
-Supported identifiers are:
+## Supported platform identifiers
 
 ```text
 linux-x64
@@ -15,373 +14,247 @@ macos-arm64
 windows-x64
 ```
 
-The format is `<os>-<arch>`. cup does not build a platform by combining any
-known OS with any known architecture; the complete identifier must appear in
-the built-in registry.
-
-`windows-arm64` is not currently supported.
+The identifier is a closed `<os>-<arch>` value from the compiled registry. CUP
+does not derive support by freely combining known operating systems and
+architectures; for example, `windows-arm64` is not currently supported.
 
 ## Host and target
 
-A package has:
+A package has two platform coordinates:
 
 ```text
-host    platform where the package runs
-target  platform handled by the tool
+host    where the package executable runs
+target  the platform the tool handles/produces for
 ```
-
-The target defaults to the host.
 
 Examples:
 
 ```text
-host=linux-x64 target=linux-x64     native Linux package
-host=linux-x64 target=windows-x64   Windows cross-tool package running on Linux
+linux-x64 -> linux-x64      native Linux package
+linux-x64 -> windows-x64    Windows cross-target tool running on Linux
 ```
 
-State, package paths, preferences and defaults include both values.
+Target defaults to host. State, package paths, preferences and defaults preserve
+both values. One running CUP instance manages packages for its own host; foreign-
+host records are reported/preserved rather than adopted automatically.
 
-One running cup executable manages only packages for its own host. Package trees
-or state records for a different host are reported and preserved rather than
-adopted automatically.
+## User root and executable names
 
-## User roots
-
-Default roots are:
+Default roots:
 
 ```text
-POSIX   $HOME/.cup
-Windows %USERPROFILE%\.cup
+POSIX    $HOME/.cup
+Windows  %USERPROFILE%\.cup
 ```
 
-An installer may select another existing user-manageable base. The leaf remains `.cup`, or
-`.coffee-cup` when the primary leaf is foreign. Installed CUP derives that canonical root
-from its own real executable path and authenticates `root.txt`; no `CUP_HOME` override is
-supported. A location outside the default home/profile is not intrinsically privileged, but
-CUP never elevates when the current user lacks a filesystem capability required by an
-operation.
+A custom installer base still uses `.cup`, or `.coffee-cup` when the primary leaf
+is foreign. Once installed, CUP derives the active root from its real executable
+and validates `root.txt`.
 
-## Executable and helper names
+Native executable/helper names are:
 
 ```text
-POSIX main executable       cup
-Windows main executable     cup.exe
-POSIX update helper         update-helper
-Windows update helper       update-helper.exe
+POSIX    cup                 helpers/update-helper
+Windows  cup.exe             helpers/update-helper.exe
 ```
 
-Public package commands use shell wrappers on POSIX and `.cmd` wrappers on
-Windows.
+Package commands are shell launchers on POSIX and `.cmd` launchers on Windows.
 
-## Portable and native code
+## Native system boundary
 
-Portable code uses the API in `system.h`.
+Portable modules call `system.h` instead of choosing OS APIs directly.
 
 ```text
-system.c            platform-neutral queries and path-identity comparison
-system_posix.c      openat/fstatat/unlinkat, POSIX locks and processes
-system_windows.c    Windows paths, handles, reparse checks and processes
+system.c            portable queries / identity comparison
+system_posix.c      POSIX filesystem, locks, processes, durability
+system_windows.c    Windows filesystem, handles, reparse/process behavior
+windows_utf.h       private UTF-8 <-> UTF-16 path boundary
 ```
 
-The command and package modules do not choose between POSIX and Windows calls
-directly.
+### POSIX
 
-### POSIX implementation
+The POSIX backend uses descriptor-relative operations when later mutation must
+remain tied to an object already inspected. Its implementation includes
+`openat`/`fstatat`/`unlinkat`, native rename operations, `flock`, process creation
+and `fsync`.
 
-The POSIX backend uses descriptor-relative operations where an existing tree
-must stay tied to the object that was checked. Important calls include:
+Managed control-tree traversal does not follow symbolic links. POSIX package
+payloads are the exception described by the package contract: confined relative
+symbolic links may exist inside a validated package.
 
-```text
-openat
-fstatat
-unlinkat
-renameat or renameat2 when available
-flock advisory locking
-fork/exec or posix_spawn-style process setup
-fsync
-```
+A temporary uninstall helper can unlink its own verified pathname and continue
+through the already-running executable image, so helper cleanup does not need a
+separate lifetime process on POSIX.
 
-Symbolic links are not followed for managed path traversal.
+### Windows
 
-A temporary POSIX uninstall helper can remove its own exact pathname after
-proving native identity and continue running through the already-open executable
-image. cup uses that property only on POSIX.
+The Windows backend uses wide-character native APIs and long-path forms where
+required. CUP keeps normalized internal path spelling at its protocol boundary;
+paths are converted to ordinary native forms only for Windows APIs/process launch
+operands that require them.
 
-### Windows implementation
+Reparse points are treated explicitly and later destructive operations can be
+bound to observed handle identity. File identity uses the full 128-bit Windows
+ID when the filesystem provides it and falls back to the legacy identity only
+when necessary.
 
-The Windows backend uses wide-character Windows APIs. UTF-8 project paths are
-converted through the private helpers in `windows_utf.h`.
+Windows x64 is built against `_WIN32_WINNT=0x0A00` (Windows 10 API baseline).
+That compile value is not, by itself, a promise about the oldest qualified
+Windows feature release.
 
-Managed filesystem paths use the long-path form where required. A pathname used
-as a Windows API or process-path operand is converted to the ordinary absolute
-Windows representation instead of a device prefix that the child may not understand.
-CUP protocol arguments are different: normalized root paths passed to detached CUP
-helpers keep their internal `/` spelling across the UTF-8/UTF-16 argv boundary so
-the child can validate them against paths reconstructed by the layout layer.
+A mapped Windows `.exe` cannot be treated like a POSIX executable pathname during
+uninstall. CUP therefore binds `DELETE_ON_CLOSE` to the exact temporary helper
+before handoff. A built-in Windows PowerShell process, resolved from the system
+directory, acts only as the lifetime carrier for that cleanup handle until the
+helper process terminates. It receives no CUP root, token, journal or mutation
+authority.
 
-The backend checks reparse points, uses handle identities for later operations
-and configures inherited handles explicitly for detached helpers. Identity
-snapshots use the 128-bit Windows file ID where the filesystem provides one.
-The legacy ID is used only when the filesystem explicitly reports that no
-128-bit ID exists. After a move, the backend refreshes identity through the
-still-open source handle before proving the destination because some filesystems
-can change a file ID during rename.
+## Path and object rules
 
-Windows x64 is built against the Windows 10 API baseline
-(`_WIN32_WINNT=0x0A00`). That build setting does not by itself identify the
-oldest Windows 10 release that is qualified to run cup.
+Managed relative paths use a platform-independent clean grammar: no empty,
+absolute, `.` or `..` components, control characters or identifier separators.
+Native roots additionally pass the operating system's absolute/root/UNC/device
+checks.
 
-Windows uninstall has one additional platform problem: a running `.exe` is a
-mapped executable image, so cup does not rely on POSIX-style unlink of the
-helper pathname. The parent instead binds `DELETE_ON_CLOSE` to the exact helper
-file, and the child proves that inherited handle against its own running image
-before accepting handoff.
+Control paths do not use symlink/junction/reparse shortcuts. Directory
+enumeration retains native identity when a later copy/move/remove relies on the
+object that was observed. Recursive native cleanup does not follow links/reparse
+points and refuses to cross into another device/volume.
 
-The final cleanup handle must outlive the helper process. A built-in Windows
-PowerShell process resolved from the system directory acts only as that lifetime
-carrier: it receives the helper process handle, cleanup handle, readiness event
-and `NUL` standard handles, but no cup root, token, journal or handoff authority.
-The parent observes readiness before releasing `cup.lock`; the carrier releases
-the cleanup handle only after the helper process object is signaled. No PID
-polling, lifetime timer or `PATH` lookup is used.
+Package payload path rules are documented in [Packages](PACKAGES.md).
 
-The complete ordering and recovery boundaries are described in
-[Transactions](TRANSACTIONS.md).
-
-## Internal path representation
-
-Public and persistent path text uses `/`-independent project rules, but native
-filesystem calls receive the representation expected by the current platform.
-
-Managed relative paths must be clean:
-
-- no empty segment;
-- no `.` or `..` segment;
-- no absolute package entry;
-- no control characters;
-- no separator accepted inside an identifier;
-- no path longer than the project limit.
-
-Windows drive roots, UNC paths and device-prefixed paths are validated before
-use. POSIX paths must be absolute where a managed root or external override
-requires it.
-
-## Permissions
+## Permissions and executable state
 
 ### POSIX permissions
 
-The user root is private. Runtime and staging directories use user-only modes
-where they hold temporary or transaction data.
-
-Installed package directories are normalized to mode `0755`. Regular package
-files are normalized to `0755` when the admitted archive marks them executable
-and to `0644` otherwise. Declared executable entries must satisfy the POSIX
-executable check before the package is accepted.
-
-cup and helper executables use executable permissions. State, configuration and
-journal files are not made executable.
+CUP creates private runtime/staging data below the user root. Installed package
+directories are normalized to `0755`; regular payload files use `0755` when
+executable and `0644` otherwise. Declared package entries must pass the executable
+check before admission.
 
 ### Windows permissions
 
-Windows does not use POSIX mode bits as the security model. cup checks file type,
-reparse state and handle access instead. Test fixtures normalize mode-like
-expectations only where Git/MSYS needs them for repository scripts.
+Windows security is not modeled through POSIX mode bits. Managed private
+directories use a protected DACL owned by the current user; access is limited to
+the current user, Local System and the local Administrators group and is inherited
+by managed descendants. CUP verifies that privacy contract together with object
+type, reparse state and native identity. Repository/MSYS test fixtures may still
+use mode-like expectations where Git/shell transport needs them.
 
-## Links, reparse points and archive paths
+## Locks and handoff
 
-CUP control trees such as state, staging control data and runtime metadata do not
-use symbolic links, junctions or other reparse points as structural shortcuts.
-Windows package content follows the same no-reparse rule.
+Normal commands coordinate through `<cup-root>/cup.lock`. Detached self-update
+or uninstall must transfer exclusive ownership to another process without an
+unlocked interval.
 
-POSIX package archives may contain relative symbolic links. Extraction requires lexical
-confinement and forbids using a link as the parent of a later archive write; it does not need
-to resolve the link while the tree is still being constructed. Final manifest validation is
-stricter: every link must resolve physically inside the package to a regular file, and every
-`entry.*` path must resolve to an executable regular file. Raw hard-link entries, device files,
-FIFOs and sockets remain rejected; the producer materializes hard links as independent regular
-files.
+```text
+POSIX    parent/child share the inherited flock open-file description
+Windows  parent/child share a named handoff authority keyed by root-parent
+         filesystem identity and the canonical .cup/.coffee-cup slot
+```
 
-When an operation enumerates a directory, the observed child identity is passed
-to later copy or removal work. The later operation checks that it opened the
-same object instead of trusting that the pathname still refers to it.
+For self-update, the child converts that temporary authority back into the normal
+root lock before commit. Uninstall keeps handoff authority while detaching the
+root because the normal lock file moves with the root being removed.
 
-## Filesystem boundaries
+The transaction-level behavior is documented in
+[Transactions and recovery](TRANSACTIONS.md).
 
-Native recursive removal records the starting device or volume and refuses to
-cross into another mounted filesystem or reparse target. This rule protects
-runtime cleanup of owned CUP trees from continuing into a separately mounted or
-reparsed object that happens to appear below them.
+## Atomic publication and durability
 
-Repository build/dependency cleanup has a separate, simpler shell path-safety
-contract based on canonical paths, ownership markers, containment and rejection
-of evident symbolic-link components; it does not claim the native recursive
-filesystem-boundary model.
+Both native backends expose create-without-replace, identity-bound replacement
+and identity-bound removal where CUP needs them. The runtime does not implement
+no-replace as an unsafe “check then rename” sequence.
 
-## Locks, handoff and atomic replacement
-
-Normal root operations use one runtime lock at `<cup-root>/cup.lock`. A detached
-self-update or uninstall must transfer authority to a child without creating an
-unlocked interval, so the system layer also provides a temporary `SystemHandoff`.
-
-On POSIX, parent and child retain references to the same `flock` open-file
-description across `fork`/`exec`. On Windows, where `LockFileEx` ownership cannot
-be transferred to another process, a named kernel object keyed by the root-parent
-filesystem identity and canonical root slot bridges the transition. Root admission
-checks that no Windows handoff authority is active before inspecting a root and
-again after acquiring `cup.lock`.
-
-For self-update, the child returns from handoff authority to the canonical lock
-before changing update state. For uninstall, the child keeps handoff authority
-while it detaches and removes the root because `cup.lock` itself lives inside the
-root being removed.
-
-The native backends also provide atomic file and directory publication used by
-state, preferences, wrappers, journals and release/build staging.
-
-A replacement reports whether it was:
+Mutation results distinguish:
 
 ```text
 not applied
-applied but not fully confirmed as durable
+applied but not fully confirmed durable
 durable
 ```
 
-No-replace operations must use a real native primitive. cup does not replace
-that guarantee with “check whether the path exists, then move”, because another
-process could create the destination between those two steps.
+POSIX can use file/directory `fsync` at the required boundaries. Some Windows
+filesystems reject directory `FlushFileBuffers`; CUP reports the strongest state
+it can prove instead of pretending to have POSIX-equivalent durability.
 
 ## Native detached helpers
 
-Both self-update and uninstall run a copied native cup executable after the
-initiating process exits. Parent lifetime is proved by an inherited operating-
-system object rather than a PID. Detached helpers do not retain the caller's
-standard streams: POSIX reconnects stdin/stdout/stderr to `/dev/null`, while
-Windows inherits only the explicitly allowlisted handles required by the
-operation.
+Both `cup update cup` and `cup uninstall` continue through a copied native CUP
+executable after the initiating process exits. Parent lifetime is observed
+through inherited OS objects, not PID polling. Detached helpers do not retain the
+caller's standard streams.
 
-### Uninstall
+- update uses the persistent `helpers/update-helper[.exe]` refreshed from the
+  installed executable before each operation;
+- uninstall uses one token-bound temporary helper outside the managed root;
+- Windows temporary-helper deletion uses the handle-lifetime carrier described
+  above; all root/journal cleanup remains native C.
 
-The parent creates a unique native helper copy outside the managed root, starts
-it while still holding the exclusive canonical lock and establishes handoff
-authority before that lock can be released. Temporary-helper cleanup is armed
-before the root can be mutated: POSIX unlinks the verified running helper path;
-Windows uses the deferred cleanup mechanism described above.
+## Build and linkage matrix
 
-After parent exit, the child validates the root and uninstall journal, publishes
-`detaching/detach`, then performs the root move and no-follow cleanup itself.
-Windows retries only bounded transient sharing failures during the root move.
-All managed-root cleanup uses the native long-path filesystem backend. Windows
-PowerShell participates only as the handle-only lifetime carrier described
-above; it does not receive managed paths or perform filesystem cleanup.
+| Platform | Primary build toolchain | Release linkage |
+|---|---|---|
+| Linux x64 | GCC | fully static ELF |
+| Linux arm64 | GCC | fully static ELF |
+| macOS x64 | Apple Clang | third-party static, Apple system dynamic |
+| macOS arm64 | Apple Clang | third-party static, Apple system dynamic |
+| Windows x64 | MSYS2 UCRT64 GCC | third-party/compiler runtime static, approved system DLLs dynamic |
 
-### `cup update cup`
+Linux x64 also receives a secondary Clang compile/unit pass. Windows sanitizers
+use the separate MSYS2 CLANG64 profile with LLVM Compiler-RT.
 
-The persistent `helpers/update-helper[.exe]` is refreshed from the current
-installed executable before each update. It receives the same continuous
-handoff. After parent exit, POSIX converts the inherited flock authority directly
-into the helper's `SystemLock`; Windows acquires `cup.lock` while the external
-authority is still active and then releases that temporary authority. The helper
-then validates and commits the staged generation.
+Current release-build baselines include macOS deployment target 13.0 and the
+Windows 10 API baseline above. Runtime support still requires native test
+evidence; a compile flag alone is not compatibility proof.
 
 ## Linux static runtime
 
-Official Linux candidates statically link cup's third-party libraries and the
-glibc runtime. The resulting executable has no ELF dynamic interpreter, but
-glibc resolver and NSS behavior can still depend on compatible host facilities.
-The release portability test exercises DNS, TLS, direct HTTPS and proxy CONNECT;
-it does not claim a musl-based or libc-independent runtime.
+Official Linux releases contain no ELF interpreter or `DT_NEEDED` entries. CUP's
+third-party graph and glibc runtime are linked into the executable. glibc
+resolver/NSS behavior can still rely on compatible host facilities, so the
+portability suite tests DNS, TLS, direct HTTPS and CONNECT proxy behavior rather
+than claiming libc independence.
 
 ## Public installer portability
 
-The POSIX installer runs on machines that cup does not prepare. It uses `/bin/sh`
-and a deliberately small command set. It does not depend on a compiler or on
-repository-only helpers.
+The POSIX installer targets `/bin/sh` and a deliberately small command set. It
+must work before CUP or a compiler is available. The Windows installer uses
+Windows PowerShell-compatible syntax.
 
-The PowerShell installer uses Windows PowerShell-compatible syntax and native
-filesystem paths.
+Build/test/release scripts have a broader contract because CI prepares their
+runtime environment.
 
-Build, dependency, test and release scripts have a broader contract because the
-workflow prepares their environment.
+## Native verification
 
-## Build matrix
-
-| Platform | Main toolchain |
-|---|---|
-| Linux x64 | GCC |
-| Linux ARM64 | GCC |
-| macOS x64 | Apple Clang |
-| macOS ARM64 | Apple Clang |
-| Windows x64 | MSYS2 UCRT64 GCC |
-
-Linux also receives a secondary Clang compile/unit pass. Windows sanitizer work
-uses CLANG64 so ASan/UBSan use LLVM Compiler-RT.
-
-Current CI build values are:
+Binary inspection checks the native output rather than inferring linkage from
+Make flags:
 
 ```text
-macOS deployment target  13.0
-Windows _WIN32_WINNT      0x0A00
+Linux    architecture + fully static ELF + no RPATH/RUNPATH
+macOS    architecture/deployment target + approved Apple deps + no LC_RPATH
+Windows  PE32+ x86-64 + approved system imports + resource/mitigation flags
 ```
 
-These values describe the build configuration rather than deriving runtime
-support by themselves. In particular, `_WIN32_WINNT=0x0A00` selects the Windows
-10 API baseline; it does not name a specific Windows 10 feature release. The
-oldest supported runtime still requires matching native qualification evidence.
+The main test workflow executes all five supported host platforms natively.
+Platform-specific suites cover the behaviors that cannot be meaningfully
+simulated elsewhere, such as Windows reparse/process semantics, macOS Mach-O
+metadata and Linux static-runtime behavior.
 
-## Linked-binary policy
-
-Release candidates may depend only on the platform runtime allowed by the
-project:
-
-```text
-Linux    fully static executable
-macOS    Apple system libraries and frameworks only
-Windows  allowlisted operating-system DLLs only
-```
-
-Third-party project dependencies are linked statically.
-
-`make check-binary` checks object format, architecture, runtime dependencies,
-minimum OS metadata, debug/sanitizer instrumentation and path leaks.
-
-## Test matrix
-
-The five identifiers above are the product support matrix. Native test evidence
-belongs to a specific commit and workflow run; listing a platform here does not
-by itself claim that a particular repository snapshot was executed there.
-
-The workflow runs native jobs for all five supported platforms. Public CLI
-integration scenarios have matching POSIX and PowerShell suites where the
-behavior is shared.
-
-Platform-only tests cover:
-
-```text
-POSIX bootstrap and shell portability
-Windows reparse points and native filesystem behavior
-Linux fully static runtime
-macOS load commands and coverage tooling
-Windows PE imports and console/process handling
-```
-
-Repository tests can check workflow structure, but the real Windows and macOS
-runners remain the final test for native APIs and shell behavior.
-
-## Current limitations
+## Current platform limits
 
 - Windows ARM64 is not supported.
-- cup does not install a system compiler or runtime outside its own root.
-- PATH is optional for correctness; interactive installers may offer user-level
-  PATH integration, while relocation and uninstall do not rewrite it automatically.
-- Windows directory flushing may provide weaker confirmation than POSIX
-  directory `fsync` on filesystems that reject `FlushFileBuffers` for a
-  directory handle.
-- Final minimum OS support still needs evidence from the matching native OS
-  versions.
+- CUP does not install tool/runtime files outside its managed root.
+- PATH integration is optional and user-level only.
+- Windows directory durability can be weaker to prove on filesystems that reject
+  directory flushes.
+- The oldest practical OS release must be established by native testing; a
+  compiler deployment baseline alone is not sufficient.
 
 ## Related documents
 
 - [Architecture](ARCHITECTURE.md)
+- [Packages](PACKAGES.md)
 - [State](STATE.md)
 - [Transactions](TRANSACTIONS.md)
 - [Build](../development/BUILD.md)

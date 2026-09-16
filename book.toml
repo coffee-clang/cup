@@ -1,6 +1,6 @@
 [book]
-title = "Cup"
-description = "The C toolchain installer"
+title = "CUP"
+description = "The userspace C toolchain manager"
 authors = ["Gianluca Della Vedova"]
 language = "en"
 src = "docs"

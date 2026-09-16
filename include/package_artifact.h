@@ -63,11 +63,8 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
                                 const char *expected_digest,
                                 ArtifactVerificationStatus *status);
 
-/*
- * Rebind refreshed checksum metadata to the already opened bytes without reopening the path.
- * Operational verification failure preserves the opened artifact so its exact identity remains
- * available to the caller for discard; verified_artifact_open() still owns cleanup on open.
- */
+/* Revalidate open bytes against refreshed checksum metadata without reopening the path;
+ * failure keeps the exact artifact available for discard. */
 CupError verified_artifact_verify_expected(VerifiedArtifact *artifact,
                                            const char *expected_digest,
                                            ArtifactVerificationStatus *status);
