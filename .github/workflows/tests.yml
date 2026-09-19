@@ -81,7 +81,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.platform }}"
+          root="$(pwd -P)/deps/${{ matrix.platform }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -97,7 +97,6 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           FAMILY: ${{ matrix.family }}
-          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
           CUP_SOURCE_BUILD_CONFIG: ${{ runner.temp }}/build-config.txt
@@ -146,7 +145,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          root="$HOME/deps/windows-x64"
+          root="$(pwd -P)/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -164,14 +163,13 @@ jobs:
         shell: msys2 {0}
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
-          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
           CUP_TEST_UNIT_TIMEOUT: 300
         run: |
           set -euo pipefail
-          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_INTERNAL_DEPS_TARGET=deps-check test
-          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_INTERNAL_DEPS_TARGET=deps-check check-development
           CUP_TEST_PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
             ./tests/repository/reproducibility.sh
@@ -261,7 +259,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          root="$(pwd -P)/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -272,7 +270,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          root="$(pwd -P)/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -302,7 +300,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           CUP_TEST_PLATFORM: ${{ matrix.platform }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-posix.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CC: ${{ matrix.compiler }}
           CUP_COVERAGE_MIN_LINES: 85
@@ -311,7 +308,7 @@ jobs:
         run: |
           set -euo pipefail
           tests/runners/coverage.sh
-          make PLATFORM="$PLATFORM" DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM="$PLATFORM" DEPS_PREFIX="$DEPS_PREFIX" \
             CC="$CC" CUP_BUILD_CONFIGURATION=coverage _check-binary
 
       - name: Collect Windows coverage
@@ -321,7 +318,6 @@ jobs:
           PLATFORM: windows-x64
           CUP_TEST_PLATFORM: windows-x64
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-windows.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CC: gcc
           CUP_COVERAGE_MIN_LINES: 85
@@ -330,7 +326,7 @@ jobs:
         run: |
           set -euo pipefail
           tests/runners/coverage.sh
-          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
             CC=gcc WINDRES=windres CUP_BUILD_CONFIGURATION=coverage _check-binary
       - uses: actions/upload-artifact@v7.0.1
         if: always()
@@ -414,7 +410,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          root="$(pwd -P)/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -425,7 +421,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.variant }}"
+          root="$(pwd -P)/deps/${{ matrix.variant }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -455,13 +451,12 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           CUP_TEST_PLATFORM: ${{ matrix.platform }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-posix.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CC: clang
         run: |
           set -euo pipefail
           tests/runners/sanitizers.sh
-          make PLATFORM="$PLATFORM" DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM="$PLATFORM" DEPS_PREFIX="$DEPS_PREFIX" \
             CC=clang CUP_BUILD_CONFIGURATION=sanitizers _check-binary
 
       - name: Run Windows sanitizer tests
@@ -471,13 +466,12 @@ jobs:
           PLATFORM: windows-x64
           CUP_TEST_PLATFORM: windows-x64
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-windows.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CC: clang
         run: |
           set -euo pipefail
           tests/runners/sanitizers.sh
-          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+          make PLATFORM=windows-x64 DEPS_PREFIX="$DEPS_PREFIX" \
             CC=clang WINDRES=llvm-windres CUP_BUILD_CONFIGURATION=sanitizers _check-binary
       - uses: actions/upload-artifact@v7.0.1
         if: always()

@@ -74,7 +74,8 @@ EOF_VERIFY
 
     cup_test_prepare_environment
     assert_equals "$CUP_TEST_PLATFORM" linux-x64
-    assert_equals "$DEPS_PREFIX" "$HOME/deps/linux-x64/install"
+    _cup_repo_root=$(cup_test_project_root)
+    assert_equals "$DEPS_PREFIX" "$_cup_repo_root/deps/linux-x64/install"
 )
 
 (

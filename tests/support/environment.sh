@@ -83,7 +83,8 @@ cup_test_prepare_environment() {
     esac
 
     CUP_TEST_PLATFORM=$_cup_test_platform
-    DEPS_PREFIX=${DEPS_PREFIX:-$HOME/deps/$_cup_test_platform/install}
+    _cup_test_project=$(cup_test_project_root) || return 1
+    DEPS_PREFIX=${DEPS_PREFIX:-$_cup_test_project/deps/$_cup_test_platform/install}
     export CUP_TEST_PLATFORM DEPS_PREFIX
 }
 

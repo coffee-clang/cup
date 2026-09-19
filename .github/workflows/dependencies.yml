@@ -149,7 +149,7 @@ jobs:
             macos-arm64-apple-clang) platform=macos-arm64; profile=apple-clang; family=macos ;;
             *) echo "Unsupported POSIX target: $TARGET" >&2; exit 2 ;;
           esac
-          root="$HOME/deps/$platform"
+          root="$(pwd -P)/deps/$platform"
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
           echo "family=$family" >> "$GITHUB_OUTPUT"
@@ -189,14 +189,11 @@ jobs:
           set -euo pipefail
           if [ "$CACHE_HIT" = true ]; then
             make PLATFORM='${{ steps.posix-target.outputs.platform }}' \
-              DEPS_ROOT='${{ steps.posix-target.outputs.root }}' \
               DEPS_PREFIX='${{ steps.posix-target.outputs.prefix }}' deps-check
           else
             JOBS=4 make PLATFORM='${{ steps.posix-target.outputs.platform }}' \
-              DEPS_ROOT='${{ steps.posix-target.outputs.root }}' \
-              DEPS_PREFIX='${{ steps.posix-target.outputs.prefix }}' deps
+              DEPS_ROOT='${{ steps.posix-target.outputs.root }}' deps
             make PLATFORM='${{ steps.posix-target.outputs.platform }}' \
-              DEPS_ROOT='${{ steps.posix-target.outputs.root }}' \
               DEPS_PREFIX='${{ steps.posix-target.outputs.prefix }}' deps-check
           fi
 
@@ -212,7 +209,7 @@ jobs:
             windows-x64-clang64) profile=clang64; variant=windows-x64-clang64 ;;
             *) echo "Unsupported Windows target: $TARGET" >&2; exit 2 ;;
           esac
-          root="$HOME/deps/$variant"
+          root="$(pwd -P)/deps/$variant"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -246,11 +243,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$CACHE_HIT" = true ]; then
-            make PLATFORM=windows-x64 DEPS_ROOT='${{ steps.windows-target.outputs.root }}' \
+            make PLATFORM=windows-x64 \
               DEPS_PREFIX='${{ steps.windows-target.outputs.prefix }}' deps-check
           else
-            JOBS=4 make PLATFORM=windows-x64 DEPS_ROOT='${{ steps.windows-target.outputs.root }}' \
-              DEPS_PREFIX='${{ steps.windows-target.outputs.prefix }}' deps
-            make PLATFORM=windows-x64 DEPS_ROOT='${{ steps.windows-target.outputs.root }}' \
+            JOBS=4 make PLATFORM=windows-x64 \
+              DEPS_ROOT='${{ steps.windows-target.outputs.root }}' deps
+            make PLATFORM=windows-x64 \
               DEPS_PREFIX='${{ steps.windows-target.outputs.prefix }}' deps-check
           fi

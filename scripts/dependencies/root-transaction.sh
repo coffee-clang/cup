@@ -27,8 +27,7 @@ dependency_stream_matches_file() {
 dependency_validate_root_path() {
     local root="$1"
 
-    dependency_require_whitespace_free_path "dependency root" "$root" || return 1
-    cup_path_validate_absolute_clean "$root" "dependency root" || return 1
+    dependency_validate_path "dependency root" "$root" || return 1
     if [ -n "${HOME:-}" ] && [ "$root" = "${HOME%/}" ]; then
         echo "Error: dependency root must not be the user home directory: $root" >&2
         return 1

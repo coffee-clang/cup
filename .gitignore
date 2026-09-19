@@ -1,5 +1,6 @@
 # Build and test outputs
 /build/
+/deps/
 
 # Release artifacts
 /dist/

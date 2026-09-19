@@ -18,7 +18,7 @@ checkout="$TMP_ROOT/native checkout with spaces/cup-main"
 mkdir -p "$checkout"
 (
     cd "$PROJECT_ROOT"
-    tar --exclude='./.git' --exclude='./build' -cf - .
+    tar --exclude='./.git' --exclude='./build' --exclude='./deps' -cf - .
 ) | (
     cd "$checkout"
     tar -xf -

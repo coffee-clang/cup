@@ -38,6 +38,7 @@ require_sha256_tool
 require_tool cmp
 use_openssl=$(dependency_uses_openssl "$PLATFORM")
 DEPS_PREFIX=$MODE
+dependency_validate_path "dependency prefix" "$DEPS_PREFIX"
 metadata=$(dependency_metadata "$PLATFORM" "$profile")
 if ! dependency_prefix_matches "$DEPS_PREFIX" "$metadata" "$use_openssl"; then
     echo "Pinned dependency prefix is missing, incomplete or incompatible: $DEPS_PREFIX" >&2

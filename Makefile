@@ -20,6 +20,7 @@ escape_spaces = $(subst $(space),\$(space),$(1))
 SUPPORTED_PLATFORM := linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
 SUPPORTED_CONFIGURATION := development debug coverage sanitizers release
 PLATFORM_INPUT_ORIGIN := $(origin PLATFORM)
+DEPS_PREFIX_INPUT_ORIGIN := $(origin DEPS_PREFIX)
 
 # Freeze every supported external input before it is inspected. $(value ...)
 # preserves command-line and environment text literally, so Make functions in
@@ -204,7 +205,13 @@ endif
 CUP_BUILD_CONFIGURATION ?= development
 CUP_TEST_CONFIGURATION ?= development
 CUP_OFFICIAL_BUILD ?= 0
-CUP_INTERNAL_DEPS_TARGET ?= deps
+ifeq ($(origin CUP_INTERNAL_DEPS_TARGET),undefined)
+    ifneq ($(filter environment environment\ override command\ line,$(DEPS_PREFIX_INPUT_ORIGIN)),)
+        CUP_INTERNAL_DEPS_TARGET := deps-check
+    else
+        CUP_INTERNAL_DEPS_TARGET := deps
+    endif
+endif
 CUP_INTERNAL_TOOLCHAIN_ROLE ?= primary
 override CONFIGURATION := $(CUP_BUILD_CONFIGURATION)
 
@@ -477,96 +484,27 @@ ifeq ($(PLATFORM),windows-x64)
         DEPS_VARIANT := windows-x64-clang64
     endif
 endif
-DEPS_ROOT ?= $(HOME)/deps/$(DEPS_VARIANT)
+DEPS_ROOT ?= $(PROJECT_ROOT)/deps/$(DEPS_VARIANT)
+# Make must reject values that cannot be transported safely through its quoted
+# recursive recipes. Dependency path semantics belong to the builder/verifier
+# and are checked only when the path is actually consumed.
 DEPS_ROOT_INPUT := $(DEPS_ROOT)
-ifneq ($(findstring $(space),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain whitespace)
-endif
-ifneq ($(findstring $(tab),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain whitespace)
-endif
 ifneq ($(findstring $(apostrophe),$(DEPS_ROOT_INPUT)),)
     $(error DEPS_ROOT must not contain a single quote)
-endif
-ifneq ($(findstring $(colon),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain a colon)
-endif
-ifneq ($(findstring $(semicolon),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain a semicolon)
-endif
-ifneq ($(findstring $(percent),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain a percent sign)
-endif
-ifneq ($(findstring $(hash),$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain a number sign)
 endif
 ifneq ($(findstring $(dollar),$(DEPS_ROOT_INPUT)),)
     $(error DEPS_ROOT must not contain a dollar sign)
 endif
-ifneq ($(findstring \,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must use forward slashes)
-endif
-ifneq ($(findstring //,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain empty path components)
-endif
-ifeq ($(filter /%,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must be an absolute path)
-endif
-ifneq ($(filter / . .. ./% ../% %/. %/.. %/,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain . or .. path components)
-endif
-ifneq ($(findstring /./,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain . path components)
-endif
-ifneq ($(findstring /../,$(DEPS_ROOT_INPUT)),)
-    $(error DEPS_ROOT must not contain .. path components)
-endif
-override DEPS_ROOT := $(abspath $(DEPS_ROOT_INPUT))
+override DEPS_ROOT := $(DEPS_ROOT_INPUT)
 DEPS_PREFIX ?= $(DEPS_ROOT)/install
 DEPS_PREFIX_INPUT := $(DEPS_PREFIX)
-ifneq ($(findstring $(space),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain whitespace)
-endif
-ifneq ($(findstring $(tab),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain whitespace)
-endif
 ifneq ($(findstring $(apostrophe),$(DEPS_PREFIX_INPUT)),)
     $(error DEPS_PREFIX must not contain a single quote)
-endif
-ifneq ($(findstring $(colon),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain a colon)
-endif
-ifneq ($(findstring $(semicolon),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain a semicolon)
-endif
-ifneq ($(findstring $(percent),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain a percent sign)
-endif
-ifneq ($(findstring $(hash),$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain a number sign)
 endif
 ifneq ($(findstring $(dollar),$(DEPS_PREFIX_INPUT)),)
     $(error DEPS_PREFIX must not contain a dollar sign)
 endif
-ifneq ($(findstring \,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must use forward slashes)
-endif
-ifneq ($(findstring //,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain empty path components)
-endif
-ifeq ($(filter /%,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must be an absolute path)
-endif
-ifneq ($(filter / . .. ./% ../% %/. %/.. %/,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain . or .. path components)
-endif
-ifneq ($(findstring /./,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain . path components)
-endif
-ifneq ($(findstring /../,$(DEPS_PREFIX_INPUT)),)
-    $(error DEPS_PREFIX must not contain .. path components)
-endif
-override DEPS_PREFIX := $(abspath $(DEPS_PREFIX_INPUT))
+override DEPS_PREFIX := $(DEPS_PREFIX_INPUT)
 override DEPS_INCLUDE := $(DEPS_PREFIX)/include
 DEPS_LIB_DIRS = $(foreach directory,$(DEPS_PREFIX)/lib $(DEPS_PREFIX)/lib64,\
     $(if $(wildcard $(directory)),$(directory)))
@@ -714,7 +652,7 @@ endif
     check-ca-bundle FORCE _prepare-object-directories
 
 BUILD_RECURSE = $(MAKE) --no-print-directory _build \
-    PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+    PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
     CC='$(CC)' WINDRES='$(WINDRES)' \
     CUP_OFFICIAL_BUILD='$(CUP_OFFICIAL_BUILD)'
 all: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
@@ -730,7 +668,7 @@ coverage: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 
 sanitizers: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _build PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC=clang WINDRES='$(if $(filter windows-x64,$(PLATFORM)),llvm-windres,$(WINDRES))' \
 		CUP_BUILD_CONFIGURATION=sanitizers CUP_OFFICIAL_BUILD=0
 
@@ -749,7 +687,7 @@ release-common-assets: $(BUILD_ROOT_MARKER)
 
 release-candidate: deps-check | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _release-output \
-		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)' CUP_BUILD_CONFIGURATION=release \
 		CUP_OFFICIAL_BUILD=1 CUP_RELEASE_VERSION='$(CUP_RELEASE_VERSION)' \
 		CUP_RELEASE_TAG='$(CUP_RELEASE_TAG)' CUP_RELEASE_COMMIT='$(CUP_RELEASE_COMMIT)'
@@ -764,7 +702,7 @@ _release-output: _release-candidate
 
 debug-artifact: deps-check | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _debug-artifact \
-		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)' CUP_BUILD_CONFIGURATION=debug \
 		CUP_OFFICIAL_BUILD=0
 
@@ -870,24 +808,24 @@ check-toolchain:
 check-binary: check-development
 check-development: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=development CUP_OFFICIAL_BUILD=0
 check-debug: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=debug CUP_OFFICIAL_BUILD=0
 check-coverage: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=coverage CUP_OFFICIAL_BUILD=0
 check-sanitizers: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC=clang \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC=clang \
 		WINDRES='$(if $(filter windows-x64,$(PLATFORM)),llvm-windres,$(WINDRES))' \
 		CUP_BUILD_CONFIGURATION=sanitizers CUP_OFFICIAL_BUILD=0
 check-release: $(CUP_INTERNAL_DEPS_TARGET) | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _check-binary PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
+		DEPS_PREFIX='$(DEPS_PREFIX)' CC='$(CC)' WINDRES='$(WINDRES)' \
 		CUP_BUILD_CONFIGURATION=release CUP_OFFICIAL_BUILD=0
 
 _check-binary: $(BINARY_INSPECTION)
@@ -1011,7 +949,7 @@ endif
 
 version: | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _version \
-		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)'
 
 _version: $(VERSION_STAMP)
@@ -1024,7 +962,7 @@ validate-release:
 
 release-metadata: | $(BUILD_ROOT_MARKER)
 	+@$(MAKE) --no-print-directory _release-metadata \
-		PLATFORM='$(PLATFORM)' DEPS_ROOT='$(DEPS_ROOT)' DEPS_PREFIX='$(DEPS_PREFIX)' \
+		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' WINDRES='$(WINDRES)'
 
 _release-metadata: $(VERSION_STAMP)
@@ -1126,7 +1064,6 @@ test: $(CUP_INTERNAL_DEPS_TARGET)
 		windows-x64) \
 			$(MAKE) --no-print-directory _test-windows \
 				PLATFORM=windows-x64 \
-				DEPS_ROOT='$(DEPS_ROOT)' \
 				DEPS_PREFIX='$(DEPS_PREFIX)' \
 				CC='$(CC)' \
 			;; \
@@ -1212,7 +1149,6 @@ test-release: deps-check
 	@test -n "$(RELEASE_DIR)" || { echo "Set RELEASE_DIR=<candidate-dir>" >&2; exit 2; }
 	+@$(MAKE) --no-print-directory _test-helpers \
 		PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' \
 		CUP_TEST_CONFIGURATION='$(CUP_TEST_CONFIGURATION)'
@@ -1255,7 +1191,6 @@ test-coverage: $(CUP_INTERNAL_DEPS_TARGET)
 		./tests/runners/coverage.sh
 	+@$(MAKE) --no-print-directory _check-binary \
 		PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC='$(CC)' \
 		WINDRES='$(WINDRES)' \
@@ -1270,7 +1205,6 @@ test-sanitizers: $(CUP_INTERNAL_DEPS_TARGET)
 		./tests/runners/sanitizers.sh
 	+@$(MAKE) --no-print-directory _check-binary \
 		PLATFORM='$(PLATFORM)' \
-		DEPS_ROOT='$(DEPS_ROOT)' \
 		DEPS_PREFIX='$(DEPS_PREFIX)' \
 		CC=clang \
 		WINDRES='$(if $(filter windows-x64,$(PLATFORM)),llvm-windres,$(WINDRES))' \
@@ -1293,8 +1227,6 @@ test-portability-linux: $(CUP_INTERNAL_DEPS_TARGET)
 test-windows:
 	+@$(MAKE) --no-print-directory _test-windows \
 		PLATFORM=windows-x64 \
-		DEPS_ROOT='$(HOME)/deps/windows-x64' \
-		DEPS_PREFIX='$(HOME)/deps/windows-x64/install' \
 		CC=gcc \
 		WINDRES=windres
 

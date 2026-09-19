@@ -185,7 +185,7 @@ jobs:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
-          root="$HOME/deps/${{ matrix.platform }}"
+          root="$(pwd -P)/deps/${{ matrix.platform }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -198,7 +198,7 @@ jobs:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
-          root="$HOME/deps/windows-x64"
+          root="$(pwd -P)/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -241,7 +241,6 @@ jobs:
         if: matrix.family != 'windows'
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-posix.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CUP_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           CUP_RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
@@ -250,7 +249,7 @@ jobs:
           set -euo pipefail
           inputs="$RUNNER_TEMP/cup-release-inputs"
           make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
-            DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+            DEPS_PREFIX="$DEPS_PREFIX" \
             RELEASE_COMMON_DIR="$inputs/common" release-candidate
           scripts/ci/verify-source-build-config.sh \
             "$inputs/source/${{ matrix.platform }}/build-config.txt" \
@@ -262,7 +261,6 @@ jobs:
         shell: msys2 {0}
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache-windows.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CUP_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           CUP_RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
@@ -271,7 +269,7 @@ jobs:
           set -euo pipefail
           inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
           make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
-            DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+            DEPS_PREFIX="$DEPS_PREFIX" \
             RELEASE_COMMON_DIR="$inputs/common" release-candidate
           scripts/ci/verify-source-build-config.sh \
             "$inputs/source/windows-x64/build-config.txt" \
@@ -280,7 +278,6 @@ jobs:
       - name: Assemble and test POSIX candidate
         if: matrix.family != 'windows'
         env:
-          DEPS_ROOT: ${{ steps.cache-posix.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
@@ -291,14 +288,13 @@ jobs:
             "$inputs/common" \
             "$PWD/build/release/platforms/${{ matrix.platform }}/public"
           make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
-            DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+            DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
 
       - name: Assemble and test Windows candidate
         if: matrix.family == 'windows'
         shell: msys2 {0}
         env:
-          DEPS_ROOT: ${{ steps.cache-windows.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
@@ -309,7 +305,7 @@ jobs:
             "$inputs/common" \
             "$PWD/build/release/platforms/windows-x64/public"
           make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
-            DEPS_ROOT="$DEPS_ROOT" DEPS_PREFIX="$DEPS_PREFIX" \
+            DEPS_PREFIX="$DEPS_PREFIX" \
             CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
 
       - uses: actions/upload-artifact@v7.0.1

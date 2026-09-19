@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 PLATFORM="${PLATFORM:-linux-x64}"
-DEPS_PREFIX="${DEPS_PREFIX:-$HOME/deps/$PLATFORM/install}"
+DEPS_PREFIX="${DEPS_PREFIX:-$ROOT/deps/$PLATFORM/install}"
 JOBS="${CUP_TEST_JOBS:-4}"
 
 fail() {
@@ -232,7 +232,7 @@ verify_successful_install() {
 
 mkdir -p "$SOURCE" "$SERVER_ROOT" "$PACKAGE_ROOT"
 source_snapshot="$WORK/source.tar"
-tar -C "$ROOT" --exclude='./.git' --exclude='./.vscode' --exclude='./build' \
+tar -C "$ROOT" --exclude='./.git' --exclude='./.vscode' --exclude='./build' --exclude='./deps' \
     -cf "$source_snapshot" .
 tar -xf "$source_snapshot" -C "$SOURCE"
 rm -f -- "$source_snapshot"

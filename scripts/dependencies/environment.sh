@@ -15,6 +15,42 @@ dependency_require_whitespace_free_path() {
     esac
 }
 
+# Dependency paths are embedded in compiler/link metadata and pkg-config search
+# lists, so the builder and verifier share one stricter path contract.
+dependency_validate_path() {
+    local label="$1"
+    local path="$2"
+
+    dependency_require_whitespace_free_path "$label" "$path" || return 1
+    case "$path" in
+        *"'"*)
+            echo "Error: $label must not contain a single quote: $path" >&2
+            return 1
+            ;;
+        *:*)
+            echo "Error: $label must not contain a colon: $path" >&2
+            return 1
+            ;;
+        *';'*)
+            echo "Error: $label must not contain a semicolon: $path" >&2
+            return 1
+            ;;
+        *'%'*)
+            echo "Error: $label must not contain a percent sign: $path" >&2
+            return 1
+            ;;
+        *'#'*)
+            echo "Error: $label must not contain a number sign: $path" >&2
+            return 1
+            ;;
+        *'$'*)
+            echo "Error: $label must not contain a dollar sign: $path" >&2
+            return 1
+            ;;
+    esac
+    cup_path_validate_absolute_clean "$path" "$label"
+}
+
 # Establishes the controlled environment used by every dependency builder.
 # Ambient compiler and package-discovery flags must not silently alter the
 # pinned graph or make a prefix depend on the caller's shell configuration.

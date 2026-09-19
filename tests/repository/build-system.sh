@@ -917,13 +917,13 @@ PINNED_PREFIX="$prefix"
 resolved_prefix=$(print_dependency_prefix DEPS_PREFIX="$PINNED_PREFIX")
 assert_equals "$resolved_prefix" "$PINNED_PREFIX"
 
-if print_dependency_prefix \
-        DEPS_PREFIX="$PINNED_PREFIX/../$(basename "$PINNED_PREFIX")" \
+if make -C "$PROJECT_ROOT" --no-print-directory -s \
+        DEPS_PREFIX="$PINNED_PREFIX/../$(basename "$PINNED_PREFIX")" deps-check \
         >"$TMP_ROOT/deps-prefix-traversal.out" 2>&1; then
-    fail 'DEPS_PREFIX containing .. was normalized and accepted'
+    fail 'deps-check accepted DEPS_PREFIX containing ..'
 fi
 assert_contains "$(cat "$TMP_ROOT/deps-prefix-traversal.out")" \
-    'DEPS_PREFIX must not contain .. path components'
+    'dependency prefix contains a non-canonical path component'
 
 if make -C "$PROJECT_ROOT" --no-print-directory -n \
         BUILD_DIR="$TMP_ROOT/a/../outside" help \
@@ -1043,13 +1043,17 @@ if make -C "$PROJECT_ROOT" --no-print-directory -s \
 fi
 assert_file "$external_build_parent/output/sentinel"
 
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        DEPS_PREFIX="$TMP_ROOT/dependency prefix" help \
+make -C "$PROJECT_ROOT" --no-print-directory -n \
+    DEPS_PREFIX="$TMP_ROOT/dependency prefix" help \
+    >"$TMP_ROOT/deps-prefix-space-help.out" 2>&1 ||
+    fail 'make help inspected an unused DEPS_PREFIX'
+if make -C "$PROJECT_ROOT" --no-print-directory -s \
+        DEPS_PREFIX="$TMP_ROOT/dependency prefix" deps-check \
         >"$TMP_ROOT/deps-prefix-space.out" 2>&1; then
-    fail 'DEPS_PREFIX containing whitespace was accepted'
+    fail 'deps-check accepted DEPS_PREFIX containing whitespace'
 fi
 assert_contains "$(cat "$TMP_ROOT/deps-prefix-space.out")" \
-    'DEPS_PREFIX must not contain whitespace'
+    'dependency prefix must not contain whitespace'
 
 custom_build_root=$TMP_ROOT/custom-build-output
 posix_test_command=$(

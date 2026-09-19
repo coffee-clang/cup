@@ -167,6 +167,15 @@ if dependency_require_whitespace_free_path "test path" "$TMP_ROOT/with space" \
 fi
 grep -Fq 'must not contain whitespace' "$TMP_ROOT/space.out"
 
+for unsafe in ':' ';' '%' '#' "'" '$'; do
+    if dependency_validate_path "test path" "$TMP_ROOT/unsafe${unsafe}path" \
+            >"$TMP_ROOT/special.out" 2>&1; then
+        echo "dependency path validation accepted reserved character: $unsafe" >&2
+        exit 1
+    fi
+    grep -Fq 'must not contain' "$TMP_ROOT/special.out"
+done
+
 metadata_final="$TMP_ROOT/metadata-root/install"
 metadata_stage="$TMP_ROOT/.install.staging.fixture"
 metadata_prefix="$metadata_stage$metadata_final"
@@ -895,6 +904,13 @@ missing_prefix="$TMP_ROOT/missing-prefix"
     make --no-print-directory -n PLATFORM=linux-x64 \
         DEPS_PREFIX="$missing_prefix" all
 ) >"$TMP_ROOT/missing-prefix.out" 2>&1 || true
+assert_contains "$(cat "$TMP_ROOT/missing-prefix.out")" \
+    "./scripts/dependencies/verify.sh 'linux-x64' '$missing_prefix'"
+case "$(cat "$TMP_ROOT/missing-prefix.out")" in
+    *scripts/dependencies/build-posix.sh*)
+        fail 'explicit DEPS_PREFIX still selected the dependency builder'
+        ;;
+esac
 if (
     cd "$ROOT"
     make --no-print-directory -s PLATFORM=linux-x64 \
@@ -905,7 +921,7 @@ fi
 assert_contains "$(cat "$TMP_ROOT/deps-check-missing.out")" \
     'Pinned dependency prefix is missing, incomplete or incompatible'
 
-default_deps_prefix="$HOME/deps/linux-x64/install"
+default_deps_prefix="$ROOT/deps/linux-x64/install"
 deps_command=$(
     cd "$ROOT"
     unset DEPS_ROOT DEPS_PREFIX MAKEFLAGS MAKEOVERRIDES

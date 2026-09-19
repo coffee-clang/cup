@@ -65,7 +65,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
         run: |
-          root="$HOME/deps/${{ matrix.platform }}"
+          root="$(pwd -P)/deps/${{ matrix.platform }}"
           key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -80,11 +80,10 @@ jobs:
       - name: Build and package debug artifact
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
         run: |
           set -euo pipefail
-          make PLATFORM='${{ matrix.platform }}' DEPS_ROOT="$DEPS_ROOT" \
+          make PLATFORM='${{ matrix.platform }}' \
             DEPS_PREFIX="$DEPS_PREFIX" debug-artifact
           root=build/finalized/${{ matrix.platform }}/debug
           "$root/bin/cup" --version
@@ -135,7 +134,7 @@ jobs:
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
         run: |
-          root="$HOME/deps/windows-x64"
+          root="$(pwd -P)/deps/windows-x64"
           key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
           echo "root=$root" >> "$GITHUB_OUTPUT"
           echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
@@ -153,11 +152,10 @@ jobs:
         shell: msys2 {0}
         env:
           CUP_DEPENDENCY_PROFILE: ucrt64-gcc
-          DEPS_ROOT: ${{ steps.cache.outputs.root }}
           DEPS_PREFIX: ${{ steps.cache.outputs.prefix }}
         run: |
           set -euo pipefail
-          make PLATFORM=windows-x64 DEPS_ROOT="$DEPS_ROOT" \
+          make PLATFORM=windows-x64 \
             DEPS_PREFIX="$DEPS_PREFIX" debug-artifact
           root=build/finalized/windows-x64/debug
           "$root/bin/cup.exe" --version

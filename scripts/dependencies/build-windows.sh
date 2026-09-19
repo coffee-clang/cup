@@ -48,16 +48,16 @@ source "$SCRIPT_DIR/common.sh"
 dependency_normalize_build_environment
 JOBS="$(dependency_resolve_jobs)"
 
-DEPS_ROOT="${DEPS_ROOT:-$HOME/deps/$DEFAULT_DEPS_VARIANT}"
+DEPS_ROOT="${DEPS_ROOT:-$CUP_PROJECT_ROOT/deps/$DEFAULT_DEPS_VARIANT}"
 SRC_DIR="$DEPS_ROOT/src"
 BUILD_DIR="$DEPS_ROOT/build"
 DEPS_PREFIX="${DEPS_PREFIX:-$DEPS_ROOT/install}"
 PREFIX="$DEPS_PREFIX"
 
-dependency_require_whitespace_free_path "dependency root" "$DEPS_ROOT"
-dependency_require_whitespace_free_path "dependency source directory" "$SRC_DIR"
-dependency_require_whitespace_free_path "dependency build directory" "$BUILD_DIR"
-dependency_require_whitespace_free_path "dependency prefix" "$DEPS_PREFIX"
+dependency_validate_path "dependency root" "$DEPS_ROOT"
+dependency_validate_path "dependency source directory" "$SRC_DIR"
+dependency_validate_path "dependency build directory" "$BUILD_DIR"
+dependency_validate_path "dependency prefix" "$DEPS_PREFIX"
 
 # Static native Windows dependency builders.
 build_zlib() {

@@ -177,9 +177,17 @@ libevent into the local network helper.
 
 ### Prefix commands
 
-The default dependency location is platform-specific below `~/deps`; Windows
-CLANG64 sanitizer builds use a separate prefix. Custom roots can be supplied
-through the documented dependency environment variables used by the scripts.
+The default dependency root is repository-local:
+
+```text
+<checkout>/deps/<platform-or-toolchain-variant>/
+```
+
+Its prepared prefix is the `install/` child of that root. Windows CLANG64
+sanitizer builds use a separate variant. `DEPS_ROOT` may select another
+whitespace-free absolute dependency root when needed. `DEPS_PREFIX` is normally
+derived from `DEPS_ROOT`; supplying `DEPS_PREFIX` explicitly selects a prepared
+prefix for build/test consumers instead of rebuilding dependencies.
 
 The normal commands are:
 
