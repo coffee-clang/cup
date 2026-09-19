@@ -130,9 +130,6 @@ endif
 ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_PLATFORM_ROOT)),)
 override RELEASE_PLATFORM_ROOT := $(value RELEASE_PLATFORM_ROOT)
 endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_ALLOW_DEV_CLEAN)),)
-override CUP_ALLOW_DEV_CLEAN := $(value CUP_ALLOW_DEV_CLEAN)
-endif
 ifneq ($(filter environment environment\ override command\ line,$(origin CUP_TEST_WITH_BUILD_OUTPUT)),)
 override CUP_TEST_WITH_BUILD_OUTPUT := $(value CUP_TEST_WITH_BUILD_OUTPUT)
 endif
@@ -378,12 +375,13 @@ PROJECT_CPPFLAGS := -I$(call escape_spaces,$(GENERATED_DIR)) \
     -I$(call escape_spaces,$(PROJECT_ROOT)/include) \
     -DCUP_USE_EMBEDDED_CA_BUNDLE
 PROJECT_CFLAGS := -Wall -Wextra -Werror -std=c11 \
-    -ffile-prefix-map=$(call escape_spaces,$(BUILD_ROOT))=/usr/src/cup-build \
     -fdebug-prefix-map=$(call escape_spaces,$(BUILD_ROOT))=/usr/src/cup-build \
     -fmacro-prefix-map=$(call escape_spaces,$(BUILD_ROOT))=/usr/src/cup-build \
-    -ffile-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup \
     -fdebug-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup \
     -fmacro-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup
+PROJECT_FILE_PREFIX_CFLAGS := \
+    -ffile-prefix-map=$(call escape_spaces,$(BUILD_ROOT))=/usr/src/cup-build \
+    -ffile-prefix-map=$(call escape_spaces,$(PROJECT_ROOT))=/usr/src/cup
 PROJECT_LDFLAGS :=
 PROJECT_LDLIBS :=
 PLATFORM_CPPFLAGS :=
@@ -557,8 +555,11 @@ endif
 override CPPFLAGS := $(strip $(PROJECT_CPPFLAGS) $(PLATFORM_CPPFLAGS) \
     $(CONFIG_CPPFLAGS_$(CONFIGURATION)) $(DEPENDENCY_CPPFLAGS) \
     $(EXTRA_CPPFLAGS))
-override CFLAGS := $(strip $(PROJECT_CFLAGS) $(PLATFORM_CFLAGS) \
-    $(CONFIG_CFLAGS_$(CONFIGURATION)) $(DEPENDENCY_CFLAGS) $(EXTRA_CFLAGS))
+override CFLAGS := $(strip $(PROJECT_CFLAGS) \
+    $(if $(and $(filter coverage,$(CONFIGURATION)),\
+        $(filter linux-x64 linux-arm64,$(PLATFORM))),,$(PROJECT_FILE_PREFIX_CFLAGS)) \
+    $(PLATFORM_CFLAGS) $(CONFIG_CFLAGS_$(CONFIGURATION)) \
+    $(DEPENDENCY_CFLAGS) $(EXTRA_CFLAGS))
 override LDFLAGS := $(strip $(PROJECT_LDFLAGS) $(PLATFORM_LDFLAGS) \
     $(CONFIG_LDFLAGS_$(CONFIGURATION)) $(DEPENDENCY_LDFLAGS) \
     $(EXTRA_LDFLAGS))
@@ -572,8 +573,11 @@ override LDLIBS = $(strip $(PROJECT_LDLIBS) $(PLATFORM_LDLIBS) \
 TEST_CPPFLAGS := $(filter-out -DCUP_COVERAGE_ENTRY=%,\
     -DCUP_USE_EMBEDDED_CA_BUNDLE $(PLATFORM_CPPFLAGS) \
     $(CONFIG_CPPFLAGS_$(CUP_TEST_CONFIGURATION)))
-TEST_CFLAGS := $(PROJECT_CFLAGS) $(PLATFORM_CFLAGS) \
-    $(CONFIG_CFLAGS_$(CUP_TEST_CONFIGURATION)) $(DEPENDENCY_CFLAGS)
+TEST_CFLAGS := $(PROJECT_CFLAGS) \
+    $(if $(and $(filter coverage,$(CUP_TEST_CONFIGURATION)),\
+        $(filter linux-x64 linux-arm64,$(PLATFORM))),,$(PROJECT_FILE_PREFIX_CFLAGS)) \
+    $(PLATFORM_CFLAGS) $(CONFIG_CFLAGS_$(CUP_TEST_CONFIGURATION)) \
+    $(DEPENDENCY_CFLAGS)
 TEST_LDFLAGS := $(PROJECT_LDFLAGS) $(PLATFORM_LDFLAGS) \
     $(CONFIG_LDFLAGS_$(CUP_TEST_CONFIGURATION)) $(DEPENDENCY_LDFLAGS)
 
@@ -642,7 +646,7 @@ endif
 
 .PHONY: \
     all build debug coverage sanitizers release release-common-assets release-candidate debug-artifact \
-    help _build _debug-artifact _release-candidate _release-output _version _release-metadata clean reset-dev-home \
+    help _build _debug-artifact _release-candidate _release-output _version _release-metadata clean \
     deps deps-check deps-force deps-clean check-toolchain check-binary \
     check-development check-debug check-coverage check-sanitizers check-release \
     _check-binary quality check docs-assets docs serve version release-metadata \
@@ -754,9 +758,6 @@ help:
 		'  make docs                    refresh theme assets and build documentation' \
 		'  make serve                   refresh theme assets and serve documentation' \
 		'' \
-		'Maintenance:' \
-		'  CUP_ALLOW_DEV_CLEAN=1 make reset-dev-home' \
-		'                               remove build outputs and the marked dev root' \
 		'Local additions: EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS, EXTRA_LDLIBS' \
 		'Current platform: $(PLATFORM)' \
 		'Supported platforms: $(SUPPORTED_PLATFORM)'
@@ -986,50 +987,6 @@ clean:
 			;; \
 	esac; \
 	cup_path_clean_build_root "$$root"
-
-reset-dev-home:
-	@if test "$(CUP_ALLOW_DEV_CLEAN)" != "1"; then \
-		echo "Refusing to remove the dev root without CUP_ALLOW_DEV_CLEAN=1" >&2; \
-		exit 1; \
-	fi
-	+@$(MAKE) --no-print-directory clean BUILD_DIR='$(BUILD_DIR)'
-	@case "$(HOME)" in \
-		/*) test "$(HOME)" != "/" ;; \
-		*) false ;; \
-	esac || { \
-		echo "Invalid HOME for reset-dev-home" >&2; \
-		exit 1; \
-	}
-	@selected_root=; \
-	. '$(PATH_SAFETY)'; \
-	cup_path_validate_absolute_clean '$(HOME)' 'HOME' || exit 1; \
-	cup_path_check_directory_chain '$(HOME)' 0 'HOME' || exit 1; \
-	for candidate_root in "$(HOME)/.cup" "$(HOME)/.coffee-cup"; do \
-		marker_path="$$candidate_root/root.txt"; \
-		if test -e "$$candidate_root" || test -L "$$candidate_root"; then \
-			cup_path_check_directory_chain \
-				"$$candidate_root" 0 'development root candidate' || exit 1; \
-		fi; \
-		if test -d "$$candidate_root" && \
-			cup_path_require_regular_file \
-				"$$marker_path" 'development root marker' >/dev/null 2>&1 && \
-			test "$$(awk 'END { print NR }' "$$marker_path")" = 3 && \
-			test "$$(sed -n '1p' "$$marker_path")" = 'format=1' && \
-			test "$$(sed -n '2p' "$$marker_path")" = 'product=coffee-clang/cup' && \
-			test "$$(sed -n '3p' "$$marker_path")" = 'layout=1'; then \
-			if test -n "$$selected_root"; then \
-				echo "Both dev root candidates are marked as cup roots." >&2; \
-				exit 1; \
-			fi; \
-			selected_root="$$candidate_root"; \
-		fi; \
-	done; \
-	if test -z "$$selected_root"; then \
-		echo "No marked cup dev root was found; nothing was removed." >&2; \
-		exit 1; \
-	fi; \
-	cup_path_remove_child_tree \
-		'$(HOME)' "$$selected_root" 'development root' || exit 1
 
 # Platform wrappers choose their platform before validating prepared dependencies.
 

@@ -391,6 +391,7 @@ assert_contains "$config_text" 'compiler_target=x86_64-unknown-linux-gnu'
 assert_contains "$config_text" 'compiler_target_normalized=linux-x64'
 assert_contains "$config_text" 'compiler_version=gcc 1.0'
 assert_contains "$config_text" 'cflags=-Wall -Wextra -Werror -std=c11'
+assert_contains "$config_text" '-ffile-prefix-map='
 assert_contains "$config_text" '-fdebug-prefix-map='
 assert_contains "$config_text" '-O0 -g3 -DCUP_EXTRA_C'
 assert_contains "$config_text" '-DCUP_EXTRA_CPP'
@@ -848,7 +849,7 @@ for target in \
     deps-clean check-toolchain check-binary test test-unit test-integration \
     quality check test-coverage test-sanitizers test-portability-linux \
     test-windows test-release version check-ca-bundle update-ca-bundle \
-    docs-assets docs serve reset-dev-home; do
+    docs-assets docs serve; do
     assert_contains "$help_output" "make $target"
 done
 assert_not_contains "$help_output" 'make _build'
@@ -1125,6 +1126,11 @@ for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64
             assert_contains "$coverage_command" '-fprofile-instr-generate'
             assert_contains "$coverage_command" \
                 "-fcoverage-prefix-map=$PROJECT_ROOT=$PROJECT_ROOT"
+            ;;
+        linux-*)
+            assert_contains "$coverage_command" '--coverage'
+            assert_not_contains "$coverage_command" '-ffile-prefix-map='
+            assert_contains "$coverage_command" '-fdebug-prefix-map='
             ;;
         *)
             assert_contains "$coverage_command" '--coverage'
