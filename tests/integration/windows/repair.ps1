@@ -1,5 +1,4 @@
-# Exercises deterministic Windows repair, state reconstruction, quarantine,
-# journal ambiguity, stale cleanup, and foreign-host preservation.
+# Exercises deterministic Windows repair, state reconstruction, quarantine and evidence preservation.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -7,244 +6,205 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-function Test-PackageAdoption {
-    $Script:RepairCompilerRoot = New-InstalledPackageFixture `
-        -Component "compiler" -Tool "clang" -Version "23.1.0" -Entries @("clang")
+try {
+    Initialize-TestEnvironment -Name 'repair' -ExecutablePath $CupExecutablePath
+    Ensure-FixtureRuntimeRoot
 
-    $infoPath = Join-Path $Script:RepairCompilerRoot "info.txt"
-    $manifestPath = Join-Path $Script:RepairCompilerRoot "manifest.txt"
-    $infoHash = (Get-FileHash -LiteralPath $infoPath -Algorithm SHA256).Hash
-    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
-    $adopted = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $adopted "Prepared state repair: adopt valid package 'compiler:clang@23.1.0'"
-    Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "installed.compiler.windows-x64.windows-x64=clang@23.1.0"
+    $cupRoot = Join-Path $Script:CupTestHome '.cup'
+    $stateFile = Join-Path $cupRoot 'state.txt'
+    $transactionFile = Join-Path $cupRoot 'transaction.txt'
 
-    Assert-Equals (Get-FileHash -LiteralPath $infoPath -Algorithm SHA256).Hash $infoHash
-    Assert-Equals (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash $manifestHash
-}
+    # A valid package found on disk is adopted without rewriting producer-owned metadata.
+    $packageRoot = New-InstalledPackageFixture -Component compiler -Tool clang `
+        -Version '23.1.0' -Entries @('clang')
+    $packageMetadata = Join-Path $packageRoot 'info.txt'
+    $packageManifest = Join-Path $packageRoot 'manifest.txt'
+    $metadataHash = Get-Sha256Lower -Path $packageMetadata
+    $manifestHash = Get-Sha256Lower -Path $packageManifest
+    $adopt = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $adopt "Prepared state repair: adopt valid package 'compiler:clang@23.1.0'"
+    Assert-Contains (Get-Content -LiteralPath $stateFile -Raw) `
+        'installed.compiler.windows-x64=clang@23.1.0'
+    Assert-Equals (Get-Sha256Lower -Path $packageMetadata) $metadataHash
+    Assert-Equals (Get-Sha256Lower -Path $packageManifest) $manifestHash
 
-function Test-StaleStateRemoval {
-    $state = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Get-Content -LiteralPath $Script:RepairStatePath)) {
-        $state.Add($line)
-    }
-    $state.Add("installed.debugger.windows-x64.windows-x64=lldb@23.1.0")
-    $state.Add("default.debugger.windows-x64.windows-x64=lldb@23.1.0")
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $state
-
-    $stale = Invoke-Cup -CommandArgs @("repair")
+    # State entries with no package are removed together with their defaults.
+    Add-Content -LiteralPath $stateFile -Encoding utf8 -Value @(
+        'installed.debugger.windows-x64=lldb@23.1.0',
+        'default.debugger.windows-x64=lldb@23.1.0'
+    )
+    $stale = Invoke-Cup -CommandArgs @('repair')
     Assert-Contains $stale "Removed stale state record 'debugger:lldb@23.1.0'."
-    Assert-NotContains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "lldb@23.1.0"
-}
+    Assert-NotContains (Get-Content -LiteralPath $stateFile -Raw) 'lldb@23.1.0'
 
-function Test-InvalidPackageQuarantine {
-    $invalidPackage = Join-Path $Script:RepairCupRoot (
-        "components\debugger\lldb\windows-x64\windows-x64\23.1.0")
-    $malformedRoot = Join-Path $Script:RepairCupRoot "components\unknown-component"
+    # Package-shaped invalid data is quarantined; ambiguous higher-level structure is preserved.
+    $invalidPackage = Join-Path $cupRoot 'components\debugger\lldb\windows-x64\23.1.0'
+    $malformedRoot = Join-Path $cupRoot 'components\unknown-component'
     New-Item -ItemType Directory -Force -Path $invalidPackage, $malformedRoot | Out-Null
-
-    $quarantine = Invoke-Cup -CommandArgs @("repair")
+    $quarantine = Invoke-Cup -CommandArgs @('repair')
     Assert-ContainsPathText $quarantine "Quarantined invalid package '$invalidPackage'"
-    Assert-Contains $quarantine "unknown component"
+    Assert-Contains $quarantine 'unknown component'
     Assert-PathMissing $invalidPackage
-
-    $preserved = Get-ChildItem (Join-Path $Script:RepairCupRoot "recovery") `
+    $preserved = Get-ChildItem (Join-Path $cupRoot 'recovery') `
         -Directory -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq "package" }
+        Where-Object { $_.Name -eq 'package' }
     if (@($preserved).Count -eq 0) {
-        Fail-Test "quarantined package was not preserved under recovery"
+        Fail-Test 'quarantined package was not preserved under recovery'
     }
-
     Assert-PathExists $malformedRoot
     Remove-Item -LiteralPath $malformedRoot -Recurse -Force
-    Assert-PathExists (Join-Path $Script:RepairCompilerRoot "info.txt")
-}
+    Assert-PathExists (Join-Path $packageRoot 'info.txt')
 
-function Test-InvalidStateRebuild {
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines @("unexpected.key=value")
+    # Invalid state is preserved and rebuilt from complete valid package evidence.
+    Write-Utf8NoBom -Path $stateFile -Lines @('unexpected.key=value')
+    $rebuilt = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $rebuilt 'Preserved invalid state as'
+    Assert-PathExists "$stateFile.invalid"
+    Assert-Contains (Get-Content -LiteralPath $stateFile -Raw) 'clang@23.1.0'
+    $validState = Join-Path $Script:CupTestRoot 'state.valid'
+    Copy-Item -LiteralPath $stateFile -Destination $validState -Force
 
-    $rebuilt = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $rebuilt "Preserved invalid state as"
-    Assert-PathExists "$($Script:RepairStatePath).invalid"
-    Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "clang@23.1.0"
-
-    $Script:RepairValidState = @(Get-Content -LiteralPath $Script:RepairStatePath)
-}
-
-function Restore-ValidRepairState {
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $Script:RepairValidState
-    Remove-Item -LiteralPath "$($Script:RepairStatePath).invalid" `
-        -Force -ErrorAction SilentlyContinue
-}
-
-function Test-PendingTransactionBlocksInvalidState {
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines @("unexpected.key=value")
-    Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=1",
-        "operation=install",
-        "component=compiler",
-        "tool=clang",
-        "host_platform=windows-x64",
-        "target_platform=windows-x64",
-        "package_version=23.1.0",
-        "temporary_name=install-compiler-clang-windows-x64-windows-x64-23.1.0-test"
+    # Invalid state is not guessed while a package transaction is pending.
+    Write-Utf8NoBom -Path $stateFile -Lines @('unexpected.key=value')
+    Write-Utf8NoBom -Path $transactionFile -Lines @(
+        'format=2',
+        'operation=install',
+        'component=compiler',
+        'tool=clang',
+        'target_platform=windows-x64',
+        'package_version=23.1.0',
+        'temporary_name=install-compiler-clang-windows-x64-23.1.0-test'
     )
+    $invalidStateHash = Get-Sha256Lower -Path $stateFile
+    $ambiguousState = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
+    Assert-Contains $ambiguousState `
+        'state.txt is missing or invalid while a package transaction is pending'
+    Assert-Equals (Get-Sha256Lower -Path $stateFile) $invalidStateHash
+    Assert-PathExists $transactionFile
+    Remove-Item -LiteralPath $transactionFile -Force
+    Copy-Item -LiteralPath $validState -Destination $stateFile -Force
+    Remove-Item -LiteralPath "$stateFile.invalid" -Force -ErrorAction SilentlyContinue
 
-    $failure = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
-    Assert-Contains $failure `
-        "state.txt is missing or invalid while a state-owning transaction is pending"
-
-    Remove-Item -LiteralPath $Script:RepairTransactionPath -Force
-    Restore-ValidRepairState
-}
-
-function Test-MalformedUpdateBlocksInvalidState {
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines @("unexpected.key=value")
-    Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=1",
-        "operation=cup-update",
-        "phase=failed"
+    # A malformed generation journal is the first blocker; state/staging evidence stays untouched.
+    Write-Utf8NoBom -Path $stateFile -Lines @('unexpected.key=value')
+    Write-Utf8NoBom -Path $transactionFile -Lines @(
+        'format=2',
+        'operation=cup-generation',
+        'target_release_sha256=not-a-digest',
+        'temporary_name=cup-update-malformed'
     )
+    $malformedStaging = Join-Path $cupRoot 'staging\cup-update-malformed'
+    New-Item -ItemType Directory -Force -Path $malformedStaging | Out-Null
+    $invalidStateHash = Get-Sha256Lower -Path $stateFile
+    $invalidGenerationHash = Get-Sha256Lower -Path $transactionFile
+    $malformedGeneration = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
+    Assert-Contains $malformedGeneration 'CUP generation transaction journal is invalid'
+    Assert-Equals (Get-Sha256Lower -Path $stateFile) $invalidStateHash
+    Assert-Equals (Get-Sha256Lower -Path $transactionFile) $invalidGenerationHash
+    Assert-PathMissing "$stateFile.invalid"
+    Assert-PathExists $malformedStaging
+    Remove-Item -LiteralPath $malformedStaging -Recurse -Force
+    Remove-Item -LiteralPath $transactionFile -Force
+    Copy-Item -LiteralPath $validState -Destination $stateFile -Force
 
-    $stateHash = (Get-FileHash -LiteralPath $Script:RepairStatePath -Algorithm SHA256).Hash
-    $journalHash = (
-        Get-FileHash -LiteralPath $Script:RepairTransactionPath -Algorithm SHA256).Hash
-
-    $failure = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
-    Assert-Contains $failure "cup update journal is invalid"
-    Assert-Equals (
-        (Get-FileHash -LiteralPath $Script:RepairStatePath -Algorithm SHA256).Hash) `
-        $stateHash
-    Assert-Equals (
-        (Get-FileHash -LiteralPath $Script:RepairTransactionPath -Algorithm SHA256).Hash) `
-        $journalHash
-    Assert-PathMissing "$($Script:RepairStatePath).invalid"
-
-    Remove-Item -LiteralPath $Script:RepairTransactionPath -Force
-    Restore-ValidRepairState
-}
-
-function Test-MalformedJournalPreservesEvidence {
-    Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @("not-a-valid-journal")
-    $ambiguousStaging = Join-Path $Script:RepairCupRoot "staging\ambiguous-data"
+    # A generic malformed journal likewise preserves unrelated state/staging evidence.
+    Write-Utf8NoBom -Path $transactionFile -Lines @('not-a-valid-journal')
+    $ambiguousStaging = Join-Path $cupRoot 'staging\ambiguous-data'
     New-Item -ItemType Directory -Force -Path $ambiguousStaging | Out-Null
-    $stateHash = (Get-FileHash -LiteralPath $Script:RepairStatePath -Algorithm SHA256).Hash
-
-    $failure = Invoke-Cup -CommandArgs @("repair") -ExpectFailure
-    Assert-Contains $failure "transaction.txt is invalid"
-    Assert-PathExists $Script:RepairTransactionPath
-    Assert-Equals (
-        (Get-FileHash -LiteralPath $Script:RepairStatePath -Algorithm SHA256).Hash) `
-        $stateHash
+    $stateHash = Get-Sha256Lower -Path $stateFile
+    $invalidJournal = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
+    Assert-Contains $invalidJournal 'transaction.txt is invalid'
+    Assert-PathExists $transactionFile
+    Assert-Equals (Get-Sha256Lower -Path $stateFile) $stateHash
     Assert-PathExists $ambiguousStaging
-
-    $blocked = Invoke-Cup -CommandArgs @("list") -ExpectFailure
-    Assert-Contains $blocked "transaction journal is invalid"
-
+    $blocked = Invoke-Cup -CommandArgs @('list') -ExpectFailure
+    Assert-Contains $blocked 'transaction journal is invalid'
     Remove-Item -LiteralPath $ambiguousStaging -Recurse -Force
-    Remove-Item -LiteralPath $Script:RepairTransactionPath -Force
-}
+    Remove-Item -LiteralPath $transactionFile -Force
 
-function Test-StaleStagingCleanup {
-    $stagingLeftover = Join-Path $Script:RepairCupRoot "staging\stale-data"
-    New-Item -ItemType Directory -Force -Path $stagingLeftover | Out-Null
+    # Without ambiguous transaction evidence, stale staging is deterministic garbage.
+    $staleStaging = Join-Path $cupRoot 'staging\stale-data'
+    New-Item -ItemType Directory -Force -Path $staleStaging | Out-Null
+    Invoke-Cup -CommandArgs @('repair') | Out-Null
+    Assert-PathMissing $staleStaging
 
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
-    Assert-PathMissing $stagingLeftover
-}
-
-function Test-ForeignHostPreservation {
-    $foreignHost = "linux-x64"
-    $foreignTree = Join-Path $Script:RepairCupRoot (
-        "components\compiler\clang\$foreignHost\$foreignHost\23.1.0")
-    New-Item -ItemType Directory -Force -Path $foreignTree | Out-Null
-
-    $state = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Get-Content -LiteralPath $Script:RepairStatePath)) {
-        $state.Add($line)
+    # Host mismatch is metadata corruption, not a second physical host dimension.
+    $foreignMetadataRoot = New-InstalledPackageFixture -Component debugger -Tool lldb `
+        -Version '23.2.0' -Entries @('lldb')
+    $infoPath = Join-Path $foreignMetadataRoot 'info.txt'
+    $lines = foreach ($line in Get-Content -LiteralPath $infoPath) {
+        if ($line -ceq 'platform.host=windows-x64') { 'platform.host=linux-x64' } else { $line }
     }
-    $state.Add("installed.compiler.$foreignHost.$foreignHost=clang@23.1.0")
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $state
+    Write-Utf8NoBom -Path $infoPath -Lines $lines
+    Write-TestPackageManifest -PackageRoot $foreignMetadataRoot
+    $foreignRepair = Invoke-Cup -CommandArgs @('repair')
+    Assert-ContainsPathText $foreignRepair "Quarantined invalid package '$foreignMetadataRoot'"
+    Assert-PathMissing $foreignMetadataRoot
+    Assert-NotContains (Get-Content -LiteralPath $stateFile -Raw) 'lldb@23.2.0'
 
-    $foreignDoctor = Invoke-Cup -CommandArgs @("doctor") -ExpectFailure
-    Assert-Contains $foreignDoctor "record(s) for foreign hosts"
-    Assert-Contains $foreignDoctor "foreign-host package tree(s)"
+    # Invalid preferences are preserved; absence afterwards means no user preference.
+    Invoke-Cup -CommandArgs @('config', 'set', 'compiler', 'clang') | Out-Null
+    $preferences = Join-Path $cupRoot 'config\preferences.txt'
+    Write-Utf8NoBom -Path $preferences -Lines @('unexpected.key=value')
+    $preferenceRepair = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $preferenceRepair 'Preserved invalid preferences as'
+    Assert-PathMissing $preferences
+    Assert-PathExists "$preferences.invalid"
 
-    $foreignRepair = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $foreignRepair "Preserved 1 foreign-host package tree(s)"
-    Assert-PathExists $foreignTree
-    Assert-Contains ((Get-Content -LiteralPath $Script:RepairStatePath) -join "`n") `
-        "installed.compiler.$foreignHost.$foreignHost=clang@23.1.0"
-    Assert-Contains (Invoke-Cup -CommandArgs @("list") -ExpectFailure) "foreign host"
+    # Development repair preserves a malformed catalog without synthesizing a replacement.
+    $catalog = Join-Path $cupRoot 'config\catalog.cfg'
+    Write-Utf8NoBom -Path $catalog -Lines @('broken catalog')
+    $catalogRepair = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
+    Assert-Contains $catalogRepair 'Preserved invalid catalog as'
+    Assert-Contains $catalogRepair 'development catalog is unavailable'
+    Assert-PathExists "$catalog.invalid"
+    Assert-PathMissing $catalog
 
-    $cleanState = Get-Content -LiteralPath $Script:RepairStatePath | Where-Object {
-        -not $_.StartsWith(
-            "installed.compiler.$foreignHost.$foreignHost=",
-            [StringComparison]::Ordinal)
-    }
-    Write-Utf8NoBom -Path $Script:RepairStatePath -Lines $cleanState
-    Remove-Item -LiteralPath (
-        Join-Path $Script:RepairCupRoot "components\compiler\clang\$foreignHost") `
-        -Recurse -Force
-}
-
-function Test-UninstallRecovery {
-    $profileRoot = Split-Path -Parent $Script:RepairCupRoot
-    $staleHelper = Join-Path $profileRoot ".cup-uninstall-helper-fixture.exe"
-
-    Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=2",
-        "operation=uninstall",
-        "phase=scheduled",
-        "temporary_name=.cup-uninstall-fixture",
-        "token=fixture",
-        "error=0"
+    # A well-formed future format is not corruption and must not be downgraded to the seed.
+    Remove-Item -LiteralPath "$catalog.invalid" -Force
+    Write-Utf8NoBom -Path $catalog -Lines @(
+        'format=2',
+        'revision=999',
+        'update_url=https://example.invalid/catalog.cfg'
     )
-    Write-Utf8NoBom -Path $staleHelper -Lines @("stale helper")
-    $pending = Invoke-Cup -CommandArgs @("repair")
-    Assert-Contains $pending `
-        "Cancelled interrupted cup uninstall in phase 'scheduled'."
-    Assert-PathMissing $Script:RepairTransactionPath
+    $futureCatalogHash = Get-Sha256Lower -Path $catalog
+    $futureFailure = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
+    Assert-Contains $futureFailure 'newer unsupported format'
+    Assert-Equals (Get-Sha256Lower -Path $catalog) $futureCatalogHash
+    Assert-PathMissing "$catalog.invalid"
+    Copy-Item -LiteralPath (Join-Path $Script:CupTestDevRoot 'config\catalog.cfg') `
+        -Destination $catalog -Force
+
+    # The proven uninstall journal lifecycle remains distinct from generation recovery.
+    Write-Utf8NoBom -Path $transactionFile -Lines @(
+        'format=2',
+        'operation=uninstall',
+        'phase=scheduled',
+        'temporary_name=.cup-uninstall-fixture',
+        'token=fixture',
+        'error=0'
+    )
+    $staleHelper = Join-Path (Split-Path -Parent $cupRoot) '.cup-uninstall-helper-fixture.exe'
+    Write-Utf8NoBom -Path $staleHelper -Lines @('stale helper')
+    $uninstallPending = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $uninstallPending "Cancelled interrupted cup uninstall in phase 'scheduled'."
+    Assert-PathMissing $transactionFile
     Assert-PathMissing $staleHelper
 
-    Write-Utf8NoBom -Path $Script:RepairTransactionPath -Lines @(
-        "format=2",
-        "operation=uninstall",
-        "phase=failed",
-        "temporary_name=.cup-uninstall-fixture",
-        "token=fixture",
-        "error=6"
+    Write-Utf8NoBom -Path $transactionFile -Lines @(
+        'format=2',
+        'operation=uninstall',
+        'phase=failed',
+        'temporary_name=.cup-uninstall-fixture',
+        'token=fixture',
+        'error=6'
     )
-    Assert-Contains (Invoke-Cup -CommandArgs @("repair")) `
-        "Acknowledged failed cup uninstall (error 6)."
-    Assert-PathMissing $Script:RepairTransactionPath
+    $uninstallFailed = Invoke-Cup -CommandArgs @('repair')
+    Assert-Contains $uninstallFailed 'Acknowledged failed cup uninstall (error 6).'
+    Assert-PathMissing $transactionFile
     Assert-CupHealthy
-}
 
-try {
-    Initialize-TestEnvironment -Name "repair" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
-
-    $Script:RepairCupRoot = Join-Path $Script:CupTestHome ".cup"
-    $Script:RepairStatePath = Join-Path $Script:RepairCupRoot "state.txt"
-    $Script:RepairTransactionPath = Join-Path $Script:RepairCupRoot "transaction.txt"
-    $Script:RepairValidState = @()
-
-    Test-PackageAdoption
-    Test-StaleStateRemoval
-    Test-InvalidPackageQuarantine
-    Test-InvalidStateRebuild
-    Test-PendingTransactionBlocksInvalidState
-    Test-MalformedUpdateBlocksInvalidState
-    Test-MalformedJournalPreservesEvidence
-    Test-StaleStagingCleanup
-    Test-ForeignHostPreservation
-    Test-UninstallRecovery
-
-    Write-Host "Windows repair tests passed."
+    Write-Host 'Windows repair tests passed.'
 } finally {
     Remove-TestEnvironment
 }

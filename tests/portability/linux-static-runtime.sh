@@ -82,7 +82,7 @@ wait_for_tls() {
     while [ "$attempt" -lt 50 ]; do
         if curl --noproxy '*' --connect-timeout 1 --max-time 2 -sS \
             --cacert "$ca_file" \
-            "https://localhost:$port/SHA256SUMS" >/dev/null 2>&1; then
+            "https://localhost:$port/$package_name.tar.gz" >/dev/null 2>&1; then
             return
         fi
         attempt=$((attempt + 1))
@@ -187,18 +187,73 @@ start_https_server() {
 
 write_package_catalog() {
     local port=$1
-    local package_path='{version}-{host_platform}-{target_platform}'
-    local package_name='clang-{version}-{host_platform}-{target_platform}.{format}'
-    local release_url="https://localhost:$port/$package_path"
-    cat >"$SOURCE/config/packages.cfg" <<PACKAGE_CATALOG
+    local archive="$SERVER_ROOT/$package_name.tar.gz"
+    local sha
+    sha=$(sha256sum "$archive" | awk '{print $1}')
+    cat >"$SOURCE/config/catalog.cfg" <<PACKAGE_CATALOG
 format=1
-compiler.clang.$PLATFORM.$PLATFORM.stable_version=99.0.0
-compiler.clang.$PLATFORM.$PLATFORM.available_versions=99.0.0
-compiler.clang.$PLATFORM.$PLATFORM.default_format=tar.gz
-compiler.clang.$PLATFORM.$PLATFORM.formats=tar.gz
-compiler.clang.$PLATFORM.$PLATFORM.url_template=$release_url/$package_name
-compiler.clang.$PLATFORM.$PLATFORM.checksum_url_template=$release_url/SHA256SUMS
+revision=1
+update_url=https://localhost:$port/catalog.cfg
+package.0.component=compiler
+package.0.tool=clang
+package.0.host=$PLATFORM
+package.0.target=$PLATFORM
+package.0.version=99.0.0
+package.0.stable=true
+package.0.artifact.0.format=tar.gz
+package.0.artifact.0.url=https://localhost:$port/$package_name.tar.gz
+package.0.artifact.0.sha256=$sha
 PACKAGE_CATALOG
+    cp "$SOURCE/config/catalog.cfg" "$SERVER_ROOT/catalog.cfg"
+}
+
+write_bootstrap_release() {
+    local directory=$1
+    local version sha name index count
+    version=$(cat "$SOURCE/VERSION")
+    sha=$SOURCE_SHA
+    (
+        cd "$directory"
+        find . -mindepth 1 -maxdepth 1 -type f ! -name release.txt -print |
+            sed 's|^./||' | LC_ALL=C sort
+    ) > "$directory/.release-names"
+    count=$(wc -l < "$directory/.release-names" | tr -d ' ')
+    {
+        printf 'format=2\n'
+        printf 'version=%s\n' "$version"
+        printf 'commit=%s\n' "$sha"
+        printf 'root_layout=2\n'
+        printf 'catalog_format=1\n'
+        printf 'asset_count=%s\n' "$count"
+        index=0
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            printf 'asset.%s.name=%s\n' "$index" "$name"
+            printf 'asset.%s.sha256=%s\n' "$index" \
+                "$(sha256sum "$directory/$name" | awk '{print $1}')"
+            index=$((index + 1))
+        done < "$directory/.release-names"
+    } > "$directory/release.txt"
+    rm -f "$directory/.release-names"
+    chmod 0644 "$directory/release.txt"
+}
+
+bootstrap_runtime() {
+    local home=$1
+    local source_dir binary_name
+    source_dir=$(mktemp -d "$WORK/bootstrap.XXXXXX")
+    chmod 0700 "$source_dir"
+    binary_name="cup-$PLATFORM"
+    cp "$CUP" "$source_dir/$binary_name"
+    chmod 0755 "$source_dir/$binary_name"
+    cp "$SOURCE/LICENSE" "$source_dir/LICENSE"
+    cp "$SOURCE/scripts/dependencies/THIRD_PARTY_NOTICES.txt"         "$source_dir/THIRD_PARTY_NOTICES.txt"
+    cp "$SOURCE/config/catalog.cfg" "$source_dir/catalog.cfg"
+    chmod 0644 "$source_dir/LICENSE" "$source_dir/THIRD_PARTY_NOTICES.txt"         "$source_dir/catalog.cfg"
+    write_bootstrap_release "$source_dir"
+    mkdir -p "$home"
+    HOME="$home" "$CUP" --internal-bootstrap "$source_dir" "$home" >/dev/null
+    rm -rf "$source_dir"
 }
 
 run_cup_without_proxy() {
@@ -231,6 +286,7 @@ verify_successful_install() {
 }
 
 mkdir -p "$SOURCE" "$SERVER_ROOT" "$PACKAGE_ROOT"
+SOURCE_SHA=$(git -C "$ROOT" rev-parse HEAD)
 source_snapshot="$WORK/source.tar"
 tar -C "$ROOT" --exclude='./.git' --exclude='./.vscode' --exclude='./build' --exclude='./deps' \
     -cf "$source_snapshot" .
@@ -256,7 +312,7 @@ CA_METADATA
 
 package_name="clang-99.0.0-$PLATFORM-$PLATFORM"
 package_directory="$PACKAGE_ROOT/$package_name"
-release_directory="$SERVER_ROOT/99.0.0-$PLATFORM-$PLATFORM"
+release_directory="$SERVER_ROOT"
 case "$PLATFORM" in
     linux-x64) package_triple=x86_64-linux-gnu ;;
     linux-arm64) package_triple=aarch64-linux-gnu ;;
@@ -266,8 +322,6 @@ cat >"$package_directory/info.txt" <<METADATA
 package.component=compiler
 package.tool=clang
 package.version=99.0.0
-package.mode=self-contained
-package.formats=tar.xz,tar.gz,zip
 platform.host=$PLATFORM
 platform.target=$PLATFORM
 platform.host_triple=$package_triple
@@ -299,10 +353,6 @@ chmod +x "$package_directory/bin/clang"
 chmod 0644 "$package_directory/manifest.txt"
 tar -czf "$release_directory/$package_name.tar.gz" \
     -C "$PACKAGE_ROOT" "$package_name"
-(
-    cd "$release_directory"
-    sha256sum "$package_name.tar.gz" >SHA256SUMS
-)
 
 start_https_server "$TRUSTED" "$WORK/trusted-server.log"
 trusted_port=$selected_port
@@ -325,11 +375,11 @@ CUP="$SOURCE_BUILD_ROOT/$PLATFORM/release/bin/cup"
 
 printf '==> Rejecting a server outside the embedded trust bundle...\n'
 write_package_catalog "$untrusted_port"
-mkdir -p "$WORK/home-untrusted"
+bootstrap_runtime "$WORK/home-untrusted"
 if (
     cd "$SOURCE"
     run_cup_without_proxy "$WORK/home-untrusted" \
-        "$CUP" install compiler clang@stable
+        "$CUP" install compiler clang@99.0.0
 ) >"$WORK/untrusted.out" 2>&1; then
     fail 'an untrusted HTTPS server was accepted'
 fi
@@ -344,11 +394,11 @@ HOME="$WORK/home-untrusted" "$CUP" doctor >/dev/null ||
 
 printf '==> Exercising the static runtime through direct HTTPS...\n'
 write_package_catalog "$trusted_port"
-mkdir -p "$WORK/home-direct"
+bootstrap_runtime "$WORK/home-direct"
 (
     cd "$SOURCE"
     run_cup_without_proxy "$WORK/home-direct" \
-        "$CUP" install compiler clang@stable
+        "$CUP" install compiler clang@99.0.0
 ) >"$WORK/direct.out" 2>&1
 verify_successful_install "$WORK/home-direct"
 
@@ -362,19 +412,19 @@ proxy_pid=$!
 PIDS+=("$proxy_pid")
 wait_for_ready_port "$proxy_ready" "$proxy_pid"
 proxy_port=$selected_port
-mkdir -p "$WORK/home-proxy"
+bootstrap_runtime "$WORK/home-proxy"
 (
     cd "$SOURCE"
     env -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
         HTTPS_PROXY="http://127.0.0.1:$proxy_port" \
         https_proxy="http://127.0.0.1:$proxy_port" \
         HOME="$WORK/home-proxy" \
-        "$CUP" install compiler clang@stable
+        "$CUP" install compiler clang@99.0.0
 ) >"$WORK/proxy.out" 2>&1
 verify_successful_install "$WORK/home-proxy"
 connect_count=$(grep -Fc "CONNECT localhost:$trusted_port" "$PROXY_LOG" || true)
-[ "$connect_count" -ge 2 ] ||
-    fail "expected checksum and package downloads through the proxy, got $connect_count"
+[ "$connect_count" -ge 1 ] ||
+    fail "expected package download through the proxy, got $connect_count"
 
 printf '%s\n' \
     'Linux static runtime test passed:' \

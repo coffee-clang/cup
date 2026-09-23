@@ -291,12 +291,17 @@ build_libarchive() {
     echo "==> Building libarchive ${LIBARCHIVE_VERSION}"
     cd "$source"
 
+    # libarchive probes ambient libmd unconditionally after its other crypto backends. CUP does
+    # not use that optional digest backend, so force the probe off rather than leaking an
+    # unpinned host library into the private static link metadata.
+
     CC="$CC" CFLAGS="$CUP_DEPENDENCY_CFLAGS" \
     CPPFLAGS="-I$PREFIX/include" \
     LDFLAGS="$(library_flags)" \
     PKG_CONFIG_PATH="$pkg_dirs" \
     PKG_CONFIG_LIBDIR="$pkg_dirs" \
     PKG_CONFIG_SYSROOT_DIR="" \
+    ac_cv_lib_md_MD5Init=no \
     ./configure \
         --prefix="$INSTALL_PREFIX" \
         --disable-shared \
@@ -306,6 +311,9 @@ build_libarchive() {
         --disable-bsdcat \
         --disable-bsdunzip \
         --disable-acl \
+        --disable-xattr \
+        --disable-posix-regex-lib \
+        --without-libb2 \
         --without-bz2lib \
         --without-lzo2 \
         --without-lz4 \
@@ -313,7 +321,9 @@ build_libarchive() {
         --without-xml2 \
         --without-expat \
         --without-nettle \
-        --without-openssl
+        --without-openssl \
+        --without-iconv \
+        --without-libiconv-prefix
 
     make -j"$JOBS"
     make install DESTDIR="$DESTDIR"

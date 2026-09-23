@@ -89,6 +89,17 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.metadata.outputs.sha }}
           fetch-depth: 0
+      - name: Acquire published cup-components catalog snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cup-catalog-input"
+          curl --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 180 \
+            'https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg' \
+            --output "$RUNNER_TEMP/cup-catalog-input/catalog.cfg"
+          test -s "$RUNNER_TEMP/cup-catalog-input/catalog.cfg"
       - name: Build exact common asset set
         env:
           CUP_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
@@ -98,6 +109,7 @@ jobs:
           TESTS_RUN_ID: ${{ needs.metadata.outputs.tests_run_id }}
           TESTS_RUN_ATTEMPT: ${{ needs.metadata.outputs.tests_run_attempt }}
           RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_CATALOG_SOURCE: ${{ runner.temp }}/cup-catalog-input/catalog.cfg
         run: make release-common-assets
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -280,6 +292,9 @@ jobs:
         env:
           DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
         run: |
           set -euo pipefail
           inputs="$RUNNER_TEMP/cup-release-inputs"
@@ -297,6 +312,9 @@ jobs:
         env:
           DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
         run: |
           set -euo pipefail
           inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
@@ -370,6 +388,10 @@ jobs:
           path: ${{ runner.temp }}/cup-release-downloads/windows-x64
 
       - name: Assemble exact flat candidate
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
         run: |
           set -euo pipefail
           scripts/release/assemble-candidate.sh "$RUNNER_TEMP/cup-release-candidate" \

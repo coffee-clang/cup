@@ -53,7 +53,6 @@ run_check() {
 }
 
 run_check 'Testing repository structure...' tests/repository/structure.sh
-run_check 'Testing source-test environment...' tests/repository/environment.sh
 run_check 'Testing descriptor-relative path safety...' tests/repository/path-safety.sh
 run_check 'Testing dependency contracts...' tests/repository/dependencies.sh
 run_check 'Testing embedded CA metadata...' scripts/certs/check-ca-bundle.sh

@@ -1,353 +1,396 @@
-/*
- * Exercises official-version selection, downgrade/equality policy, staged asset
- * verification and deferred-helper boundaries.
- */
+/* Exercises the CUP-generation trust, pinning and detached-handoff boundaries. */
 
-#include "assets.h"
-#include "download.h"
 #include "checksum.h"
 #include "command_context.h"
-#include "commands.h"
-#include "self_update.h"
-#include "update_journal.h"
 #include "constants.h"
-#include "error.h"
+#include "download.h"
 #include "filesystem.h"
-#include "layout.h"
-#include "install_policy.h"
+#include "generation.h"
 #include "interrupt.h"
-#include "package_catalog.h"
-#include "system.h"
-#include "package_transaction.h"
+#include "layout.h"
 #include "release_metadata.h"
+#include "runtime_journal.h"
+#include "self_update.h"
+#include "system.h"
+#include "text.h"
+#include "update_helper.h"
+#include "update_journal.h"
 #include "unity.h"
-#include "test_platform.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
-static char remote_version[64];
-static char remote_commit[64];
-static char versioned_version[64];
-static char versioned_commit[64];
-static int fetch_calls;
-static int fail_fetch_call;
-static int checksum_schema_valid;
-static int checksum_matches;
-static CupError verify_result;
-static int verify_calls;
-static int fail_verify_call;
-static CupError executable_result;
-static int fail_executable_call;
-static int setup_calls;
-static int fail_setup_call;
-static int latest_metadata_mode;
-static int versioned_metadata_mode;
-static CupError context_result;
-static CupError transaction_begin_result;
-static CupError transaction_clear_result;
-static CupError helper_prepare_result;
-static CupError helper_result;
-static CupError cleanup_result;
-static CupError safe_point_result;
-static int context_end_calls;
-static int transaction_begin_calls;
-static int transaction_clear_calls;
-static int helper_prepare_calls;
-static int helper_calls;
-static int cleanup_calls;
-static int safe_point_calls;
-static int executable_calls;
-static unsigned staging_serial;
-static CupError assets_inspect_result;
-static int installed_generation_valid;
-static int assets_inspect_calls;
-static int allow_insecure_loopback;
-static char expected_url_base[MAX_CATALOG_URL_LEN];
+#define DIGEST_CURRENT "1111111111111111111111111111111111111111111111111111111111111111"
+#define DIGEST_LICENSE "2222222222222222222222222222222222222222222222222222222222222222"
+#define DIGEST_NOTICES "3333333333333333333333333333333333333333333333333333333333333333"
+#define DIGEST_BINARY  "4444444444444444444444444444444444444444444444444444444444444444"
+#define DIGEST_RELEASE "5555555555555555555555555555555555555555555555555555555555555555"
+#define DIGEST_BAD     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-static CupError buffer_write_result(int written, size_t size) {
-    return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+static char latest_version[CUP_RELEASE_VERSION_MAX];
+static char latest_commit[CUP_RELEASE_COMMIT_MAX];
+static char target_version[CUP_RELEASE_VERSION_MAX];
+static char target_commit[CUP_RELEASE_COMMIT_MAX];
+static const char *current_binary_digest;
+static const char *target_license_digest;
+static const char *target_notices_digest;
+static const char *target_binary_digest;
+static CupError current_manifest_result;
+static CupError latest_manifest_result;
+static CupError target_manifest_result;
+static CupError download_result;
+static int fail_download_call;
+static CupError generation_prepare_result;
+static CupError helper_prepare_result;
+static CupError journal_begin_result;
+static CupError safe_point_result;
+static CupError helper_start_result;
+static CupError journal_clear_result;
+static CupError cleanup_result;
+
+static int context_begin_calls;
+static int context_end_calls;
+static int temp_directory_calls;
+static int ensure_directory_calls;
+static int download_calls;
+static int release_load_calls;
+static int generation_prepare_calls;
+static int helper_prepare_calls;
+static int journal_begin_calls;
+static int safe_point_calls;
+static int helper_start_calls;
+static int journal_clear_calls;
+static int cleanup_calls;
+static int executable_calls;
+static char urls[8][MAX_CATALOG_URL_LEN];
+static DownloadValidation validations[8];
+
+static const ReleaseAsset current_binary_asset = {"cup-current", DIGEST_CURRENT};
+static const ReleaseAsset target_license_asset = {"LICENSE", DIGEST_LICENSE};
+static const ReleaseAsset target_notices_asset = {"THIRD_PARTY_NOTICES.txt", DIGEST_NOTICES};
+static const ReleaseAsset target_binary_asset = {"cup-target", DIGEST_BINARY};
+
+static CupError copy_text(char *buffer, size_t size, const char *value) {
+    size_t length = strlen(value);
+    if (length >= size) return CUP_ERR_BUFFER_TOO_SMALL;
+    memcpy(buffer, value, length + 1);
+    return CUP_OK;
+}
+
+static void set_metadata(ReleaseMetadata *metadata,
+                         const char *version,
+                         const char *commit,
+                         unsigned marker) {
+    memset(metadata, 0, sizeof(*metadata));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_text(metadata->version, sizeof(metadata->version), version));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_text(metadata->commit, sizeof(metadata->commit), commit));
+    metadata->root_layout = marker;
 }
 
 static void reset_scenario(void) {
-    strcpy(remote_version, "1.2.4");
-    strcpy(remote_commit, "abcdef1234567890abcdef1234567890abcdef12");
-    strcpy(versioned_version, "1.2.4");
-    strcpy(versioned_commit, "abcdef1234567890abcdef1234567890abcdef12");
-    fetch_calls = 0;
-    fail_fetch_call = 0;
-    checksum_schema_valid = 1;
-    checksum_matches = 1;
-    verify_result = CUP_OK;
-    verify_calls = 0;
-    fail_verify_call = 0;
-    executable_result = CUP_OK;
-    fail_executable_call = 0;
-    setup_calls = 0;
-    fail_setup_call = 0;
-    latest_metadata_mode = 0;
-    versioned_metadata_mode = 0;
-    context_result = CUP_OK;
-    transaction_begin_result = CUP_OK;
-    transaction_clear_result = CUP_OK;
+    strcpy(latest_version, "1.2.4");
+    strcpy(latest_commit, "abcdef1234567890abcdef1234567890abcdef12");
+    strcpy(target_version, "1.2.4");
+    strcpy(target_commit, "abcdef1234567890abcdef1234567890abcdef12");
+    current_binary_digest = DIGEST_CURRENT;
+    target_license_digest = DIGEST_LICENSE;
+    target_notices_digest = DIGEST_NOTICES;
+    target_binary_digest = DIGEST_BINARY;
+    current_manifest_result = CUP_OK;
+    latest_manifest_result = CUP_OK;
+    target_manifest_result = CUP_OK;
+    download_result = CUP_ERR_FETCH;
+    fail_download_call = 0;
+    generation_prepare_result = CUP_OK;
     helper_prepare_result = CUP_OK;
-    helper_result = CUP_OK;
-    cleanup_result = CUP_OK;
+    journal_begin_result = CUP_OK;
     safe_point_result = CUP_OK;
+    helper_start_result = CUP_OK;
+    journal_clear_result = CUP_OK;
+    cleanup_result = CUP_OK;
+    context_begin_calls = 0;
     context_end_calls = 0;
-    transaction_begin_calls = 0;
-    transaction_clear_calls = 0;
+    temp_directory_calls = 0;
+    ensure_directory_calls = 0;
+    download_calls = 0;
+    release_load_calls = 0;
+    generation_prepare_calls = 0;
     helper_prepare_calls = 0;
-    helper_calls = 0;
-    cleanup_calls = 0;
+    journal_begin_calls = 0;
     safe_point_calls = 0;
+    helper_start_calls = 0;
+    journal_clear_calls = 0;
+    cleanup_calls = 0;
     executable_calls = 0;
-    assets_inspect_result = CUP_OK;
-    installed_generation_valid = 1;
-    assets_inspect_calls = 0;
-    allow_insecure_loopback = 0;
-    expected_url_base[0] = '\0';
+    memset(urls, 0, sizeof(urls));
+    memset(validations, 0, sizeof(validations));
 }
 
-void setUp(void) {
-    reset_scenario();
-}
-
-void tearDown(void) {
-#if defined(_WIN32)
-    (void)_putenv_s("CUP_INSTALL_BASE_URL", "");
-#else
-    (void)unsetenv("CUP_INSTALL_BASE_URL");
-#endif
-}
-
-static void write_text(const char *path, const char *text) {
-    FILE *file = fopen(path, "wb");
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_EQUAL_size_t(strlen(text), fwrite(text, 1, strlen(text), file));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-}
-
-static void write_metadata(const char *path, const char *version, const char *commit, int mode) {
-    char contents[512];
-
-    switch (mode) {
-        case 1:
-            (void)snprintf(
-                contents, sizeof(contents), "format=2\nversion=%s\ncommit=%s\n", version, commit);
-            break;
-        case 2:
-            (void)snprintf(contents,
-                           sizeof(contents),
-                           "format=1\nversion=%s\nversion=%s\ncommit=%s\n",
-                           version,
-                           version,
-                           commit);
-            break;
-        case 3:
-            (void)snprintf(contents,
-                           sizeof(contents),
-                           "format=1\nunknown=x\nversion=%s\ncommit=%s\n",
-                           version,
-                           commit);
-            break;
-        case 4:
-            (void)snprintf(contents, sizeof(contents), "format=1\nversion=%s\n", version);
-            break;
-        case 5:
-            (void)snprintf(contents, sizeof(contents), "not-key-value\n");
-            break;
-        default:
-            (void)snprintf(
-                contents, sizeof(contents), "format=1\nversion=%s\ncommit=%s\n", version, commit);
-            break;
-    }
-    write_text(path, contents);
-}
-
-static CupError setup_result(void) {
-    setup_calls++;
-    return setup_calls == fail_setup_call ? CUP_ERR_BUFFER_TOO_SMALL : CUP_OK;
-}
+void setUp(void) { reset_scenario(); }
+void tearDown(void) {}
 
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode) {
-    (void)target_override;
-    (void)mode;
-    if (context != NULL) {
-        memset(context, 0, sizeof(*context));
-        context->lock.handle = 7;
-        context->lock.mode = SYSTEM_LOCK_EXCLUSIVE;
-        context->lock.active = 1;
-    }
-    return context_result;
+    TEST_ASSERT_NOT_NULL(context);
+    TEST_ASSERT_NULL(target_override);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, mode);
+    memset(context, 0, sizeof(*context));
+    context->lock.handle = 7;
+    context->lock.mode = SYSTEM_LOCK_EXCLUSIVE;
+    context->lock.active = 1;
+    context_begin_calls++;
+    return CUP_OK;
 }
 
 void command_context_end(CommandContext *context) {
-    (void)context;
+    TEST_ASSERT_NOT_NULL(context);
     context_end_calls++;
 }
 
-CupError assets_inspect(AssetsInspection *inspection) {
-    assets_inspect_calls++;
-    if (inspection == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    memset(inspection, 0, sizeof(*inspection));
-    if (assets_inspect_result != CUP_OK) {
-        return assets_inspect_result;
-    }
-    if (installed_generation_valid) {
-        inspection->binary = CUP_ASSET_VALID;
-        inspection->catalog = CUP_ASSET_VALID;
-        inspection->install_policy = CUP_ASSET_VALID;
-        inspection->common_checksums = CUP_ASSET_VALID;
-        inspection->platform_checksums = CUP_ASSET_VALID;
-    }
-    return CUP_OK;
-}
-
-int assets_installed_is_valid(const AssetsInspection *inspection) {
-    TEST_ASSERT_NOT_NULL(inspection);
-    return installed_generation_valid;
-}
-
-CupError assets_binary_asset_name(char *name, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return buffer_write_result(snprintf(name, size, "cup-linux-x64"), size);
-}
-
-CupError assets_platform_checksums_name(char *name, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return buffer_write_result(snprintf(name, size, "SHA256SUMS.linux-x64"), size);
-}
-
-CupError assets_platform_checksum_required_names(PlatformChecksumRequiredNames *required) {
-    if (required == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (assets_binary_asset_name(required->binary, sizeof(required->binary)) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    required->names[0] = required->binary;
-    required->names[1] = CUP_RELEASE_METADATA_FILENAME;
-    required->names[2] = CUP_COMMON_CHECKSUMS_FILENAME;
-    return CUP_OK;
-}
-
-CupError checksum_verify_file(const char *checksum_path,
-                              const char *asset_name,
-                              const char *asset_path,
-                              int *matches) {
-    (void)checksum_path;
-    (void)asset_name;
-    (void)asset_path;
-    if (matches == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    verify_calls++;
-    if (verify_calls == fail_verify_call) {
-        return verify_result;
-    }
-    *matches = checksum_matches;
-    return CUP_OK;
-}
-
-static CupError copy_test_path(char *buffer, size_t size, const char *suffix) {
-    return buffer_write_result(snprintf(buffer, size, "%s/%s", temp_dir, suffix), size);
+CupError layout_get_root(char *buffer, size_t size) {
+    return copy_text(buffer, size, "/mock/root");
 }
 
 CupError layout_get_staging_dir(char *buffer, size_t size) {
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+    return copy_text(buffer, size, "/mock/root/tmp");
+}
+
+static const char *binary_release_name(void) {
+#if defined(_WIN32)
+    return "cup-windows-x64.exe";
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return "cup-macos-arm64";
+#elif defined(__APPLE__)
+    return "cup-macos-x64";
+#elif defined(__aarch64__)
+    return "cup-linux-arm64";
+#else
+    return "cup-linux-x64";
+#endif
+}
+
+CupError generation_asset_spec(GenerationAssetId id, GenerationAssetSpec *spec) {
+    const char *name = NULL;
+    const char *destination = NULL;
+    TEST_ASSERT_NOT_NULL(spec);
+    memset(spec, 0, sizeof(*spec));
+    spec->id = id;
+    switch (id) {
+        case CUP_GENERATION_ASSET_RELEASE:
+            name = "release.txt";
+            destination = "/mock/root/release.txt";
+            spec->read_only = 1;
+            break;
+        case CUP_GENERATION_ASSET_LICENSE:
+            name = "LICENSE";
+            destination = "/mock/root/LICENSE";
+            spec->read_only = 1;
+            break;
+        case CUP_GENERATION_ASSET_NOTICES:
+            name = "THIRD_PARTY_NOTICES.txt";
+            destination = "/mock/root/THIRD_PARTY_NOTICES.txt";
+            spec->read_only = 1;
+            break;
+        case CUP_GENERATION_ASSET_BINARY:
+            name = binary_release_name();
+            destination = "/mock/root/bin/cup";
+            spec->executable = 1;
+            break;
+        default:
+            return CUP_ERR_INVALID_INPUT;
     }
-    return copy_test_path(buffer, size, "tmp");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_text(spec->release_name, sizeof(spec->release_name), name));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_text(spec->destination, sizeof(spec->destination), destination));
+    return CUP_OK;
 }
 
-CupError layout_get_root(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed");
+CupError generation_asset_specs(GenerationAssetSpec specs[CUP_GENERATION_ASSET_COUNT]) {
+    size_t i;
+    TEST_ASSERT_NOT_NULL(specs);
+    for (i = 0; i < CUP_GENERATION_ASSET_COUNT; ++i) {
+        CupError err = generation_asset_spec((GenerationAssetId)i, &specs[i]);
+        if (err != CUP_OK) return err;
+    }
+    return CUP_OK;
 }
 
-CupError layout_get_binary_path(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed/bin/cup");
+void release_metadata_init(ReleaseMetadata *metadata) {
+    if (metadata != NULL) memset(metadata, 0, sizeof(*metadata));
 }
 
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed/SHA256SUMS.linux-x64");
+void release_metadata_free(ReleaseMetadata *metadata) {
+    if (metadata != NULL) memset(metadata, 0, sizeof(*metadata));
 }
 
-CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed/config/packages.cfg");
+CupError release_metadata_load(const char *path, ReleaseMetadata *metadata) {
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_NOT_NULL(metadata);
+    release_load_calls++;
+    if (strcmp(path, "/mock/root/release.txt") == 0) {
+        set_metadata(metadata, CUP_VERSION_BASE,
+                     "0123456789012345678901234567890123456789", 1);
+        return CUP_OK;
+    }
+    if (strstr(path, "latest-release.txt") != NULL) {
+        set_metadata(metadata, latest_version, latest_commit, 2);
+        return CUP_OK;
+    }
+    if (strstr(path, "/new/release.txt") != NULL) {
+        set_metadata(metadata, target_version, target_commit, 3);
+        return CUP_OK;
+    }
+    TEST_FAIL_MESSAGE("unexpected release metadata path");
+    return CUP_ERR_VALIDATION;
 }
 
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed/config/install.cfg");
+CupError release_version_parse(const char *text, ReleaseVersion *version) {
+    unsigned major, minor, patch;
+    char extra;
+    if (text == NULL || version == NULL ||
+        sscanf(text, "%u.%u.%u%c", &major, &minor, &patch, &extra) != 3) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    version->major = major;
+    version->minor = minor;
+    version->patch = patch;
+    return CUP_OK;
 }
 
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    return copy_test_path(buffer, size, "installed/SHA256SUMS.common");
+CupError generation_validate_manifest(const ReleaseMetadata *metadata) {
+    TEST_ASSERT_NOT_NULL(metadata);
+    if (metadata->root_layout == 1) return current_manifest_result;
+    if (metadata->root_layout == 2) return latest_manifest_result;
+    if (metadata->root_layout == 3) return target_manifest_result;
+    return CUP_ERR_VALIDATION;
+}
+
+const ReleaseAsset *generation_manifest_asset(const ReleaseMetadata *metadata,
+                                              GenerationAssetId id) {
+    static ReleaseAsset license_asset;
+    static ReleaseAsset notices_asset;
+    static ReleaseAsset binary_asset;
+    TEST_ASSERT_NOT_NULL(metadata);
+    if (metadata->root_layout == 1 && id == CUP_GENERATION_ASSET_BINARY) {
+        return &current_binary_asset;
+    }
+    if (metadata->root_layout != 3) return NULL;
+    if (id == CUP_GENERATION_ASSET_LICENSE) {
+        license_asset = target_license_asset;
+        strcpy(license_asset.sha256, DIGEST_LICENSE);
+        return &license_asset;
+    }
+    if (id == CUP_GENERATION_ASSET_NOTICES) {
+        notices_asset = target_notices_asset;
+        strcpy(notices_asset.sha256, DIGEST_NOTICES);
+        return &notices_asset;
+    }
+    if (id == CUP_GENERATION_ASSET_BINARY) {
+        binary_asset = target_binary_asset;
+        strcpy(binary_asset.sha256, DIGEST_BINARY);
+        return &binary_asset;
+    }
+    return NULL;
+}
+
+int checksum_digest_is_canonical(const char *digest) {
+    size_t i;
+    if (digest == NULL || strlen(digest) != 64) return 0;
+    for (i = 0; i < 64; ++i) {
+        if (!((digest[i] >= '0' && digest[i] <= '9') ||
+              (digest[i] >= 'a' && digest[i] <= 'f'))) return 0;
+    }
+    return 1;
+}
+
+CupError checksum_sha256_file(const char *path, char *digest, size_t size) {
+    const char *value = NULL;
+    TEST_ASSERT_NOT_NULL(path);
+    if (strcmp(path, "/mock/root/bin/cup") == 0) value = current_binary_digest;
+    else if (strstr(path, "/new/LICENSE") != NULL) value = target_license_digest;
+    else if (strstr(path, "/new/THIRD_PARTY_NOTICES.txt") != NULL) value = target_notices_digest;
+    else if (strstr(path, "/new/") != NULL && strstr(path, "cup-") != NULL) value = target_binary_digest;
+    else {
+        TEST_FAIL_MESSAGE("unexpected digest path");
+        return CUP_ERR_VALIDATION;
+    }
+    return copy_text(digest, size, value);
 }
 
 CupError system_create_temp_directory(const char *directory,
                                       const char *prefix,
                                       char *path,
                                       size_t path_size) {
-    (void)directory;
-    TEST_ASSERT_EQUAL_STRING("cup-update", prefix);
-    if (setup_result() != CUP_OK) {
-        return CUP_ERR_TEMPORARY;
-    }
-    staging_serial++;
-    if (snprintf(path, path_size, "%s/cup-update-%u.tmp", temp_dir, staging_serial) <= 0) {
-        return CUP_ERR_TEMPORARY;
-    }
-    return test_mkdir(path, 0700) == 0 ? CUP_OK : CUP_ERR_TEMPORARY;
+    TEST_ASSERT_EQUAL_STRING("/mock/root/tmp", directory);
+    TEST_ASSERT_EQUAL_STRING(CUP_UPDATE_TEMP_PREFIX, prefix);
+    temp_directory_calls++;
+    return copy_text(path, path_size, "/mock/root/tmp/cup-update-abc");
+}
+
+CupError filesystem_ensure_directory(const char *path) {
+    TEST_ASSERT_EQUAL_STRING("/mock/root/tmp/cup-update-abc/new", path);
+    ensure_directory_calls++;
+    return CUP_OK;
+}
+
+CupError download_copy_release_base_override(char *base, size_t size) {
+    return copy_text(base, size, "https://example.test/cup");
+}
+
+CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(destination);
+    TEST_ASSERT_TRUE(download_calls < (int)(sizeof(urls) / sizeof(urls[0])));
+    strcpy(urls[download_calls], url);
+    validations[download_calls] = validation;
+    download_calls++;
+    if (fail_download_call == download_calls) return download_result;
+    return CUP_OK;
 }
 
 CupError system_set_executable(const char *path, int executable) {
     TEST_ASSERT_NOT_NULL(path);
     TEST_ASSERT_TRUE(executable);
     executable_calls++;
-    if (executable_calls == fail_executable_call) {
-        return executable_result;
-    }
     return CUP_OK;
 }
 
-unsigned long system_get_process_id(void) {
-    return 1234;
+CupError update_generation_prepare(const char *staging, char target_release_sha256[65]) {
+    TEST_ASSERT_EQUAL_STRING("/mock/root/tmp/cup-update-abc", staging);
+    generation_prepare_calls++;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, copy_text(target_release_sha256, 65, DIGEST_RELEASE));
+    return generation_prepare_result;
 }
 
-CupError update_helper_prepare(void) {
+CupError update_helper_prepare_from(const char *source_binary) {
+    TEST_ASSERT_EQUAL_STRING("/mock/root/bin/cup", source_binary);
     helper_prepare_calls++;
     return helper_prepare_result;
 }
 
-CupError update_helper_start(const char *root, const char *token, SystemLock *lock) {
-    char expected_root[MAX_PATH_LEN];
+unsigned long system_get_process_id(void) { return 1234; }
 
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, copy_test_path(expected_root, sizeof(expected_root), "installed"));
-    TEST_ASSERT_EQUAL_STRING(expected_root, root);
-    TEST_ASSERT_NOT_NULL(token);
-    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));
-    TEST_ASSERT_NOT_NULL(strstr(token, ".tmp"));
-    TEST_ASSERT_NOT_NULL(lock);
-    TEST_ASSERT_TRUE(lock->active);
-    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock->mode);
-    helper_calls++;
-    if (helper_result == CUP_OK) {
-        lock->active = 0;
-        lock->mode = SYSTEM_LOCK_SHARED;
+void update_journal_init(UpdateJournal *journal) {
+    if (journal != NULL) memset(journal, 0, sizeof(*journal));
+}
+
+CupError update_journal_begin(const char *temporary_path,
+                              const char *target_release_sha256,
+                              UpdateJournal *created) {
+    TEST_ASSERT_EQUAL_STRING("/mock/root/tmp/cup-update-abc", temporary_path);
+    TEST_ASSERT_EQUAL_STRING(DIGEST_RELEASE, target_release_sha256);
+    TEST_ASSERT_NOT_NULL(created);
+    journal_begin_calls++;
+    memset(created, 0, sizeof(*created));
+    if (journal_begin_result == CUP_OK || journal_begin_result == CUP_ERR_COMMIT) {
+        created->file_identity.valid = 1;
+        created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
+        strcpy(created->temporary_name, "cup-update-abc");
+        strcpy(created->target_release_sha256, DIGEST_RELEASE);
     }
-    return helper_result;
+    return journal_begin_result;
 }
 
 CupError interrupt_safe_point(void) {
@@ -355,467 +398,131 @@ CupError interrupt_safe_point(void) {
     return safe_point_result;
 }
 
-int download_insecure_loopback_is_allowed(const char *url) {
-    return allow_insecure_loopback && url != NULL;
+CupError update_helper_start(const char *root, const char *token, SystemLock *lock) {
+    TEST_ASSERT_EQUAL_STRING("/mock/root", root);
+    TEST_ASSERT_EQUAL_STRING("u1234-cup-update-abc", token);
+    TEST_ASSERT_NOT_NULL(lock);
+    TEST_ASSERT_TRUE(lock->active);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock->mode);
+    helper_start_calls++;
+    if (helper_start_result == CUP_OK) lock->active = 0;
+    return helper_start_result;
 }
 
-CupError download_copy_release_base_override(char *base, size_t size) {
-    const char *value = getenv("CUP_INSTALL_BASE_URL");
-    size_t length;
-
-    if (base == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (value == NULL || value[0] == '\0') {
-        return CUP_ERR_NOT_AVAILABLE;
-    }
-    if (!download_insecure_loopback_is_allowed(value)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    length = strlen(value);
-    while (length > 0 && value[length - 1] == '/') {
-        length--;
-    }
-    if (length == 0 || length >= size) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(base, value, length);
-    base[length] = '\0';
-    return CUP_OK;
-}
-
-CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
-    (void)validation;
-    if (expected_url_base[0] != '\0') {
-        TEST_ASSERT_TRUE(strncmp(url, expected_url_base, strlen(expected_url_base)) == 0);
-        TEST_ASSERT_EQUAL_CHAR('/', url[strlen(expected_url_base)]);
-        TEST_ASSERT_TRUE(url[strlen(expected_url_base) + 1] != '/');
-    }
-    fetch_calls++;
-    if (fail_fetch_call == fetch_calls) {
-        return CUP_ERR_FETCH;
-    }
-
-    if (fetch_calls == 1) {
-        if (expected_url_base[0] != '\0') {
-            TEST_ASSERT_TRUE(strstr(url, "/release.txt") != NULL);
-        } else {
-            TEST_ASSERT_TRUE(strstr(url, "/latest/download/release.txt") != NULL);
-        }
-        write_metadata(destination, remote_version, remote_commit, latest_metadata_mode);
-    } else if (fetch_calls == 2) {
-        TEST_ASSERT_TRUE(strstr(url, "SHA256SUMS.linux-x64") != NULL);
-        write_text(destination, "platform checksums\n");
-    } else if (fetch_calls == 3) {
-        TEST_ASSERT_TRUE(strstr(url, "SHA256SUMS.common") != NULL);
-        write_text(destination, "common checksums\n");
-    } else if (fetch_calls == 4) {
-        if (expected_url_base[0] != '\0') {
-            TEST_ASSERT_TRUE(strstr(url, "/1.2.4/release.txt") != NULL);
-        } else {
-            TEST_ASSERT_TRUE(strstr(url, "/download/v") != NULL);
-        }
-        write_metadata(destination, versioned_version, versioned_commit, versioned_metadata_mode);
-    } else if (fetch_calls == 5) {
-        TEST_ASSERT_TRUE(strstr(url, "cup-linux-x64") != NULL);
-        write_text(destination, "binary\n");
-    } else if (fetch_calls == 6) {
-        TEST_ASSERT_TRUE(strstr(url, "packages.cfg") != NULL);
-        write_text(destination, "catalog\n");
-    } else if (fetch_calls == 7) {
-        TEST_ASSERT_TRUE(strstr(url, "install.cfg") != NULL);
-        write_text(destination, "install config\n");
-    } else {
-        TEST_FAIL_MESSAGE("unexpected cup update fetch");
-        return CUP_ERR_FETCH;
-    }
-    return CUP_OK;
-}
-
-CupError checksum_validate_assets(const char *checksum_path,
-                                  const char *const *asset_names,
-                                  size_t asset_count) {
-    TEST_ASSERT_NOT_NULL(checksum_path);
-    TEST_ASSERT_NOT_NULL(asset_names);
-    if (strstr(checksum_path, CUP_UPDATE_COMMON_CHECKSUMS_NEW) != NULL) {
-        TEST_ASSERT_EQUAL_UINT(CUP_COMMON_CHECKSUM_ASSET_COUNT, asset_count);
-        TEST_ASSERT_EQUAL_STRING(CUP_PACKAGES_FILENAME, asset_names[0]);
-        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POLICY_FILENAME, asset_names[1]);
-        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_POSIX_FILENAME, asset_names[2]);
-        TEST_ASSERT_EQUAL_STRING(CUP_INSTALL_WINDOWS_FILENAME, asset_names[3]);
-    } else {
-        TEST_ASSERT_EQUAL_UINT(CUP_PLATFORM_CHECKSUM_ASSET_COUNT, asset_count);
-        TEST_ASSERT_EQUAL_STRING(CUP_COMMON_CHECKSUMS_FILENAME, asset_names[2]);
-    }
-    return checksum_schema_valid ? CUP_OK : CUP_ERR_VALIDATION;
-}
-
-void package_catalog_init(PackageCatalog *catalog) {
-    if (catalog != NULL) {
-        memset(catalog, 0, sizeof(*catalog));
-    }
-}
-
-void package_catalog_free(PackageCatalog *catalog) {
-    (void)catalog;
-}
-
-CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
-    TEST_ASSERT_NOT_NULL(catalog);
-    TEST_ASSERT_NOT_NULL(path);
-    return CUP_OK;
-}
-
-void install_policy_init(InstallPolicy *config) {
-    if (config != NULL) {
-        memset(config, 0, sizeof(*config));
-    }
-}
-
-CupError install_policy_load_path(InstallPolicy *config, const char *path) {
-    TEST_ASSERT_NOT_NULL(config);
-    TEST_ASSERT_NOT_NULL(path);
-    return CUP_OK;
-}
-
-void update_journal_init(UpdateJournal *journal) {
-    if (journal != NULL) {
-        memset(journal, 0, sizeof(*journal));
-        journal->phase = CUP_UPDATE_PHASE_SCHEDULED;
-    }
-}
-
-CupError update_journal_begin(const char *temporary_path,
-                                  const char *token,
-                                  const char *version,
-                                  UpdateJournal *created) {
-    TEST_ASSERT_NOT_NULL(temporary_path);
-    TEST_ASSERT_NOT_NULL(token);
-    TEST_ASSERT_NOT_NULL(strstr(token, "u1234-cup-update-"));
-    TEST_ASSERT_NOT_NULL(strstr(token, ".tmp"));
-    TEST_ASSERT_EQUAL_STRING(versioned_version, version);
-    TEST_ASSERT_NOT_NULL(created);
-
-    transaction_begin_calls++;
-    update_journal_init(created);
-    if (transaction_begin_result == CUP_OK || transaction_begin_result == CUP_ERR_COMMIT) {
-        created->file_identity.valid = 1;
-        created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
-    }
-    return transaction_begin_result;
-}
-
-
-
-CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity) {
-    TEST_ASSERT_NOT_NULL(expected_identity);
-    TEST_ASSERT_TRUE(expected_identity->valid);
-    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
-    transaction_clear_calls++;
-    return transaction_clear_result;
+CupError runtime_journal_clear_if_identity(const SystemPathIdentity *identity) {
+    TEST_ASSERT_NOT_NULL(identity);
+    TEST_ASSERT_TRUE(identity->valid);
+    journal_clear_calls++;
+    return journal_clear_result;
 }
 
 CupError filesystem_remove_tree(const char *path) {
-    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_EQUAL_STRING("/mock/root/tmp/cup-update-abc", path);
     cleanup_calls++;
     return cleanup_result;
 }
 
-static void test_installed_preflight(void) {
-    installed_generation_valid = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, assets_inspect_calls);
-    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(0, setup_calls);
-
-    reset_scenario();
-    assets_inspect_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, assets_inspect_calls);
-    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
+static void assert_no_handoff(void) {
+    TEST_ASSERT_EQUAL_INT(0, generation_prepare_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_prepare_calls);
+    TEST_ASSERT_EQUAL_INT(0, journal_begin_calls);
+    TEST_ASSERT_EQUAL_INT(0, helper_start_calls);
 }
 
-static void test_update_success(void) {
+static void test_current_binary_must_be_trusted_before_staging(void) {
+    current_binary_digest = DIGEST_BAD;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
+    TEST_ASSERT_EQUAL_INT(1, context_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, release_load_calls);
+    TEST_ASSERT_EQUAL_INT(0, temp_directory_calls);
+    TEST_ASSERT_EQUAL_INT(0, download_calls);
+    TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
+    assert_no_handoff();
+}
+
+static void test_equal_and_older_release_are_local_noops_after_discovery(void) {
+    strcpy(latest_version, CUP_VERSION_BASE);
     TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-    TEST_ASSERT_EQUAL_INT(7, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(1, download_calls);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/release.txt", urls[0]);
+    TEST_ASSERT_EQUAL_INT(DOWNLOAD_VALIDATE_METADATA, validations[0]);
+    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
+    assert_no_handoff();
+
+    reset_scenario();
+    strcpy(latest_version, "1.2.2");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
+    TEST_ASSERT_EQUAL_INT(1, download_calls);
+    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
+    assert_no_handoff();
+}
+
+static void test_newer_release_is_pinned_then_handed_off(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
+    TEST_ASSERT_EQUAL_INT(5, download_calls);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/release.txt", urls[0]);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/1.2.4/release.txt", urls[1]);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/1.2.4/LICENSE", urls[2]);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/1.2.4/THIRD_PARTY_NOTICES.txt", urls[3]);
+    TEST_ASSERT_NOT_NULL(strstr(urls[4], "https://example.test/cup/1.2.4/cup-"));
+    TEST_ASSERT_EQUAL_INT(DOWNLOAD_VALIDATE_BINARY, validations[4]);
+    TEST_ASSERT_EQUAL_INT(1, generation_prepare_calls);
     TEST_ASSERT_EQUAL_INT(1, helper_prepare_calls);
-    TEST_ASSERT_EQUAL_INT(1, transaction_begin_calls);
-    TEST_ASSERT_EQUAL_INT(1, helper_calls);
+    TEST_ASSERT_EQUAL_INT(1, journal_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
+    TEST_ASSERT_EQUAL_INT(1, helper_start_calls);
+    TEST_ASSERT_EQUAL_INT(0, journal_clear_calls);
+    TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
 #if defined(_WIN32)
     TEST_ASSERT_EQUAL_INT(0, executable_calls);
 #else
     TEST_ASSERT_EQUAL_INT(1, executable_calls);
 #endif
-    TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
-    TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
-    TEST_ASSERT_EQUAL_INT(1, context_end_calls);
 }
 
-
-static void test_loopback_base_normalization(void) {
-    allow_insecure_loopback = 1;
-    strcpy(expected_url_base, "http://127.0.0.1:18080");
-#if defined(_WIN32)
-    TEST_ASSERT_EQUAL_INT(
-        0, _putenv_s("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080////"));
-#else
-    TEST_ASSERT_EQUAL_INT(
-        0, setenv("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080////", 1));
-#endif
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-    TEST_ASSERT_EQUAL_INT(7, fetch_calls);
-}
-
-
-
-static void test_invalid_override_fails_closed(void) {
-#if defined(_WIN32)
-    TEST_ASSERT_EQUAL_INT(0, _putenv_s("CUP_INSTALL_BASE_URL", "ftp://example.invalid"));
-#else
-    TEST_ASSERT_EQUAL_INT(0, setenv("CUP_INSTALL_BASE_URL", "ftp://example.invalid", 1));
-#endif
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, self_update_start());
-    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, context_end_calls);
-}
-
-static void test_release_version_grammar(void) {
-    ReleaseVersion version;
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, release_version_parse("0.2.2", &version));
-    TEST_ASSERT_EQUAL_UINT(0, version.major);
-    TEST_ASSERT_EQUAL_UINT(2, version.minor);
-    TEST_ASSERT_EQUAL_UINT(2, version.patch);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, release_version_parse("999999.0.1", NULL));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, release_version_parse(NULL, &version));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, release_version_parse("", &version));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("01.2.3", &version));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1.2", &version));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1.2.3.4", &version));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, release_version_parse("1000000.2.3", &version));
-}
-
-static void test_noop_versions(void) {
-    strcpy(remote_version, "1.2.3");
-    strcpy(versioned_version, "1.2.3");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(0, transaction_begin_calls);
-    TEST_ASSERT_EQUAL_INT(0, helper_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    strcpy(remote_version, "1.2.2");
-    strcpy(versioned_version, "1.2.2");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-}
-
-static void test_bad_latest_metadata(void) {
-    strcpy(remote_version, "01.2.4");
+static void test_versioned_manifest_must_match_discovery_identity(void) {
+    strcpy(target_version, "1.2.5");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(2, download_calls);
+    TEST_ASSERT_EQUAL_STRING("https://example.test/cup/1.2.4/release.txt", urls[1]);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
+    assert_no_handoff();
+}
 
-    reset_scenario();
-    strcpy(remote_commit, "INVALID");
+static void test_target_asset_digest_failure_stops_before_transaction(void) {
+    target_binary_digest = DIGEST_BAD;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
+    TEST_ASSERT_EQUAL_INT(5, download_calls);
+    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
+    assert_no_handoff();
+}
+
+static void test_helper_failure_cancels_parent_owned_transaction(void) {
+    helper_start_result = CUP_ERR_TEMPORARY;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TEMPORARY, self_update_start());
+    TEST_ASSERT_EQUAL_INT(1, generation_prepare_calls);
+    TEST_ASSERT_EQUAL_INT(1, journal_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, helper_start_calls);
+    TEST_ASSERT_EQUAL_INT(1, journal_clear_calls);
     TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
 }
 
-static void test_versioned_checksums(void) {
-    strcpy(versioned_commit, "abcdef1234567890abcdef1234567890abcdef13");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(4, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    checksum_schema_valid = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(4, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    checksum_matches = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(4, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-}
-
-static void test_update_fetch_fail(void) {
-    context_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, self_update_start());
-    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(1, context_end_calls);
-
-    reset_scenario();
-    context_result = CUP_ERR_TRANSACTION;
+static void test_cleanup_failure_after_handoff_failure_reports_transaction_error(void) {
+    helper_start_result = CUP_ERR_TEMPORARY;
+    journal_clear_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
-
-    reset_scenario();
-    fail_fetch_call = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    fail_fetch_call = 5;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-}
-
-static void test_interrupt_before_helper_handoff(void) {
-    safe_point_result = CUP_ERR_INTERRUPT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
-    TEST_ASSERT_EQUAL_INT(0, helper_calls);
-    TEST_ASSERT_EQUAL_INT(1, transaction_begin_calls);
-    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-}
-
-static void test_update_commit_fail(void) {
-    helper_prepare_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-    TEST_ASSERT_EQUAL_INT(0, transaction_begin_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    transaction_begin_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(0, transaction_clear_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    transaction_begin_result = CUP_ERR_COMMIT;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    helper_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
-    TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-
-    reset_scenario();
-    helper_result = CUP_ERR_FILESYSTEM;
-    transaction_clear_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, self_update_start());
-    TEST_ASSERT_EQUAL_INT(1, transaction_clear_calls);
+    TEST_ASSERT_EQUAL_INT(1, journal_clear_calls);
     TEST_ASSERT_EQUAL_INT(0, cleanup_calls);
 }
-
-static void test_version_order(void) {
-    strcpy(remote_version, "2.0.0");
-    strcpy(versioned_version, "2.0.0");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-
-    reset_scenario();
-    strcpy(remote_version, "1.3.0");
-    strcpy(versioned_version, "1.3.0");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, self_update_start());
-}
-
-static void test_metadata_shapes(void) {
-    const char *versions[] = {"", "1.2", "1.2.3.4", "1000000.2.3"};
-    size_t i;
-
-    for (i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i) {
-        reset_scenario();
-        strcpy(remote_version, versions[i]);
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    }
-
-    for (i = 1; i <= 5; ++i) {
-        reset_scenario();
-        latest_metadata_mode = (int)i;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-    }
-
-    reset_scenario();
-    strcpy(remote_commit, "abcdef");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-
-    reset_scenario();
-    strcpy(remote_commit, "Abcdef1234567890abcdef1234567890abcdef12");
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-
-    reset_scenario();
-    versioned_metadata_mode = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
-}
-
-static void test_setup_failures(void) {
-    int step;
-
-    for (step = 1; step <= 4; ++step) {
-        reset_scenario();
-        fail_setup_call = step;
-        TEST_ASSERT_NOT_EQUAL(CUP_OK, self_update_start());
-        TEST_ASSERT_EQUAL_INT(0, fetch_calls);
-    }
-}
-
-static void test_stage_failures(void) {
-    int call;
-
-    for (call = 2; call <= 7; ++call) {
-        reset_scenario();
-        fail_fetch_call = call;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, self_update_start());
-        TEST_ASSERT_EQUAL_INT(1, cleanup_calls);
-    }
-
-    reset_scenario();
-    fail_verify_call = 1;
-    verify_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-
-    reset_scenario();
-    fail_verify_call = 2;
-    verify_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-
-#if !defined(_WIN32)
-    reset_scenario();
-    fail_executable_call = 1;
-    executable_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, self_update_start());
-
-#endif
-}
-
 
 int main(void) {
-    char tmp_path[1024];
-
-    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
-        temp_dir, sizeof(temp_dir), "cup-self-update-test"));
-    TEST_ASSERT_TRUE(snprintf(tmp_path, sizeof(tmp_path), "%s/tmp", temp_dir) > 0);
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(tmp_path, 0700));
-    TEST_ASSERT_TRUE(snprintf(tmp_path, sizeof(tmp_path), "%s/installed", temp_dir) > 0);
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(tmp_path, 0700));
-
     UNITY_BEGIN();
-    RUN_TEST(test_release_version_grammar);
-    RUN_TEST(test_installed_preflight);
-    RUN_TEST(test_update_success);
-    RUN_TEST(test_loopback_base_normalization);
-    RUN_TEST(test_invalid_override_fails_closed);
-    RUN_TEST(test_noop_versions);
-    RUN_TEST(test_version_order);
-    RUN_TEST(test_bad_latest_metadata);
-    RUN_TEST(test_metadata_shapes);
-    RUN_TEST(test_setup_failures);
-    RUN_TEST(test_stage_failures);
-    RUN_TEST(test_versioned_checksums);
-    RUN_TEST(test_update_fetch_fail);
-    RUN_TEST(test_interrupt_before_helper_handoff);
-    RUN_TEST(test_update_commit_fail);
+    RUN_TEST(test_current_binary_must_be_trusted_before_staging);
+    RUN_TEST(test_equal_and_older_release_are_local_noops_after_discovery);
+    RUN_TEST(test_newer_release_is_pinned_then_handed_off);
+    RUN_TEST(test_versioned_manifest_must_match_discovery_identity);
+    RUN_TEST(test_target_asset_digest_failure_stops_before_transaction);
+    RUN_TEST(test_helper_failure_cancels_parent_owned_transaction);
+    RUN_TEST(test_cleanup_failure_after_handoff_failure_reports_transaction_error);
     return UNITY_END();
 }

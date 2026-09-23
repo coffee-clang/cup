@@ -230,19 +230,6 @@ dependency_tree_has_no_symlinks() {
     ! find "$1" -type l -print -quit | grep -q .
 }
 
-dependency_unused_programs_absent() {
-    local prefix="$1" program
-
-    for program in \
-            openssl \
-            xz xzdec lzmadec lzmainfo \
-            xzdiff xzgrep xzless xzmore \
-            bsdtar bsdcpio bsdcat bsdunzip; do
-        [ ! -e "$prefix/bin/$program" ] && [ ! -L "$prefix/bin/$program" ] || return 1
-        [ ! -e "$prefix/bin/$program.exe" ] && [ ! -L "$prefix/bin/$program.exe" ] || return 1
-    done
-}
-
 dependency_curl_protocols_valid() {
     local prefix="$1" protocols protocol
 
@@ -471,6 +458,13 @@ dependency_link_metadata_valid() {
     [ -n "$cares_flags" ] && [ -n "$curl_flags" ] && \
         [ -n "$archive_flags" ] && [ -n "$event_flags" ] || return 1
 
+    case " $archive_flags " in
+        *" -lmd "*)
+            echo "Error: libarchive static link metadata leaked ambient libmd." >&2
+            return 1
+            ;;
+    esac
+
     if ! "$prefix/bin/curl-config" --features 2>/dev/null | \
         grep -Fx AsynchDNS >/dev/null; then
         echo "Error: curl was not built with asynchronous hostname resolution." >&2
@@ -505,7 +499,6 @@ dependency_prefix_complete() {
             ;;
     esac
     dependency_tree_has_no_symlinks "$prefix" &&
-        dependency_unused_programs_absent "$prefix" &&
         application_dependency_prefix_complete "$prefix" &&
         test_dependency_prefix_complete "$prefix" &&
         dependency_regular_nonempty_file "$prefix/bin/curl-config" &&

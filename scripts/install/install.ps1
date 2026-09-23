@@ -16,11 +16,6 @@ $BaseUrl = if ($BaseUrlOverridden) {
 } else {
     $DefaultBaseUrl
 }
-$WaitAttempts = if ([string]::IsNullOrWhiteSpace($env:CUP_INSTALL_WAIT_ATTEMPTS)) {
-    120
-} else {
-    0
-}
 $Work = $null
 $MaxBinaryBytes = 268435456L
 $MaxTextBytes = 16777216L
@@ -86,17 +81,6 @@ function Assert-BaseUrl {
     $port = 0
     if (-not [int]::TryParse($Matches[1], [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
         Fail 'installer release base URL override has an invalid port'
-    }
-}
-
-function Resolve-WaitAttempts {
-    if (-not [string]::IsNullOrWhiteSpace($env:CUP_INSTALL_WAIT_ATTEMPTS)) {
-        $parsed = 0
-        if (-not [int]::TryParse($env:CUP_INSTALL_WAIT_ATTEMPTS, [ref]$parsed) -or
-            $parsed -lt 1 -or $parsed -gt 3600) {
-            Fail 'CUP_INSTALL_WAIT_ATTEMPTS is invalid'
-        }
-        $script:WaitAttempts = $parsed
     }
 }
 
@@ -314,62 +298,50 @@ function Receive-Asset([string]$Name) {
     }
 }
 
-function Assert-ChecksumDocument([string]$DocumentName, [string[]]$ExpectedNames) {
-    $lines = @(Get-CanonicalLines (Join-Path $Work $DocumentName))
-    if ($lines.Count -ne $ExpectedNames.Count) {
-        Fail "checksum document has an unexpected entry count: $DocumentName"
+function Assert-ReleaseManifest {
+    $lines = Get-CanonicalLines (Join-Path $Work 'release.txt')
+    if ($lines.Count -lt 6) { Fail 'release metadata is incomplete' }
+    if ($lines[0] -cne 'format=2') { Fail 'release metadata has an unsupported format' }
+    if ($lines[1] -cne "version=$ReleaseVersion") { Fail 'release metadata version does not match the installer' }
+    if ($lines[2] -cne "commit=$ReleaseCommit") { Fail 'release metadata commit does not match the installer' }
+    if ($lines[3] -cne 'root_layout=2') { Fail 'release metadata root layout is incompatible' }
+    if ($lines[4] -cne 'catalog_format=1') { Fail 'release metadata catalog format is incompatible' }
+    if ($lines[5] -cnotmatch '^asset_count=([0-9]+)$') { Fail 'release metadata asset count is invalid' }
+    $assetCount = [int]$Matches[1]
+    if ($assetCount -lt 1 -or $assetCount -gt 256 -or $lines.Count -ne 6 + (2 * $assetCount)) {
+        Fail 'release metadata asset count is invalid'
     }
-    for ($index = 0; $index -lt $ExpectedNames.Count; $index++) {
-        $expectedName = $ExpectedNames[$index]
-        $match = [regex]::Match($lines[$index], '^([0-9a-f]{64})  ([^\s]+)$')
-        if (-not $match.Success -or $match.Groups[2].Value -cne $expectedName) {
-            Fail "checksum entry is not canonical: $expectedName"
+    $script:ManifestHashes = @{}
+    $previous = $null
+    for ($i = 0; $i -lt $assetCount; $i++) {
+        $nameLine = $lines[6 + (2 * $i)]
+        $shaLine = $lines[7 + (2 * $i)]
+        $namePrefix = "asset.$i.name="
+        $shaPrefix = "asset.$i.sha256="
+        if (-not $nameLine.StartsWith($namePrefix, [StringComparison]::Ordinal) -or
+            -not $shaLine.StartsWith($shaPrefix, [StringComparison]::Ordinal)) {
+            Fail 'release metadata asset record is not contiguous'
         }
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Work $expectedName)).Hash.ToLowerInvariant()
-        if ($actual -cne $match.Groups[1].Value) {
-            Fail "checksum mismatch for $expectedName"
+        $name = $nameLine.Substring($namePrefix.Length)
+        $sha = $shaLine.Substring($shaPrefix.Length)
+        if ($name -cnotmatch '^[A-Za-z0-9._-]+$' -or $name -ceq 'release.txt') {
+            Fail 'release metadata contains an unsafe asset name'
         }
-    }
-}
-
-function Assert-ReleaseMetadata {
-    $lines = @(Get-CanonicalLines (Join-Path $Work 'release.txt'))
-    if ($lines.Count -ne 3 -or $lines[0] -cne 'format=1') {
-        Fail 'release metadata has an unsupported format'
-    }
-    if ($lines[1] -cne "version=$ReleaseVersion") {
-        Fail 'release metadata version does not match the installer'
-    }
-    if ($lines[2] -cne "commit=$ReleaseCommit") {
-        Fail 'release metadata commit does not match the installer'
-    }
-}
-
-function Test-DirectoryEmpty([string]$Path) {
-    if (-not [IO.Directory]::Exists($Path)) { return $false }
-    $enumerator = [IO.Directory]::EnumerateFileSystemEntries($Path).GetEnumerator()
-    try { return -not $enumerator.MoveNext() } finally { $enumerator.Dispose() }
-}
-
-function Test-CupRootMarker([string]$Root) {
-    try { $lines = @(Get-CanonicalLines (Join-Path $Root 'root.txt')) } catch { return $false }
-    return $lines.Count -eq 3 -and $lines[0] -ceq 'format=1' -and
-        $lines[1] -ceq 'product=coffee-clang/cup' -and $lines[2] -ceq 'layout=1'
-}
-
-function Test-ExpectedCupBinary([string]$Path) {
-    try {
-        $item = Get-Item -LiteralPath $Path -Force
-        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return $false
+        if ($sha -cnotmatch '^[0-9a-f]{64}$') { Fail "release metadata has an invalid digest for $name" }
+        if ($null -ne $previous -and [string]::CompareOrdinal($previous, $name) -ge 0) {
+            Fail 'release metadata assets are not strictly ordered'
         }
-        $output = @(& $Path --version 2>$null)
-        return $LASTEXITCODE -eq 0 -and $output.Count -eq 1 -and $output[0] -ceq "cup $ReleaseVersion"
-    } catch { return $false }
+        if ($script:ManifestHashes.ContainsKey($name)) { Fail "release metadata duplicates asset $name" }
+        $script:ManifestHashes[$name] = $sha
+        $previous = $name
+    }
 }
 
-function Test-CupReady([string]$Path) {
-    try { & $Path --internal-runtime-ready *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
+function Assert-ManifestAsset([string]$Name) {
+    if (-not $script:ManifestHashes.ContainsKey($Name)) { Fail "release manifest does not authenticate $Name" }
+    $path = Join-Path $Work $Name
+    $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -cne $script:ManifestHashes[$Name]) { Fail "release manifest digest mismatch for $Name" }
 }
 
 function Get-CupCanonicalBase([string]$Path) {
@@ -498,19 +470,6 @@ function Get-BootstrapRoot([string[]]$Output, [string]$ExpectedRoot) {
     return $root.Replace('/', '\')
 }
 
-function Wait-ForCommit([string]$Root) {
-    $binary = Join-Path $Root 'bin\cup.exe'
-    $transaction = Join-Path $Root 'transaction.txt'
-    $staging = Join-Path $Root 'staging'
-    for ($attempt = 0; $attempt -lt $WaitAttempts; $attempt++) {
-        if ((Test-CupRootMarker $Root) -and -not [IO.File]::Exists($transaction) -and
-            -not [IO.Directory]::Exists($transaction) -and (Test-DirectoryEmpty $staging) -and
-            (Test-ExpectedCupBinary $binary) -and (Test-CupReady $binary)) { return $binary }
-        Start-Sleep -Seconds 1
-    }
-    Fail 'timed out while waiting for the installed cup to become ready'
-}
-
 function Normalize-PathEntry([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
     return $Value.Trim().TrimEnd([char[]]'\/')
@@ -526,10 +485,14 @@ function Test-PathContains([string]$PathValue, [string]$Directory) {
 
 function Offer-PathIntegration([string]$Root) {
     $bin = Join-Path ($Root.Replace('/', '\')) 'bin'
-    if ($bin.Contains(';')) {
+    $hasControl = $false
+    foreach ($character in $bin.ToCharArray()) {
+        if ([char]::IsControl($character)) { $hasControl = $true; break }
+    }
+    if ($bin.Contains(';') -or $hasControl) {
         Write-Host (
             "Automatic User PATH integration is unavailable for $bin because the path " +
-            "contains ';'. Configure PATH manually or use the full path to cup.exe.")
+            "contains unsafe separator/control content. Configure PATH manually or use the full path to cup.exe.")
         return
     }
     if (Test-PathContains $env:Path $bin) { return }
@@ -539,8 +502,8 @@ function Offer-PathIntegration([string]$Root) {
         return
     }
     if ($env:CUP_INSTALL_NO_PATH_PROMPT -ceq '1' -or -not [Environment]::UserInteractive) { return }
-    $answer = Read-Host "Add $bin to your User PATH? [Y/n]"
-    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer -notmatch '^(?i:y|yes)$') { return }
+    $answer = Read-Host "Add $bin to your User PATH? [y/N]"
+    if ([string]::IsNullOrWhiteSpace($answer) -or $answer -notmatch '^(?i:y|yes)$') { return }
     $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $bin } else { "$userPath;$bin" }
     try {
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
@@ -556,35 +519,48 @@ function Offer-PathIntegration([string]$Root) {
 try {
     Assert-InstallerIdentity
     Assert-BaseUrl
-    Resolve-WaitAttempts
-    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        Fail 'USERPROFILE is not available'
-    }
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { Fail 'USERPROFILE is not available' }
     $Work = New-PrivateDirectory
     $binaryAsset = 'cup-windows-x64.exe'
-    $platformSums = 'SHA256SUMS.windows-x64'
-    $assets = @(
-        $binaryAsset, 'release.txt', $platformSums,
-        'SHA256SUMS.common', 'packages.cfg', 'install.cfg', 'install.sh', 'install.ps1')
-    foreach ($asset in $assets) {
+
+    Receive-Asset 'release.txt'
+    Assert-ReleaseManifest
+    foreach ($asset in @($binaryAsset, 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'catalog.cfg')) {
         Receive-Asset $asset
+        Assert-ManifestAsset $asset
     }
-    Assert-ChecksumDocument 'SHA256SUMS.common' @(
-        'packages.cfg', 'install.cfg', 'install.sh', 'install.ps1')
-    Assert-ChecksumDocument $platformSums @(
-        $binaryAsset, 'release.txt', 'SHA256SUMS.common')
-    Assert-ReleaseMetadata
 
     $bootstrap = Join-Path $Work $binaryAsset
     $selection = Select-Installation $bootstrap
-    Assert-NoImplicitDowngrade $bootstrap $selection.Root
+    $freshInstall = -not (Test-NativeRootProbe $bootstrap $selection.Root)
     Write-Host "CUP will be installed in $($selection.Root)"
     $bootstrapOutput = @(& $bootstrap --internal-bootstrap $Work $selection.Base)
-    if ($LASTEXITCODE -ne 0) {
-        Fail 'the verified cup bootstrap transaction was rejected'
-    }
+    if ($LASTEXITCODE -ne 0) { Fail 'the verified cup bootstrap transaction was rejected' }
     $bootstrapRoot = Get-BootstrapRoot $bootstrapOutput $selection.Root
-    $installed = Wait-ForCommit $bootstrapRoot
+    $installed = Join-Path $bootstrapRoot 'bin\cup.exe'
+    if (-not (Test-NativeRootProbe $bootstrap $selection.Root) -or
+        -not [IO.File]::Exists($installed) -or (Get-InstalledVersion $installed) -cne $ReleaseVersion) {
+        Fail 'installed CUP generation did not validate after bootstrap'
+    }
+
+    if ($freshInstall) {
+        & $installed install coffee
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Coffee installed successfully.'
+        } else {
+            $transaction = Join-Path $bootstrapRoot 'transaction.txt'
+            if ([IO.File]::Exists($transaction) -or [IO.Directory]::Exists($transaction)) {
+                Fail 'optional Coffee installation left an unresolved CUP transaction; run cup repair'
+            }
+            $coffeeState = @(& $installed list package-manager 2>$null)
+            if ($LASTEXITCODE -eq 0 -and ($coffeeState -join "`n") -match 'package-manager:coffee@') {
+                Write-Warning 'Coffee was installed, but derived commands need repair; run cup repair.'
+            } else {
+                Write-Warning 'Coffee was not installed; the CUP core installation is ready.'
+            }
+        }
+    }
+
     Write-Host "cup $ReleaseVersion installed successfully."
     Write-Host "Binary: $installed"
     Offer-PathIntegration $selection.Root

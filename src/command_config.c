@@ -43,26 +43,27 @@ static CupError show_configuration(const InstallPolicy *policy,
     for (i = 0; i < registry_component_count(); ++i) {
         const char *component = registry_component_at(i);
         const InstallDefault *official;
-        ToolPreferenceSource source = TOOL_PREFERENCE_NONE;
-        char effective[MAX_IDENTIFIER_LEN] = "-";
-        CupError err;
+        const ToolPreference *preference;
+        const char *effective = "-";
+        const char *source = "unavailable";
 
         if (component == NULL) {
             return CUP_ERR_INCONSISTENT_STATE;
         }
         official = install_policy_find_default(policy, host, target, component);
-        err = tool_preferences_resolve(
-            policy, preferences, host, target, component, effective, sizeof(effective), &source);
-        if (err != CUP_OK && err != CUP_ERR_NOT_AVAILABLE) {
-            return err;
+        preference = tool_preferences_find(preferences, target, component);
+        if (preference != NULL) {
+            effective = preference->tool;
+            source = "user preference";
+        } else if (official != NULL) {
+            effective = official->tool;
+            source = "official default";
         }
         printf("%-18s %-18s %-18s %s\n",
                component,
-               source == TOOL_PREFERENCE_NONE ? "-" : effective,
+               effective,
                official == NULL ? "-" : official->tool,
-               source == TOOL_PREFERENCE_USER               ? "user preference"
-               : source == TOOL_PREFERENCE_OFFICIAL_DEFAULT ? "official default"
-                                                            : "unavailable");
+               source);
     }
 
     print_named_lists("Profiles", policy->profiles, policy->profile_count);
@@ -184,13 +185,22 @@ CupError command_config(const char *action_input,
 
     /* View needs official policy plus preferences. Mutations need only the private preference
      * document after the exclusive command context has established runtime ownership. */
-    err = is_view ? command_context_begin_read_only(&context, target_override)
-                  : command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+    if (is_view) {
+        err = command_context_begin_read_only(&context, target_override);
+    } else if (strcmp(action, "set") == 0) {
+        err = command_context_begin_initialize(
+            &context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+    } else {
+        err = command_context_begin(&context, target_override, SYSTEM_LOCK_EXCLUSIVE);
+        if (err == CUP_ERR_NOT_INSTALLED && strcmp(action, "reset") == 0) {
+            return CUP_OK;
+        }
+    }
     if (err == CUP_OK && is_view) {
         err = install_policy_load(&policy);
     }
     if (err == CUP_OK && (!is_view || context.runtime_available)) {
-        err = tool_preferences_load(&preferences);
+        err = tool_preferences_load(&preferences, stderr);
     }
     if (err != CUP_OK) {
         goto done;

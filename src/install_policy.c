@@ -1,23 +1,11 @@
-/*
- * Parses and validates the immutable install.cfg document containing official scoped defaults,
- * profiles and toolchains.
- */
+/* Official scoped defaults, profiles and curated toolchains compiled into this CUP generation. */
 
 #include "install_policy.h"
 
-#include "filesystem.h"
-#include "layout.h"
-#include "path.h"
-#include "platform.h"
 #include "registry.h"
-#include "system.h"
 #include "text.h"
-#include "version.h"
 
-#include <stdio.h>
 #include <string.h>
-
-#define INSTALL_POLICY_FORMAT "1"
 
 /* Scoped lookup helpers. Policy entries are keyed by component, host and target; no global fallback
  * is inferred here. */
@@ -80,291 +68,132 @@ const InstallNamedList *install_policy_find_toolchain(const InstallPolicy *polic
     return NULL;
 }
 
-/* Physical install.cfg parsing. Semantic lines accept trimmed whitespace; the schema marker must be
- * the first semantic record and duplicate or partially valid records are rejected. */
-static CupError parse_list(char *value,
-                           char items[][MAX_IDENTIFIER_LEN],
-                           size_t capacity,
-                           size_t *count) {
-    char *cursor = value;
-
-    *count = 0;
-    while (cursor != NULL) {
-        char *separator = strchr(cursor, ',');
-        char *item;
-        size_t i;
-
-        if (separator != NULL) {
-            *separator = '\0';
-        }
-        item = text_trim(cursor);
-        if (text_is_empty(item) || !path_is_canonical_identifier(item) || *count >= capacity) {
-            return CUP_ERR_INVALID_INPUT;
-        }
-        for (i = 0; i < *count; ++i) {
-            if (strcmp(items[i], item) == 0) {
-                return CUP_ERR_INVALID_INPUT;
-            }
-        }
-        if (text_copy(items[*count], MAX_IDENTIFIER_LEN, item) != CUP_OK) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        (*count)++;
-        cursor = separator == NULL ? NULL : separator + 1;
-    }
-    return *count == 0 ? CUP_ERR_INVALID_INPUT : CUP_OK;
-}
-
-static CupError parse_default(InstallPolicy *policy, char *key, const char *value) {
-    char prefix[MAX_IDENTIFIER_LEN];
-    char host[MAX_PLATFORM_LEN];
-    char target[MAX_PLATFORM_LEN];
-    char component[MAX_IDENTIFIER_LEN];
-    TextBuffer parts[4];
-    InstallDefault *entry;
-    PackageScope scope;
-    CupError err;
-
-    parts[0] = (TextBuffer){prefix, sizeof(prefix)};
-    parts[1] = (TextBuffer){host, sizeof(host)};
-    parts[2] = (TextBuffer){target, sizeof(target)};
-    parts[3] = (TextBuffer){component, sizeof(component)};
-    if (text_split_exact(key, '.', parts, 4) != CUP_OK || strcmp(prefix, "default") != 0 ||
-        package_scope_init(&scope, component, host, target) != CUP_OK ||
-        registry_validate_tool(component, value) != CUP_OK || default_index(policy, &scope) >= 0 ||
-        policy->default_count >= MAX_INSTALL_DEFAULTS) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    entry = &policy->defaults[policy->default_count++];
-    memset(entry, 0, sizeof(*entry));
-    entry->scope = scope;
-    err = text_copy(entry->tool, sizeof(entry->tool), value);
-    return err;
-}
-
-static CupError validate_profile_items(const InstallNamedList *list) {
-    size_t i;
-
-    for (i = 0; i < list->item_count; ++i) {
-        if (registry_validate_component(list->items[i]) != CUP_OK) {
-            return CUP_ERR_INVALID_INPUT;
-        }
-    }
-    return CUP_OK;
-}
-
-static CupError validate_toolchain_items(const InstallNamedList *list) {
-    char components[MAX_INSTALL_LIST_ITEMS][MAX_IDENTIFIER_LEN];
-    size_t component_count = 0;
-    size_t i;
-
-    for (i = 0; i < list->item_count; ++i) {
-        char component[MAX_IDENTIFIER_LEN];
-        size_t previous;
-
-        if (registry_find_tool_component(list->items[i], component, sizeof(component)) != CUP_OK) {
-            return CUP_ERR_INVALID_INPUT;
-        }
-        for (previous = 0; previous < component_count; ++previous) {
-            if (strcmp(components[previous], component) == 0) {
-                return CUP_ERR_INVALID_INPUT;
-            }
-        }
-        if (text_copy(components[component_count], MAX_IDENTIFIER_LEN, component) != CUP_OK) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        component_count++;
-    }
-    return CUP_OK;
-}
-
-static CupError parse_named_list(InstallPolicy *policy,
-                                 char *key,
-                                 char *value,
-                                 const char *expected_prefix) {
-    char prefix[MAX_IDENTIFIER_LEN];
-    char name[MAX_IDENTIFIER_LEN];
-    TextBuffer parts[2];
-    InstallNamedList *lists;
-    size_t *count;
-    size_t capacity;
-    InstallNamedList *list;
-    CupError err;
-
-    parts[0] = (TextBuffer){prefix, sizeof(prefix)};
-    parts[1] = (TextBuffer){name, sizeof(name)};
-    if (text_split_exact(key, '.', parts, 2) != CUP_OK || strcmp(prefix, expected_prefix) != 0 ||
-        !path_is_canonical_identifier(name)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    if (strcmp(expected_prefix, "profile") == 0) {
-        lists = policy->profiles;
-        count = &policy->profile_count;
-        capacity = MAX_INSTALL_PROFILES;
-    } else {
-        lists = policy->toolchains;
-        count = &policy->toolchain_count;
-        capacity = MAX_INSTALL_TOOLCHAINS;
-    }
-    if (named_list_index(lists, *count, name) >= 0 || *count >= capacity) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    list = &lists[(*count)++];
-    memset(list, 0, sizeof(*list));
-    err = text_copy(list->name, sizeof(list->name), name);
-    if (err == CUP_OK) {
-        err = parse_list(value, list->items, MAX_INSTALL_LIST_ITEMS, &list->item_count);
-    }
-    if (err != CUP_OK) {
-        return err;
-    }
-    return strcmp(expected_prefix, "profile") == 0 ? validate_profile_items(list)
-                                                   : validate_toolchain_items(list);
-}
-
-/* Cross-record validation. Named-list contents are validated as they are parsed; this final
- * check requires every policy section to be represented. */
-static CupError validate_policy(const InstallPolicy *policy) {
-    return policy->default_count == 0 || policy->profile_count == 0 || policy->toolchain_count == 0
-               ? CUP_ERR_INVALID_INPUT
-               : CUP_OK;
-}
-
 void install_policy_init(InstallPolicy *policy) {
     if (policy != NULL) {
         memset(policy, 0, sizeof(*policy));
     }
 }
 
-CupError install_policy_load_path(InstallPolicy *policy, const char *path) {
-    PersistentFileSnapshot snapshot;
-    TextDocumentReader reader;
-    CupError err;
-    char line[MAX_INSTALL_POLICY_LINE_LEN];
-    int has_line;
-    int format_seen = 0;
-    int missing;
+typedef struct {
+    const char *host;
+    const char *target;
+    const char *component;
+    const char *tool;
+} CompiledDefault;
 
-    if (policy == NULL || text_is_empty(path)) {
-        return CUP_ERR_INVALID_INPUT;
+typedef struct {
+    const char *name;
+    const char *const *items;
+    size_t count;
+} CompiledList;
+
+static const CompiledDefault COMPILED_DEFAULTS[] = {
+    {"linux-arm64", "linux-arm64", "compiler", "clang"},
+    {"linux-arm64", "linux-arm64", "debugger", "lldb"},
+    {"linux-arm64", "linux-arm64", "linker", "lld"},
+    {"linux-arm64", "linux-arm64", "formatter", "clang-format"},
+    {"linux-arm64", "linux-arm64", "linter", "clang-tidy"},
+    {"linux-arm64", "linux-arm64", "language-server", "clangd"},
+    {"linux-arm64", "linux-arm64", "analyzer", "valgrind"},
+    {"linux-x64", "linux-x64", "compiler", "clang"},
+    {"linux-x64", "linux-x64", "debugger", "lldb"},
+    {"linux-x64", "linux-x64", "linker", "lld"},
+    {"linux-x64", "linux-x64", "formatter", "clang-format"},
+    {"linux-x64", "linux-x64", "linter", "clang-tidy"},
+    {"linux-x64", "linux-x64", "language-server", "clangd"},
+    {"linux-x64", "linux-x64", "analyzer", "valgrind"},
+    {"linux-x64", "windows-x64", "compiler", "gcc"},
+    {"linux-x64", "windows-x64", "linker", "ld"},
+    {"macos-arm64", "macos-arm64", "compiler", "clang"},
+    {"macos-arm64", "macos-arm64", "debugger", "lldb"},
+    {"macos-arm64", "macos-arm64", "linker", "lld"},
+    {"macos-arm64", "macos-arm64", "formatter", "clang-format"},
+    {"macos-arm64", "macos-arm64", "linter", "clang-tidy"},
+    {"macos-arm64", "macos-arm64", "language-server", "clangd"},
+    {"macos-x64", "macos-x64", "compiler", "clang"},
+    {"macos-x64", "macos-x64", "debugger", "lldb"},
+    {"macos-x64", "macos-x64", "linker", "lld"},
+    {"macos-x64", "macos-x64", "formatter", "clang-format"},
+    {"macos-x64", "macos-x64", "linter", "clang-tidy"},
+    {"macos-x64", "macos-x64", "language-server", "clangd"},
+    {"windows-x64", "windows-x64", "compiler", "clang"},
+    {"windows-x64", "windows-x64", "debugger", "lldb"},
+    {"windows-x64", "windows-x64", "linker", "lld"},
+    {"windows-x64", "windows-x64", "formatter", "clang-format"},
+    {"windows-x64", "windows-x64", "linter", "clang-tidy"},
+    {"windows-x64", "windows-x64", "language-server", "clangd"}
+};
+
+static const char *const PROFILE_MINIMAL[] = {"compiler", "linker"};
+static const char *const PROFILE_STANDARD[] = {"compiler", "linker", "debugger", "language-server"};
+static const char *const PROFILE_EXTENDED[] = {
+    "compiler", "linker", "debugger", "language-server", "formatter", "linter"
+};
+static const char *const TOOLCHAIN_LLVM[] = {
+    "clang", "lldb", "lld", "clang-format", "clang-tidy", "clangd"
+};
+static const char *const TOOLCHAIN_GNU[] = {"gcc", "gdb", "ld"};
+
+static const CompiledList COMPILED_PROFILES[] = {
+    {"minimal", PROFILE_MINIMAL, sizeof(PROFILE_MINIMAL) / sizeof(PROFILE_MINIMAL[0])},
+    {"standard", PROFILE_STANDARD, sizeof(PROFILE_STANDARD) / sizeof(PROFILE_STANDARD[0])},
+    {"extended", PROFILE_EXTENDED, sizeof(PROFILE_EXTENDED) / sizeof(PROFILE_EXTENDED[0])}
+};
+static const CompiledList COMPILED_TOOLCHAINS[] = {
+    {"llvm", TOOLCHAIN_LLVM, sizeof(TOOLCHAIN_LLVM) / sizeof(TOOLCHAIN_LLVM[0])},
+    {"gnu", TOOLCHAIN_GNU, sizeof(TOOLCHAIN_GNU) / sizeof(TOOLCHAIN_GNU[0])}
+};
+
+static CupError copy_compiled_list(InstallNamedList *destination, const CompiledList *source) {
+    size_t i;
+
+    if (destination == NULL || source == NULL || source->count > MAX_INSTALL_LIST_ITEMS ||
+        text_copy(destination->name, sizeof(destination->name), source->name) != CUP_OK) {
+        return CUP_ERR_INCONSISTENT_STATE;
     }
-    install_policy_init(policy);
-    filesystem_snapshot_init(&snapshot);
-    err = filesystem_snapshot_read(
-        path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
-    if (err != CUP_OK || missing) {
-        return err != CUP_OK ? err : CUP_ERR_FILESYSTEM;
-    }
-    err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
-    if (err != CUP_OK) {
-        filesystem_snapshot_release(&snapshot);
-        return CUP_ERR_VALIDATION;
-    }
-
-    while (1) {
-        char key[MAX_METADATA_KEY_LEN];
-        char value[MAX_INSTALL_POLICY_LINE_LEN];
-
-        err = text_document_read_line(&reader, line, sizeof(line), &has_line);
-        if (err != CUP_OK) {
-            goto invalid;
+    destination->item_count = source->count;
+    for (i = 0; i < source->count; ++i) {
+        if (text_copy(destination->items[i], sizeof(destination->items[i]), source->items[i]) != CUP_OK) {
+            return CUP_ERR_INCONSISTENT_STATE;
         }
-        if (!has_line) {
-            break;
-        }
-        if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK) {
-            err = CUP_ERR_VALIDATION;
-            goto invalid;
-        }
-
-        if (!format_seen && strcmp(key, "format") != 0) {
-            err = CUP_ERR_VALIDATION;
-            goto invalid;
-        }
-        if (strcmp(key, "format") == 0) {
-            if (format_seen || strcmp(value, INSTALL_POLICY_FORMAT) != 0) {
-                err = CUP_ERR_VALIDATION;
-                goto invalid;
-            }
-            format_seen = 1;
-        } else if (strncmp(key, "default.", 8) == 0) {
-            err = parse_default(policy, key, value);
-            if (err != CUP_OK) {
-                goto invalid;
-            }
-        } else if (strncmp(key, "profile.", 8) == 0) {
-            err = parse_named_list(policy, key, value, "profile");
-            if (err != CUP_OK) {
-                goto invalid;
-            }
-        } else if (strncmp(key, "toolchain.", 10) == 0) {
-            err = parse_named_list(policy, key, value, "toolchain");
-            if (err != CUP_OK) {
-                goto invalid;
-            }
-        } else {
-            err = CUP_ERR_VALIDATION;
-            goto invalid;
-        }
-    }
-
-    filesystem_snapshot_release(&snapshot);
-    if (!format_seen || validate_policy(policy) != CUP_OK) {
-        install_policy_init(policy);
-        return CUP_ERR_VALIDATION;
     }
     return CUP_OK;
-
-invalid:
-    fprintf(stderr, "Error: invalid installation policy line %zu.\n", reader.line_number);
-    filesystem_snapshot_release(&snapshot);
-    install_policy_init(policy);
-    return err == CUP_ERR_FILESYSTEM || err == CUP_ERR_TEMPORARY ? err : CUP_ERR_VALIDATION;
-}
-
-/* Policy sources. Installed assets are authoritative for official cup builds, while development
- * builds may use the repository copy. */
-CupError install_policy_load_development(InstallPolicy *policy) {
-    return install_policy_load_path(policy, CUP_DEVELOPMENT_INSTALL_POLICY_PATH);
 }
 
 CupError install_policy_load(InstallPolicy *policy) {
-    char path[MAX_PATH_LEN];
-    CupError err;
-    int exists;
+    size_t i;
 
     if (policy == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = layout_get_install_policy_path(path, sizeof(path));
-    if (err != CUP_OK) {
-        goto failed;
-    }
-    err = system_path_exists(path, &exists);
-    if (err != CUP_OK) {
-        goto failed;
-    }
-    if (exists) {
-        return install_policy_load_path(policy, path);
-    }
-#if !CUP_VERSION_OFFICIAL
-    err = system_path_exists(CUP_DEVELOPMENT_INSTALL_POLICY_PATH, &exists);
-    if (err != CUP_OK) {
-        goto failed;
-    }
-    if (exists) {
-        return install_policy_load_development(policy);
-    }
-#endif
-    fprintf(stderr,
-            "Error: installation policy not found. "
-            "Run 'cup repair' to restore official configuration assets.\n");
-    err = CUP_ERR_VALIDATION;
-
-failed:
     install_policy_init(policy);
-    return err;
+    if (sizeof(COMPILED_DEFAULTS) / sizeof(COMPILED_DEFAULTS[0]) > MAX_INSTALL_DEFAULTS ||
+        sizeof(COMPILED_PROFILES) / sizeof(COMPILED_PROFILES[0]) > MAX_INSTALL_PROFILES ||
+        sizeof(COMPILED_TOOLCHAINS) / sizeof(COMPILED_TOOLCHAINS[0]) > MAX_INSTALL_TOOLCHAINS) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    for (i = 0; i < sizeof(COMPILED_DEFAULTS) / sizeof(COMPILED_DEFAULTS[0]); ++i) {
+        InstallDefault *entry = &policy->defaults[policy->default_count++];
+        const CompiledDefault *source = &COMPILED_DEFAULTS[i];
+
+        if (package_scope_init(&entry->scope, source->component, source->host, source->target) != CUP_OK ||
+            registry_validate_tool(source->component, source->tool) != CUP_OK ||
+            text_copy(entry->tool, sizeof(entry->tool), source->tool) != CUP_OK) {
+            install_policy_init(policy);
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
+    for (i = 0; i < sizeof(COMPILED_PROFILES) / sizeof(COMPILED_PROFILES[0]); ++i) {
+        if (copy_compiled_list(&policy->profiles[policy->profile_count++], &COMPILED_PROFILES[i]) != CUP_OK) {
+            install_policy_init(policy);
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
+    for (i = 0; i < sizeof(COMPILED_TOOLCHAINS) / sizeof(COMPILED_TOOLCHAINS[0]); ++i) {
+        if (copy_compiled_list(&policy->toolchains[policy->toolchain_count++], &COMPILED_TOOLCHAINS[i]) != CUP_OK) {
+            install_policy_init(policy);
+            return CUP_ERR_INCONSISTENT_STATE;
+        }
+    }
+    return CUP_OK;
 }

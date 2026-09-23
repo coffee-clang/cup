@@ -60,16 +60,6 @@ grep -F "\$ReleaseVersion = \"$VERSION\"" "$snapshot/install.ps1" >/dev/null
 grep -F "\$ReleaseTag = \"$TAG\"" "$snapshot/install.ps1" >/dev/null
 grep -F "\$ReleaseCommit = \"$SHA\"" "$snapshot/install.ps1" >/dev/null
 ! grep -E '@CUP_RELEASE_(VERSION|TAG|COMMIT)@' "$snapshot/install.sh" "$snapshot/install.ps1" >/dev/null
-# shellcheck disable=SC2086
-verify_checksum_file_exact "$snapshot" SHA256SUMS.common $(release_common_checksum_assets)
-for platform in $CUP_SUPPORTED_PLATFORMS; do
-    platform_checksum=$(release_platform_checksum_name "$platform") ||
-        fail "could not derive platform checksum name: $platform"
-    # shellcheck disable=SC2086
-    verify_checksum_file_exact "$snapshot" "$platform_checksum" \
-        $(release_platform_checksum_assets "$platform")
-done
-
 if [ "$GH_REPO" = "$SOURCE_REPOSITORY" ]; then
     release_target=$SHA
 else

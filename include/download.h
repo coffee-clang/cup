@@ -14,6 +14,11 @@ typedef enum {
     DOWNLOAD_VALIDATE_ARCHIVE
 } DownloadValidation;
 
+typedef enum {
+    DOWNLOAD_DIAGNOSTICS_REPORT,
+    DOWNLOAD_DIAGNOSTICS_QUIET
+} DownloadDiagnostics;
+
 /* Optional validators inspect the completed temporary file only; they must not mutate, replace or
  * remove temporary_path. */
 typedef CupError (*DownloadValidator)(const char *temporary_path, void *userdata);
@@ -34,5 +39,11 @@ CupError download_file_checked(const char *url,
 
 /* Simpler transfer boundary for callers that do not need a validator. */
 CupError download_file(const char *url, const char *destination, DownloadValidation validation);
+
+/* Best-effort callers may suppress low-level diagnostics and emit one contextual warning. */
+CupError download_file_with_diagnostics(const char *url,
+                                        const char *destination,
+                                        DownloadValidation validation,
+                                        DownloadDiagnostics diagnostics);
 
 #endif /* CUP_DOWNLOAD_H */

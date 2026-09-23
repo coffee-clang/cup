@@ -13,7 +13,7 @@ uninstall_started_message="${uninstall_started_message}The PATH entry was not re
 
 test_begin uninstall
 prepare_command_environment
-run_cup repair >/dev/null
+ensure_fixture_runtime_root
 
 cup_root=$TEST_HOME/.cup
 printf 'fixture\n' > "$cup_root/components/fixture.txt"

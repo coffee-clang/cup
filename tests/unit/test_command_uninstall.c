@@ -10,6 +10,7 @@
 #include "layout.h"
 #include "path.h"
 #include "runtime_journal.h"
+#include "runtime_recovery.h"
 #include "system.h"
 #include "uninstall_helper.h"
 #include "uninstall_journal.h"
@@ -176,6 +177,16 @@ void system_lock_release(SystemLock *lock) {
     }
 }
 
+
+CupError runtime_recover_pending(const SystemLock *lock, RuntimeJournalKind *recovered_kind) {
+    TEST_ASSERT_NOT_NULL(lock);
+    TEST_ASSERT_TRUE(lock->active);
+    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock->mode);
+    if (recovered_kind != NULL) *recovered_kind = journal_kind;
+    if (journal_detect_result != CUP_OK) return CUP_ERR_TRANSACTION;
+    return CUP_OK;
+}
+
 CupError runtime_journal_detect(RuntimeJournalKind *kind) {
     TEST_ASSERT_NOT_NULL(kind);
     *kind = journal_kind;
@@ -303,14 +314,14 @@ static void test_invalid_runtime(void) {
 static void test_pending_or_missing(void) {
     provide_input("y\n");
     journal_kind = RUNTIME_JOURNAL_PACKAGE;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_uninstall(0));
-    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_uninstall(0));
+    TEST_ASSERT_EQUAL_INT(1, helper_calls);
 
     reset_scenario();
     provide_input("y\n");
     journal_detect_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, command_uninstall(0));
-
+    TEST_ASSERT_EQUAL_INT(0, helper_calls);
 }
 
 static void test_confirmation_and_success(void) {

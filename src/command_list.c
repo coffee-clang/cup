@@ -8,10 +8,30 @@
 #include "layout.h"
 #include "package.h"
 #include "package_catalog.h"
+#include "package_selector.h"
 #include "state.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static int compare_installed_for_display(const void *left_value, const void *right_value) {
+    const PackageIdentity *left = left_value;
+    const PackageIdentity *right = right_value;
+    int result;
+
+    result = strcmp(left->host_platform, right->host_platform);
+    if (result == 0) result = strcmp(left->target_platform, right->target_platform);
+    if (result == 0) result = strcmp(left->component, right->component);
+    if (result == 0) result = strcmp(left->tool, right->tool);
+    if (result == 0) {
+        int version_result = 0;
+        result = package_release_compare(left->version, right->version, &version_result) == CUP_OK
+                     ? -version_result
+                     : -strcmp(left->version, right->version);
+    }
+    return result;
+}
 
 static void print_list_heading(const CommandContext *context,
                                const char *component,
@@ -160,9 +180,18 @@ CupError command_list(const char *component, const char *target_override) {
         }
     }
     catalog_err = command_context_load_catalog(&context);
+    if (catalog_err != CUP_OK) {
+        fprintf(stderr,
+                "Warning: package catalog is unavailable; showing local installed state without stable annotations.\n");
+    }
 
     /* Sort the private state snapshot directly; no persistent state is modified. */
-    package_identity_sort(context.state.installed, context.state.installed_count);
+    if (context.state.installed_count > 1) {
+        qsort(context.state.installed,
+              context.state.installed_count,
+              sizeof(context.state.installed[0]),
+              compare_installed_for_display);
+    }
     for (i = 0; i < context.state.installed_count; ++i) {
         if (package_identity_matches(&context.state.installed[i],
                                      context.host_platform,
@@ -174,7 +203,7 @@ CupError command_list(const char *component, const char *target_override) {
 
     if (entry_count == 0) {
         print_empty_list(&context, component, target_override);
-        err = catalog_err;
+        err = CUP_OK;
         goto done;
     }
 
@@ -195,7 +224,7 @@ CupError command_list(const char *component, const char *target_override) {
             degraded = 1;
         }
     }
-    err = degraded ? CUP_ERR_INCONSISTENT_STATE : catalog_err;
+    err = degraded ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
 
 done:
     command_context_end(&context);

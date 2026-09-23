@@ -8,7 +8,7 @@ param(
 
 try {
     Initialize-TestEnvironment -Name "filesystem" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Ensure-FixtureRuntimeRoot
 
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     $acl = Get-Acl -LiteralPath $cupRoot
@@ -21,12 +21,6 @@ try {
     Assert-Equals $ownerSid $currentSid
 
     $longVersion = "30.0.1"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $longVersion `
-        -Mode "Prepend"
     $longFileName = "long-" + [string]::new([char]'x', 220) + ".txt"
     $relativeLongPath = "bin\$longFileName"
     $zipLongPath = "clang-$longVersion-windows-x64-windows-x64/bin/$longFileName"
@@ -37,7 +31,7 @@ try {
         -ValidExtraFile)
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@$longVersion") | Out-Null
     $longPackageRoot = Join-Path $cupRoot (
-        "components\compiler\clang\windows-x64\windows-x64\$longVersion")
+        "components\compiler\clang\windows-x64\$longVersion")
     $installedLongPath = Join-Path $longPackageRoot $relativeLongPath
     if ($installedLongPath.Length -le 260) {
         Fail-Test "long-path fixture did not exceed MAX_PATH"
@@ -52,12 +46,6 @@ try {
     }
 
     $fallbackVersion = "30.0.2"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $fallbackVersion `
-        -Mode "Prepend"
     New-TestPackage `
         -Component "compiler" `
         -Tool "clang" `
@@ -71,7 +59,7 @@ try {
     $sentinel = Join-Path $external "sentinel.txt"
     Set-Content -LiteralPath $sentinel -Encoding ascii -Value "preserve"
     $packageRoot = Join-Path $cupRoot (
-        "components\compiler\clang\windows-x64\windows-x64\$longVersion")
+        "components\compiler\clang\windows-x64\$longVersion")
     $junction = Join-Path $packageRoot "external-junction"
     $mklink = Invoke-NativeProcess -FilePath (Get-CommandProcessor) `
         -Arguments @('/d', '/c', 'mklink', '/J', $junction, $external) `

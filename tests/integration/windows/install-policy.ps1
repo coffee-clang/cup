@@ -16,7 +16,6 @@ try {
     Assert-Contains $initial "analyzer           -                  -                  unavailable"
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup")
 
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
     New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++")
     New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" `
@@ -36,14 +35,18 @@ try {
     New-TestPackage -Component "language-server" -Tool "clangd" -Version "23.1.0" `
         -Entries @("clangd")
 
+    Set-PackageCatalogUpdateUrl -Url 'http://127.0.0.1:1/catalog.cfg'
+    $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+    $env:NO_PROXY = '127.0.0.1'
+
     $profile = Invoke-Cup -CommandArgs @("install", "PROFILE", "MINIMAL")
     Assert-Contains $profile "Installing profile 'minimal' (2 packages)"
     Assert-Contains $profile `
         "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\clang\windows-x64\windows-x64\23.1.0\info.txt")
+        ".cup\components\compiler\clang\windows-x64\23.1.0\info.txt")
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\linker\lld\windows-x64\windows-x64\23.1.0\info.txt")
+        ".cup\components\linker\lld\windows-x64\23.1.0\info.txt")
 
     $configuredOutput = Invoke-Cup -CommandArgs @("config", "set", "compiler", "gcc")
     Assert-Contains $configuredOutput `
@@ -54,30 +57,30 @@ try {
     $compilerInstall = Invoke-Cup -CommandArgs @("install", "compiler")
     Assert-Contains $compilerInstall "Installed compiler gcc@16.2.0-rev1"
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\gcc\windows-x64\windows-x64\16.2.0-rev1\info.txt")
+        ".cup\components\compiler\gcc\windows-x64\16.2.0-rev1\info.txt")
 
     $gnu = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "GNU")
     Assert-Contains $gnu "Installing toolchain 'gnu' (3 packages)"
     Assert-Contains $gnu `
         "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\debugger\gdb\windows-x64\windows-x64\17.2\info.txt")
+        ".cup\components\debugger\gdb\windows-x64\17.2\info.txt")
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\linker\ld\windows-x64\windows-x64\2.47\info.txt")
+        ".cup\components\linker\ld\windows-x64\2.47\info.txt")
 
     Invoke-Cup -CommandArgs @(
         "config", "set", "compiler", "gcc", "--target", "linux-x64") | Out-Null
     $preferences = Join-Path $Script:CupTestHome ".cup\config\preferences.txt"
     $preferenceText = Get-Content -LiteralPath $preferences -Raw
-    Assert-Contains $preferenceText "preferred.windows-x64.windows-x64.compiler=gcc"
-    Assert-Contains $preferenceText "preferred.windows-x64.linux-x64.compiler=gcc"
+    Assert-Contains $preferenceText "preferred.windows-x64.compiler=gcc"
+    Assert-Contains $preferenceText "preferred.linux-x64.compiler=gcc"
 
     $resetCompiler = Invoke-Cup -CommandArgs @("config", "reset", "compiler")
     Assert-Contains $resetCompiler `
         "Preference for 'compiler' on target 'windows-x64' was reset."
     $preferenceText = Get-Content -LiteralPath $preferences -Raw
-    Assert-NotContains $preferenceText "preferred.windows-x64.windows-x64.compiler="
-    Assert-Contains $preferenceText "preferred.windows-x64.linux-x64.compiler=gcc"
+    Assert-NotContains $preferenceText "preferred.windows-x64.compiler="
+    Assert-Contains $preferenceText "preferred.linux-x64.compiler=gcc"
 
     $resetTarget = Invoke-Cup -CommandArgs @("config", "reset", "--target", "linux-x64")
     Assert-Contains $resetTarget "Reset 1 preference(s) for target 'linux-x64'."
@@ -93,10 +96,10 @@ try {
     Assert-Contains $llvm `
         "Install group 'llvm' completed: 4 package(s) installed, 2 skipped."
     foreach ($relative in @(
-        ".cup\components\debugger\lldb\windows-x64\windows-x64\23.1.0\info.txt",
-        ".cup\components\formatter\clang-format\windows-x64\windows-x64\23.1.0\info.txt",
-        ".cup\components\linter\clang-tidy\windows-x64\windows-x64\23.1.0\info.txt",
-        ".cup\components\language-server\clangd\windows-x64\windows-x64\23.1.0\info.txt"
+        ".cup\components\debugger\lldb\windows-x64\23.1.0\info.txt",
+        ".cup\components\formatter\clang-format\windows-x64\23.1.0\info.txt",
+        ".cup\components\linter\clang-tidy\windows-x64\23.1.0\info.txt",
+        ".cup\components\language-server\clangd\windows-x64\23.1.0\info.txt"
     )) {
         Assert-PathExists (Join-Path $Script:CupTestHome $relative)
     }

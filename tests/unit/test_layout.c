@@ -45,10 +45,17 @@ static void make_child_directory(const char *root, const char *name) {
 
 static void create_owned_root(const char *root) {
     char marker[1024];
+    char host[MAX_PLATFORM_LEN];
+    char contents[256];
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(root));
     TEST_ASSERT_TRUE(snprintf(marker, sizeof(marker), "%s/root.txt", root) > 0);
-    write_text_file(marker, "format=1\nproduct=coffee-clang/cup\nlayout=1\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
+    TEST_ASSERT_TRUE(snprintf(contents,
+                              sizeof(contents),
+                              "format=2\nproduct=coffee-clang/cup\nlayout=2\nhost=%s\n",
+                              host) > 0);
+    write_text_file(marker, contents);
 }
 
 static void get_root_marker_path_for_test(char *buffer, size_t size) {
@@ -69,7 +76,6 @@ static void test_package_paths(void) {
     char path[1024];
     char expected[1024];
     char home[1024];
-    char host[64];
 
     /* Root and fixed asset paths derive from the platform-validated home directory. */
     TEST_ASSERT_EQUAL_INT(0, test_set_home(temp_dir));
@@ -90,23 +96,11 @@ static void test_package_paths(void) {
     TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/state.txt", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_package_catalog_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/packages.cfg", home) > 0);
-    TEST_ASSERT_EQUAL_STRING(expected, path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_install_policy_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/install.cfg", home) > 0);
+    TEST_ASSERT_TRUE(snprintf(expected, sizeof(expected), "%s/.cup/config/catalog.cfg", home) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_preferences_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(
         snprintf(expected, sizeof(expected), "%s/.cup/config/preferences.txt", home) > 0);
-    TEST_ASSERT_EQUAL_STRING(expected, path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_common_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_TRUE(
-        snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.common", home) > 0);
-    TEST_ASSERT_EQUAL_STRING(expected, path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
-    TEST_ASSERT_TRUE(
-        snprintf(expected, sizeof(expected), "%s/.cup/config/SHA256SUMS.%s", home, host) > 0);
     TEST_ASSERT_EQUAL_STRING(expected, path);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
     TEST_ASSERT_TRUE(
@@ -114,18 +108,18 @@ static void test_package_paths(void) {
     TEST_ASSERT_EQUAL_STRING(expected, path);
     /* Package and cache paths derive exclusively from the validated concrete identity. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_build_install_path(path, sizeof(path), &identity));
-    TEST_ASSERT_TRUE(strstr(path, "/components/compiler/clang/linux-x64/windows-x64/22.1.5") !=
+    TEST_ASSERT_TRUE(strstr(path, "/components/compiler/clang/windows-x64/22.1.5") !=
                      NULL);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          layout_build_cache_archive_path(path, sizeof(path), &identity, "tar.gz"));
-    TEST_ASSERT_TRUE(strstr(path, "/cache/compiler/clang/linux-x64/windows-x64/22.1.5/") != NULL);
-    TEST_ASSERT_TRUE(strstr(path, "clang-22.1.5-linux-x64-windows-x64.tar.gz") != NULL);
+                          layout_build_cache_path(path, sizeof(path),
+                                                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    TEST_ASSERT_TRUE(strstr(path, "/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != NULL);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, layout_get_root(NULL, 1));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           layout_build_install_path(path, sizeof(path), NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          layout_build_cache_archive_path(path, sizeof(path), &identity, "../bad"));
+                          layout_build_cache_path(path, sizeof(path), "../bad"));
 }
 
 static void test_path_argument_contracts(void) {
@@ -148,10 +142,8 @@ static void test_path_argument_contracts(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           layout_build_staging_prefix(path, sizeof(path), "install", &invalid));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          layout_build_cache_archive_path(tiny,
-                                                          sizeof(tiny),
-                                                          &identity,
-                                                          "tar.xz"));
+                          layout_build_cache_path(tiny, sizeof(tiny),
+                                                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
 }
 
 static void test_explicit_base_and_relocated_root(void) {
@@ -226,8 +218,14 @@ static void test_root_selection(void) {
         size_t count = fread(contents, 1, sizeof(contents) - 1, file);
 
         contents[count] = '\0';
-        TEST_ASSERT_EQUAL_STRING(
-            "format=1\nproduct=coffee-clang/cup\nlayout=1\n", contents);
+        char host[MAX_PLATFORM_LEN];
+        char expected[128];
+        TEST_ASSERT_EQUAL_INT(CUP_OK, platform_get_host(host, sizeof(host)));
+        TEST_ASSERT_TRUE(snprintf(expected,
+                                  sizeof(expected),
+                                  "format=2\nproduct=coffee-clang/cup\nlayout=2\nhost=%s\n",
+                                  host) > 0);
+        TEST_ASSERT_EQUAL_STRING(expected, contents);
     }
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 
@@ -306,6 +304,30 @@ static void test_fallback_snapshot_lock_runtime_sequence(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, err);
 }
 #endif
+
+static void test_legacy_035_root_blocks_fallback_without_adoption(void) {
+    char home[1024];
+    char primary[1024];
+    char fallback[1024];
+    char path[1024];
+    size_t issues = 0;
+    int exists = 0;
+
+    TEST_ASSERT_TRUE(snprintf(home, sizeof(home), "%s/legacy-035-root", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(home));
+    TEST_ASSERT_EQUAL_INT(0, test_set_home(home));
+    TEST_ASSERT_TRUE(snprintf(primary, sizeof(primary), "%s/.cup", home) > 0);
+    TEST_ASSERT_TRUE(snprintf(fallback, sizeof(fallback), "%s/.coffee-cup", home) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(primary));
+    TEST_ASSERT_TRUE(snprintf(path, sizeof(path), "%s/root.txt", primary) > 0);
+    write_text_file(path, "format=1\nproduct=coffee-clang/cup\nlayout=1\n");
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, layout_get_root(path, sizeof(path)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_root_candidates(&issues));
+    TEST_ASSERT_EQUAL_size_t(1, issues);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(fallback, &exists));
+    TEST_ASSERT_FALSE(exists);
+}
 
 static void test_corrupt_owned_root_marker_blocks_fallback(void) {
     char home[1024];
@@ -594,7 +616,7 @@ static void test_runtime_paths(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_runtime_status(&status));
     TEST_ASSERT_EQUAL_INT(LAYOUT_RUNTIME_MISSING, status);
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_check_runtime(&missing));
-    TEST_ASSERT_EQUAL_size_t(4, missing);
+    TEST_ASSERT_EQUAL_size_t(3, missing);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_runtime_status(&status));
@@ -637,7 +659,7 @@ static void test_runtime_paths(void) {
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_assets());
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_package_parent(&identity));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(&identity));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache());
 
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_build_install_path(path, sizeof(path), &identity));
     {
@@ -786,42 +808,6 @@ static void test_directory_creation_prevalidates_identity(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(path, &kind));
     TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_MISSING, kind);
 
-#if !defined(_WIN32)
-    {
-        char long_home[1024];
-        char next[1024];
-        char segment[48];
-        int written;
-
-        written = snprintf(long_home, sizeof(long_home), "%s", temp_dir);
-        TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(long_home));
-        memset(segment, 'h', sizeof(segment) - 1);
-        segment[sizeof(segment) - 1] = '\0';
-        while (strlen(long_home) < 945) {
-            written = snprintf(next, sizeof(next), "%s/%s", long_home, segment);
-            TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(next));
-            TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(next));
-            written = snprintf(long_home, sizeof(long_home), "%s", next);
-            TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(long_home));
-        }
-        TEST_ASSERT_EQUAL_INT(0, test_set_home(long_home));
-        TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
-        written = snprintf(identity.target_platform,
-                           sizeof(identity.target_platform),
-                           "%s",
-                           "linux-x64");
-        TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(identity.target_platform));
-        written = snprintf(identity.version,
-                           sizeof(identity.version),
-                           "%s",
-                           "1234567890123456789012345678901");
-        TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof(identity.version));
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, layout_ensure_cache_parent(&identity));
-        TEST_ASSERT_TRUE(snprintf(path, sizeof(path), "%s/.cup/cache/compiler", long_home) > 0);
-        TEST_ASSERT_EQUAL_INT(CUP_OK, system_get_path_kind(path, &kind));
-        TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_MISSING, kind);
-    }
-#endif
 }
 
 static void test_recovery_paths(void) {
@@ -839,7 +825,7 @@ static void test_recovery_paths(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, layout_build_staging_prefix(prefix, sizeof(prefix), "install", &identity));
-    TEST_ASSERT_EQUAL_STRING("install-compiler-clang-linux-x64-linux-x64-22.1.5", prefix);
+    TEST_ASSERT_EQUAL_STRING("install-compiler-clang-linux-x64-22.1.5", prefix);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
                           layout_create_staging_dir(path, sizeof(path), "install", &identity));
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_is_directory(path, &exists));
@@ -878,6 +864,7 @@ void register_layout_tests(void) {
     RUN_TEST(test_root_snapshot_does_not_adopt_concurrent_creation);
     RUN_TEST(test_root_selection);
     RUN_TEST(test_explicit_base_and_relocated_root);
+    RUN_TEST(test_legacy_035_root_blocks_fallback_without_adoption);
     RUN_TEST(test_corrupt_owned_root_marker_blocks_fallback);
     RUN_TEST(test_unmarked_cup_root_blocks_fallback);
     RUN_TEST(test_unmarked_cup_root_directory_binary_blocks_fallback);

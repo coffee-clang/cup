@@ -28,8 +28,7 @@ prepare_command_environment() {
 
     assert_file "$CUP"
     mkdir -p "$TEST_HOME" "$DEV_ROOT/config"
-    cp "$PROJECT_ROOT/config/packages.cfg" "$DEV_ROOT/config/packages.cfg"
-    cp "$PROJECT_ROOT/config/install.cfg" "$DEV_ROOT/config/install.cfg"
+    cp "$PROJECT_ROOT/tests/fixtures/catalog.cfg" "$DEV_ROOT/config/catalog.cfg"
 
     if [ "${TEST_PLATFORM%%-*}" = windows ]; then
         fail 'POSIX command environment cannot target Windows'
@@ -67,75 +66,188 @@ run_cup_expect_status() (
 )
 
 assert_cup_healthy() (
-    cup_health_output=$(run_cup_with_managed_path doctor 2>&1)
-    assert_contains "$cup_health_output" 'Doctor found no issues.'
-    assert_not_contains "$cup_health_output" 'Error:'
-    assert_not_contains "$cup_health_output" 'Issue:'
-    assert_not_contains "$cup_health_output" 'Warning:'
-    assert_not_contains "$cup_health_output" 'Incomplete:'
+    assert_missing "$TEST_HOME/.cup/transaction.txt"
+    run_cup doctor >/dev/null
+    if [ -d "$TEST_HOME/.cup/staging" ] &&
+       find "$TEST_HOME/.cup/staging" -mindepth 1 -print -quit | grep . >/dev/null; then
+        fail 'package runtime contains leftover staging content'
+    fi
 )
 
 
-package_catalog_edit() {
-    component=$1
-    tool=$2
-    target=$3
-    field=$4
-    value=$5
-    mode=$6
-    catalog=$DEV_ROOT/config/packages.cfg
-    key="$component.$tool.$TEST_PLATFORM.$target.$field"
-    temporary=$catalog.tmp
-
-    awk -v key="$key" -v value="$value" -v mode="$mode" '
-        BEGIN { found = 0 }
-        index($0, key "=") == 1 {
-            old = substr($0, length(key) + 2)
-            if (mode == "prepend") {
-                print key "=" value "," old
-            } else if (mode == "replace") {
-                print key "=" value
-            } else {
-                exit 3
-            }
-            found = 1
-            next
-        }
-        { print }
-        END { if (!found) exit 2 }
-    ' "$catalog" >"$temporary" || {
-        rm -f "$temporary"
-        fail "catalog entry could not be updated: $key"
-    }
-    mv "$temporary" "$catalog"
+ensure_fixture_runtime_root() {
+    root=$TEST_HOME/.cup
+    mkdir -p "$root/components" "$root/staging" "$root/config" "$root/bin"
+    chmod 0700 "$root"
+    if [ ! -f "$root/root.txt" ]; then
+        cat > "$root/root.txt" <<EOF_ROOT
+format=2
+product=coffee-clang/cup
+layout=2
+host=$TEST_PLATFORM
+EOF_ROOT
+    fi
+    [ -f "$root/state.txt" ] || printf 'format=2\n' > "$root/state.txt"
+    if [ ! -f "$root/cup.lock" ]; then
+        : > "$root/cup.lock"
+        chmod 0600 "$root/cup.lock"
+    fi
+    [ -f "$root/config/catalog.cfg" ] || cp "$DEV_ROOT/config/catalog.cfg" "$root/config/catalog.cfg"
 }
 
+package_catalog_next_index() {
+    catalog=$DEV_ROOT/config/catalog.cfg
+    awk -F'[.=]' '
+        /^package\.[0-9]+\.component=/ {
+            if (($2 + 0) >= n) n = ($2 + 0) + 1
+        }
+        END { print n + 0 }
+    ' "$catalog"
+}
 
-package_catalog_ensure_package() {
+package_catalog_add_package() {
     component=$1
     tool=$2
     target=$3
     version=$4
-    format=${5:-tar.gz}
-    catalog=$DEV_ROOT/config/packages.cfg
-    key="$component.$tool.$TEST_PLATFORM.$target"
+    format=$5
+    url=$6
+    sha=$7
+    catalog=$DEV_ROOT/config/catalog.cfg
+    temporary=$catalog.tmp
+    index=$(package_catalog_next_index)
 
-    grep -F "$key.stable_version=" "$catalog" >/dev/null 2>&1 && return 0
+    # Integration fixtures add versions in semantic ascending order within a family.
+    # Therefore the newly added record is the derived stable and prior records in
+    # the same scope become non-stable.
+    awk -v component="$component" -v tool="$tool" -v host="$TEST_PLATFORM" \
+        -v target="$target" '
+        function value(line) { sub(/^[^=]*=/, "", line); return line }
+        /^package\.[0-9]+\.component=/ {
+            split($0, a, "."); current = a[2]
+            comp[current] = value($0)
+        }
+        /^package\.[0-9]+\.tool=/ { split($0, a, "."); t[a[2]] = value($0) }
+        /^package\.[0-9]+\.host=/ { split($0, a, "."); h[a[2]] = value($0) }
+        /^package\.[0-9]+\.target=/ { split($0, a, "."); tg[a[2]] = value($0) }
+        /^package\.[0-9]+\.stable=/ {
+            split($0, a, "."); i = a[2]
+            if (comp[i] == component && t[i] == tool && h[i] == host && tg[i] == target)
+                print "package." i ".stable=false"
+            else
+                print
+            next
+        }
+        { print }
+    ' "$catalog" > "$temporary" || fail 'could not update catalog stable records'
+    mv "$temporary" "$catalog"
 
-    package_path="$tool-{version}-{host_platform}-{target_platform}.{format}"
-    url_template="https://example.invalid/$package_path"
-    checksum_template="https://example.invalid/"
-    checksum_path="$tool-{version}-{host_platform}-{target_platform}/SHA256SUMS"
-    checksum_template="${checksum_template}${checksum_path}"
-    cat >> "$catalog" <<EOF_PACKAGE_CATALOG
+    revision=$(awk -F= '/^revision=/{print $2; exit}' "$catalog")
+    case "$revision" in ''|*[!0-9]*) fail 'invalid fixture catalog revision' ;; esac
+    next_revision=$((revision + 1))
+    awk -v revision="$next_revision" '
+        /^revision=/ { print "revision=" revision; next }
+        { print }
+    ' "$catalog" > "$temporary" || fail 'could not bump fixture catalog revision'
+    mv "$temporary" "$catalog"
 
-$key.stable_version=$version
-$key.available_versions=$version
-$key.default_format=$format
-$key.formats=$format
-$key.url_template=$url_template
-$key.checksum_url_template=$checksum_template
-EOF_PACKAGE_CATALOG
+    {
+        printf 'package.%s.component=%s\n' "$index" "$component"
+        printf 'package.%s.tool=%s\n' "$index" "$tool"
+        printf 'package.%s.host=%s\n' "$index" "$TEST_PLATFORM"
+        printf 'package.%s.target=%s\n' "$index" "$target"
+        printf 'package.%s.version=%s\n' "$index" "$version"
+        case "$version" in
+            *-rev*) printf 'package.%s.revision_reason=integration fixture revision\n' "$index" ;;
+        esac
+        printf 'package.%s.stable=true\n' "$index"
+        printf 'package.%s.artifact.0.format=%s\n' "$index" "$format"
+        printf 'package.%s.artifact.0.url=%s\n' "$index" "$url"
+        printf 'package.%s.artifact.0.sha256=%s\n' "$index" "$sha"
+    } >> "$catalog"
+
+    # Keep the runtime snapshot in sync once a fixture runtime exists.
+    if [ -f "$TEST_HOME/.cup/root.txt" ]; then
+        cp "$catalog" "$TEST_HOME/.cup/config/catalog.cfg"
+    fi
+}
+
+package_catalog_find_index() {
+    tool=$1
+    version=$2
+    target=${3:-$TEST_PLATFORM}
+    awk -v tool="$tool" -v version="$version" -v host="$TEST_PLATFORM" -v target="$target" '
+        function value(line) { sub(/^[^=]*=/, "", line); return line }
+        /^package\.[0-9]+\.tool=/ { split($0,a,"."); t[a[2]]=value($0) }
+        /^package\.[0-9]+\.host=/ { split($0,a,"."); h[a[2]]=value($0) }
+        /^package\.[0-9]+\.target=/ { split($0,a,"."); tg[a[2]]=value($0) }
+        /^package\.[0-9]+\.version=/ {
+            split($0,a,"."); i=a[2]; v=value($0)
+            if (t[i] == tool && h[i] == host && tg[i] == target && v == version) { print i; exit }
+        }
+    ' "$DEV_ROOT/config/catalog.cfg"
+}
+
+package_catalog_rewrite_artifact() {
+    tool=$1
+    version=$2
+    format=$3
+    url=$4
+    sha=$5
+    target=${6:-$TEST_PLATFORM}
+    catalog=$DEV_ROOT/config/catalog.cfg
+    index=$(package_catalog_find_index "$tool" "$version" "$target")
+    [ -n "$index" ] || fail "fixture catalog package not found: $tool@$version [$target]"
+    temporary=$catalog.tmp
+    awk -v prefix="package.$index.artifact.0." -v format="$format" -v url="$url" -v sha="$sha" '
+        index($0, prefix "format=") == 1 { print prefix "format=" format; next }
+        index($0, prefix "url=") == 1 { print prefix "url=" url; next }
+        index($0, prefix "sha256=") == 1 { print prefix "sha256=" sha; next }
+        { print }
+    ' "$catalog" > "$temporary" || fail 'could not rewrite fixture artifact'
+    mv "$temporary" "$catalog"
+    [ ! -f "$TEST_HOME/.cup/root.txt" ] || cp "$catalog" "$TEST_HOME/.cup/config/catalog.cfg"
+}
+
+package_cache_publish() {
+    archive=$1
+    sha=$(hash_file "$archive")
+    ensure_fixture_runtime_root
+    mkdir -p "$TEST_HOME/.cup/cache"
+    cp "$archive" "$TEST_HOME/.cup/cache/$sha"
+    printf '%s\n' "$sha"
+}
+
+package_catalog_set_artifact() {
+    tool=$1
+    version=$2
+    format=$3
+    url=$4
+    sha=$5
+    catalog=$DEV_ROOT/config/catalog.cfg
+    temporary=$catalog.tmp
+
+    awk -v tool="$tool" -v version="$version" -v format="$format" \
+        -v url="$url" -v sha="$sha" '
+        function value(line) { sub(/^[^=]*=/, "", line); return line }
+        /^package\.[0-9]+\.tool=/ { split($0,a,"."); tools[a[2]]=value($0) }
+        /^package\.[0-9]+\.version=/ { split($0,a,"."); versions[a[2]]=value($0) }
+        /^package\.[0-9]+\.artifact\.[0-9]+\.format=/ {
+            split($0,a,"."); p=a[2]; art=a[4]
+            if (tools[p] == tool && versions[p] == version && value($0) == format) selected[p "." art]=1
+        }
+        /^package\.[0-9]+\.artifact\.[0-9]+\.url=/ {
+            split($0,a,"."); key=a[2] "." a[4]
+            if (selected[key]) { print "package." a[2] ".artifact." a[4] ".url=" url; next }
+        }
+        /^package\.[0-9]+\.artifact\.[0-9]+\.sha256=/ {
+            split($0,a,"."); key=a[2] "." a[4]
+            if (selected[key]) { print "package." a[2] ".artifact." a[4] ".sha256=" sha; next }
+        }
+        { print }
+    ' "$catalog" > "$temporary" || fail 'could not update fixture catalog artifact'
+    mv "$temporary" "$catalog"
+    [ ! -f "$TEST_HOME/.cup/root.txt" ] || cp "$catalog" "$TEST_HOME/.cup/config/catalog.cfg"
 }
 
 
@@ -181,26 +293,14 @@ package_fixture_source_name() {
 package_fixture_source_version() {
     tool=$1
     version=$2
-    if [ "$tool" = gcc ]; then
-        printf '%s\n' "${version%%-rev*}"
-    else
-        printf '%s\n' "$version"
-    fi
+    printf '%s\n' "${version%%-rev*}"
 }
 
-write_package_revision() {
-    tool=$1
-    version=$2
-
-    [ "$tool" = gcc ] || return 0
+write_package_revision_reason() {
+    version=$1
     case "$version" in
-        *-rev*) revision=${version##*-rev} ;;
-        *) fail "invalid GCC fixture revision: $version" ;;
+        *-rev*) printf 'package.revision_reason=integration fixture revision\n' ;;
     esac
-    case "$revision" in
-        ''|0*|*[!0-9]*) fail "invalid GCC fixture revision: $version" ;;
-    esac
-    printf 'package.revision=%s\n' "$revision"
 }
 
 write_package_manifest() {
@@ -254,18 +354,16 @@ make_package_format() {
     host=$TEST_PLATFORM
     package_name=$tool-$version-$host-$target
     package_root=$TMP_ROOT/packages/$package_name
-    cache_dir=$TEST_HOME/.cup/cache/$component/$tool/$host/$target/$version
-    archive=$cache_dir/$package_name.$format
+    artifact_dir=$TMP_ROOT/artifacts
+    archive=$artifact_dir/$package_name.$format
 
     rm -rf "$package_root"
-    mkdir -p "$package_root/bin" "$cache_dir"
+    mkdir -p "$package_root/bin" "$artifact_dir"
     {
         printf 'package.component=%s\n' "$component"
         printf 'package.tool=%s\n' "$tool"
         printf 'package.version=%s\n' "$version"
-        write_package_revision "$tool" "$version"
-        printf 'package.mode=self-contained\n'
-        printf 'package.formats=tar.xz,tar.gz,zip\n'
+        write_package_revision_reason "$version"
         printf 'platform.host=%s\n' "$host"
         printf 'platform.target=%s\n' "$target"
         printf 'platform.host_triple=%s\n' "$(package_fixture_triple "$host")"
@@ -277,7 +375,8 @@ make_package_format() {
         printf 'build.source_policy=fixture\n'
         printf 'source.primary.name=%s\n' "$(package_fixture_source_name "$tool")"
         printf 'source.primary.version=%s\n' "$(package_fixture_source_version "$tool" "$version")"
-        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
+        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' \
+            "$tool" "$(package_fixture_source_version "$tool" "$version")"
         printf 'source.primary.sha256=%064d\n' 0
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"
@@ -294,24 +393,21 @@ SCRIPT
     write_package_manifest "$package_root"
 
     case "$format" in
-        tar.gz)
-            tar -czf "$archive" -C "$TMP_ROOT/packages" "$package_name"
-            ;;
-        tar.xz)
-            tar -cJf "$archive" -C "$TMP_ROOT/packages" "$package_name"
-            ;;
+        tar.gz) tar -czf "$archive" -C "$TMP_ROOT/packages" "$package_name" ;;
+        tar.xz) tar -cJf "$archive" -C "$TMP_ROOT/packages" "$package_name" ;;
         zip)
-            command -v zip >/dev/null 2>&1 ||
-                fail "zip utility is required for ZIP package fixtures"
+            command -v zip >/dev/null 2>&1 || fail "zip utility is required for ZIP package fixtures"
             (cd "$TMP_ROOT/packages" && zip -qr "$archive" "$package_name")
             ;;
-        *)
-            fail "unsupported package fixture format: $format"
-            ;;
+        *) fail "unsupported package fixture format: $format" ;;
     esac
-    {
-        printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")"
-    } > "$cache_dir/SHA256SUMS"
+
+    sha=$(hash_file "$archive")
+    ensure_fixture_runtime_root
+    mkdir -p "$TEST_HOME/.cup/cache"
+    cp "$archive" "$TEST_HOME/.cup/cache/$sha"
+    package_catalog_add_package "$component" "$tool" "$target" "$version" "$format" \
+        "https://example.invalid/$package_name.$format" "$sha"
 }
 
 make_installed_package() {
@@ -321,15 +417,13 @@ make_installed_package() {
     target=$4
     shift 4
 
-    root=$TEST_HOME/.cup/components/$component/$tool/$TEST_PLATFORM/$target/$version
+    root=$TEST_HOME/.cup/components/$component/$tool/$target/$version
     mkdir -p "$root/bin"
     {
         printf 'package.component=%s\n' "$component"
         printf 'package.tool=%s\n' "$tool"
         printf 'package.version=%s\n' "$version"
-        write_package_revision "$tool" "$version"
-        printf 'package.mode=self-contained\n'
-        printf 'package.formats=tar.xz,tar.gz,zip\n'
+        write_package_revision_reason "$version"
         printf 'platform.host=%s\n' "$TEST_PLATFORM"
         printf 'platform.target=%s\n' "$target"
         printf 'platform.host_triple=%s\n' "$(package_fixture_triple "$TEST_PLATFORM")"
@@ -341,7 +435,7 @@ make_installed_package() {
         printf 'build.source_policy=fixture\n'
         printf 'source.primary.name=%s\n' "$(package_fixture_source_name "$tool")"
         printf 'source.primary.version=%s\n' "$(package_fixture_source_version "$tool" "$version")"
-        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$version"
+        printf 'source.primary.url=https://example.invalid/%s-%s.tar.xz\n' "$tool" "$(package_fixture_source_version "$tool" "$version")"
         printf 'source.primary.sha256=%064d\n' 0
         for entry in "$@"; do
             printf 'entry.%s=bin/%s\n' "$entry" "$entry"

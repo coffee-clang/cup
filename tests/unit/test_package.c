@@ -38,22 +38,16 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 #endif
 
 #if defined(_WIN32)
-#define TEST_PACKAGE_FORMATS "zip,tar.xz,tar.gz"
 #define TEST_PACKAGE_TRIPLE "x86_64-w64-mingw32"
 #define TEST_PACKAGE_RUNTIME "ucrt"
 #else
-#define TEST_PACKAGE_FORMATS "tar.xz,tar.gz,zip"
 #define TEST_PACKAGE_TRIPLE "x86_64-linux-gnu"
 #define TEST_PACKAGE_RUNTIME "glibc"
 #endif
 
-#define TEST_PACKAGE_WRONG_FORMATS "tar.xz,tar.gz"
-
 #define TEST_PACKAGE_SHA \
     "0000000000000000000000000000000000000000000000000000000000000000"
-#define TEST_PACKAGE_COMMON_METADATA_WITH(formats, sha) \
-    "package.mode=self-contained\n" \
-    "package.formats=" formats "\n" \
+#define TEST_PACKAGE_COMMON_METADATA_WITH_SHA(sha) \
     "platform.host_triple=" TEST_PACKAGE_TRIPLE "\n" \
     "platform.target_triple=" TEST_PACKAGE_TRIPLE "\n" \
     "platform.family=gnu\n" \
@@ -65,8 +59,7 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
     "source.primary.version=22.1.5\n" \
     "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n" \
     "source.primary.sha256=" sha "\n"
-#define TEST_PACKAGE_COMMON_METADATA \
-    TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
+#define TEST_PACKAGE_COMMON_METADATA TEST_PACKAGE_COMMON_METADATA_WITH_SHA(TEST_PACKAGE_SHA)
 
 static unsigned int recovery_serial;
 static CupError install_path_result;
@@ -205,9 +198,6 @@ static void make_valid_package_for_platform(const char *root,
     char tool_path[512];
     char package_metadata_path[512];
     char metadata[2048];
-    const char *formats = strcmp(host, "windows-x64") == 0
-                              ? "zip,tar.xz,tar.gz"
-                              : "tar.xz,tar.gz,zip";
     int written;
 
     join_path(bin_dir, sizeof(bin_dir), root, "bin");
@@ -223,8 +213,6 @@ static void make_valid_package_for_platform(const char *root,
                        "package.component=compiler\n"
                        "package.tool=clang\n"
                        "package.version=22.1.5\n"
-                       "package.mode=self-contained\n"
-                       "package.formats=%s\n"
                        "platform.host=%s\n"
                        "platform.target=%s\n"
                        "platform.host_triple=fixture-host\n"
@@ -240,7 +228,6 @@ static void make_valid_package_for_platform(const char *root,
                        "source.primary.sha256="
                        "0000000000000000000000000000000000000000000000000000000000000000\n"
                        "entry.clang=" TEST_PACKAGE_ENTRY "\n",
-                       formats,
                        host,
                        target);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(metadata));
@@ -496,31 +483,19 @@ static void test_common_metadata_contract(void) {
                               TEST_PACKAGE_HOST,
                               "22.1.5"));
 
-    build_path(root, sizeof(root), "wrong-package-formats");
+    build_path(root, sizeof(root), "obsolete-package-fields");
     make_valid_package(root);
     join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
     write_text(info,
                "package.component=compiler\n"
                "package.tool=clang\n"
                "package.version=22.1.5\n"
+               "package.mode=self-contained\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
-               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_WRONG_FORMATS, TEST_PACKAGE_SHA)
+               TEST_PACKAGE_COMMON_METADATA
                "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
-
-    build_path(root, sizeof(root), "reordered-package-formats");
-    make_valid_package(root);
-    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
-    write_text(info,
-               "package.component=compiler\n"
-               "package.tool=clang\n"
-               "package.version=22.1.5\n"
-               "platform.host=" TEST_PACKAGE_HOST "\n"
-               "platform.target=" TEST_PACKAGE_HOST "\n"
-               TEST_PACKAGE_COMMON_METADATA_WITH("zip,tar.gz,tar.xz", TEST_PACKAGE_SHA)
-               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "invalid-source-digest");
     make_valid_package(root);
@@ -531,43 +506,93 @@ static void test_common_metadata_contract(void) {
                "package.version=22.1.5\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
-               TEST_PACKAGE_COMMON_METADATA_WITH(
-                   TEST_PACKAGE_FORMATS,
+               TEST_PACKAGE_COMMON_METADATA_WITH_SHA(
                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 
-    build_path(root, sizeof(root), "gcc-revision-contract");
+    build_path(root, sizeof(root), "generic-revision-contract");
     make_valid_package(root);
     join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
-    write_text(info,
-               "package.component=compiler\n"
-               "package.tool=gcc\n"
-               "package.version=16.2.0-rev1\n"
-               "package.revision=1\n"
-               "platform.host=" TEST_PACKAGE_HOST "\n"
-               "platform.target=" TEST_PACKAGE_HOST "\n"
-               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
-               "entry.gcc=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
         package_identity_init(&identity,
                               "compiler",
-                              "gcc",
+                              "clang",
                               TEST_PACKAGE_HOST,
                               TEST_PACKAGE_HOST,
-                              "16.2.0-rev1"));
+                              "22.1.5-rev1"));
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5-rev1\n"
+               "package.revision_reason=Relocation fix\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
 
     write_text(info,
                "package.component=compiler\n"
-               "package.tool=gcc\n"
-               "package.version=16.2.0-rev1\n"
-               "package.revision=2\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5-rev1\n"
                "platform.host=" TEST_PACKAGE_HOST "\n"
                "platform.target=" TEST_PACKAGE_HOST "\n"
-               TEST_PACKAGE_COMMON_METADATA_WITH(TEST_PACKAGE_FORMATS, TEST_PACKAGE_SHA)
-               "entry.gcc=" TEST_PACKAGE_ENTRY "\n");
+               TEST_PACKAGE_COMMON_METADATA
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5-rev1\n"
+               "package.revision=1\n"
+               "package.revision_reason=Relocation fix\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5-rev1\n"
+               "package.revision_reason=Relocation fix\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               "platform.host_triple=" TEST_PACKAGE_TRIPLE "\n"
+               "platform.target_triple=" TEST_PACKAGE_TRIPLE "\n"
+               "platform.family=gnu\n"
+               "platform.runtime=" TEST_PACKAGE_RUNTIME "\n"
+               "platform.thread_model=posix\n"
+               "build.environment=test\n"
+               "build.source_policy=fixture\n"
+               "source.primary.name=llvm-project\n"
+               "source.primary.version=22.1.4\n"
+               "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n"
+               "source.primary.sha256=" TEST_PACKAGE_SHA "\n"
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_identity_init(&identity,
+                              "compiler",
+                              "clang",
+                              TEST_PACKAGE_HOST,
+                              TEST_PACKAGE_HOST,
+                              "22.1.5"));
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5\n"
+               "package.revision_reason=Should not exist\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_COMMON_METADATA
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, package_validate(root, &identity, stderr));
 }
 
@@ -807,6 +832,7 @@ static void test_scan_roots(void) {
     PackageList packages;
     char components[512];
 
+    package_list_init(&packages);
     build_path(components, sizeof(components), "components");
     /* The valid package remains usable while every malformed branch is reported. */
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages, stderr));
@@ -819,6 +845,7 @@ static void test_scan_roots(void) {
 
     components_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_scan(&packages, stderr));
+    package_list_free(&packages);
 }
 
 static void test_path_failures(void) {
@@ -872,8 +899,6 @@ static void assert_package_issue_names(void) {
     TEST_ASSERT_EQUAL_STRING("unknown component",
                              package_issue_reason_name(PACKAGE_ISSUE_INVALID_COMPONENT));
     TEST_ASSERT_EQUAL_STRING("unknown tool", package_issue_reason_name(PACKAGE_ISSUE_INVALID_TOOL));
-    TEST_ASSERT_EQUAL_STRING("invalid host platform",
-                             package_issue_reason_name(PACKAGE_ISSUE_INVALID_HOST));
     TEST_ASSERT_EQUAL_STRING("invalid target platform",
                              package_issue_reason_name(PACKAGE_ISSUE_INVALID_TARGET));
     TEST_ASSERT_EQUAL_STRING("invalid package version",
@@ -895,19 +920,11 @@ static void create_scan_issue_fixture(char *host, size_t host_size) {
     build_path(components, sizeof(components), "components");
 
     /* Keep one valid package so malformed paths are observed beside a usable entry. */
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "components/compiler/clang/%s/%s",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "components/compiler/clang/%s", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     make_parent_chain(relative);
 
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "compiler/clang/%s/%s/22.1.5",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "compiler/clang/%s/22.1.5", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     join_path(valid_root, sizeof(valid_root), components, relative);
     make_valid_package_for_platform(valid_root, host, host);
@@ -915,54 +932,29 @@ static void create_scan_issue_fixture(char *host, size_t host_size) {
     /* Cover malformed hierarchy segments at every identity level. */
     make_parent_chain("components/unknown-component");
     make_parent_chain("components/compiler/not-a-tool");
-    make_parent_chain("components/compiler/clang/not-a-host");
-
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "components/compiler/clang/%s/not-a-target",
-                       host);
+    written = snprintf(relative, sizeof(relative), "components/compiler/clang/not-a-target");
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     make_parent_chain(relative);
 
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "components/compiler/clang/%s/%s/bad version",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "components/compiler/clang/%s/bad version", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     make_parent_chain(relative);
 
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "components/compiler/clang/%s/%s/stable",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "components/compiler/clang/%s/stable", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     make_parent_chain(relative);
 
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "components/compiler/clang/%s/%s/24.0.0",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "components/compiler/clang/%s/24.0.0", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     make_parent_chain(relative);
 
     /* Add invalid leaf types and unexpected entries below the components root. */
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "compiler/clang/%s/%s/23.0.0",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "compiler/clang/%s/23.0.0", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     join_path(path, sizeof(path), components, relative);
     write_text(path, "not a package directory\n");
 #if !defined(_WIN32)
-    written = snprintf(relative,
-                       sizeof(relative),
-                       "compiler/clang/%s/%s/25.0.0",
-                       host,
-                       host);
+    written = snprintf(relative, sizeof(relative), "compiler/clang/%s/25.0.0", host);
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(relative));
     join_path(path, sizeof(path), components, relative);
     TEST_ASSERT_EQUAL_INT(0, mkfifo(path, 0600));
@@ -977,7 +969,7 @@ static void assert_scan_issue_inventory(const PackageList *packages, const char 
     TEST_ASSERT_TRUE(packages->complete);
     TEST_ASSERT_EQUAL_size_t(1, packages->count);
     TEST_ASSERT_EQUAL_size_t(1, packages->total_count);
-    TEST_ASSERT_TRUE(packages->issue_count >= 8);
+    TEST_ASSERT_TRUE(packages->issue_count >= 7);
     TEST_ASSERT_EQUAL_size_t(packages->issue_count, packages->total_issue_count);
 
     TEST_ASSERT_EQUAL_INT(
@@ -989,7 +981,6 @@ static void assert_scan_issue_inventory(const PackageList *packages, const char 
 
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_COMPONENT, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_TOOL, 0));
-    TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_HOST, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_TARGET, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_VERSION, 0));
     TEST_ASSERT_NOT_NULL(find_issue(packages, PACKAGE_ISSUE_INVALID_PATH_TYPE, 1));
@@ -1043,12 +1034,14 @@ static void test_scan_issues(void) {
     PackageList packages;
     char host[MAX_PLATFORM_LEN];
 
+    package_list_init(&packages);
     create_scan_issue_fixture(host, sizeof(host));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_scan(&packages, stderr));
     assert_scan_issue_inventory(&packages, host);
     assert_scan_issue_quarantine(&packages);
     assert_package_issue_names();
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_scan(NULL, stderr));
+    package_list_free(&packages);
 }
 
 static void test_registry_platform(void) {
@@ -1069,8 +1062,8 @@ static void test_registry_platform(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_ARCH, platform_validate("windows-arm64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, platform_validate(long_platform));
     TEST_ASSERT_EQUAL_UINT(5, CUP_PLATFORM_COUNT);
-    TEST_ASSERT_EQUAL_UINT(7, registry_component_count());
-    TEST_ASSERT_EQUAL_UINT(10, CUP_TOOL_COUNT);
+    TEST_ASSERT_EQUAL_UINT(8, registry_component_count());
+    TEST_ASSERT_EQUAL_UINT(11, CUP_TOOL_COUNT);
 
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, registry_validate_component(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, registry_validate_component(""));

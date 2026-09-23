@@ -183,9 +183,6 @@ static size_t build_metadata(const FixtureOptions *options, char *info, size_t i
     const char *host_triple = platform_triple(options->host);
     const char *target_triple = platform_triple(options->target);
     const char *runtime = platform_runtime(options->target);
-    const char *formats = strcmp(options->host, "windows-x64") == 0
-                              ? "zip,tar.xz,tar.gz"
-                              : "tar.xz,tar.gz,zip";
     int written;
 
     if (host_triple == NULL || target_triple == NULL || runtime == NULL) {
@@ -197,8 +194,6 @@ static size_t build_metadata(const FixtureOptions *options, char *info, size_t i
                        "package.component=compiler\n"
                        "package.tool=clang\n"
                        "package.version=%s\n"
-                       "package.mode=self-contained\n"
-                       "package.formats=%s\n"
                        "platform.host=%s\n"
                        "platform.target=%s\n"
                        "platform.host_triple=%s\n"
@@ -215,7 +210,6 @@ static size_t build_metadata(const FixtureOptions *options, char *info, size_t i
                        "0000000000000000000000000000000000000000000000000000000000000000\n"
                        "entry.clang=%s\n",
                        options->version,
-                       formats,
                        options->host,
                        options->target,
                        host_triple,

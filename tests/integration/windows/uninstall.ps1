@@ -159,7 +159,7 @@ function Wait-ForCleanUninstall {
 
 try {
     Initialize-TestEnvironment -Name "uninstall" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Invoke-Cup -CommandArgs @("config", "set", "compiler", "clang") | Out-Null
 
     $uninstallStartedMessage =
         "Uninstall handoff accepted; cleanup continues in the background. " +

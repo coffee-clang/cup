@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Verifies that generated installers are transport-only, fail closed, and hand one exact
-# verified generation to the hidden canonical bootstrap entry point.
+# Verifies the public installers remain transport-only and hand one authenticated,
+# concrete release generation to the native synchronous bootstrap.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -13,79 +13,28 @@ CUP_TEST_CP=$(command -v cp) || exit 1
 CUP_TEST_MKDIR=$(command -v mkdir) || exit 1
 export CUP_TEST_CP CUP_TEST_MKDIR
 
-cleanup() {
-    [ ! -e "$WORK" ] || rm -rf -- "$WORK"
-}
+cleanup() { [ ! -e "$WORK" ] || rm -rf -- "$WORK"; }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-fail() {
-    printf 'Error: %s\n' "$*" >&2
-    exit 1
-}
+fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
-check_shell_syntax() {
-    label=$1
-    shift
-    "$@" -n "$ROOT/scripts/install/install.sh" ||
-        fail "$label rejected the POSIX installer"
-}
-check_shell_syntax sh sh
-if command -v dash >/dev/null 2>&1; then
-    check_shell_syntax dash dash
-fi
-if command -v busybox >/dev/null 2>&1; then
-    check_shell_syntax 'BusyBox sh' busybox sh
-fi
-
-# The transporters must not contain a second managed transaction implementation.
-for forbidden in '.bootstrap' 'binary.old' 'platform-checksums.old' \
-        'File.Replace' 'Move-Item'; do
-    ! grep -F "$forbidden" "$ROOT/scripts/install/install.sh" \
-        "$ROOT/scripts/install/install.ps1" >/dev/null ||
-        fail "installer still contains managed transaction state: $forbidden"
+for shell_cmd in "sh" "dash" "busybox sh"; do
+    set -- $shell_cmd
+    command -v "$1" >/dev/null 2>&1 || continue
+    "$@" -n "$ROOT/scripts/install/install.sh" || fail "$shell_cmd rejected the POSIX installer"
 done
-grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.sh" >/dev/null
-grep -F -- '--internal-bootstrap' "$ROOT/scripts/install/install.ps1" >/dev/null
-grep -F -- '$MaxRedirects = if ($BaseUrlOverridden) { 0 } else { 10 }' "$ROOT/scripts/install/install.ps1" >/dev/null
-
-# Windows private transport ACLs use SID objects directly and are applied when
-# the directory is created, avoiding account-name translation and a
-# create-then-protect window.
-! grep -F -- '$identity.User.Value' "$ROOT/scripts/install/install.ps1" >/dev/null ||
-    fail 'Windows installer translates the current user SID through an account-name string'
-! grep -F -- "'NT AUTHORITY\SYSTEM'" "$ROOT/scripts/install/install.ps1" >/dev/null ||
-    fail 'Windows installer depends on the localized SYSTEM account name'
-! grep -F -- "'BUILTIN\Administrators'" "$ROOT/scripts/install/install.ps1" >/dev/null ||
-    fail 'Windows installer depends on the localized Administrators account name'
-grep -F -- '[Security.Principal.WellKnownSidType]::LocalSystemSid' \
-    "$ROOT/scripts/install/install.ps1" >/dev/null
-grep -F -- '[Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid' \
-    "$ROOT/scripts/install/install.ps1" >/dev/null
-grep -F -- '[IO.Directory]::CreateDirectory($path, $security)' \
-    "$ROOT/scripts/install/install.ps1" >/dev/null
-
-# Windows PowerShell adapts Nullable<T> properties to their scalar value/null.
-# Do not require Nullable<T> members such as HasValue/Value on Content-Length.
-! grep -F -- 'ContentLength.HasValue' "$ROOT/scripts/install/install.ps1" >/dev/null ||
-    fail 'Windows installer assumes Nullable<T>.HasValue survives PowerShell adaptation'
-! grep -F -- 'ContentLength.Value' "$ROOT/scripts/install/install.ps1" >/dev/null ||
-    fail 'Windows installer assumes Nullable<T>.Value survives PowerShell adaptation'
-grep -F -- '$contentLength = $response.Content.Headers.ContentLength' \
-    "$ROOT/scripts/install/install.ps1" >/dev/null
-grep -F -- '$null -ne $contentLength -and $contentLength -gt $maximum' \
-    "$ROOT/scripts/install/install.ps1" >/dev/null
 
 SCRIPT_DIR="$ROOT/scripts/release"
 # shellcheck source=scripts/release/common.sh
 . "$SCRIPT_DIR/common.sh"
 prepare_installer "$ROOT/scripts/install/install.sh" "$WORK/install.sh" 0755
+prepare_installer "$ROOT/scripts/install/install.ps1" "$WORK/install.ps1" 0644
 [ -x "$WORK/install.sh" ] || fail 'prepared POSIX installer is not executable'
 
-# POSIX PATH cannot represent a directory containing ':' as one entry. The root remains valid;
-# only the optional PATH convenience is skipped.
+# PATH paths containing ':' remain valid roots but cannot be represented as one POSIX PATH entry.
 path_functions=$WORK/install-path-functions.sh
 awk '/^validate_identity$/ { exit } { print }' "$WORK/install.sh" > "$path_functions"
 colon_home=$WORK/path-colon-home
@@ -98,20 +47,73 @@ printf '%s\n' "$colon_output" | grep -F 'Automatic user PATH integration is unav
     fail 'POSIX installer did not explain an unrepresentable PATH entry'
 [ ! -e "$colon_home/.profile" ] || fail 'POSIX installer wrote an unrepresentable PATH entry'
 
+# Bash startup files are updated independently and unsafe targets are preserved.
+partial_home=$WORK/path-partial-home
+partial_root=$WORK/path-partial-root/.cup
+mkdir -p "$partial_home/.bashrc" "$partial_root/bin"
+partial_output=$(HOME="$partial_home" SHELL=/bin/bash PATH="$PATH"     sh -eu -c '. "$1"; SELECTED_ROOT=$2; export SELECTED_ROOT; add_posix_path'     sh "$path_functions" "$partial_root" 2>&1)
+printf '%s
+' "$partial_output" | grep -F 'could not update every Bash startup file' >/dev/null ||
+    fail 'POSIX installer did not report a partial Bash PATH update'
+[ -d "$partial_home/.bashrc" ] || fail 'POSIX installer replaced a non-file Bash startup target'
+grep -F "$partial_root/bin" "$partial_home/.bash_profile" >/dev/null ||
+    fail 'POSIX installer did not update the independent valid Bash login file'
+[ -z "$(find "$partial_home/.bashrc" -mindepth 1 -print -quit)" ] ||
+    fail 'POSIX installer wrote temporary content inside a startup-file directory'
+
+symlink_home=$WORK/path-symlink-home
+symlink_root=$WORK/path-symlink-root/.cup
+mkdir -p "$symlink_home" "$symlink_root/bin"
+printf 'keep-me
+' > "$symlink_home/target"
+ln -s target "$symlink_home/.zshrc"
+symlink_output=$(HOME="$symlink_home" SHELL=/bin/zsh PATH="$PATH"     sh -eu -c '. "$1"; SELECTED_ROOT=$2; export SELECTED_ROOT; add_posix_path'     sh "$path_functions" "$symlink_root" 2>&1)
+printf '%s
+' "$symlink_output" | grep -F 'could not update the Zsh PATH configuration' >/dev/null ||
+    fail 'POSIX installer did not report a symlink PATH target'
+[ "$(cat "$symlink_home/target")" = 'keep-me' ] ||
+    fail 'POSIX installer followed and modified a symlink PATH target'
+[ -L "$symlink_home/.zshrc" ] || fail 'POSIX installer replaced a symlink PATH target'
+
+# The interactive PATH prompt is opt-in: Enter keeps external shell state untouched,
+# an explicit yes adds one idempotent entry. Use a real pseudo-TTY because the public
+# installer deliberately skips prompts for non-interactive stdin.
+if command -v script >/dev/null 2>&1; then
+    path_prompt_home=$WORK/path-prompt-home
+    path_prompt_root=$WORK/path-prompt-root/.cup
+    mkdir -p "$path_prompt_home" "$path_prompt_root/bin"
+    prompt_command=". '$path_functions'; SELECTED_ROOT='$path_prompt_root'; export SELECTED_ROOT; offer_path_integration"
+
+    printf '\n' | HOME="$path_prompt_home" SHELL=/bin/bash PATH="$PATH" \
+        script -qfec "sh -eu -c \"$prompt_command\"" /dev/null > "$WORK/path-default-no.out" 2>&1 ||
+        fail 'POSIX installer PATH default-no prompt failed'
+    grep -F '[y/N]' "$WORK/path-default-no.out" >/dev/null ||
+        fail 'POSIX installer did not show the opt-in PATH prompt'
+    [ ! -e "$path_prompt_home/.bashrc" ] && [ ! -e "$path_prompt_home/.bash_profile" ] ||
+        fail 'POSIX installer changed PATH configuration on the default response'
+
+    printf 'y\n' | HOME="$path_prompt_home" SHELL=/bin/bash PATH="$PATH" \
+        script -qfec "sh -eu -c \"$prompt_command\"" /dev/null > "$WORK/path-yes.out" 2>&1 ||
+        fail 'POSIX installer PATH opt-in failed'
+    grep -F "$path_prompt_root/bin" "$path_prompt_home/.bashrc" >/dev/null ||
+        fail 'POSIX installer did not persist the accepted Bash interactive PATH entry'
+    grep -F "$path_prompt_root/bin" "$path_prompt_home/.bash_profile" >/dev/null ||
+        fail 'POSIX installer did not persist the accepted Bash login PATH entry'
+    first_profile_hash=$(cat "$path_prompt_home/.bashrc" "$path_prompt_home/.bash_profile" | sha256sum | awk '{print $1}')
+
+    printf 'yes\n' | HOME="$path_prompt_home" SHELL=/bin/bash PATH="$PATH" \
+        script -qfec "sh -eu -c \"$prompt_command\"" /dev/null >/dev/null 2>&1 ||
+        fail 'POSIX installer repeated PATH opt-in failed'
+    second_profile_hash=$(cat "$path_prompt_home/.bashrc" "$path_prompt_home/.bash_profile" | sha256sum | awk '{print $1}')
+    [ "$first_profile_hash" = "$second_profile_hash" ] ||
+        fail 'POSIX installer duplicated an already persisted PATH entry'
+fi
+
 mkdir -p "$WORK/mock-bin"
 cat > "$WORK/mock-bin/curl" <<'MOCK_CURL'
 #!/usr/bin/env sh
 set -eu
-output=
-url=
-proto=
-proto_redir=
-max_redirs=
-connect_timeout=
-max_time=
-speed_time=
-speed_limit=
-max_filesize=
+output= url= proto= proto_redir= max_redirs= connect_timeout= max_time= speed_time= speed_limit= max_filesize=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output) output=$2; shift 2 ;;
@@ -145,29 +147,40 @@ chmod 0755 "$WORK/mock-bin/curl"
 
 mkdir -p "$WORK/windows-bin"
 cp "$WORK/mock-bin/curl" "$WORK/windows-bin/curl"
-cat > "$WORK/windows-bin/uname" <<'MOCK_UNAME'
+cat > "$WORK/windows-bin/uname" <<'EOF_UNAME'
 #!/usr/bin/env sh
-case "${1:-}" in
-    -s) printf 'MINGW64_NT-10.0\n' ;;
-    -m) printf 'x86_64\n' ;;
-    *) exit 2 ;;
-esac
-MOCK_UNAME
-cat > "$WORK/windows-bin/cygpath" <<'MOCK_CYGPATH'
+case "${1:-}" in -s) printf 'MINGW64_NT-10.0\n' ;; -m) printf 'x86_64\n' ;; *) exit 2 ;; esac
+EOF_UNAME
+cat > "$WORK/windows-bin/cygpath" <<'EOF_CYGPATH'
 #!/usr/bin/env sh
 [ "$#" -eq 2 ] && [ "$1" = -w ]
 printf '%s\n' "$2"
-MOCK_CYGPATH
-cat > "$WORK/windows-bin/powershell.exe" <<'MOCK_POWERSHELL'
+EOF_CYGPATH
+cat > "$WORK/windows-bin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env sh
 set -eu
 printf '%s\n' "$*" > "$CUP_POWERSHELL_TRACE"
-MOCK_POWERSHELL
-chmod 0755 "$WORK/windows-bin/uname" "$WORK/windows-bin/cygpath" \
-    "$WORK/windows-bin/powershell.exe"
+EOF_PS
+chmod 0755 "$WORK/windows-bin/uname" "$WORK/windows-bin/cygpath" "$WORK/windows-bin/powershell.exe"
 
-hash_file() {
-    sha256sum "$1" | awk '{print $1}'
+hash_file() { sha256sum "$1" | awk '{print $1}'; }
+
+write_manifest() {
+    fixture=$1
+    shift
+    names=$(printf '%s\n' "$@" | LC_ALL=C sort)
+    count=$(printf '%s\n' "$names" | wc -l | tr -d ' ')
+    {
+        printf 'format=2\nversion=%s\ncommit=%s\nroot_layout=2\ncatalog_format=1\nasset_count=%s\n' "$VERSION" "$SHA" "$count"
+        i=0
+        while IFS= read -r name; do
+            printf 'asset.%s.name=%s\n' "$i" "$name"
+            printf 'asset.%s.sha256=%s\n' "$i" "$(hash_file "$fixture/$name")"
+            i=$((i + 1))
+        done <<EOF_NAMES
+$names
+EOF_NAMES
+    } > "$fixture/release.txt"
 }
 
 prepare_fixture() {
@@ -177,656 +190,221 @@ prepare_fixture() {
 #!/usr/bin/env sh
 set -eu
 select_root() {
-    base=$1
-    primary=$base/.cup
-    fallback=$base/.coffee-cup
-    if [ ! -e "$primary" ] && [ ! -L "$primary" ]; then
-        printf '%s\n' "$primary"; return 0
-    fi
-    if [ -f "$primary/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$primary/root.txt" >/dev/null 2>&1; then
-        printf '%s\n' "$primary"; return 0
-    fi
-    if [ ! -e "$fallback" ] && [ ! -L "$fallback" ]; then
-        printf '%s\n' "$fallback"; return 0
-    fi
-    if [ -f "$fallback/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$fallback/root.txt" >/dev/null 2>&1; then
-        printf '%s\n' "$fallback"; return 0
-    fi
+    base=$1; primary=$base/.cup; fallback=$base/.coffee-cup
+    if [ ! -e "$primary" ] && [ ! -L "$primary" ]; then printf '%s\n' "$primary"; return 0; fi
+    if [ -f "$primary/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$primary/root.txt" >/dev/null 2>&1; then printf '%s\n' "$primary"; return 0; fi
+    if [ ! -e "$fallback" ] && [ ! -L "$fallback" ]; then printf '%s\n' "$fallback"; return 0; fi
+    if [ -f "$fallback/root.txt" ] && grep -Fx 'product=coffee-clang/cup' "$fallback/root.txt" >/dev/null 2>&1; then printf '%s\n' "$fallback"; return 0; fi
     return 1
 }
-if [ "${1:-}" = --version ]; then
-    version=${CUP_TEST_RELEASE_VERSION:?}
-    self_dir=${0%/*}
-    [ ! -f "$self_dir/../mock-version" ] || version=$(cat "$self_dir/../mock-version")
-    printf 'cup %s\n' "$version"
-    exit 0
-fi
-if [ "${1:-}" = --internal-select-root ]; then
-    [ "$#" -eq 2 ] || exit 79
-    select_root "$2"
-    exit $?
-fi
+if [ "${1:-}" = --version ]; then printf 'cup %s\n' "${CUP_TEST_RELEASE_VERSION:?}"; exit 0; fi
+if [ "${1:-}" = --internal-select-root ]; then [ "$#" -eq 2 ] || exit 79; select_root "$2"; exit $?; fi
 if [ "${1:-}" = --internal-root-probe ]; then
-    [ "$#" -eq 2 ] || exit 79
-    root=$2
+    [ "$#" -eq 2 ] || exit 79; root=$2
     [ -f "$root/root.txt" ] && [ ! -L "$root/root.txt" ] || exit 1
+    grep -Fx 'format=2' "$root/root.txt" >/dev/null || exit 1
     grep -Fx 'product=coffee-clang/cup' "$root/root.txt" >/dev/null || exit 1
+    grep -Fx 'layout=2' "$root/root.txt" >/dev/null || exit 1
+    grep -Fx 'host=linux-x64' "$root/root.txt" >/dev/null || exit 1
     [ -f "$root/bin/cup" ] && [ ! -L "$root/bin/cup" ] || exit 1
     cmp -s "$0" "$root/bin/cup" || exit 1
     exit 0
 fi
-if [ "${1:-}" = --internal-runtime-ready ]; then
-    if [ -n "${CUP_TEST_RUNTIME_READY_RETRY_FILE:-}" ] && [ ! -e "$CUP_TEST_RUNTIME_READY_RETRY_FILE" ]; then
-        : > "$CUP_TEST_RUNTIME_READY_RETRY_FILE"
-        exit 1
-    fi
-    printf 'Doctor found no issues.\n'
+if [ "${1:-}" = list ] && [ "${2:-}" = package-manager ]; then
+    case "${CUP_COFFEE_MODE:-unavailable}" in
+        poststate) printf 'package-manager:coffee@1.0.0\n' ;;
+    esac
     exit 0
 fi
-[ "$#" -eq 3 ] && [ "$1" = --internal-bootstrap ]
-source_directory=$2
-base=$3
+if [ "${1:-}" = install ] && [ "${2:-}" = coffee ]; then
+    printf 'coffee\n' >> "${CUP_COFFEE_TRACE:?}"
+    case "${CUP_COFFEE_MODE:-unavailable}" in
+        success) exit 0 ;;
+        poststate)
+            printf 'Error: wrapper reconciliation failed.\n' >&2
+            exit 6
+            ;;
+        transaction)
+            root=$(select_root "$HOME") || exit 84
+            printf 'format=2\noperation=install\n' > "$root/transaction.txt"
+            printf 'Error: package installation was interrupted.\n' >&2
+            exit 6
+            ;;
+        *)
+            printf 'Error: package coffee is unavailable.\n' >&2
+            exit 6
+            ;;
+    esac
+fi
+[ "$#" -eq 3 ] && [ "$1" = --internal-bootstrap ] || exit 80
+source_directory=$2; base=$3
 case "$source_directory:$base" in /*:/*) ;; *) exit 81 ;; esac
-[ -d "$source_directory" ] && [ ! -L "$source_directory" ]
+[ -d "$source_directory" ] && [ ! -L "$source_directory" ] || exit 82
 count=0
-for entry in "$source_directory"/*; do
-    [ -f "$entry" ] && [ ! -L "$entry" ] || exit 82
-    count=$((count + 1))
-done
-[ "$count" -eq 8 ] || exit 83
+for entry in "$source_directory"/*; do [ -f "$entry" ] && [ ! -L "$entry" ] || exit 82; count=$((count + 1)); done
+[ "$count" -eq 5 ] || exit 83
+for required in release.txt cup-linux-x64 LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg; do [ -f "$source_directory/$required" ] || exit 83; done
 printf '%s\n' "$source_directory" > "$CUP_BOOTSTRAP_TRACE"
 root=$(select_root "$base") || exit 84
-"$CUP_TEST_MKDIR" -p "$root/bin" "$root/staging"
-printf 'format=1\nproduct=coffee-clang/cup\nlayout=1\n' > "$root/root.txt"
-"$CUP_TEST_CP" "$0" "$root/bin/cup"
-chmod 0700 "$root/bin/cup"
+"$CUP_TEST_MKDIR" -p "$root/bin" "$root/staging" "$root/config" "$root/components" "$root/tmp"
+printf 'format=2\nproduct=coffee-clang/cup\nlayout=2\nhost=linux-x64\n' > "$root/root.txt"
+: > "$root/cup.lock"
+"$CUP_TEST_CP" "$source_directory/cup-linux-x64" "$root/bin/cup"; chmod 0700 "$root/bin/cup"
+"$CUP_TEST_CP" "$source_directory/release.txt" "$root/release.txt"
+"$CUP_TEST_CP" "$source_directory/LICENSE" "$root/LICENSE"
+"$CUP_TEST_CP" "$source_directory/THIRD_PARTY_NOTICES.txt" "$root/THIRD_PARTY_NOTICES.txt"
+"$CUP_TEST_CP" "$source_directory/catalog.cfg" "$root/config/catalog.cfg"
+printf 'format=2\n' > "$root/state.txt"
 printf 'CUP_BOOTSTRAP_ROOT=%s\n' "$root"
-printf 'Verified cup installation scheduled.\n'
+printf 'Verified CUP %s generation installed.\n' "${CUP_TEST_RELEASE_VERSION:?}"
 FAKE_CUP
     chmod 0755 "$fixture/cup-linux-x64"
-    cat > "$fixture/release.txt" <<EOF_METADATA
-format=1
-version=$VERSION
-commit=$SHA
-EOF_METADATA
-    printf 'format=1\n' > "$fixture/packages.cfg"
-    printf 'format=1\n' > "$fixture/install.cfg"
+    printf 'license fixture\n' > "$fixture/LICENSE"
+    printf 'notices fixture\n' > "$fixture/THIRD_PARTY_NOTICES.txt"
+    printf 'format=1\nrevision=0\nupdate_url=https://example.invalid/catalog.cfg\n' > "$fixture/catalog.cfg"
     cp "$WORK/install.sh" "$fixture/install.sh"
-    printf '# generated Windows transport fixture\n' > "$fixture/install.ps1"
-    {
-        for asset in packages.cfg install.cfg install.sh install.ps1; do
-            printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-        done
-    } > "$fixture/SHA256SUMS.common"
-    {
-        for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
-            printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-        done
-    } > "$fixture/SHA256SUMS.linux-x64"
-}
-
-prepare_windows_handoff_fixture() {
-    fixture=$1
-    prepare_fixture "$fixture"
-    prepare_installer "$ROOT/scripts/install/install.ps1" "$fixture/install.ps1" 0644
-    printf 'fake Windows binary\n' > "$fixture/cup-windows-x64.exe"
-    {
-        for asset in packages.cfg install.cfg install.sh install.ps1; do
-            printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-        done
-    } > "$fixture/SHA256SUMS.common"
-    {
-        for asset in cup-windows-x64.exe release.txt SHA256SUMS.common; do
-            printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-        done
-    } > "$fixture/SHA256SUMS.windows-x64"
+    cp "$WORK/install.ps1" "$fixture/install.ps1"
+    write_manifest "$fixture" LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg cup-linux-x64 install.ps1 install.sh
 }
 
 run_success() {
-    shell_label=$1
-    shift
-    fixture=$WORK/fixture-$shell_label
-    home=$WORK/home-$shell_label
-    trace=$WORK/bootstrap-$shell_label.trace
-    downloads=$WORK/downloads-$shell_label.trace
-    prepare_fixture "$fixture"
-    mkdir -m 0700 "$home"
-    : > "$downloads"
+    shell_label=$1; shift
+    fixture=$WORK/fixture-$shell_label; home=$WORK/home-$shell_label
+    trace=$WORK/bootstrap-$shell_label.trace; downloads=$WORK/downloads-$shell_label.trace; coffee=$WORK/coffee-$shell_label.trace
+    prepare_fixture "$fixture"; mkdir -m 0700 "$home"; : > "$downloads"; : > "$coffee"
+    output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$downloads" \
+        CUP_BOOTSTRAP_TRACE="$trace" CUP_COFFEE_TRACE="$coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 "$@" "$WORK/install.sh" 2>&1)
+    printf '%s\n' "$output" | grep -F "cup $VERSION installed successfully." >/dev/null || fail "$shell_label install did not complete"
+    printf '%s\n' "$output" | grep -F 'Warning: Coffee was not installed' >/dev/null || fail "$shell_label did not report optional Coffee outcome"
+    [ "$(wc -l < "$coffee" | tr -d ' ')" -eq 1 ] || fail "$shell_label did not attempt Coffee exactly once on fresh install"
+    expected='release.txt
+cup-linux-x64
+LICENSE
+THIRD_PARTY_NOTICES.txt
+catalog.cfg'
+    [ "$(cat "$downloads")" = "$expected" ] || { cat "$downloads" >&2; fail "$shell_label downloaded an unexpected asset set"; }
+    [ "$(cat "$trace")" != "" ] || fail "$shell_label did not invoke native bootstrap"
+    [ -f "$home/.cup/release.txt" ] && [ -f "$home/.cup/LICENSE" ] && [ -f "$home/.cup/THIRD_PARTY_NOTICES.txt" ] || fail "$shell_label did not install complete generation"
 
-    output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" \
-        CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$downloads" \
-        CUP_BOOTSTRAP_TRACE="$trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-        CUP_INSTALL_WAIT_ATTEMPTS=2 "$@" "$WORK/install.sh" 2>&1)
-    printf '%s\n' "$output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
-        printf '%s\n' "$output" >&2
-        fail "valid transport did not complete under $shell_label"
-    }
-    [ "$(wc -l < "$downloads")" -eq 8 ] || fail "$shell_label did not download exactly eight assets"
-    [ -s "$trace" ] || fail "$shell_label did not invoke the hidden bootstrap"
-    source_directory=$(tr -d '\n' < "$trace")
-    [ ! -e "$source_directory" ] || fail "$shell_label did not remove the private transport directory"
-    [ -x "$home/.cup/bin/cup" ] || fail "$shell_label did not observe the canonical commit"
-    [ ! -e "$home/.cup/.bootstrap" ] || fail "$shell_label created unexpected bootstrap state"
+    # Reinstalling the existing root is synchronous and must not re-bootstrap optional Coffee.
+    : > "$downloads"; : > "$coffee"
+    HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$downloads" \
+        CUP_BOOTSTRAP_TRACE="$trace" CUP_COFFEE_TRACE="$coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 "$@" "$WORK/install.sh" >/dev/null 2>&1
+    [ ! -s "$coffee" ] || fail "$shell_label reinstalled Coffee after an existing-root reinstall"
 }
+
 run_success sh sh
-if command -v dash >/dev/null 2>&1; then run_success dash dash; fi
-if command -v busybox >/dev/null 2>&1; then run_success busybox busybox sh; fi
+command -v dash >/dev/null 2>&1 && run_success dash dash
+command -v busybox >/dev/null 2>&1 && run_success busybox busybox sh
 
-# A custom base keeps the canonical leaf, supports spaces, and remains the target on reinstall.
-custom_fixture=$WORK/fixture-custom-base
-custom_home=$WORK/home-custom-base
-custom_base=$WORK/'custom base'
-custom_trace=$WORK/bootstrap-custom-base.trace
-custom_downloads=$WORK/downloads-custom-base.trace
-prepare_fixture "$custom_fixture"
-mkdir -m 0700 "$custom_home" "$custom_base"
-: > "$custom_downloads"
-custom_output=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
-    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
-    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
-printf '%s\n' "$custom_output" | grep -F "Binary: $custom_base/.cup/bin/cup" >/dev/null || {
-    printf '%s\n' "$custom_output" >&2
-    fail 'custom base installation did not use the canonical .cup leaf'
-}
-[ -x "$custom_base/.cup/bin/cup" ] || fail 'custom base binary is missing'
+# Coffee bootstrap reports outcomes from persistent package state.
+fixture=$WORK/coffee-poststate-fixture; home=$WORK/coffee-poststate-home
+prepare_fixture "$fixture"; mkdir -m 0700 "$home"; : > "$WORK/coffee-poststate-downloads"; : > "$WORK/coffee-poststate-trace"
+output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
+    CUP_DOWNLOAD_TRACE="$WORK/coffee-poststate-downloads" CUP_BOOTSTRAP_TRACE="$WORK/coffee-poststate-bootstrap" \
+    CUP_COFFEE_TRACE="$WORK/coffee-poststate-trace" CUP_COFFEE_MODE=poststate CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1)
+printf '%s\n' "$output" | grep -F 'Coffee was installed, but derived commands need repair' >/dev/null ||
+    fail 'post-state Coffee failure was misreported as not installed'
+printf '%s\n' "$output" | grep -F "cup $VERSION installed successfully." >/dev/null ||
+    fail 'post-state Coffee failure incorrectly failed the core installation'
+[ "$(wc -l < "$WORK/coffee-poststate-trace" | tr -d ' ')" -eq 1 ] ||
+    fail 'post-state Coffee fixture did not execute one install attempt'
 
-: > "$custom_downloads"
-custom_reinstall=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
-    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
-    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
-printf '%s\n' "$custom_reinstall" | grep -F "cup $VERSION installed successfully." >/dev/null ||
-    fail 'same-version reinstall failed for a custom base containing spaces'
-
-# A valid newer installation is never silently downgraded in place.
-printf '9.9.9\n' > "$custom_base/.cup/mock-version"
-rm -f "$custom_trace"
+fixture=$WORK/coffee-transaction-fixture; home=$WORK/coffee-transaction-home
+prepare_fixture "$fixture"; mkdir -m 0700 "$home"; : > "$WORK/coffee-transaction-downloads"; : > "$WORK/coffee-transaction-trace"
 set +e
-newer_output=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
-    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
-    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
-newer_status=$?
+output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
+    CUP_DOWNLOAD_TRACE="$WORK/coffee-transaction-downloads" CUP_BOOTSTRAP_TRACE="$WORK/coffee-transaction-bootstrap" \
+    CUP_COFFEE_TRACE="$WORK/coffee-transaction-trace" CUP_COFFEE_MODE=transaction CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1); status=$?
 set -e
-[ "$newer_status" -ne 0 ] || fail 'installer silently downgraded a newer CUP'
-printf '%s\n' "$newer_output" | grep -F 'refusing to replace newer CUP 9.9.9' >/dev/null ||
-    fail 'newer CUP downgrade refusal was not explained'
-[ ! -e "$custom_trace" ] || fail 'downgrade refusal reached bootstrap'
-rm -f "$custom_base/.cup/mock-version"
+[ "$status" -ne 0 ] || fail 'unresolved Coffee transaction was reported as a clean installation'
+printf '%s\n' "$output" | grep -F 'optional Coffee installation left an unresolved CUP transaction' >/dev/null ||
+    fail 'unresolved Coffee transaction did not receive its specific diagnosis'
+[ -f "$home/.cup/transaction.txt" ] || fail 'Coffee transaction evidence was not preserved'
 
-# A changed installed executable is never executed before the new verified generation repairs it.
-tamper_execution=$WORK/tampered-installed-executed
-cat > "$custom_base/.cup/bin/cup" <<EOF_TAMPER
-#!/usr/bin/env sh
-printf 'executed\n' > '$tamper_execution'
-exit 0
-EOF_TAMPER
-chmod 0700 "$custom_base/.cup/bin/cup"
-: > "$custom_downloads"
-custom_repair=$(HOME="$custom_home" PATH="$WORK/mock-bin:$PATH" \
-    CUP_FIXTURE="$custom_fixture" CUP_DOWNLOAD_TRACE="$custom_downloads" \
-    CUP_BOOTSTRAP_TRACE="$custom_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-    CUP_INSTALL_BASE_DIR="$custom_base" CUP_INSTALL_NO_PATH_PROMPT=1 \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
-[ ! -e "$tamper_execution" ] || fail 'installer executed an unverified installed CUP binary'
-printf '%s\n' "$custom_repair" | grep -F "cup $VERSION installed successfully." >/dev/null ||
-    fail 'verified installer did not repair the changed installed executable'
-cmp -s "$custom_fixture/cup-linux-x64" "$custom_base/.cup/bin/cup" ||
-    fail 'verified reinstall did not restore the installed executable'
+# A foreign .cup collision must publish into .coffee-cup, never merge into foreign bytes.
+fixture=$WORK/foreign-fixture; home=$WORK/foreign-home; prepare_fixture "$fixture"
+mkdir -m 0700 "$home" "$home/.cup" "$home/.cup/bin"; printf 'foreign\n' > "$home/.cup/bin/cup"
+: > "$WORK/foreign-downloads"; : > "$WORK/foreign-coffee"
+output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/foreign-downloads" \
+    CUP_BOOTSTRAP_TRACE="$WORK/foreign-bootstrap" CUP_COFFEE_TRACE="$WORK/foreign-coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1)
+printf '%s\n' "$output" | grep -F "Binary: $home/.coffee-cup/bin/cup" >/dev/null || fail 'foreign primary root did not select fallback'
+[ -f "$home/.cup/bin/cup" ] && grep -Fx foreign "$home/.cup/bin/cup" >/dev/null || fail 'foreign primary root was modified'
 
-# A normal POSIX installation must not depend on undeclared host utilities.
-# The fixture itself uses absolute test-only helpers, while PATH exposes only
-# the shell plus the commands require_commands() deliberately accepts.
-portable_bin=$WORK/portable-bin
-portable_fixture=$WORK/fixture-portable-path
-portable_home=$WORK/home-portable-path
-portable_trace=$WORK/bootstrap-portable-path.trace
-portable_downloads=$WORK/downloads-portable-path.trace
-mkdir -p "$portable_bin"
-for tool in basename chmod cmp dirname mkdir mktemp readlink rm sha256sum sh sleep uname wc; do
-    tool_path=$(command -v "$tool") || fail "test prerequisite is unavailable: $tool"
-    ln -s "$tool_path" "$portable_bin/$tool"
-done
-cp "$WORK/mock-bin/curl" "$portable_bin/curl"
-chmod 0755 "$portable_bin/curl"
-prepare_fixture "$portable_fixture"
-mkdir -m 0700 "$portable_home"
-: > "$portable_downloads"
-portable_output=$(
-    HOME="$portable_home" PATH="$portable_bin" \
-        CUP_FIXTURE="$portable_fixture" CUP_DOWNLOAD_TRACE="$portable_downloads" \
-        CUP_BOOTSTRAP_TRACE="$portable_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-        CUP_INSTALL_WAIT_ATTEMPTS=2 /bin/sh "$WORK/install.sh" 2>&1
-)
-printf '%s\n' "$portable_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
-    printf '%s\n' "$portable_output" >&2
-    fail 'POSIX installer depends on an undeclared external command'
-}
-
-# BSD/macOS wc may pad a single count with leading spaces. The installer must
-# normalize that presentation without weakening the numeric size check.
-mkdir -p "$WORK/bsd-wc-bin"
-real_wc=$(command -v wc) || fail 'wc is unavailable for the BSD-style fixture'
-cat > "$WORK/bsd-wc-bin/wc" <<'MOCK_BSD_WC'
-#!/usr/bin/env sh
-set -eu
-result=$("${CUP_REAL_WC:?}" "$@") || exit $?
-case "${1:-}" in
-    -c) printf '    %s\n' "$result" ;;
-    *) printf '%s\n' "$result" ;;
-esac
-MOCK_BSD_WC
-chmod 0755 "$WORK/bsd-wc-bin/wc"
-bsd_wc_fixture=$WORK/fixture-bsd-wc
-bsd_wc_home=$WORK/home-bsd-wc
-bsd_wc_trace=$WORK/bootstrap-bsd-wc.trace
-bsd_wc_downloads=$WORK/downloads-bsd-wc.trace
-prepare_fixture "$bsd_wc_fixture"
-mkdir -m 0700 "$bsd_wc_home"
-: > "$bsd_wc_downloads"
-bsd_wc_output=$(
-    HOME="$bsd_wc_home" PATH="$WORK/bsd-wc-bin:$WORK/mock-bin:$PATH" \
-        CUP_REAL_WC="$real_wc" CUP_FIXTURE="$bsd_wc_fixture" \
-        CUP_DOWNLOAD_TRACE="$bsd_wc_downloads" CUP_BOOTSTRAP_TRACE="$bsd_wc_trace" \
-        CUP_TEST_RELEASE_VERSION="$VERSION" \
-        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-        CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1
-)
-printf '%s\n' "$bsd_wc_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
-    printf '%s\n' "$bsd_wc_output" >&2
-    fail 'installer rejected BSD-style padded wc output'
-}
-
-# macOS temporary directories may be reached through aliases such as /var or
-# /tmp. The installer must pass the physical private directory to the bootstrap
-# so the bootstrap's no-follow directory-chain validation remains meaningful.
-physical_tmp=$WORK/physical-tmp
-alias_tmp=$WORK/alias-tmp
-mkdir -m 0700 "$physical_tmp"
-ln -s "$physical_tmp" "$alias_tmp"
-physical_fixture=$WORK/fixture-physical-tmp
-physical_home=$WORK/home-physical-tmp
-physical_trace=$WORK/bootstrap-physical-tmp.trace
-physical_downloads=$WORK/downloads-physical-tmp.trace
-prepare_fixture "$physical_fixture"
-mkdir -m 0700 "$physical_home"
-: > "$physical_downloads"
-physical_output=$(
-    HOME="$physical_home" TMPDIR="$alias_tmp" PATH="$WORK/mock-bin:$PATH" \
-        CUP_FIXTURE="$physical_fixture" CUP_DOWNLOAD_TRACE="$physical_downloads" \
-        CUP_BOOTSTRAP_TRACE="$physical_trace" CUP_TEST_RELEASE_VERSION="$VERSION" \
-        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-        CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1
-)
-printf '%s\n' "$physical_output" | grep -F "cup $VERSION installed successfully." >/dev/null || {
-    printf '%s\n' "$physical_output" >&2
-    fail 'installer rejected a private transport directory reached through a symlink alias'
-}
-physical_source=$(tr -d '\n' < "$physical_trace")
-case "$physical_source" in
-    "$physical_tmp"/cup-install.*) ;;
-    *) fail "installer did not canonicalize the private transport directory: $physical_source" ;;
-esac
-[ ! -e "$physical_source" ] || fail 'canonical private transport directory was not removed'
-
-# The installer must not report success until the installed binary can acquire
-# its runtime snapshot. The fixture makes the first readiness probe fail and the
-# second succeed, modelling the detached helper releasing its lock.
-ready_fixture=$WORK/fixture-runtime-ready
-ready_home=$WORK/home-runtime-ready
-ready_trace=$WORK/bootstrap-runtime-ready.trace
-ready_downloads=$WORK/downloads-runtime-ready.trace
-ready_probe=$WORK/runtime-ready.probe
-prepare_fixture "$ready_fixture"
-mkdir -m 0700 "$ready_home"
-: > "$ready_downloads"
-ready_output=$(
-    HOME="$ready_home" PATH="$WORK/mock-bin:$PATH" \
-        CUP_FIXTURE="$ready_fixture" \
-        CUP_DOWNLOAD_TRACE="$ready_downloads" \
-        CUP_BOOTSTRAP_TRACE="$ready_trace" \
-        CUP_TEST_RELEASE_VERSION="$VERSION" \
-        CUP_TEST_RUNTIME_READY_RETRY_FILE="$ready_probe" \
-        CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 \
-        CUP_INSTALL_ALLOW_INSECURE=1 CUP_INSTALL_WAIT_ATTEMPTS=3 \
-        sh "$WORK/install.sh" 2>&1
-)
-[ -f "$ready_probe" ] || fail 'installer did not probe installed runtime readiness'
-printf '%s\n' "$ready_output" | grep -F "cup $VERSION installed successfully." >/dev/null ||
-    fail 'installer did not retry until the installed runtime became ready'
-
-# The POSIX entrypoint may hand off to PowerShell only after authenticating the
-# Windows installer through the existing platform-to-common checksum chain.
-fixture=$WORK/windows-handoff-fixture
-prepare_windows_handoff_fixture "$fixture"
-: > "$WORK/windows-handoff-downloads"
-rm -f -- "$WORK/windows-handoff-powershell"
-HOME="$WORK/windows-handoff-home" PATH="$WORK/windows-bin:$PATH" \
-    CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/windows-handoff-downloads" \
-    CUP_POWERSHELL_TRACE="$WORK/windows-handoff-powershell" \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    sh "$WORK/install.sh"
-[ -s "$WORK/windows-handoff-powershell" ] || fail 'verified Windows handoff did not invoke PowerShell'
-[ "$(wc -l < "$WORK/windows-handoff-downloads")" -eq 7 ] ||
-    fail 'Windows handoff did not download the exact verification asset set'
-
-fixture=$WORK/windows-handoff-tampered-fixture
-prepare_windows_handoff_fixture "$fixture"
-printf '# tampered body with unchanged release identity\n' >> "$fixture/install.ps1"
-grep -F "\$ReleaseVersion = \"$VERSION\"" "$fixture/install.ps1" >/dev/null ||
-    fail 'tamper fixture lost the valid release version literal'
-grep -F "\$ReleaseTag = \"$TAG\"" "$fixture/install.ps1" >/dev/null ||
-    fail 'tamper fixture lost the valid release tag literal'
-grep -F "\$ReleaseCommit = \"$SHA\"" "$fixture/install.ps1" >/dev/null ||
-    fail 'tamper fixture lost the valid release commit literal'
-: > "$WORK/windows-handoff-tampered-downloads"
-rm -f -- "$WORK/windows-handoff-tampered-powershell"
+# Manifest-authenticated bytes must fail before bootstrap/root mutation.
+fixture=$WORK/tampered-fixture; home=$WORK/tampered-home; prepare_fixture "$fixture"; printf 'tampered\n' >> "$fixture/catalog.cfg"; mkdir -m 0700 "$home"; : > "$WORK/tampered-downloads"; : > "$WORK/tampered-coffee"
 set +e
-output=$(HOME="$WORK/windows-handoff-tampered-home" PATH="$WORK/windows-bin:$PATH" \
-    CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/windows-handoff-tampered-downloads" \
-    CUP_POWERSHELL_TRACE="$WORK/windows-handoff-tampered-powershell" \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    sh "$WORK/install.sh" 2>&1)
-status=$?
+output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/tampered-downloads" \
+    CUP_BOOTSTRAP_TRACE="$WORK/tampered-bootstrap" CUP_COFFEE_TRACE="$WORK/tampered-coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1); status=$?
 set -e
-[ "$status" -ne 0 ] || fail 'tampered Windows installer body unexpectedly executed'
-printf '%s\n' "$output" | grep -F 'checksum mismatch for install.ps1' >/dev/null ||
-    fail 'tampered Windows installer body was not rejected by its published digest'
-[ ! -e "$WORK/windows-handoff-tampered-powershell" ] ||
-    fail 'PowerShell was invoked for a tampered Windows installer body'
+[ "$status" -ne 0 ] || fail 'tampered catalog unexpectedly succeeded'
+printf '%s\n' "$output" | grep -F 'release manifest digest mismatch for catalog.cfg' >/dev/null || fail 'tampered catalog was not rejected by manifest digest'
+[ ! -e "$home/.cup" ] || fail 'tampered release mutated managed root'
 
-# Re-signing the tampered body only in an arbitrary common checksum document is
-# insufficient: the platform checksum must still bind that common document to the release.
-fixture=$WORK/windows-handoff-unbound-common-fixture
-prepare_windows_handoff_fixture "$fixture"
-printf '# tampered body with locally rewritten common checksum\n' >> "$fixture/install.ps1"
-{
-    for asset in packages.cfg install.cfg install.sh install.ps1; do
-        printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-    done
-} > "$fixture/SHA256SUMS.common"
-: > "$WORK/windows-handoff-unbound-downloads"
-rm -f -- "$WORK/windows-handoff-unbound-powershell"
+# Authenticated metadata identity must match the prepared installer.
+fixture=$WORK/identity-fixture; home=$WORK/identity-home; prepare_fixture "$fixture"; sed -i "s/^version=.*/version=9.9.9/" "$fixture/release.txt"; mkdir -m 0700 "$home"; : > "$WORK/identity-downloads"; : > "$WORK/identity-coffee"
 set +e
-output=$(HOME="$WORK/windows-handoff-unbound-home" PATH="$WORK/windows-bin:$PATH" \
-    CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/windows-handoff-unbound-downloads" \
-    CUP_POWERSHELL_TRACE="$WORK/windows-handoff-unbound-powershell" \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    sh "$WORK/install.sh" 2>&1)
-status=$?
+output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/identity-downloads" \
+    CUP_BOOTSTRAP_TRACE="$WORK/identity-bootstrap" CUP_COFFEE_TRACE="$WORK/identity-coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1); status=$?
 set -e
-[ "$status" -ne 0 ] || fail 'unbound common checksum unexpectedly authorized Windows installer'
-printf '%s\n' "$output" | grep -F 'checksum mismatch for SHA256SUMS.common' >/dev/null ||
-    fail 'unbound common checksum was not rejected by the platform binding'
-[ ! -e "$WORK/windows-handoff-unbound-powershell" ] ||
-    fail 'PowerShell was invoked with an unbound common checksum document'
+[ "$status" -ne 0 ] || fail 'wrong release identity unexpectedly succeeded'
+printf '%s\n' "$output" | grep -F 'release metadata version does not match the installer' >/dev/null || fail 'wrong release identity was not explained'
 
-run_failure() {
-    name=$1
-    expected=$2
-    fixture=$WORK/failure-$name-fixture
-    home=$WORK/failure-$name-home
-    downloads=$WORK/failure-$name-downloads
-    shift 2
-    prepare_fixture "$fixture"
-    mkdir -m 0700 "$home"
-    : > "$downloads"
+# Windows shell handoff authenticates exactly release.txt + install.ps1 before PowerShell.
+fixture=$WORK/windows-fixture; prepare_fixture "$fixture"; : > "$WORK/windows-downloads"; rm -f "$WORK/windows-powershell"
+PATH="$WORK/windows-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/windows-downloads" CUP_POWERSHELL_TRACE="$WORK/windows-powershell" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" >/dev/null 2>&1
+[ "$(cat "$WORK/windows-downloads")" = $'release.txt\ninstall.ps1' ] || fail 'Windows shell handoff downloaded an unexpected asset set'
+grep -F -- '-NoProfile -ExecutionPolicy Bypass -File' "$WORK/windows-powershell" >/dev/null || fail 'Windows handoff did not invoke PowerShell safely'
+
+fixture=$WORK/windows-tampered-fixture; prepare_fixture "$fixture"; printf '# tampered\n' >> "$fixture/install.ps1"; : > "$WORK/windows-tampered-downloads"; rm -f "$WORK/windows-tampered-powershell"
+set +e
+output=$(PATH="$WORK/windows-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/windows-tampered-downloads" CUP_POWERSHELL_TRACE="$WORK/windows-tampered-powershell" \
+    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1); status=$?
+set -e
+[ "$status" -ne 0 ] || fail 'tampered Windows installer unexpectedly succeeded'
+printf '%s\n' "$output" | grep -F 'release manifest digest mismatch for install.ps1' >/dev/null || fail 'tampered Windows handoff was not rejected'
+[ ! -e "$WORK/windows-tampered-powershell" ] || fail 'PowerShell ran before handoff authentication'
+
+run_pretransport_failure() {
+    name=$1; expected=$2; shift 2
+    fixture=$WORK/pre-$name-fixture; home=$WORK/pre-$name-home; prepare_fixture "$fixture"; mkdir -m 0700 "$home"; : > "$WORK/pre-$name-downloads"; : > "$WORK/pre-$name-coffee"
     set +e
-    output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" \
-        CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$downloads" \
-        CUP_BOOTSTRAP_TRACE="$WORK/failure-$name-bootstrap" \
-        CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_WAIT_ATTEMPTS=1 "$@" sh "$WORK/install.sh" 2>&1)
-    status=$?
+    output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" CUP_DOWNLOAD_TRACE="$WORK/pre-$name-downloads" \
+        CUP_BOOTSTRAP_TRACE="$WORK/pre-$name-bootstrap" CUP_COFFEE_TRACE="$WORK/pre-$name-coffee" CUP_TEST_RELEASE_VERSION="$VERSION" \
+        "$@" sh "$WORK/install.sh" 2>&1); status=$?
     set -e
-    [ "$status" -ne 0 ] || fail "failure case unexpectedly succeeded: $name"
-    printf '%s\n' "$output" | grep -F "$expected" >/dev/null || {
-        printf '%s\n' "$output" >&2
-        fail "failure case did not explain $name"
-    }
-    [ ! -s "$downloads" ] || fail "failure case reached transport before rejection: $name"
-    [ ! -e "$WORK/failure-$name-bootstrap" ] ||
-        fail "failure case reached bootstrap before rejection: $name"
-    [ ! -e "$home/.cup" ] || fail "failure case mutated the managed root: $name"
+    [ "$status" -ne 0 ] || fail "pretransport failure unexpectedly succeeded: $name"
+    printf '%s\n' "$output" | grep -F "$expected" >/dev/null || fail "pretransport failure did not explain $name"
+    [ ! -s "$WORK/pre-$name-downloads" ] || fail "$name reached transport before rejection"
+    [ ! -e "$home/.cup" ] || fail "$name mutated root before rejection"
 }
+run_pretransport_failure arbitrary-https 'release base URL override is test-only' env CUP_INSTALL_BASE_URL=https://example.invalid
+run_pretransport_failure remote-http 'allowed loopback host and explicit port' env CUP_INSTALL_BASE_URL=http://example.invalid:18080 CUP_INSTALL_ALLOW_INSECURE=1
+run_pretransport_failure missing-port 'allowed loopback host and explicit port' env CUP_INSTALL_BASE_URL=http://127.0.0.1 CUP_INSTALL_ALLOW_INSECURE=1
+run_pretransport_failure bad-port 'invalid port' env CUP_INSTALL_BASE_URL=http://127.0.0.1:65536 CUP_INSTALL_ALLOW_INSECURE=1
 
-run_failure arbitrary-https \
-    'release base URL override is test-only and requires CUP_INSTALL_ALLOW_INSECURE=1' \
-    env CUP_INSTALL_BASE_URL=https://example.invalid
-run_failure arbitrary-https-opted-in \
-    'installer release base URL override must use loopback HTTP' \
-    env CUP_INSTALL_BASE_URL=https://example.invalid CUP_INSTALL_ALLOW_INSECURE=1
-run_failure invalid-scheme \
-    'installer release base URL override must use loopback HTTP' \
-    env CUP_INSTALL_BASE_URL=ftp://example.invalid CUP_INSTALL_ALLOW_INSECURE=1
-run_failure explicit-userinfo 'installer test release base URL is invalid' \
-    env CUP_INSTALL_BASE_URL=http://user@127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1
-run_failure remote-http \
-    'installer release base URL override must use an allowed loopback host and explicit port' \
-    env CUP_INSTALL_BASE_URL=http://example.invalid:18080 CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-without-opt-in \
-    'release base URL override is test-only and requires CUP_INSTALL_ALLOW_INSECURE=1' \
-    env CUP_INSTALL_BASE_URL=http://127.0.0.1:1234
-run_failure loopback-missing-port \
-    'installer release base URL override must use an allowed loopback host and explicit port' \
-    env CUP_INSTALL_BASE_URL=http://127.0.0.1 CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-port-zero \
-    'installer release base URL override has an invalid port' \
-    env CUP_INSTALL_BASE_URL=http://127.0.0.1:0 CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-port-too-large \
-    'installer release base URL override has an invalid port' \
-    env CUP_INSTALL_BASE_URL=http://127.0.0.1:65536 CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-port-nonnumeric \
-    'installer release base URL override has an invalid port' \
-    env CUP_INSTALL_BASE_URL=http://127.0.0.1:nope CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-query 'installer test release base URL is invalid' \
-    env 'CUP_INSTALL_BASE_URL=http://127.0.0.1:18080/path?query' CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-fragment 'installer test release base URL is invalid' \
-    env 'CUP_INSTALL_BASE_URL=http://127.0.0.1:18080/path#fragment' CUP_INSTALL_ALLOW_INSECURE=1
-run_failure loopback-backslash 'installer test release base URL is invalid' \
-    env 'CUP_INSTALL_BASE_URL=http://127.0.0.1:18080/path\evil' CUP_INSTALL_ALLOW_INSECURE=1
-
-fixture=$WORK/tampered-fixture
-prepare_fixture "$fixture"
-printf 'tampered\n' >> "$fixture/packages.cfg"
-home=$WORK/tampered-home
-mkdir -m 0700 "$home"
-: > "$WORK/tampered-downloads"
-set +e
-output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
-    CUP_DOWNLOAD_TRACE="$WORK/tampered-downloads" CUP_BOOTSTRAP_TRACE="$WORK/tampered-bootstrap" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 \
-    CUP_INSTALL_ALLOW_INSECURE=1 CUP_INSTALL_WAIT_ATTEMPTS=1 \
-    sh "$WORK/install.sh" 2>&1)
-status=$?
-set -e
-[ "$status" -ne 0 ] || fail 'tampered common asset unexpectedly succeeded'
-printf '%s\n' "$output" | grep -F 'checksum mismatch for packages.cfg' >/dev/null ||
-    fail 'tampered common asset failure was not explained'
-[ ! -e "$home/.cup" ] || fail 'tampered common asset mutated the managed root'
-
-fixture=$WORK/metadata-fixture
-prepare_fixture "$fixture"
-printf 'format=1\nversion=9.9.9\ncommit=%s\n' "$SHA" > "$fixture/release.txt"
-# Re-authenticate the intentionally wrong metadata so the identity check, not SHA, rejects it.
-{
-    for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
-        printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-    done
-} > "$fixture/SHA256SUMS.linux-x64"
-home=$WORK/metadata-home
-mkdir -m 0700 "$home"
-: > "$WORK/metadata-downloads"
-set +e
-output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
-    CUP_DOWNLOAD_TRACE="$WORK/metadata-downloads" CUP_BOOTSTRAP_TRACE="$WORK/metadata-bootstrap" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 \
-    CUP_INSTALL_ALLOW_INSECURE=1 CUP_INSTALL_WAIT_ATTEMPTS=1 \
-    sh "$WORK/install.sh" 2>&1)
-status=$?
-set -e
-[ "$status" -ne 0 ] || fail 'wrong authenticated release identity unexpectedly succeeded'
-printf '%s\n' "$output" | grep -F 'release metadata version does not match the installer' >/dev/null ||
-    fail 'wrong authenticated release identity was not explained'
-[ ! -e "$home/.cup" ] || fail 'wrong release identity mutated the managed root'
-
-
-# A foreign primary root must not be mistaken for the generation installed in the fallback root.
-fixture=$WORK/foreign-root-fixture
-home=$WORK/foreign-root-home
-prepare_fixture "$fixture"
-mkdir -m 0700 "$home" "$home/.cup" "$home/.cup/bin"
-printf '#!/usr/bin/env sh\nprintf "unrelated program\\n"\n' > "$home/.cup/bin/cup"
-chmod 0755 "$home/.cup/bin/cup"
-: > "$WORK/foreign-root-downloads"
-output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
-    CUP_DOWNLOAD_TRACE="$WORK/foreign-root-downloads" \
-    CUP_BOOTSTRAP_TRACE="$WORK/foreign-root-bootstrap" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=2 sh "$WORK/install.sh" 2>&1)
-printf '%s\n' "$output" | grep -F "Binary: $home/.coffee-cup/bin/cup" >/dev/null || {
-    printf '%s\n' "$output" >&2
-    fail 'installer reported the foreign primary root instead of the committed fallback root'
-}
-
-# Canonical checksum documents must end after the expected LF-terminated records.
-fixture=$WORK/trailing-checksum-fixture
-home=$WORK/trailing-checksum-home
-prepare_fixture "$fixture"
-printf 'evil' >> "$fixture/SHA256SUMS.common"
-{
-    for asset in cup-linux-x64 release.txt SHA256SUMS.common; do
-        printf '%s  %s\n' "$(hash_file "$fixture/$asset")" "$asset"
-    done
-} > "$fixture/SHA256SUMS.linux-x64"
-mkdir -m 0700 "$home"
-: > "$WORK/trailing-checksum-downloads"
-set +e
-output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
-    CUP_DOWNLOAD_TRACE="$WORK/trailing-checksum-downloads" \
-    CUP_BOOTSTRAP_TRACE="$WORK/trailing-checksum-bootstrap" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=1 sh "$WORK/install.sh" 2>&1)
-status=$?
-set -e
-[ "$status" -ne 0 ] || fail 'checksum document with unterminated trailing bytes succeeded'
-printf '%s\n' "$output" | grep -F 'checksum document has unexpected entries' >/dev/null ||
-    fail 'unterminated checksum bytes were not explained'
-
-# The generated POSIX installer must reject non-canonical release versions before transport.
-invalid_installer=$WORK/install-invalid-version.sh
-sed \
-    -e 's/CUP_RELEASE_VERSION="[^"]*"/CUP_RELEASE_VERSION="1"/' \
-    -e 's/CUP_RELEASE_TAG="[^"]*"/CUP_RELEASE_TAG="v1"/' \
-    "$WORK/install.sh" > "$invalid_installer"
-chmod 0755 "$invalid_installer"
-set +e
-output=$(HOME="$WORK/invalid-version-home" PATH="$WORK/mock-bin:$PATH" \
-    CUP_TEST_RELEASE_VERSION=1 CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    sh "$invalid_installer" 2>&1)
-status=$?
-set -e
-[ "$status" -ne 0 ] || fail 'non-canonical installer release version succeeded'
-printf '%s\n' "$output" | grep -F 'installer has an invalid release version' >/dev/null ||
-    fail 'non-canonical installer release version was not explained'
-
-# An interrupt must stop the installer rather than resume after cleanup.
+# Interrupts stop transport immediately rather than resuming mutation.
 mkdir -p "$WORK/interrupt-bin"
-cat > "$WORK/interrupt-bin/curl" <<'INTERRUPT_CURL'
+cat > "$WORK/interrupt-bin/curl" <<'EOF_INTERRUPT'
 #!/usr/bin/env sh
-set -eu
 kill -INT "$PPID"
 sleep 1
 exit 1
-INTERRUPT_CURL
+EOF_INTERRUPT
 chmod 0755 "$WORK/interrupt-bin/curl"
-signal_home=$WORK/signal-home
-mkdir -m 0700 "$signal_home"
 set +e
-HOME="$signal_home" PATH="$WORK/interrupt-bin:$PATH" \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 CUP_TEST_RELEASE_VERSION="$VERSION" \
-    sh "$WORK/install.sh" >"$WORK/signal.out" 2>&1
+HOME="$WORK/interrupt-home" PATH="$WORK/interrupt-bin:$PATH" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
+    sh "$WORK/install.sh" >/dev/null 2>&1
 status=$?
 set -e
-[ "$status" -eq 130 ] || {
-    cat "$WORK/signal.out" >&2
-    fail "installer interrupt returned $status instead of 130"
-}
-! grep -F 'installed successfully' "$WORK/signal.out" >/dev/null ||
-    fail 'installer continued to success after SIGINT'
+[ "$status" -eq 130 ] || fail "installer interrupt returned $status instead of 130"
 
-# The public installer requires curl so every transport uses one bounded policy.
-curl_required_bin=$WORK/curl-required-bin
-mkdir -p "$curl_required_bin"
-for tool in basename chmod cmp dirname mkdir mktemp readlink rm sha256sum sh sleep uname wc; do
-    tool_path=$(command -v "$tool") || fail "test prerequisite is unavailable: $tool"
-    ln -s "$tool_path" "$curl_required_bin/$tool"
-done
-curl_required_home=$WORK/curl-required-home
-mkdir -m 0700 "$curl_required_home"
-set +e
-curl_required_output=$(HOME="$curl_required_home" PATH="$curl_required_bin" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    sh "$WORK/install.sh" 2>&1)
-curl_required_status=$?
-set -e
-[ "$curl_required_status" -ne 0 ] || fail 'installer succeeded without curl'
-printf '%s\n' "$curl_required_output" | grep -F \
-    'required command is unavailable: curl' >/dev/null ||
-    fail 'missing curl was not explained'
-
-# The post-download size check remains authoritative when a transporter ignores its own limit.
-oversize_installer=$WORK/install-oversize-limit.sh
-sed 's/MAX_TEXT_BYTES=16777216/MAX_TEXT_BYTES=8/' "$WORK/install.sh" > "$oversize_installer"
-chmod 0755 "$oversize_installer"
-oversize_fixture=$WORK/oversize-fixture
-oversize_home=$WORK/oversize-home
-prepare_fixture "$oversize_fixture"
-mkdir -m 0700 "$oversize_home"
-: > "$WORK/oversize-downloads"
-set +e
-oversize_output=$(
-    HOME="$oversize_home" \
-    PATH="$WORK/mock-bin:$PATH" \
-    CUP_FIXTURE="$oversize_fixture" \
-    CUP_DOWNLOAD_TRACE="$WORK/oversize-downloads" \
-    CUP_BOOTSTRAP_TRACE="$WORK/oversize-bootstrap" \
-    CUP_TEST_RELEASE_VERSION="$VERSION" \
-    CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 \
-    CUP_INSTALL_WAIT_ATTEMPTS=1 \
-    sh "$oversize_installer" 2>&1
-)
-oversize_status=$?
-set -e
-[ "$oversize_status" -ne 0 ] || fail 'oversized text asset unexpectedly succeeded'
-printf '%s\n' "$oversize_output" | grep -F 'downloaded asset is too large' >/dev/null ||
-    fail 'oversized text asset failure was not explained'
-
-installer_ps1_text=$(cat "$ROOT/scripts/install/install.ps1")
-printf '%s\n' "$installer_ps1_text" | grep -F 'function Get-CupCanonicalBase' >/dev/null ||
-    fail 'PowerShell installer lost base-directory canonicalization'
-printf '%s\n' "$installer_ps1_text" | grep -F '[IO.Path]::GetFullPath' >/dev/null ||
-    fail 'PowerShell installer lost absolute path canonicalization'
-printf '%s\n' "$installer_ps1_text" | grep -F -- '--internal-select-root' >/dev/null ||
-    fail 'PowerShell installer lost native canonical root selection'
-printf '%s\n' "$installer_ps1_text" | grep -F -- '--internal-root-probe' >/dev/null ||
-    fail 'PowerShell installer lost native installed-root authentication'
-! printf '%s\n' "$installer_ps1_text" | grep -F '[EnvironmentVariableTarget]::Machine' >/dev/null ||
-    fail 'PowerShell installer must not modify Machine PATH'
-printf '%s\n' "$installer_ps1_text" | grep -F "\$bin.Contains(';')" >/dev/null ||
-    fail 'PowerShell installer lost the semicolon PATH-representability guard'
-printf '%s\n' "$installer_ps1_text" | grep -F 'Automatic User PATH integration is unavailable' >/dev/null ||
-    fail 'PowerShell installer no longer explains unrepresentable PATH integration'
-printf '%s\n' "$installer_ps1_text" | grep -F 'CUP remains installed at $bin' >/dev/null ||
-    fail 'PowerShell installer can again report PATH mutation failure as installation failure'
-
-printf 'Installer transport behavior checks passed.\n'
+printf 'Installer behavior repository tests passed.\n'

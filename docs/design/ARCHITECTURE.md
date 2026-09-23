@@ -1,323 +1,293 @@
 # Architecture
 
-This page is the map of CUP's implementation. It explains the boundaries between
-CLI planning, package handling, state, recovery and native platform code so a
-reader can navigate the repository without reconstructing the design from
-`main.c`.
+CUP is a userspace manager for prebuilt C development tools. Its runtime owns
+package selection, verified admission, local state, command wrappers, recovery
+and the CUP generation installed in one managed root. Package compilation and
+publication belong to `cup-components`.
 
-User-facing terminology is introduced in [Concepts](../user/CONCEPTS.md).
-Persistent formats are documented in [Packages](PACKAGES.md), [State](STATE.md)
-and [Transactions](TRANSACTIONS.md).
+The architecture is intentionally split by authority. A file or module may
+carry a copy of an identity for validation, but no behavior should have two
+independent sources of truth.
 
 ## Product boundary
 
-CUP manages **prebuilt** C development tools inside one user-managed root. This
-repository owns:
+CUP is not a compiler build system, a system package manager or a global
+sysroot manager. It does not decide how GCC, LLVM, GDB, LLDB or Valgrind are
+built. It consumes self-contained packages that have already crossed the
+producer qualification boundary.
+
+The runtime operates entirely below a user-selected base. The default managed
+root is `<home>/.cup`; `.coffee-cup` is only the fallback when `.cup` is a clear
+foreign-directory collision. CUP does not require administrator privileges and
+does not write into system toolchain directories.
+
+## Authority graph
+
+The main authorities are deliberately separate:
+
+| Authority | Owns |
+| --- | --- |
+| compiled registry | known components, tools, platform identifiers and version semantics |
+| compiled policy | official abbreviated selections, profiles and toolchains |
+| `catalog.cfg` | concrete package availability for published host/target/version tuples |
+| `preferences.txt` | user choices for future abbreviated installs |
+| `state.txt` | installed package identities and active defaults |
+| package `info.txt` | descriptive package identity and producer metadata |
+| package `manifest.txt` | exact extracted package tree and content |
+| `release.txt` | exact public CUP release manifest and installed-generation trust metadata |
+| wrapper files | derived executable view of current defaults |
+| cache objects | optional verified transport reuse; never package or state authority |
+| transaction journal | minimum evidence required to recover one interrupted mutation |
+
+A preference is not a default, a wrapper is not state, a cache hit is not
+availability and the catalog is not policy. These separations are visible in
+the source tree and are part of the product contract.
+
+## Runtime root
+
+A managed root authenticates itself with `root.txt`:
 
 ```text
-CLI and command planning
-component/tool/platform domain
-catalog and install policy
-package download, cache, archive admission and extraction
-package metadata/integrity validation
-installed state, preferences, defaults and launchers
-transactions, recovery, self-update and uninstall
-native filesystem/process abstraction
-CUP build, tests and release publication
+format=2
+product=coffee-clang/cup
+layout=2
+host=<platform>
 ```
 
-Tool packages are produced separately by `cup-components`. CUP intentionally
-does not carry the build recipes for GCC, LLVM, GDB, Valgrind or other managed
-tools. The repositories meet at the package contract: catalog coordinates,
-checksums, archive layout, `info.txt` and `manifest.txt`.
+The host belongs to the root. Local package paths, `state.txt`,
+`preferences.txt` and package journals therefore do not persist another host
+dimension. Objects that cross the root boundary, such as catalog records,
+package metadata and release metadata, still carry host explicitly.
 
-CUP also does not provide a daemon, privileged service, global sysroot or
-system-wide package database.
-
-## Runtime model
-
-The important scopes are:
+The core runtime layout is roughly:
 
 ```text
-package  = component + tool + host + target + concrete version
-default  = component + host + target -> installed package
-preference = component + host + target -> preferred tool for future installs
+<root>/
+  root.txt
+  cup.lock
+  bin/
+    cup[.exe]
+    <derived wrappers>
+  state.txt
+  components/<component>/<tool>/<target>/<version>/
+  config/
+    catalog.cfg
+    preferences.txt        # only when non-empty
+  staging/
+  release.txt
+  LICENSE
+  THIRD_PARTY_NOTICES.txt
 ```
 
-`stable` is resolved by the catalog before a package becomes persistent state.
-A package may run on one host and target another platform; host and target are
-therefore kept separate in paths, state and defaults.
+`cache/`, `helpers/` and `recovery/` are lazy. Their absence is not a damaged
+installation.
 
-The closed component/tool/platform relationships live in
-`include/domain_registry.h`. `packages.cfg` can restrict availability but cannot
-extend that compiled domain.
+See [State](STATE.md) for the persistent layout and ownership rules.
 
-## Command flow
+## Command context and locking
 
-A normal single-package install is representative of the architecture:
+`command_context` binds a command to one authenticated root snapshot, host and
+target. Ordinary contexts never create a missing root as a side effect.
+Persistent initialization is an explicit capability used only by the commands
+that are allowed to create development runtime state: install, preference set
+and catalog update.
+
+Read operations use shared authority where possible. Mutations use exclusive
+authority around the local commit boundary. Network I/O is not moved under a
+global lock merely to simplify reasoning; catalog refresh has its own
+snapshot/compare-and-swap lifecycle.
+
+A pending shared transaction is not silently ignored by ordinary mutations.
+Doctor reports it, repair owns recovery, and uninstall must first reach a state
+where the journal slot can safely be used by the uninstall handoff.
+
+## Package selection and admission
+
+Install resolution happens before package mutation. The planner combines the
+request grammar, user preferences, compiled policy and one logical catalog
+snapshot. A group/profile/toolchain install preflights every member before the
+first package commit; group members then commit sequentially and are not
+presented as one atomic transaction.
+
+A package archive is authenticated by the SHA-256 stored in the catalog. The
+archive contains `manifest.txt`, which authenticates the extracted tree. CUP
+does not persist another catalog-side copy of the manifest digest.
+
+The high-level admission path is:
 
 ```text
-argv
-  -> parse and normalize public command
-  -> select host/target and CUP root
-  -> shared preflight state/catalog snapshot
-  -> resolve concrete package artifact
-  -> exclusive package transaction
-  -> verified cache/download stream
-  -> archive admission + extraction into private staging
-  -> metadata + executable-entry validation
-  -> manifest integrity validation
-  -> transaction journal
-  -> canonical package publication
-  -> state.txt commit
-  -> launcher reconciliation + cleanup
+request
+  -> resolve concrete catalog record
+  -> obtain verified archive (cache hit or download)
+  -> extract into private staging
+  -> validate info.txt + manifest.txt + wrapper namespace
+  -> publish package journal
+  -> publish canonical package tree
+  -> commit state.txt
+  -> reconcile derived wrappers
+  -> clear journal and disposable staging
 ```
 
-The flow is intentionally staged. Catalog resolution produces a concrete package
-specification before mutation. Download verification returns an open
-`VerifiedArtifact`; extraction consumes that same stream rather than reopening a
-pathname. Package integrity is proved before canonical installation, and
-`state.txt` is the package transaction commit point.
+`state.txt` is the package install/remove commit evidence. Package update is not
+a third package transaction type: installing a newer immutable identity reuses
+the normal install transaction.
 
-Group installs add one layer above this flow: profile/toolchain planning resolves
-the complete list first, then installs each package sequentially. Completed
-packages remain committed if a later member fails.
+See [Packages](PACKAGES.md) and [Transactions](TRANSACTIONS.md).
 
-## Main layers
+## Catalog lifecycle
 
-### CLI and commands
+The local catalog is a versioned snapshot with a monotonic revision and a
+stable update URL. Package records contain concrete artifact URLs and SHA-256
+digests; CUP never interprets producer URL templates.
 
-`main.c` owns public syntax, help/version and dispatch. Argtable3 parses a command
-once into normalized arguments before a command opens runtime state.
-
-Each `command_*.c` file owns the policy for one public operation. Shared package
-installation stays in `package_install.c`; command modules do not duplicate the
-package transaction to implement single installs, groups or updates.
-
-### Command context
-
-`command_context.c` groups the state that must be coherent for one command:
+A refresh uses a lifecycle-specific compare-and-swap:
 
 ```text
-selected root and host/target scope
-shared or exclusive runtime lock
-state snapshot and state-file identity
-package catalog when requested
+shared lock -> snapshot local catalog -> unlock
+network download + validation
+exclusive lock -> reload local catalog -> compare -> atomic replace or retry
 ```
 
-Read-only commands request only what they need. Mutating commands acquire final
-exclusive ownership before runtime initialization or persistent changes.
+Network I/O never occurs while the runtime lock is held. Retry is bounded.
+Lower remote revisions are rejected; equal revision requires byte identity;
+higher validated revisions may replace the local snapshot.
 
-### Package selection and artifacts
+`search` uses a best-effort refresh on an existing runtime. Package update uses
+one required refresh before planning. Exact local package operations avoid
+network when the required concrete identity is already resolvable locally.
 
-The package path from public selector to installed tree is split by responsibility:
+## Package update
+
+Update plans one `(component, tool, target)` family at a time from one refreshed
+catalog snapshot. The reference is the active default when that default uses the
+same tool; otherwise it is the semantic maximum installed release for the tool.
+
+No usable stable means warning and skip. A lower stable never causes a
+downgrade. An equal stable is a no-op only after the package being reused passes
+the normal installed-integrity boundary. A newer stable is installed or adopted
+as another immutable identity. A terminal `-revN` package revision participates
+in this same semantic ordering.
+
+The planner freezes the target catalog record, then `package_install` revalidates
+the mutable local reference under exclusive authority immediately before a
+mutation. Stable is not silently re-resolved mid-command.
+
+## CUP generation
+
+The installed CUP generation has four managed objects:
 
 ```text
-registry / install policy / preferences
-            ↓
-package catalog + selector
-            ↓
-PackageArtifactSpec
-            ↓
-package cache / download
-            ↓
-VerifiedArtifact (open authenticated stream)
-            ↓
-archive extraction + package validation
+bin/cup[.exe]
+release.txt
+LICENSE
+THIRD_PARTY_NOTICES.txt
 ```
 
-`PackageArtifactSpec` contains the resolved identity, archive format and remote
-coordinates. Cache layout, retry policy and download limits remain with their
-own modules instead of becoming generic fields on that value.
+The live package catalog is runtime state, not a generation asset.
 
-### State and launchers
+`release.txt` is format 2 and authenticates every other public release asset.
+For an installed generation, the manifest entries for the legal files and the
+platform binary authenticate the canonical local bytes.
 
-`state.txt` stores installed package identities and defaults. `preferences.txt`
-is separate because preferences influence future selection without changing the
-meaning of already installed state.
+Fresh installation and existing-root generation replacement are deliberately
+different lifecycles. A fresh install is assembled completely in a private
+sibling root and published with one no-clobber directory move. Existing-root
+reinstall and self-update preserve packages, state, preferences and a valid
+live catalog while replacing only the generation.
 
-Launchers in `bin/` are derived from defaults. Command code builds the desired
-launcher plan from validated packages; `wrappers.c` owns comparison and
-publication. `doctor` and `repair` therefore reason from the same derivation used
-by normal mutations.
+Self-update first proves that the currently running canonical binary matches the
+current installed `release.txt`. It then resolves one concrete target release,
+verifies target assets from that versioned release and hands the binary-last
+commit to a detached verified helper.
 
-### Transactions and recovery
+## Recovery model
 
-All root mutations share one runtime lock and one physical `transaction.txt`
-path. `runtime_journal.c` owns safe publication/reading/deletion of that file,
-while package, self-update and uninstall modules own their schemas and recovery
-rules.
-
-The physical file lifecycle is common; operation semantics are not. See
-[Transactions](TRANSACTIONS.md) for commit points and helper handoff.
-
-### Platform boundary
-
-Portable code calls `system.h`. The native backends implement operations whose
-correctness depends on operating-system semantics:
+Recovery follows evidence, not desired outcome. The main repair order is:
 
 ```text
-system_posix.c    descriptor-relative paths, flock, fsync, processes
-system_windows.c  UTF-16 paths, handles, reparse checks, LockFileEx/processes
+pending transaction
+package scan / quarantine
+state
+preferences
+wrappers
+staging
+installed generation
+catalog
 ```
 
-`filesystem.c` composes those primitives into project-level operations such as
-bounded snapshots, recursive cleanup and atomic text publication. Higher layers
-should not grow parallel POSIX/Windows implementations of the same filesystem
-contract.
+Package repair never invents defaults. Wrappers are always reconstructed from
+state. Invalid or ambiguous bytes are preserved rather than adopted by shape.
+A well-formed catalog from a future unsupported format is preserved/refused,
+not mislabeled as corruption and replaced with an older seed.
 
-## Native helper model
+Generation recovery uses the minimal journal plus `new/` and `old/` byte
+evidence. The CUP binary is committed last. Before that binary commit, recovery
+can roll back non-binary generation assets when the old binary is still proven.
+After a complete target generation is present, recovery finalizes. A third or
+ambiguous binary preserves the workspace and stops.
 
-Self-update and uninstall must continue after the initiating CUP process exits.
-Both use a copied native CUP executable rather than a shell implementation of the
-transaction.
+Uninstall keeps its separate, proven detach/delete handoff because its process
+and commit boundary differ from package and generation replacement.
 
-The parent establishes continuous exclusive handoff before releasing its normal
-lock. POSIX can carry lock ownership through inherited file descriptions;
-Windows uses a separate named authority because `LockFileEx` ownership cannot be
-transferred between processes. The operation-specific helper still validates the
-same root and transaction before mutation.
+## Platform boundary
 
-Windows uninstall also needs a small lifetime carrier for deletion of the
-temporary helper executable. That carrier does not implement uninstall: it owns
-only the cleanup handle and helper-process lifetime. Root detach, journal handling
-and recursive cleanup remain native C in `uninstall_helper.c`/`system_windows.c`.
+The product model is shared across Linux x64/ARM64, macOS x64/ARM64 and Windows
+x64. Divergence is kept where the operating system requires it:
 
-## Repository scripts
+- POSIX wrappers are executable scripts; Windows wrappers are `.cmd` files.
+- Windows executable lifetime may require detached helper behavior where POSIX
+  can unlink or replace executing files.
+- Linux releases are fully static; macOS keeps Apple system libraries/frameworks
+  dynamic while third-party dependencies are static; Windows keeps qualified
+  system DLL imports while third-party/compiler runtimes are static.
+- installer PATH integration uses shell startup files on POSIX/macOS and User
+  PATH on Windows.
 
-Runtime mutations belong to the C program. Repository automation is split by
-workflow responsibility:
+CUP does not mirror the changing `cup-components` host/target build matrix in
+its registry. A concrete known-platform catalog record can become explicitly
+installable without adding another runtime support table.
 
-| Directory | Responsibility |
-|---|---|
-| `scripts/build/` | build metadata, binary inspection and finalization |
-| `scripts/dependencies/` | pinned dependency prefix build/verification |
-| `scripts/certs/` | embedded CA bundle generation/checks |
-| `scripts/ci/` | CI preparation and source-build identity verification |
-| `scripts/install/` | public transport installers |
-| `scripts/release/` | release assembly and publication |
-| `scripts/lib/` | small shared shell helpers |
+## Main implementation owners
 
-Repository path-safety scripts protect managed build/dependency/release
-workspaces from accidental destructive misuse. They are not a second
-implementation of the runtime's descriptor/handle identity model.
+The source layout follows the lifecycle split rather than one generic manager:
 
-The `www/` tree and Pages workflow are a separate website surface; they do not
-authorize CUP source builds or releases.
-
-## Module map
-
-### Entry point and public commands
-
-| Module | Responsibility |
-|---|---|
-| `main.c` | CLI parsing, help/version, internal-mode dispatch |
-| `command_context.c` | root/lock/state/catalog lifetime for one command |
-| `command_search.c` | catalog search |
-| `command_list.c` | installed package listing |
-| `command_info.c` | defaults and provided commands |
-| `command_inspect.c` | installed package metadata |
-| `command_config.c` | preference view/set/reset |
-| `command_install.c` | install/profile/toolchain planning |
-| `command_remove.c` | package removal |
-| `command_default.c` | default selection |
-| `command_update.c` | tool/component update planning |
-| `command_doctor.c` | read-only diagnosis |
-| `command_repair.c` | ordered recovery/reconciliation |
-| `command_uninstall.c` | uninstall planning and helper launch |
-| `bootstrap.c` | hidden verified first-install entry point |
-
-### Packages
-
-| Module | Responsibility |
-|---|---|
-| `registry.c` | compiled component/tool domain |
-| `install_policy.c` | official defaults, profiles, toolchains |
-| `tool_preferences.c` | user preference overlay |
-| `package_catalog.c` | catalog parser and lookups |
-| `package_selector.c` / `package_request.c` | public selector -> concrete request |
-| `package_artifact.c` | immutable artifact coordinates and verified stream ownership |
-| `package_cache.c` | checksum-verified cache/download lifecycle |
-| `package_archive*.c` / `package_extract.c` | format admission and safe extraction |
-| `package_metadata.c` | `info.txt` parser |
-| `package_manifest.c` | `manifest.txt` integrity verification |
-| `package.c` / `installed_package.c` | semantic package validation/scanning |
-| `package_install.c` | reusable install transaction |
-| `package_transaction.c` | package journal schema and recovery |
-
-### CUP assets and lifecycle
-
-| Module | Responsibility |
-|---|---|
-| `assets.c` | authenticate installed CUP asset generation |
-| `update_assets.c` | generation asset names and paths |
-| `self_update.c` | discover/download/stage newer CUP release |
-| `update_helper.c` / `update_journal.c` | detached CUP update and recovery |
-| `uninstall_helper.c` / `uninstall_journal.c` | root detach/cleanup and recovery |
-| `runtime_journal.c` | physical `transaction.txt` operations |
-| `release_metadata.c` | `release.txt` parsing |
-
-### State, filesystem and platform support
-
-| Module | Responsibility |
-|---|---|
-| `layout.c` | root selection and managed paths |
-| `state.c` | installed/default state persistence |
-| `wrappers.c` | derived launcher plan and reconciliation |
-| `filesystem.c` | composite managed-tree operations |
-| `path.c` / `text.c` | bounded identifier/path/text parsing |
-| `system.c` | platform-neutral system helpers |
-| `system_posix.c` / `system_windows.c` | native filesystem/process contracts |
-| `platform.c` | host detection and platform validation |
-| `interrupt.c` | interrupt observation |
-| `exit_status.c` | internal error -> public status mapping |
-
-`include/windows_utf.h` is a private Windows boundary helper for UTF-8/UTF-16
-filesystem conversion.
-
-## Error and commit model
-
-Most implementation functions return `CupError`; the CLI maps it to the stable
-public status set only at the process boundary.
-
-Filesystem publication also uses `SystemCommitState`:
-
-```text
-NOT_APPLIED  destination was not changed
-APPLIED      replacement may be visible but durability is uncertain
-DURABLE      replacement and required persistence were confirmed
-```
-
-This distinction matters to recovery. An error after rename cannot be treated as
-if the old destination were certainly still authoritative.
+| Area | Main owners |
+| --- | --- |
+| CLI dispatch | `main.c`, `command_*.c` |
+| root/context | `layout.c`, `command_context.c`, `filesystem.c` |
+| registry and policy | `registry.c`, `install_policy.c`, `tool_preferences.c` |
+| version/request resolution | `package_selector.c`, `package_request.c` |
+| catalog | `package_catalog.c`, `catalog_refresh.c` |
+| package transport | `package_artifact.c`, `package_cache.c`, `download.c` |
+| package admission | `package.c`, `package_manifest.c`, `package_extract.c`, `package_install.c` |
+| state/wrappers | `state.c`, `installed_package.c`, `wrappers.c` |
+| package recovery | `package_transaction.c`, `runtime_journal.c` |
+| CUP generation | `release_metadata.c`, `generation.c`, `bootstrap.c` |
+| self-update | `self_update.c`, `update_journal.c`, `update_helper.c` |
+| uninstall | `command_uninstall.c`, `uninstall_journal.c`, `uninstall_helper.c` |
+| platform implementation | `system_posix.c`, `system_windows.c`, `platform.c` |
 
 ## Design rules visible in the code
 
-The repository generally keeps a separate module when it owns a public command,
-persistent format, resource lifecycle, native implementation or reusable
-operation with distinct tests. File length alone is not a reason to introduce an
-abstraction.
+CUP prefers small lifecycle-specific owners over universal transaction, asset or
+configuration frameworks. Persistent files use strict schemas; the package
+catalog is more forward-tolerant because older CUP versions must be able to
+ignore structurally safe future records they cannot operate.
 
-Comments and helpers should preserve the same boundary: share mechanics that are
-truly common, but keep operation-specific policy with the module that owns the
-invariant. The goal is not minimum line count; it is one clear owner for each
-contract.
+Filesystem replacement uses identity-aware/no-follow primitives at destructive
+boundaries. Writes are staged and committed atomically where the filesystem
+contract permits it. Errors are propagated as `CupError`; low-level owners
+report concrete causes while command owners add only useful context.
 
-## Intentional limits
-
-The runtime does not include privilege elevation, local tool compilation,
-component dependency solving, a global shared sysroot, a persistent root
-environment override, system-wide PATH mutation, automatic VERSION increments or
-nightly package selectors.
-
-These are product boundaries rather than partially implemented features.
+The implementation deliberately does not add a database, background refresh,
+cache eviction policy, general plugin system, system-wide PATH ownership or a
+network-filesystem transaction layer.
 
 ## Related documents
 
-- [Concepts](../user/CONCEPTS.md)
 - [Packages](PACKAGES.md)
 - [State](STATE.md)
 - [Transactions](TRANSACTIONS.md)
-- [Platforms](PLATFORMS.md)
 - [Security](SECURITY.md)
-- [Build](../development/BUILD.md)
+- [Platforms](PLATFORMS.md)
+- [Release process](../development/RELEASES.md)

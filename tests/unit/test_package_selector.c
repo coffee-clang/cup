@@ -20,6 +20,15 @@ static void test_selector_values(void) {
     TEST_ASSERT_FALSE(package_release_is_stable("22.1.5"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_validate_concrete("22.1.5"));
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_validate_concrete("16.1.0-rev1"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_validate_concrete("0"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_validate_concrete("1.2.0-rev10"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("01.2"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1.02"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1."));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1..2"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1.2-rev0"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1.2-rev01"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("1.2-rev1-rev2"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("stable"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("22.1.5-RC1"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_validate_concrete("../22.1.5"));
@@ -103,10 +112,34 @@ static void test_package_selectors(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_selector_parse(&selector, "gcc"));
 }
 
+static void test_package_version_ordering(void) {
+    char base[MAX_IDENTIFIER_LEN];
+    int result = 99;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_compare("9.10", "10.0", &result));
+    TEST_ASSERT_TRUE(result < 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_compare("23.1.0", "23.1.0-rev1", &result));
+    TEST_ASSERT_TRUE(result < 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_compare("23.1.0-rev9", "23.1.0-rev10", &result));
+    TEST_ASSERT_TRUE(result < 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_compare("1.2-rev99", "1.2.0", &result));
+    TEST_ASSERT_TRUE(result < 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_compare("1.2.0-rev2", "1.2.0-rev2", &result));
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_RELEASE, package_release_compare("1.02", "1.2", &result));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_release_compare("1.2", "1.2", NULL));
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_base("23.1.0-rev7", base, sizeof(base)));
+    TEST_ASSERT_EQUAL_STRING("23.1.0", base);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_release_base("23.1.0", base, sizeof(base)));
+    TEST_ASSERT_EQUAL_STRING("23.1.0", base);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_release_base("23.1.0", base, 4));
+}
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_selector_values);
     RUN_TEST(test_package_selectors);
+    RUN_TEST(test_package_version_ordering);
     return UNITY_END();
 }

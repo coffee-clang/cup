@@ -5,6 +5,9 @@
 # Release artifacts
 /dist/
 
+# Local development catalog input
+/config/catalog.cfg
+
 # Generated documentation
 /book/
 

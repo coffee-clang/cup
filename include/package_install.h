@@ -14,6 +14,7 @@ CupError package_install_artifact(const PackageArtifactSpec *spec);
 
 /* Update one installed scope using its catalog-pinned stable artifact. */
 CupError package_install_update_artifact(const PackageArtifactSpec *spec,
+                                         const PackageIdentity *expected_reference,
                                          const PackageIdentity *expected_default,
                                          int *installed,
                                          int *default_moved);

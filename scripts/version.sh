@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Validates VERSION and derives development or official build metadata from Git.
-# Commands generate version.h, release.txt and the Windows VERSIONINFO resource.
+# Commands generate version.h and the Windows VERSIONINFO resource.
 set -eu
 
 LC_ALL=C
@@ -94,16 +94,6 @@ commit_id() {
     fi
 }
 
-metadata_commit_id() {
-    if have_git_repository; then
-        git_at_root rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
-    else
-        # release.txt keeps one fixed hexadecimal schema. The all-zero value is
-        # reserved for development builds generated from a source archive;
-        # official builds still require a real checkout commit.
-        printf '%040d\n' 0
-    fi
-}
 
 working_tree_dirty() {
     have_git_repository || return 1
@@ -246,7 +236,6 @@ generate_files() {
     fi
     split_semver "$base"
     commit=$(commit_id)
-    metadata_commit=$(metadata_commit_id)
 
     if [ -n "${CUP_BUILD_ROOT:-}" ]; then
         cup_path_prepare_child_directory "$CUP_BUILD_ROOT" "$output_dir" 'generated version directory' || exit 1
@@ -268,12 +257,6 @@ generate_files() {
 
 #endif /* CUP_GENERATED_VERSION_H */
 HEADER
-
-    cat <<METADATA | write_if_changed "$output_dir/release.txt"
-format=1
-version=$base
-commit=$metadata_commit
-METADATA
 
     cat <<RESOURCE | write_if_changed "$output_dir/version.rc"
 #include <windows.h>

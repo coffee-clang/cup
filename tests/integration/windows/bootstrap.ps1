@@ -1,5 +1,4 @@
-# Exercises the hidden initial-install bridge from one private verified source generation
-# into the canonical Windows root lock, journal, staging and detached update-helper protocol.
+# Exercises native Windows bootstrap using the same five-file verified release subset as POSIX.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -8,10 +7,7 @@ param(
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 function New-PrivateBootstrapDirectory {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
+    param([Parameter(Mandatory = $true)][string]$Path)
 
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $security = New-Object Security.AccessControl.DirectorySecurity
@@ -37,124 +33,59 @@ function New-PrivateBootstrapDirectory {
         [void]$security.AddAccessRule($rule)
     }
     [IO.Directory]::CreateDirectory($Path, $security) | Out-Null
-    return $Path
 }
 
 function New-BootstrapSource {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
+    param([Parameter(Mandatory = $true)][string]$Path)
 
-    New-PrivateBootstrapDirectory -Path $Path | Out-Null
-    $configuration = Get-TestConfiguration
-    $releaseMetadata = Join-Path $Script:CupTestBuildRoot `
-        "windows-x64\$configuration\generated\release.txt"
-    Assert-PathExists $releaseMetadata
-
+    New-PrivateBootstrapDirectory -Path $Path
     $binary = Join-Path $Path "cup-windows-x64.exe"
-    $packages = Join-Path $Path "packages.cfg"
-    $installPolicy = Join-Path $Path "install.cfg"
-    $installSh = Join-Path $Path "install.sh"
-    $installPs1 = Join-Path $Path "install.ps1"
+    $license = Join-Path $Path "LICENSE"
+    $notices = Join-Path $Path "THIRD_PARTY_NOTICES.txt"
+    $catalog = Join-Path $Path "catalog.cfg"
     $release = Join-Path $Path "release.txt"
-    $commonChecksums = Join-Path $Path "SHA256SUMS.common"
-    $platformChecksums = Join-Path $Path "SHA256SUMS.windows-x64"
 
     Copy-Item -LiteralPath $Script:CupTestExecutable -Destination $binary
-    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "config\packages.cfg") `
-        -Destination $packages
-    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "config\install.cfg") `
-        -Destination $installPolicy
-    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "scripts\install\install.sh") `
-        -Destination $installSh
-    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "scripts\install\install.ps1") `
-        -Destination $installPs1
-    Copy-Item -LiteralPath $releaseMetadata -Destination $release
+    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "LICENSE") -Destination $license
+    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "scripts\dependencies\THIRD_PARTY_NOTICES.txt") `
+        -Destination $notices
+    Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot "tests\fixtures\catalog.cfg") `
+        -Destination $catalog
 
-    Write-Utf8NoBom -Path $commonChecksums -Lines @(
-        "$(Get-Sha256Lower -Path $packages)  packages.cfg",
-        "$(Get-Sha256Lower -Path $installPolicy)  install.cfg",
-        "$(Get-Sha256Lower -Path $installSh)  install.sh",
-        "$(Get-Sha256Lower -Path $installPs1)  install.ps1"
-    )
-    Write-Utf8NoBom -Path $platformChecksums -Lines @(
-        "$(Get-Sha256Lower -Path $binary)  cup-windows-x64.exe",
-        "$(Get-Sha256Lower -Path $release)  release.txt",
-        "$(Get-Sha256Lower -Path $commonChecksums)  SHA256SUMS.common"
+    $version = (Get-Content -LiteralPath (Join-Path $Script:CupTestProjectRoot "VERSION") -Raw).Trim()
+    $git = Invoke-NativeProcess -FilePath "git" `
+        -Arguments @("-C", $Script:CupTestProjectRoot, "rev-parse", "HEAD") `
+        -WorkingDirectory $Script:CupTestProjectRoot
+    if ($git.ExitCode -ne 0) { Fail-Test "could not resolve bootstrap fixture commit" }
+    $commit = $git.Output.Trim()
+    Write-Utf8NoBom -Path $release -Lines @(
+        "format=2",
+        "version=$version",
+        "commit=$commit",
+        "root_layout=2",
+        "catalog_format=1",
+        "asset_count=4",
+        "asset.0.name=LICENSE",
+        "asset.0.sha256=$(Get-Sha256Lower -Path $license)",
+        "asset.1.name=THIRD_PARTY_NOTICES.txt",
+        "asset.1.sha256=$(Get-Sha256Lower -Path $notices)",
+        "asset.2.name=catalog.cfg",
+        "asset.2.sha256=$(Get-Sha256Lower -Path $catalog)",
+        "asset.3.name=cup-windows-x64.exe",
+        "asset.3.sha256=$(Get-Sha256Lower -Path $binary)"
     )
 }
 
-function Get-AclDiagnostic {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    try {
-        $acl = Get-Acl -LiteralPath $Path
-        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $sections = [Security.AccessControl.AccessControlSections]::Access -bor
-            [Security.AccessControl.AccessControlSections]::Owner -bor
-            [Security.AccessControl.AccessControlSections]::Group
-        return @(
-            "path=$Path",
-            "current_user_sid=$currentSid",
-            "owner=$($acl.Owner)",
-            "access_rules_protected=$($acl.AreAccessRulesProtected)",
-            "sddl=$($acl.GetSecurityDescriptorSddlForm($sections))"
-        ) -join "`n"
-    } catch {
-        return "path=$Path`nacl_snapshot_error=$($_.Exception.Message)"
-    }
-}
-
-function Test-BootstrapStagingEmpty {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
-    }
+function Test-StagingEmpty {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
     return @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue).Count -eq 0
-}
-
-function Wait-ForBootstrapCommit {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    $binary = Join-Path $Root "bin\cup.exe"
-    $transaction = Join-Path $Root "transaction.txt"
-    $staging = Join-Path $Root "staging"
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        if ((Test-Path -LiteralPath $binary -PathType Leaf) -and
-            -not (Test-Path -LiteralPath $transaction) -and
-            (Test-BootstrapStagingEmpty -Path $staging)) {
-            $ready = Invoke-NativeProcess -FilePath $binary `
-                -Arguments @("--internal-runtime-ready") `
-                -WorkingDirectory $Script:CupTestDevRoot
-            if ($ready.ExitCode -eq 0) {
-                return
-            }
-        }
-        Start-Sleep -Milliseconds 100
-    }
-    Fail-Test "canonical bootstrap helper did not finish"
 }
 
 function Invoke-Bootstrap {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Source,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Base,
-
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Base,
         [switch]$ExpectFailure
     )
 
@@ -162,9 +93,7 @@ function Invoke-Bootstrap {
         -Arguments @("--internal-bootstrap", $Source, $Base) `
         -WorkingDirectory $Script:CupTestDevRoot
     if ($ExpectFailure) {
-        if ($result.ExitCode -eq 0) {
-            Fail-Test "bootstrap unexpectedly accepted source: $Source"
-        }
+        if ($result.ExitCode -eq 0) { Fail-Test "bootstrap unexpectedly accepted source: $Source" }
     } elseif ($result.ExitCode -ne 0) {
         Fail-Test "bootstrap failed [$($result.ExitCode)]`n$($result.Output)"
     }
@@ -177,127 +106,161 @@ try {
     $source = Join-Path $Script:CupTestRoot "source"
     New-BootstrapSource -Path $source
     $result = Invoke-Bootstrap -Source $source -Base $Script:CupTestHome
-    Assert-Contains $result.Output "installation scheduled"
+    Assert-Contains $result.Output "Verified CUP"
+    Assert-Contains $result.Output "CUP_BOOTSTRAP_ROOT="
 
     $root = Join-Path $Script:CupTestHome ".cup"
-    Wait-ForBootstrapCommit -Root $root
     foreach ($relative in @(
-        "root.txt",
-        "cup.lock",
-        "state.txt",
-        "bin\cup.exe",
-        "helpers\update-helper.exe",
-        "config\packages.cfg",
-        "config\install.cfg",
-        "config\SHA256SUMS.common",
-        "config\SHA256SUMS.windows-x64"
+        "root.txt", "cup.lock", "state.txt", "bin\cup.exe", "release.txt", "LICENSE",
+        "THIRD_PARTY_NOTICES.txt", "config\catalog.cfg"
     )) {
         Assert-PathExists (Join-Path $root $relative)
     }
     Assert-PathMissing (Join-Path $root "transaction.txt")
-    Assert-PathMissing (Join-Path $root ".bootstrap")
-    if (-not (Test-BootstrapStagingEmpty -Path (Join-Path $root "staging"))) {
-        Fail-Test "successful bootstrap left staging residue"
+    Assert-PathMissing (Join-Path $root "helpers\update-helper.exe")
+    if (-not (Test-StagingEmpty -Path (Join-Path $root "staging"))) {
+        Fail-Test "successful fresh bootstrap left staging residue"
+    }
+    if (@(Get-ChildItem -LiteralPath $Script:CupTestHome -Directory -Filter ".cup-install-*" `
+            -ErrorAction SilentlyContinue).Count -ne 0) {
+        Fail-Test "successful fresh bootstrap left private-root residue"
     }
 
     $installed = Join-Path $root "bin\cup.exe"
-    $helper = Join-Path $root "helpers\update-helper.exe"
-    Assert-Equals (Get-Sha256Lower -Path $installed) `
-        (Get-Sha256Lower -Path $Script:CupTestExecutable)
-    Assert-Equals (Get-Sha256Lower -Path $helper) (Get-Sha256Lower -Path $installed)
-
+    Assert-Equals (Get-Sha256Lower -Path $installed) (Get-Sha256Lower -Path $Script:CupTestExecutable)
     $version = Invoke-NativeProcess -FilePath $installed -Arguments @("--version") `
         -WorkingDirectory $Script:CupTestDevRoot
-    if ($version.ExitCode -ne 0) {
-        Fail-Test "installed bootstrap binary failed --version"
-    }
-    $savedPath = $env:Path
-    try {
-        $env:Path = "$(Join-Path $root 'bin');$savedPath"
-        $doctor = Invoke-NativeProcess -FilePath $installed -Arguments @("doctor") `
-            -WorkingDirectory $Script:CupTestDevRoot
-    } finally {
-        $env:Path = $savedPath
-    }
-    if ($doctor.ExitCode -ne 0) {
-        Fail-Test "installed bootstrap binary failed doctor`n$($doctor.Output)"
-    }
-    Assert-Contains $doctor.Output "Doctor found no issues."
+    if ($version.ExitCode -ne 0) { Fail-Test "installed bootstrap binary failed --version" }
 
-    # Moving the complete canonical root preserves identity independently of USERPROFILE.
+    # Existing-root reinstall is synchronous and preserves non-generation runtime state.
+    $config = Invoke-NativeProcess -FilePath $installed `
+        -Arguments @("config", "set", "compiler", "clang") `
+        -WorkingDirectory $Script:CupTestDevRoot
+    if ($config.ExitCode -ne 0) { Fail-Test "could not create bootstrap preference fixture" }
+    $preference = Join-Path $root "config\preferences.txt"
+    $state = Join-Path $root "state.txt"
+    $catalog = Join-Path $root "config\catalog.cfg"
+    $preferenceBefore = Get-Sha256Lower -Path $preference
+    $stateBefore = Get-Sha256Lower -Path $state
+    $catalogBefore = Get-Sha256Lower -Path $catalog
+    $cache = Join-Path $root "cache"
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $cacheObject = Join-Path $cache "preserved-object"
+    Write-Utf8NoBom -Path $cacheObject -Lines @("keep-me")
+    $cacheBefore = Get-Sha256Lower -Path $cacheObject
+
+    $secondSource = Join-Path $Script:CupTestRoot "second-source"
+    New-BootstrapSource -Path $secondSource
+    $second = Invoke-Bootstrap -Source $secondSource -Base $Script:CupTestHome
+    Assert-Contains $second.Output "Verified CUP"
+    Assert-PathMissing (Join-Path $root "transaction.txt")
+    if (-not (Test-StagingEmpty -Path (Join-Path $root "staging"))) {
+        Fail-Test "successful existing-root reinstall left staging residue"
+    }
+    Assert-Equals (Get-Sha256Lower -Path $preference) $preferenceBefore
+    Assert-Equals (Get-Sha256Lower -Path $state) $stateBefore
+    Assert-Equals (Get-Sha256Lower -Path $catalog) $catalogBefore
+    Assert-Equals (Get-Sha256Lower -Path $cacheObject) $cacheBefore
+
+    # Reinstall preserves an unsupported future catalog and refuses the operation.
+    $futureBase = Join-Path $Script:CupTestRoot 'future-base'
+    New-Item -ItemType Directory -Path $futureBase | Out-Null
+    $futureSource = Join-Path $Script:CupTestRoot 'future-source'
+    New-BootstrapSource -Path $futureSource
+    [void](Invoke-Bootstrap -Source $futureSource -Base $futureBase)
+    $futureRoot = Join-Path $futureBase '.cup'
+    $futureCatalog = Join-Path $futureRoot 'config\catalog.cfg'
+    Write-Utf8NoBom -Path $futureCatalog -Lines @(
+        'format=2',
+        'revision=9',
+        'update_url=https://example.invalid/catalog.cfg'
+    )
+    $futureCatalogHash = Get-Sha256Lower -Path $futureCatalog
+    $futureBinary = Join-Path $futureRoot 'bin\cup.exe'
+    $futureBinaryHash = Get-Sha256Lower -Path $futureBinary
+    [void](Invoke-Bootstrap -Source $futureSource -Base $futureBase -ExpectFailure)
+    Assert-Equals (Get-Sha256Lower -Path $futureCatalog) $futureCatalogHash
+    Assert-Equals (Get-Sha256Lower -Path $futureBinary) $futureBinaryHash
+    Assert-PathMissing "$futureCatalog.invalid"
+
+    # Reinstall preserves malformed catalog evidence and restores the release snapshot.
+    $malformedBase = Join-Path $Script:CupTestRoot 'malformed-base'
+    New-Item -ItemType Directory -Path $malformedBase | Out-Null
+    $malformedSource = Join-Path $Script:CupTestRoot 'malformed-source'
+    New-BootstrapSource -Path $malformedSource
+    [void](Invoke-Bootstrap -Source $malformedSource -Base $malformedBase)
+    $malformedCatalog = Join-Path $malformedBase '.cup\config\catalog.cfg'
+    Write-Utf8NoBom -Path $malformedCatalog -Lines @('invalid=1')
+    [void](Invoke-Bootstrap -Source $malformedSource -Base $malformedBase)
+    Assert-Equals (Get-Sha256Lower -Path $malformedCatalog) `
+        (Get-Sha256Lower -Path (Join-Path $malformedSource 'catalog.cfg'))
+    Assert-PathExists "$malformedCatalog.invalid"
+    Assert-Contains (Get-Content -LiteralPath "$malformedCatalog.invalid" -Raw) 'invalid=1'
+
+    # Reinstall restores a missing managed binary.
+    $repairBase = Join-Path $Script:CupTestRoot 'binary-repair-base'
+    New-Item -ItemType Directory -Path $repairBase | Out-Null
+    $repairSource = Join-Path $Script:CupTestRoot 'binary-repair-source'
+    New-BootstrapSource -Path $repairSource
+    [void](Invoke-Bootstrap -Source $repairSource -Base $repairBase)
+    $repairBinary = Join-Path $repairBase '.cup\bin\cup.exe'
+    Remove-Item -LiteralPath $repairBinary -Force
+    [void](Invoke-Bootstrap -Source $repairSource -Base $repairBase)
+    Assert-Equals (Get-Sha256Lower -Path $repairBinary) `
+        (Get-Sha256Lower -Path (Join-Path $repairSource 'cup-windows-x64.exe'))
+
+    # Reinstall refuses a newer installed generation.
+    $downgradeBase = Join-Path $Script:CupTestRoot 'downgrade-base'
+    New-Item -ItemType Directory -Path $downgradeBase | Out-Null
+    $downgradeSource = Join-Path $Script:CupTestRoot 'downgrade-source'
+    New-BootstrapSource -Path $downgradeSource
+    [void](Invoke-Bootstrap -Source $downgradeSource -Base $downgradeBase)
+    $downgradeRoot = Join-Path $downgradeBase '.cup'
+    $downgradeRelease = Join-Path $downgradeRoot 'release.txt'
+    $releaseLines = @(Get-Content -LiteralPath $downgradeRelease)
+    for ($i = 0; $i -lt $releaseLines.Count; $i++) {
+        if ($releaseLines[$i].StartsWith('version=')) { $releaseLines[$i] = 'version=999.0.0' }
+    }
+    Write-Utf8NoBom -Path $downgradeRelease -Lines $releaseLines
+    $downgradeBinary = Join-Path $downgradeRoot 'bin\cup.exe'
+    $downgradeBinaryHash = Get-Sha256Lower -Path $downgradeBinary
+    $downgrade = Invoke-Bootstrap -Source $downgradeSource -Base $downgradeBase -ExpectFailure
+    Assert-Contains $downgrade.Output 'downgrade refused'
+    Assert-Equals (Get-Sha256Lower -Path $downgradeBinary) $downgradeBinaryHash
+
+    # A quiescent root can be relocated and the installer reuses that selected root.
     $relocatedBase = Join-Path $Script:CupTestRoot "relocated base"
     New-Item -ItemType Directory -Path $relocatedBase | Out-Null
     $relocatedRoot = Join-Path $relocatedBase ".cup"
-    $aclBeforeMove = Get-AclDiagnostic -Path $root
-    $relocatedBaseAcl = Get-AclDiagnostic -Path $relocatedBase
     Move-Item -LiteralPath $root -Destination $relocatedRoot
-    $installed = Join-Path $relocatedRoot "bin\cup.exe"
-    $version = Invoke-NativeProcess -FilePath $installed -Arguments @("--version") `
+    $relocatedBinary = Join-Path $relocatedRoot "bin\cup.exe"
+    $version = Invoke-NativeProcess -FilePath $relocatedBinary -Arguments @("--version") `
         -WorkingDirectory $Script:CupTestDevRoot
-    if ($version.ExitCode -ne 0) {
-        Fail-Test "relocated bootstrap binary failed --version"
-    }
-    $savedPath = $env:Path
-    try {
-        $env:Path = "$(Join-Path $relocatedRoot 'bin');$savedPath"
-        $doctor = Invoke-NativeProcess -FilePath $installed -Arguments @("doctor") `
-            -WorkingDirectory $Script:CupTestDevRoot
-    } finally {
-        $env:Path = $savedPath
-    }
-    if ($doctor.ExitCode -ne 0) {
-        $aclAfterDoctor = Get-AclDiagnostic -Path $relocatedRoot
-        Fail-Test @"
-relocated bootstrap binary failed doctor
-$($doctor.Output)
-
-ACL before Move-Item:
-$aclBeforeMove
-
-Destination parent ACL before Move-Item:
-$relocatedBaseAcl
-
-ACL after failed doctor:
-$aclAfterDoctor
-"@
-    }
-    Assert-Contains $doctor.Output "Doctor found no issues."
+    if ($version.ExitCode -ne 0) { Fail-Test "relocated bootstrap binary failed --version" }
     Assert-PathMissing $root
 
-    # A second verified generation must reuse the relocated canonical root.
-    $secondSource = Join-Path $Script:CupTestRoot "second-source"
-    New-BootstrapSource -Path $secondSource
-    $second = Invoke-Bootstrap -Source $secondSource -Base $relocatedBase
-    Assert-Contains $second.Output "installation scheduled"
-    Wait-ForBootstrapCommit -Root $relocatedRoot
+    $thirdSource = Join-Path $Script:CupTestRoot "third-source"
+    New-BootstrapSource -Path $thirdSource
+    [void](Invoke-Bootstrap -Source $thirdSource -Base $relocatedBase)
+    Assert-PathMissing $root
+    Assert-PathExists (Join-Path $relocatedRoot "bin\cup.exe")
     Assert-PathMissing (Join-Path $relocatedRoot "transaction.txt")
-    Assert-PathMissing $root
-    if (-not (Test-BootstrapStagingEmpty -Path (Join-Path $relocatedRoot "staging"))) {
-        Fail-Test "successful relocated bootstrap reinstall left staging residue"
-    }
 
-    # Exact-set and digest failures must occur before any root mutation.
-    $primaryHome = $Script:CupTestHome
+    # Exact-set and authenticated-byte failures occur before any root mutation.
     $invalidHome = Join-Path $Script:CupTestRoot "invalid-home"
     New-Item -ItemType Directory -Path $invalidHome | Out-Null
-    $env:USERPROFILE = $invalidHome
-    try {
-        $invalidSource = Join-Path $Script:CupTestRoot "invalid-source"
-        New-BootstrapSource -Path $invalidSource
-        Write-Utf8NoBom -Path (Join-Path $invalidSource "extra.txt") -Lines @("extra")
-        Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure | Out-Null
-        Assert-PathMissing (Join-Path $invalidHome ".cup")
-        Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
+    $invalidSource = Join-Path $Script:CupTestRoot "invalid-source"
+    New-BootstrapSource -Path $invalidSource
+    Write-Utf8NoBom -Path (Join-Path $invalidSource "extra.txt") -Lines @("extra")
+    [void](Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure)
+    Assert-PathMissing (Join-Path $invalidHome ".cup")
+    Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
 
-        Remove-Item -LiteralPath (Join-Path $invalidSource "extra.txt") -Force
-        Add-Content -LiteralPath (Join-Path $invalidSource "packages.cfg") `
-            -Value "tampered" -Encoding ascii
-        Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure | Out-Null
-        Assert-PathMissing (Join-Path $invalidHome ".cup")
-        Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
-    } finally {
-        $env:USERPROFILE = $primaryHome
-    }
+    Remove-Item -LiteralPath (Join-Path $invalidSource "extra.txt") -Force
+    Add-Content -LiteralPath (Join-Path $invalidSource "catalog.cfg") -Value "tampered" -Encoding ascii
+    [void](Invoke-Bootstrap -Source $invalidSource -Base $invalidHome -ExpectFailure)
+    Assert-PathMissing (Join-Path $invalidHome ".cup")
+    Assert-PathMissing (Join-Path $invalidHome ".coffee-cup")
 
     Write-Host "Windows bootstrap integration tests passed."
 } finally {

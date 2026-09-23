@@ -1018,6 +1018,24 @@ static void test_copy_replace_and_temporary_objects(void) {
     TEST_ASSERT_FALSE(exists);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(identity_target));
 
+    /* A competing publisher at the destination must never be replaced by a no-clobber move. */
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(identity_source));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(identity_target));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          system_get_path_identity(identity_source, &expected_identity));
+    state = SYSTEM_COMMIT_NOT_APPLIED;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM,
+        system_move_path_if_identity(
+            identity_source, identity_target, &expected_identity, &state));
+    TEST_ASSERT_EQUAL_INT(SYSTEM_COMMIT_NOT_APPLIED, state);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(identity_source, &exists));
+    TEST_ASSERT_TRUE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_path_exists(identity_target, &exists));
+    TEST_ASSERT_TRUE(exists);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(identity_source));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_remove_directory(identity_target));
+
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_create_file_exclusive(exclusive, &file));
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_sync_file(file));

@@ -13,7 +13,7 @@
 typedef enum {
     RUNTIME_JOURNAL_MISSING,
     RUNTIME_JOURNAL_PACKAGE,
-    RUNTIME_JOURNAL_UPDATE,
+    RUNTIME_JOURNAL_GENERATION,
     RUNTIME_JOURNAL_UNINSTALL
 } RuntimeJournalKind;
 
@@ -64,7 +64,7 @@ CupError runtime_journal_detect(RuntimeJournalKind *kind);
  * applied but parent-directory durability is uncertain. */
 CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity);
 
-/* Reject operational commands while any valid or invalid journal is present. */
+/* Require an empty shared journal slot for callers that are about to start a new mutation. */
 CupError runtime_journal_require_none(void);
 
 #endif /* CUP_RUNTIME_JOURNAL_H */

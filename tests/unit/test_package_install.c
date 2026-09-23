@@ -1,6 +1,6 @@
 /*
- * Exercises install preparation, cache refresh, commit boundaries, default updates
- * and rollback decisions.
+ * Exercises install preparation, authenticated cache use, commit boundaries, default
+ * updates and rollback decisions.
  */
 
 #include "command_context.h"
@@ -25,30 +25,27 @@
 #include <string.h>
 
 #define MAX_STEPS 4
+#define MAX_INITIAL_INSTALLED 16
 
 static CupState initial_state;
+static PackageIdentity initial_installed[MAX_INITIAL_INSTALLED];
 static CupError parse_result;
 static CupError context_result;
 static CupError load_state_result;
 static CupError load_catalog_result;
 static CupError resolve_result;
 static CupError identity_result;
-static CupError version_result;
-static int version_available;
 static CupError absent_result;
 static CupError valid_installed_result;
-static CupError default_format_result;
-static CupError format_result;
-static int format_supported;
 static CupError tmp_result;
 static CupError install_path_result;
 static CupError begin_result;
-static CupError url_result;
-static CupError checksum_url_result;
 static CupError fetch_results[MAX_STEPS];
 static PackageCacheSource fetch_sources[MAX_STEPS];
 static CupError extract_results[MAX_STEPS];
 static CupError validate_results[MAX_STEPS];
+static CupError manifest_checksum_result;
+static const char *manifest_digest;
 static int interrupt_values[MAX_STEPS];
 static CupError safe_point_results[MAX_STEPS];
 static CupError discard_result;
@@ -93,25 +90,23 @@ static void reset_scenario(void) {
 
     /* Request, context, catalog, and package-validation defaults. */
     memset(&initial_state, 0, sizeof(initial_state));
+    memset(initial_installed, 0, sizeof(initial_installed));
+    initial_state.installed = initial_installed;
+    initial_state.installed_capacity = MAX_INITIAL_INSTALLED;
     parse_result = CUP_OK;
     context_result = CUP_OK;
     load_state_result = CUP_OK;
     load_catalog_result = CUP_OK;
     resolve_result = CUP_OK;
     identity_result = CUP_OK;
-    version_result = CUP_OK;
-    version_available = 1;
     absent_result = CUP_OK;
     valid_installed_result = CUP_OK;
-    default_format_result = CUP_OK;
-    format_result = CUP_OK;
-    format_supported = 1;
     tmp_result = CUP_OK;
     install_path_result = CUP_OK;
     begin_result = CUP_OK;
-    url_result = CUP_OK;
-    checksum_url_result = CUP_OK;
     discard_result = CUP_OK;
+    manifest_checksum_result = CUP_OK;
+    manifest_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     ensure_dir_result = CUP_OK;
     parent_result = CUP_OK;
     add_state_result = CUP_OK;
@@ -160,6 +155,7 @@ static void add_entry(const char *component,
                       const char *host,
                       const char *target,
                       const char *entry) {
+    TEST_ASSERT_TRUE(initial_state.installed_count < MAX_INITIAL_INSTALLED);
     PackageIdentity *item = &initial_state.installed[initial_state.installed_count++];
     char tool[MAX_IDENTIFIER_LEN];
     char version[MAX_IDENTIFIER_LEN];
@@ -214,6 +210,12 @@ CupError command_context_begin(CommandContext *context,
     strcpy(context->host_platform, "linux-x64");
     strcpy(context->target_platform, target_override == NULL ? "linux-x64" : target_override);
     return CUP_OK;
+}
+
+CupError command_context_begin_initialize(CommandContext *context,
+                                          const char *target_override,
+                                          SystemLockMode mode) {
+    return command_context_begin(context, target_override, mode);
 }
 
 void command_context_end(CommandContext *context) {
@@ -282,24 +284,6 @@ CupError package_identity_init(PackageIdentity *identity,
     return CUP_OK;
 }
 
-CupError package_catalog_has_version(const PackageCatalog *catalog,
-                                     const char *component,
-                                     const char *tool,
-                                     const char *host_platform,
-                                     const char *target_platform,
-                                     const char *version,
-                                     int *is_available) {
-    (void)catalog;
-    TEST_ASSERT_NOT_NULL(component);
-    TEST_ASSERT_NOT_NULL(tool);
-    TEST_ASSERT_NOT_NULL(host_platform);
-    TEST_ASSERT_NOT_NULL(target_platform);
-    TEST_ASSERT_NOT_NULL(version);
-    TEST_ASSERT_NOT_NULL(is_available);
-    *is_available = version_available;
-    return version_result;
-}
-
 CupError installed_package_require_absent(const CupState *state, const PackageIdentity *package) {
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(package);
@@ -312,47 +296,11 @@ CupError installed_package_require_valid(const CupState *state, const PackageIde
     return valid_installed_result;
 }
 
-CupError package_catalog_get_default_format(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    if (default_format_result != CUP_OK) {
-        return default_format_result;
-    }
-    return buffer_write_result(snprintf(buffer, size, "tar.gz"), size);
-}
-
-CupError package_catalog_has_format(const PackageCatalog *catalog,
-                                    const char *component,
-                                    const char *tool,
-                                    const char *host_platform,
-                                    const char *target_platform,
-                                    const char *format,
-                                    int *is_supported) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    TEST_ASSERT_NOT_NULL(format);
-    TEST_ASSERT_NOT_NULL(is_supported);
-    *is_supported = format_supported;
-    return format_result;
-}
-
 CupError layout_create_staging_dir(char *buffer,
                                    size_t size,
                                    const char *operation,
                                    const PackageIdentity *identity) {
-    TEST_ASSERT_TRUE(strcmp(operation, "install") == 0 || strcmp(operation, "update") == 0);
+    TEST_ASSERT_EQUAL_STRING("install", operation);
     TEST_ASSERT_NOT_NULL(identity);
     if (tmp_result != CUP_OK) {
         return tmp_result;
@@ -372,8 +320,7 @@ CupError package_transaction_begin(PackageOperation operation,
                                    const PackageIdentity *package,
                                    const char *temporary_path,
                                    PackageTransaction *created) {
-    TEST_ASSERT_TRUE(operation == PACKAGE_OPERATION_INSTALL ||
-                     operation == PACKAGE_OPERATION_UPDATE);
+    TEST_ASSERT_EQUAL_INT(PACKAGE_OPERATION_INSTALL, operation);
     TEST_ASSERT_NOT_NULL(package);
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", temporary_path);
     TEST_ASSERT_NOT_NULL(created);
@@ -384,84 +331,6 @@ CupError package_transaction_begin(PackageOperation operation,
         created->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
     }
     return begin_result;
-}
-
-CupError package_catalog_build_url(const PackageCatalog *catalog,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *component,
-                                   const char *tool,
-                                   const char *host_platform,
-                                   const char *target_platform,
-                                   const char *version,
-                                   const char *format) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    (void)version;
-    (void)format;
-    if (url_result != CUP_OK) {
-        return url_result;
-    }
-    return buffer_write_result(snprintf(buffer, size, "https://example.invalid/package"), size);
-}
-
-CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform,
-                                            const char *version) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    (void)version;
-    if (checksum_url_result != CUP_OK) {
-        return checksum_url_result;
-    }
-    return buffer_write_result(snprintf(buffer, size, "https://example.invalid/SHA256SUMS"), size);
-}
-
-CupError package_artifact_spec_build(PackageArtifactSpec *spec,
-                                     const PackageCatalog *catalog,
-                                     const PackageIdentity *identity,
-                                     const char *format_name) {
-    CupError err;
-
-    TEST_ASSERT_NOT_NULL(spec);
-    TEST_ASSERT_NOT_NULL(identity);
-    TEST_ASSERT_NOT_NULL(format_name);
-    memset(spec, 0, sizeof(*spec));
-    spec->identity = *identity;
-    spec->format = strcmp(format_name, "tar.gz") == 0
-                       ? PACKAGE_ARCHIVE_FORMAT_TAR_GZ
-                       : PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
-    err = package_catalog_build_url(catalog,
-                                    spec->package_url,
-                                    sizeof(spec->package_url),
-                                    identity->component,
-                                    identity->tool,
-                                    identity->host_platform,
-                                    identity->target_platform,
-                                    identity->version,
-                                    format_name);
-    if (err == CUP_OK) {
-        err = package_catalog_build_checksum_url(catalog,
-                                                 spec->checksum_url,
-                                                 sizeof(spec->checksum_url),
-                                                 identity->component,
-                                                 identity->tool,
-                                                 identity->host_platform,
-                                                 identity->target_platform,
-                                                 identity->version);
-    }
-    return err;
 }
 
 void verified_artifact_init(VerifiedArtifact *artifact) {
@@ -476,7 +345,6 @@ void verified_artifact_release(VerifiedArtifact *artifact) {
 
 CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
                                       const PackageArtifactSpec *spec,
-                                      PackageCachePolicy cache_policy,
                                       PackageCacheSource *source) {
     int index = fetch_calls++;
 
@@ -485,8 +353,9 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
     TEST_ASSERT_NOT_NULL(spec);
     TEST_ASSERT_NOT_NULL(source);
     TEST_ASSERT_EQUAL_STRING("https://example.invalid/package", spec->package_url);
-    TEST_ASSERT_EQUAL_STRING("https://example.invalid/SHA256SUMS", spec->checksum_url);
-    TEST_ASSERT_EQUAL_INT(index == 0 ? PACKAGE_CACHE_ALLOW : PACKAGE_CACHE_REFRESH, cache_policy);
+    TEST_ASSERT_EQUAL_STRING(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        spec->artifact_sha256);
     if (fetch_results[index] != CUP_OK) {
         return fetch_results[index];
     }
@@ -495,6 +364,7 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
     strcpy(artifact->path, "/tmp/archive.tar.gz");
     artifact->identity.valid = 1;
     artifact->identity.kind = SYSTEM_PATH_REGULAR_FILE;
+    artifact->disposable = *source == PACKAGE_CACHE_SOURCE_NETWORK;
     return CUP_OK;
 }
 
@@ -516,30 +386,6 @@ CupError verified_artifact_discard(VerifiedArtifact *artifact) {
     return discard_result;
 }
 
-CupError package_cache_fetch(char *archive_path,
-                             size_t archive_path_size,
-                             const char *package_url,
-                             const char *checksum_url,
-                             const PackageIdentity *identity,
-                             const char *format,
-                             PackageCachePolicy cache_policy,
-                             PackageCacheSource *source) {
-    int index = fetch_calls++;
-    TEST_ASSERT_TRUE(index < MAX_STEPS);
-    TEST_ASSERT_NOT_NULL(package_url);
-    TEST_ASSERT_NOT_NULL(checksum_url);
-    TEST_ASSERT_NOT_NULL(identity);
-    TEST_ASSERT_NOT_NULL(format);
-    TEST_ASSERT_NOT_NULL(source);
-    TEST_ASSERT_EQUAL_INT(index == 0 ? PACKAGE_CACHE_ALLOW : PACKAGE_CACHE_REFRESH, cache_policy);
-    if (fetch_results[index] != CUP_OK) {
-        return fetch_results[index];
-    }
-    snprintf(archive_path, archive_path_size, "/tmp/archive.tar.gz");
-    *source = fetch_sources[index];
-    return CUP_OK;
-}
-
 int interrupt_requested(void) {
     int index = interrupt_calls++;
     TEST_ASSERT_TRUE(index < MAX_STEPS);
@@ -555,6 +401,21 @@ CupError interrupt_safe_point(void) {
 
 
 
+
+CupError path_join(char *buffer, size_t size, const char *left, const char *right) {
+    TEST_ASSERT_NOT_NULL(buffer);
+    TEST_ASSERT_EQUAL_STRING("/tmp/staging", left);
+    TEST_ASSERT_EQUAL_STRING(CUP_MANIFEST_FILENAME, right);
+    return buffer_write_result(snprintf(buffer, size, "/tmp/staging/%s", right), size);
+}
+
+CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
+    TEST_ASSERT_EQUAL_STRING("/tmp/staging/manifest.txt", path);
+    if (manifest_checksum_result != CUP_OK) {
+        return manifest_checksum_result;
+    }
+    return buffer_write_result(snprintf(hex, size, "%s", manifest_digest), size);
+}
 
 CupError package_validate_integrity(const char *base_path,
                           const PackageIdentity *identity,
@@ -666,6 +527,54 @@ const PackageIdentity *state_get_default(const CupState *state, const PackageSco
     return &identity;
 }
 
+CupError state_get_tool_reference(const CupState *state,
+                                  const PackageScope *scope,
+                                  const char *tool,
+                                  PackageIdentity *reference,
+                                  int *reference_is_default) {
+    const PackageIdentity *current_default_identity;
+    const PackageIdentity *best = NULL;
+    size_t i;
+
+    TEST_ASSERT_NOT_NULL(state);
+    TEST_ASSERT_NOT_NULL(scope);
+    TEST_ASSERT_NOT_NULL(tool);
+    TEST_ASSERT_NOT_NULL(reference);
+    TEST_ASSERT_NOT_NULL(reference_is_default);
+    *reference_is_default = 0;
+    current_default_identity = state_get_default(state, scope);
+    if (current_default_identity != NULL && strcmp(current_default_identity->tool, tool) == 0) {
+        *reference = *current_default_identity;
+        *reference_is_default = 1;
+        return CUP_OK;
+    }
+    for (i = 0; i < state->installed_count; ++i) {
+        const PackageIdentity *candidate = &state->installed[i];
+        int compared;
+
+        if (strcmp(candidate->component, scope->component) != 0 ||
+            strcmp(candidate->host_platform, scope->host_platform) != 0 ||
+            strcmp(candidate->target_platform, scope->target_platform) != 0 ||
+            strcmp(candidate->tool, tool) != 0) {
+            continue;
+        }
+        if (best == NULL) {
+            best = candidate;
+            continue;
+        }
+        TEST_ASSERT_EQUAL_INT(CUP_OK,
+                              package_release_compare(candidate->version, best->version, &compared));
+        if (compared > 0) {
+            best = candidate;
+        }
+    }
+    if (best == NULL) {
+        return CUP_ERR_NOT_INSTALLED;
+    }
+    *reference = *best;
+    return CUP_OK;
+}
+
 CupError state_set_default(CupState *state, const PackageIdentity *identity) {
     TEST_ASSERT_NOT_NULL(state);
     TEST_ASSERT_NOT_NULL(identity);
@@ -762,6 +671,18 @@ void package_request_print(FILE *stream, const PackageRequest *request) {
     fputs(request->resolved_selector, stream);
 }
 
+
+CupError package_release_compare(const char *left, const char *right, int *result) {
+    int compared;
+
+    if (left == NULL || right == NULL || result == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    compared = strcmp(left, right);
+    *result = compared < 0 ? -1 : compared > 0 ? 1 : 0;
+    return CUP_OK;
+}
+
 CupError package_selector_format_parts(char *buffer,
                                        size_t size,
                                        const char *tool,
@@ -811,7 +732,8 @@ static PackageArtifactSpec test_artifact_spec(void) {
     strcpy(spec.identity.version, "22.1.5");
     spec.format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
     strcpy(spec.package_url, "https://example.invalid/package");
-    strcpy(spec.checksum_url, "https://example.invalid/SHA256SUMS");
+    strcpy(spec.artifact_sha256,
+           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     return spec;
 }
 
@@ -821,21 +743,45 @@ static CupError install_test_artifact(void) {
     return package_install_artifact(&spec);
 }
 
-static CupError update_test_artifact(const char *expected_default_selector,
+static CupError update_test_artifact(const char *expected_reference_selector,
+                                     const char *expected_default_selector,
                                      int *installed,
                                      int *moved) {
     PackageArtifactSpec spec = test_artifact_spec();
+    PackageIdentity expected_reference;
     PackageIdentity expected_default;
     const PackageIdentity *expected_default_ptr = NULL;
+    char tool[MAX_IDENTIFIER_LEN];
+    char version[MAX_IDENTIFIER_LEN];
+    CupError err;
+
+    if (expected_reference_selector == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = package_selector_parse_parts(expected_reference_selector,
+                                       tool,
+                                       sizeof(tool),
+                                       version,
+                                       sizeof(version));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = package_identity_init(&expected_reference,
+                                spec.identity.component,
+                                tool,
+                                spec.identity.host_platform,
+                                spec.identity.target_platform,
+                                version);
+    if (err != CUP_OK) {
+        return err;
+    }
 
     if (expected_default_selector != NULL) {
-        char tool[MAX_IDENTIFIER_LEN];
-        char version[MAX_IDENTIFIER_LEN];
-        CupError err = package_selector_parse_parts(expected_default_selector,
-                                                    tool,
-                                                    sizeof(tool),
-                                                    version,
-                                                    sizeof(version));
+        err = package_selector_parse_parts(expected_default_selector,
+                                           tool,
+                                           sizeof(tool),
+                                           version,
+                                           sizeof(version));
         if (err != CUP_OK) {
             return err;
         }
@@ -851,7 +797,8 @@ static CupError update_test_artifact(const char *expected_default_selector,
         expected_default_ptr = &expected_default;
     }
 
-    return package_install_update_artifact(&spec, expected_default_ptr, installed, moved);
+    return package_install_update_artifact(
+        &spec, &expected_reference, expected_default_ptr, installed, moved);
 }
 
 static void test_public_inputs(void) {
@@ -864,7 +811,7 @@ static void test_public_inputs(void) {
     memset(&invalid_default, 0, sizeof(invalid_default));
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INVALID_INPUT,
-        package_install_update_artifact(&spec, &invalid_default, &installed, &moved));
+        package_install_update_artifact(&spec, &invalid_default, NULL, &installed, &moved));
 }
 
 static void test_prepare_failures(void) {
@@ -902,7 +849,7 @@ static void test_update_guards(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_NOT_INSTALLED,
-        update_test_artifact(NULL, &installed, &moved));
+        update_test_artifact("clang@1.0.0", NULL, &installed, &moved));
     TEST_ASSERT_EQUAL_INT(0, installed);
     TEST_ASSERT_EQUAL_INT(0, moved);
 
@@ -910,7 +857,7 @@ static void test_update_guards(void) {
     add_entry("compiler", "linux-x64", "linux-x64", "broken");
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INCONSISTENT_STATE,
-        update_test_artifact(NULL, &installed, &moved));
+        update_test_artifact("clang@1.0.0", NULL, &installed, &moved));
 
     reset_scenario();
     add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
@@ -918,7 +865,34 @@ static void test_update_guards(void) {
     valid_installed_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_VALIDATION,
-        update_test_artifact(NULL, &installed, &moved));
+        update_test_artifact("clang@1.0.0", NULL, &installed, &moved));
+}
+
+static void test_update_reference_revalidation(void) {
+    int installed = -1;
+    int moved = -1;
+
+    add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_NOT_INSTALLED,
+        update_test_artifact("clang@2.0.0", NULL, &installed, &moved));
+    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
+
+    reset_scenario();
+    add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
+    add_entry("compiler", "linux-x64", "linux-x64", "clang@2.0.0");
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_NOT_INSTALLED,
+        update_test_artifact("clang@1.0.0", NULL, &installed, &moved));
+    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
+
+    reset_scenario();
+    add_entry("compiler", "linux-x64", "linux-x64", "clang@1.0.0");
+    current_default = "clang@1.0.0";
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_NOT_INSTALLED,
+        update_test_artifact("clang@1.0.0", NULL, &installed, &moved));
+    TEST_ASSERT_EQUAL_INT(0, fetch_calls);
 }
 
 static void test_transaction_preparation(void) {
@@ -942,40 +916,30 @@ static void test_transaction_preparation(void) {
     TEST_ASSERT_EQUAL_INT(0, clear_calls);
 }
 
-static void test_cache_refresh(void) {
+static void test_authenticated_package_failures_do_not_redownload(void) {
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
 
-    TEST_ASSERT_EQUAL_INT(CUP_OK, install_test_artifact());
-    TEST_ASSERT_EQUAL_INT(2, fetch_calls);
-    TEST_ASSERT_EQUAL_INT(2, extract_calls);
-    TEST_ASSERT_EQUAL_INT(1, discard_calls);
-    TEST_ASSERT_EQUAL_INT(1, remove_calls);
-    TEST_ASSERT_EQUAL_INT(1, ensure_dir_calls);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(1, extract_calls);
+    TEST_ASSERT_EQUAL_INT(0, discard_calls);
 
     reset_scenario();
     fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
     extract_results[0] = CUP_ERR_ARCHIVE;
     discard_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
-
-    reset_scenario();
-    fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
-    extract_results[0] = CUP_ERR_ARCHIVE;
-    remove_results[0] = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
-
-    reset_scenario();
-    fetch_sources[0] = PACKAGE_CACHE_SOURCE_CACHE;
-    extract_results[0] = CUP_ERR_ARCHIVE;
-    ensure_dir_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_ARCHIVE, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(0, discard_calls);
 
     reset_scenario();
     validate_results[0] = CUP_ERR_VALIDATION;
-    discard_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, fetch_calls);
+    TEST_ASSERT_EQUAL_INT(1, validate_calls);
     TEST_ASSERT_EQUAL_INT(1, discard_calls);
+
 }
 
 static void test_interrupt_safe_points(void) {
@@ -1012,7 +976,7 @@ static void test_existing_update_honors_persistence_safe_point(void) {
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_INTERRUPT,
-        update_test_artifact("clang@1.0.0", &installed, &moved));
+        update_test_artifact("clang@1.0.0", "clang@1.0.0", &installed, &moved));
     TEST_ASSERT_EQUAL_INT(1, safe_point_calls);
     TEST_ASSERT_EQUAL_INT(0, save_calls);
     TEST_ASSERT_EQUAL_INT(0, plan_apply_calls);
@@ -1061,12 +1025,21 @@ static void test_new_install_commit(void) {
     current_default = "clang@1.0.0";
     TEST_ASSERT_EQUAL_INT(
         CUP_OK,
-        update_test_artifact("clang@1.0.0", &installed, &moved));
+        update_test_artifact("clang@1.0.0", "clang@1.0.0", &installed, &moved));
     TEST_ASSERT_EQUAL_INT(0, installed);
     TEST_ASSERT_EQUAL_INT(1, moved);
     TEST_ASSERT_EQUAL_INT(0, fetch_calls);
     TEST_ASSERT_EQUAL_INT(1, save_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_apply_calls);
+}
+
+static void test_auto_default_only_for_empty_scope(void) {
+    add_entry("compiler", "linux-x64", "linux-x64", "gcc@1.0.0");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, install_test_artifact());
+    TEST_ASSERT_EQUAL_INT(1, save_calls);
+    TEST_ASSERT_EQUAL_INT(0, plan_build_calls);
+    TEST_ASSERT_EQUAL_INT(0, plan_apply_calls);
 }
 
 static void test_commit_failures(void) {
@@ -1129,7 +1102,7 @@ static void test_commit_failures(void) {
 
         TEST_ASSERT_EQUAL_INT(
             CUP_ERR_DEFAULT_FULL,
-            update_test_artifact("clang@1.0.0", &installed, &moved));
+            update_test_artifact("clang@1.0.0", "clang@1.0.0", &installed, &moved));
     }
 
     reset_scenario();
@@ -1143,7 +1116,7 @@ static void test_commit_failures(void) {
 
         TEST_ASSERT_EQUAL_INT(
             CUP_ERR_FILESYSTEM,
-            update_test_artifact("clang@1.0.0", &installed, &moved));
+            update_test_artifact("clang@1.0.0", "clang@1.0.0", &installed, &moved));
     }
 
     reset_scenario();
@@ -1157,7 +1130,7 @@ static void test_commit_failures(void) {
 
         TEST_ASSERT_EQUAL_INT(
             CUP_ERR_COMMIT,
-            update_test_artifact("clang@1.0.0", &installed, &moved));
+            update_test_artifact("clang@1.0.0", "clang@1.0.0", &installed, &moved));
     }
 }
 
@@ -1186,12 +1159,14 @@ int main(void) {
     RUN_TEST(test_public_inputs);
     RUN_TEST(test_prepare_failures);
     RUN_TEST(test_update_guards);
+    RUN_TEST(test_update_reference_revalidation);
     RUN_TEST(test_transaction_preparation);
-    RUN_TEST(test_cache_refresh);
+    RUN_TEST(test_authenticated_package_failures_do_not_redownload);
     RUN_TEST(test_interrupt_safe_points);
     RUN_TEST(test_existing_update_honors_persistence_safe_point);
     RUN_TEST(test_fetch_failures);
     RUN_TEST(test_new_install_commit);
+    RUN_TEST(test_auto_default_only_for_empty_scope);
     RUN_TEST(test_commit_failures);
     RUN_TEST(test_rollback_failures);
     return UNITY_END();

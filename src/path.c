@@ -307,7 +307,7 @@ const char *path_generated_temp_suffix(const char *name, const char *prefix) {
     return name + prefix_length + 1u;
 }
 
-int path_is_canonical_identifier(const char *value) {
+static int path_is_canonical_identifier(const char *value) {
     const unsigned char *cursor;
 
     if (!path_is_safe_identifier(value)) {

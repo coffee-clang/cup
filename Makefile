@@ -22,35 +22,9 @@ SUPPORTED_CONFIGURATION := development debug coverage sanitizers release
 PLATFORM_INPUT_ORIGIN := $(origin PLATFORM)
 DEPS_PREFIX_INPUT_ORIGIN := $(origin DEPS_PREFIX)
 
-# Freeze every supported external input before it is inspected. $(value ...)
-# preserves command-line and environment text literally, so Make functions in
-# inherited values cannot execute while this Makefile is parsed.
-ifneq ($(filter environment environment\ override command\ line,$(origin PLATFORM)),)
-override PLATFORM := $(value PLATFORM)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin OS)),)
-override OS := $(value OS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin PROCESSOR_ARCHITEW6432)),)
-override PROCESSOR_ARCHITEW6432 := $(value PROCESSOR_ARCHITEW6432)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin PROCESSOR_ARCHITECTURE)),)
-override PROCESSOR_ARCHITECTURE := $(value PROCESSOR_ARCHITECTURE)
-endif
+# Preserve external path spellings until the path-safety checks validate them.
 ifneq ($(filter environment environment\ override command\ line,$(origin HOME)),)
 override HOME := $(value HOME)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_BUILD_CONFIGURATION)),)
-override CUP_BUILD_CONFIGURATION := $(value CUP_BUILD_CONFIGURATION)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_OFFICIAL_BUILD)),)
-override CUP_OFFICIAL_BUILD := $(value CUP_OFFICIAL_BUILD)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_INTERNAL_DEPS_TARGET)),)
-override CUP_INTERNAL_DEPS_TARGET := $(value CUP_INTERNAL_DEPS_TARGET)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_INTERNAL_TOOLCHAIN_ROLE)),)
-override CUP_INTERNAL_TOOLCHAIN_ROLE := $(value CUP_INTERNAL_TOOLCHAIN_ROLE)
 endif
 ifneq ($(filter environment environment\ override command\ line,$(origin BUILD_DIR)),)
 override BUILD_DIR := $(value BUILD_DIR)
@@ -61,65 +35,8 @@ endif
 ifneq ($(filter environment environment\ override command\ line,$(origin DEPS_PREFIX)),)
 override DEPS_PREFIX := $(value DEPS_PREFIX)
 endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CC)),)
-override CC := $(value CC)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin WINDRES)),)
-override WINDRES := $(value WINDRES)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin JOBS)),)
-override JOBS := $(value JOBS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin MACOSX_DEPLOYMENT_TARGET)),)
-override MACOSX_DEPLOYMENT_TARGET := $(value MACOSX_DEPLOYMENT_TARGET)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_TEST_CONFIGURATION)),)
-override CUP_TEST_CONFIGURATION := $(value CUP_TEST_CONFIGURATION)
-endif
 ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_DIR)),)
 override RELEASE_DIR := $(value RELEASE_DIR)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin MDBOOK)),)
-override MDBOOK := $(value MDBOOK)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin EXTRA_CPPFLAGS)),)
-override EXTRA_CPPFLAGS := $(value EXTRA_CPPFLAGS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin EXTRA_CFLAGS)),)
-override EXTRA_CFLAGS := $(value EXTRA_CFLAGS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin EXTRA_LDFLAGS)),)
-override EXTRA_LDFLAGS := $(value EXTRA_LDFLAGS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin EXTRA_LDLIBS)),)
-override EXTRA_LDLIBS := $(value EXTRA_LDLIBS)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_RELEASE_VERSION)),)
-override CUP_RELEASE_VERSION := $(value CUP_RELEASE_VERSION)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_RELEASE_TAG)),)
-override CUP_RELEASE_TAG := $(value CUP_RELEASE_TAG)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_RELEASE_COMMIT)),)
-override CUP_RELEASE_COMMIT := $(value CUP_RELEASE_COMMIT)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin SOURCE_REPOSITORY)),)
-override SOURCE_REPOSITORY := $(value SOURCE_REPOSITORY)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin TESTS_RUN_ID)),)
-override TESTS_RUN_ID := $(value TESTS_RUN_ID)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin TESTS_RUN_ATTEMPT)),)
-override TESTS_RUN_ATTEMPT := $(value TESTS_RUN_ATTEMPT)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_RUN_ID)),)
-override RELEASE_RUN_ID := $(value RELEASE_RUN_ID)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin MSYSTEM)),)
-override MSYSTEM := $(value MSYSTEM)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_DEPENDENCY_PROFILE)),)
-override CUP_DEPENDENCY_PROFILE := $(value CUP_DEPENDENCY_PROFILE)
 endif
 ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_COMMON_ROOT)),)
 override RELEASE_COMMON_ROOT := $(value RELEASE_COMMON_ROOT)
@@ -129,9 +46,6 @@ override RELEASE_COMMON_DIR := $(value RELEASE_COMMON_DIR)
 endif
 ifneq ($(filter environment environment\ override command\ line,$(origin RELEASE_PLATFORM_ROOT)),)
 override RELEASE_PLATFORM_ROOT := $(value RELEASE_PLATFORM_ROOT)
-endif
-ifneq ($(filter environment environment\ override command\ line,$(origin CUP_TEST_WITH_BUILD_OUTPUT)),)
-override CUP_TEST_WITH_BUILD_OUTPUT := $(value CUP_TEST_WITH_BUILD_OUTPUT)
 endif
 
 ifneq ($(findstring $(apostrophe),$(PROJECT_ROOT)),)
@@ -183,22 +97,12 @@ ifeq ($(PLATFORM_INPUT_ORIGIN),environment)
 endif
 PLATFORM ?= $(NATIVE_PLATFORM)
 
-# Mandatory project flags are owned by the Makefile. Command-line additions use
-# the explicit EXTRA_* variables so language, warning and linkage policy cannot
-# be erased accidentally. Environment values are ignored by the final override.
-DIRECT_FLAG_VARIABLES := CPPFLAGS CFLAGS LDFLAGS LDLIBS
-ifneq ($(strip $(foreach variable,$(DIRECT_FLAG_VARIABLES),\
-        $(if $(filter command\ line,$(origin $(variable))),$(variable)))),)
-    $(error Direct CPPFLAGS/CFLAGS/LDFLAGS/LDLIBS overrides are not supported; use \
-        EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS or EXTRA_LDLIBS)
-endif
+# Mandatory project flags are composed below. Local additions use the explicit
+# EXTRA_* variables documented by the build interface.
 
 # CUP_BUILD_CONFIGURATION, CUP_OFFICIAL_BUILD, CUP_INTERNAL_DEPS_TARGET and
 # CUP_INTERNAL_TOOLCHAIN_ROLE are internal recursive-make inputs used by public
 # targets and CI/release consumers. They are not public user-facing selectors.
-ifeq ($(origin CONFIGURATION),command line)
-    $(error CONFIGURATION is internal; select make, debug, coverage, sanitizers or release)
-endif
 CUP_BUILD_CONFIGURATION ?= development
 CUP_TEST_CONFIGURATION ?= development
 CUP_OFFICIAL_BUILD ?= 0
@@ -305,7 +209,6 @@ override BUILD_CONFIG := $(CONFIG_DIR)/build-config.txt
 override VERSION_STAMP := $(GENERATED_DIR)/.version-stamp
 override VERSION_HEADER := $(GENERATED_DIR)/version.h
 override VERSION_RESOURCE := $(GENERATED_DIR)/version.rc
-override VERSION_METADATA := $(GENERATED_DIR)/release.txt
 override CA_BUNDLE_STAMP := $(GENERATED_DIR)/.ca-bundle-stamp
 override CA_BUNDLE_HEADER := $(GENERATED_DIR)/ca_bundle.h
 override CA_BUNDLE_SOURCE := $(GENERATED_DIR)/ca_bundle.c
@@ -319,7 +222,7 @@ COMMON_SRC := \
     src/command_update.c \
     src/self_update.c \
     src/bootstrap.c \
-    src/release_metadata.c \
+    src/release_metadata.c src/generation.c \
     src/package_selector.c \
     src/package_request.c \
     src/command_context.c \
@@ -339,19 +242,19 @@ COMMON_SRC := \
     src/filesystem.c \
     src/layout.c \
     src/package_catalog.c \
+    src/catalog_refresh.c \
     src/install_policy.c \
     src/tool_preferences.c \
     src/package_metadata.c \
     src/package_manifest.c \
     src/checksum.c \
     src/third_party/sha256.c \
-    src/assets.c \
-    src/update_assets.c \
     src/package.c \
     src/installed_package.c \
     src/package_transaction.c \
     src/update_journal.c \
     src/runtime_journal.c \
+    src/runtime_recovery.c \
     src/uninstall_journal.c \
     src/uninstall_helper.c \
     src/update_helper.c \
@@ -646,10 +549,10 @@ endif
 
 .PHONY: \
     all build debug coverage sanitizers release release-common-assets release-candidate debug-artifact \
-    help _build _debug-artifact _release-candidate _release-output _version _release-metadata clean \
+    help _build _debug-artifact _release-candidate _release-output _version clean \
     deps deps-check deps-force deps-clean check-toolchain check-binary \
     check-development check-debug check-coverage check-sanitizers check-release \
-    _check-binary quality check docs-assets docs serve version release-metadata \
+    _check-binary quality check docs-assets docs serve version \
     validate-release test test-integration test-unit test-unit-build \
     test-helpers _test-helpers test-build test-release test-windows _test-windows \
     test-portability-linux test-coverage test-sanitizers update-ca-bundle \
@@ -685,7 +588,7 @@ release-common-assets: $(BUILD_ROOT_MARKER)
 	@env VERSION='$(CUP_RELEASE_VERSION)' TAG='$(CUP_RELEASE_TAG)' SHA='$(CUP_RELEASE_COMMIT)' \
 		SOURCE_REPOSITORY='$(SOURCE_REPOSITORY)' TESTS_RUN_ID='$(TESTS_RUN_ID)' \
 		TESTS_RUN_ATTEMPT='$(TESTS_RUN_ATTEMPT)' \
-		RELEASE_RUN_ID='$(RELEASE_RUN_ID)' \
+		RELEASE_RUN_ID='$(RELEASE_RUN_ID)' CATALOG_SOURCE='$(RELEASE_CATALOG_SOURCE)' \
 		CUP_BUILD_ROOT='$(BUILD_ROOT)' \
 		./scripts/release/common-assets.sh '$(abspath $(RELEASE_COMMON_ROOT))'
 
@@ -751,7 +654,6 @@ help:
 		'Version, certificate and documentation targets:' \
 		'  make version                 print generated build identity' \
 		'  make validate-release        validate the explicit/local release context' \
-		'  make release-metadata        print generated version metadata path' \
 		'  make check-ca-bundle         validate the checked-in CA bundle' \
 		'  make update-ca-bundle        download and validate a new CA bundle' \
 		'  make docs-assets             explicitly refresh the remote theme asset' \
@@ -837,18 +739,18 @@ $(BINARY_INSPECTION): $(TARGET) scripts/build/inspect-binary.sh \
 	@CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/build/inspect-binary.sh \
 		'$(PLATFORM)' '$(CONFIGURATION)' '$(abspath $(TARGET))' '$(abspath $@)' build
 
-_debug-artifact: $(TARGET) $(BUILD_CONFIG) $(VERSION_METADATA) | $(BUILD_ROOT_MARKER)
+_debug-artifact: $(TARGET) $(BUILD_CONFIG) | $(BUILD_ROOT_MARKER)
 	@CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/build/finalize-release.sh \
 		'$(PLATFORM)' debug '$(abspath $(TARGET))' '$(abspath $(FINALIZED_ROOT))' \
-		'$(abspath $(BUILD_CONFIG))' '$(abspath $(VERSION_METADATA))' build \
+		'$(abspath $(BUILD_CONFIG))' build \
 		'$(abspath scripts/build/inspect-binary.sh)' \
 		'$(abspath scripts/build/check-path-leaks.sh)'
 	@printf '%s\n' '$(FINALIZED_ROOT)'
 
-_release-candidate: $(TARGET) $(BUILD_CONFIG) $(VERSION_METADATA) | $(BUILD_ROOT_MARKER)
+_release-candidate: $(TARGET) $(BUILD_CONFIG) | $(BUILD_ROOT_MARKER)
 	@CUP_BUILD_ROOT='$(BUILD_ROOT)' ./scripts/build/finalize-release.sh \
 		'$(PLATFORM)' release '$(abspath $(TARGET))' '$(abspath $(FINALIZED_ROOT))' \
-		'$(abspath $(BUILD_CONFIG))' '$(abspath $(VERSION_METADATA))' public \
+		'$(abspath $(BUILD_CONFIG))' public \
 		'$(abspath scripts/build/inspect-binary.sh)' \
 		'$(abspath scripts/build/check-path-leaks.sh)' \
 		'$(PROJECT_ROOT)' '$(DEPS_PREFIX)' '$(HOME)' '$(BUILD_ROOT)'
@@ -872,16 +774,15 @@ $(VERSION_STAMP): FORCE VERSION scripts/version.sh scripts/lib/path-safety.sh \
 		CUP_RELEASE_TAG='$(CUP_RELEASE_TAG)' \
 		CUP_RELEASE_COMMIT='$(CUP_RELEASE_COMMIT)' \
 		./scripts/version.sh generate "$$staging" || exit 1; \
-		for file in version.h version.rc release.txt; do \
+		for file in version.h version.rc; do \
 			cup_path_require_regular_file "$$staging/$$file" "generated $$file" || exit 1; \
 		done; \
 		cup_path_copy_file "$$staging/version.h" '$(abspath $(VERSION_HEADER))' 0644 if-different || exit 1; \
 		cup_path_copy_file "$$staging/version.rc" '$(abspath $(VERSION_RESOURCE))' 0644 if-different || exit 1; \
-		cup_path_copy_file "$$staging/release.txt" '$(abspath $(VERSION_METADATA))' 0644 if-different || exit 1; \
 		cleanup; trap - EXIT HUP INT TERM
 	@. '$(PATH_SAFETY)'; : | cup_path_write_file '$(abspath $@)' 0644 replace
 
-$(VERSION_HEADER) $(VERSION_RESOURCE) $(VERSION_METADATA): $(VERSION_STAMP)
+$(VERSION_HEADER) $(VERSION_RESOURCE): $(VERSION_STAMP)
 	@if test ! -f "$@"; then \
 		. '$(PATH_SAFETY)'; \
 		cup_path_remove_file '$(abspath $(VERSION_STAMP))' 'version stamp'; \
@@ -954,20 +855,12 @@ version: | $(BUILD_ROOT_MARKER)
 		CC='$(CC)' WINDRES='$(WINDRES)'
 
 _version: $(VERSION_STAMP)
-	@cat "$(VERSION_METADATA)"
+	@CUP_OFFICIAL_BUILD='$(VERSION_OFFICIAL_BUILD)' CUP_BUILD_CONFIGURATION='$(CONFIGURATION)' ./scripts/version.sh current
 
 validate-release:
 	@CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release \
 		CUP_RELEASE_VERSION='$(CUP_RELEASE_VERSION)' CUP_RELEASE_TAG='$(CUP_RELEASE_TAG)' \
 		CUP_RELEASE_COMMIT='$(CUP_RELEASE_COMMIT)' ./scripts/version.sh validate-release
-
-release-metadata: | $(BUILD_ROOT_MARKER)
-	+@$(MAKE) --no-print-directory _release-metadata \
-		PLATFORM='$(PLATFORM)' DEPS_PREFIX='$(DEPS_PREFIX)' \
-		CC='$(CC)' WINDRES='$(WINDRES)'
-
-_release-metadata: $(VERSION_STAMP)
-	@printf '%s\n' '$(VERSION_METADATA)'
 
 clean:
 	@root='$(BUILD_ROOT)'; project='$(PROJECT_ROOT)'; \

@@ -1,10 +1,6 @@
-/*
- * Exercises catalog tuple assembly, source choice, strict validation, catalog
- * queries and HTTPS template expansion.
- */
+/* Exercises concrete catalog parsing, operational filtering and exact artifact queries. */
 
 #include "package_catalog.h"
-#include "registry.h"
 #include "layout.h"
 #include "system.h"
 #include "text.h"
@@ -15,6 +11,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+static const char *const SHA_A =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+static const char *const SHA_B =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 static char installed_path[MAX_PATH_LEN];
@@ -34,33 +36,32 @@ void setUp(void) {
     exists_error_call = 0;
     installed_path[0] = '\0';
 }
-
-void tearDown(void) {
-}
+void tearDown(void) {}
 
 int download_insecure_loopback_is_allowed(const char *url) {
     (void)url;
     return 0;
 }
 
-CupError checksum_sha256_bytes(const unsigned char *data,
-                               size_t data_size,
-                               char *hex,
-                               size_t size) {
-    (void)data;
-    (void)data_size;
-    if (hex == NULL || size < 65) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+int checksum_digest_is_canonical(const char *value) {
+    size_t i;
+    if (value == NULL || strlen(value) != 64u) return 0;
+    for (i = 0; i < 64u; ++i) {
+        if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) return 0;
     }
-    memset(hex, 'a', 64);
-    hex[64] = '\0';
-    return CUP_OK;
+    return 1;
 }
 
+CupError checksum_sha256_bytes(const unsigned char *data, size_t data_size, char *hex, size_t size) {
+    (void)data; (void)data_size;
+    if (hex == NULL || size < 65) return CUP_ERR_BUFFER_TOO_SMALL;
+    memset(hex, 'd', 64); hex[64] = '\0'; return CUP_OK;
+}
+
+
+CupError layout_ensure_config(void) { return CUP_OK; }
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    if (layout_error != CUP_OK) {
-        return layout_error;
-    }
+    if (layout_error != CUP_OK) return layout_error;
     return text_copy(buffer, size, installed_path);
 }
 
@@ -69,952 +70,335 @@ CupError system_path_exists(const char *path, int *exists) {
     if (exists_error != CUP_OK || exists_calls == exists_error_call) {
         return exists_error != CUP_OK ? exists_error : CUP_ERR_FILESYSTEM;
     }
-    if (path == NULL || exists == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
+    if (path == NULL || exists == NULL) return CUP_ERR_INVALID_INPUT;
     *exists = strcmp(path, installed_path) == 0 ? installed_exists : development_exists;
+    return CUP_OK;
+}
+
+CupError system_copy_file(const char *source_path, const char *destination_path) {
+    (void)source_path;
+    (void)destination_path;
     return CUP_OK;
 }
 
 static void build_path(char *out, size_t size, const char *name) {
     int written = snprintf(out, size, "%s/%s", temp_dir, name);
-
     TEST_ASSERT_TRUE(written >= 0 && (size_t)written < size);
 }
 
 static void write_text(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
-
     TEST_ASSERT_NOT_NULL(file);
     TEST_ASSERT_EQUAL_size_t(strlen(text), fwrite(text, 1, strlen(text), file));
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
-static void write_tuple(FILE *file,
-                        const char *component,
-                        const char *tool,
-                        const char *host,
-                        const char *target,
-                        const char *stable,
-                        const char *versions,
-                        const char *format,
-                        const char *formats,
-                        const char *url,
-                        const char *checksum) {
+static void write_header(FILE *file, unsigned long long revision) {
     TEST_ASSERT_TRUE(fprintf(file,
-                             "%s.%s.%s.%s.stable_version=%s\n"
-                             "%s.%s.%s.%s.available_versions=%s\n"
-                             "%s.%s.%s.%s.default_format=%s\n"
-                             "%s.%s.%s.%s.formats=%s\n"
-                             "%s.%s.%s.%s.url_template=%s\n"
-                             "%s.%s.%s.%s.checksum_url_template=%s\n",
-                             component,
-                             tool,
-                             host,
-                             target,
-                             stable,
-                             component,
-                             tool,
-                             host,
-                             target,
-                             versions,
-                             component,
-                             tool,
-                             host,
-                             target,
-                             format,
-                             component,
-                             tool,
-                             host,
-                             target,
-                             formats,
-                             component,
-                             tool,
-                             host,
-                             target,
-                             url,
-                             component,
-                             tool,
-                             host,
-                             target,
-                             checksum) > 0);
+                             "format=1\nrevision=%llu\n"
+                             "update_url=https://raw.example.invalid/catalog.cfg\n",
+                             revision) > 0);
+}
+
+static void write_package(FILE *file,
+                          size_t index,
+                          const char *component,
+                          const char *tool,
+                          const char *host,
+                          const char *target,
+                          const char *version,
+                          int stable,
+                          const char *reason,
+                          const char *format,
+                          const char *url,
+                          const char *sha) {
+    TEST_ASSERT_TRUE(fprintf(file,
+                             "package.%zu.component=%s\n"
+                             "package.%zu.tool=%s\n"
+                             "package.%zu.host=%s\n"
+                             "package.%zu.target=%s\n"
+                             "package.%zu.version=%s\n"
+                             "package.%zu.stable=%s\n",
+                             index, component, index, tool, index, host, index, target,
+                             index, version, index, stable ? "true" : "false") > 0);
+    if (reason != NULL) {
+        TEST_ASSERT_TRUE(fprintf(file, "package.%zu.revision_reason=%s\n", index, reason) > 0);
+    }
+    TEST_ASSERT_TRUE(fprintf(file,
+                             "package.%zu.artifact.0.format=%s\n"
+                             "package.%zu.artifact.0.url=%s\n"
+                             "package.%zu.artifact.0.sha256=%s\n",
+                             index, format, index, url, index, sha) > 0);
 }
 
 static void write_valid_catalog(const char *path) {
     FILE *file = fopen(path, "wb");
-
     TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0);
-    write_tuple(file,
-                "compiler",
-                "clang",
-                "linux-x64",
-                "linux-x64",
-                "22.1.5",
-                "22.1.5,21.1.5",
-                "tar.xz",
-                "tar.xz,tar.gz,zip",
-                "https://example.invalid/{tool}-{version}-{host_platform}-"
-                "{target_platform}.{format}",
-                "https://example.invalid/{tool}-{version}-{host_platform}-"
-                "{target_platform}/SHA256SUMS");
+    write_header(file, 42);
+    write_package(file, 0, "compiler", "clang", "linux-x64", "linux-x64", "23.1.0", 0,
+                  NULL, "tar.gz", "https://example.invalid/clang-23.1.0.tar.gz", SHA_A);
+    write_package(file, 1, "compiler", "clang", "linux-x64", "linux-x64", "24.0.0-rev1", 1,
+                  "Packaging fix", "zip", "https://example.invalid/clang-24.0.0-rev1.zip", SHA_B);
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
-static void assert_rejected_format_marker(const char *name, const char *marker) {
+static void assert_rejected(const char *name, const char *body) {
     PackageCatalog catalog;
     char path[256];
-    FILE *file;
-
-    build_path(path, sizeof(path), name);
-    file = fopen(path, "wb");
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_TRUE(fprintf(file, "%s\n", marker) > 0);
-    write_tuple(file,
-                "compiler",
-                "clang",
-                "linux-x64",
-                "linux-x64",
-                "22.1.5",
-                "22.1.5",
-                "tar.xz",
-                "tar.xz",
-                "https://example.invalid/{version}-{host_platform}-{target_platform}.{format}",
-                "https://example.invalid/{version}-{host_platform}-{target_platform}/SHA256SUMS");
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-    package_catalog_init(&catalog);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_load_path(&catalog, path));
-    package_catalog_free(&catalog);
-}
-
-static void assert_rejected_raw(const char *name, const char *body) {
-    PackageCatalog catalog;
-    char path[256];
-
     package_catalog_init(&catalog);
     build_path(path, sizeof(path), name);
     write_text(path, body);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
     TEST_ASSERT_EQUAL_size_t(0, catalog.count);
     package_catalog_free(&catalog);
 }
 
-static void assert_rejected(const char *name, const char *body) {
-    char catalog[8192];
-
-    TEST_ASSERT_TRUE(snprintf(catalog, sizeof(catalog), "format=1\n%s", body) > 0);
-    assert_rejected_raw(name, catalog);
-}
-
-static void test_load_queries(void) {
+static void test_load_queries_and_artifacts(void) {
     PackageCatalog catalog;
     char path[256];
     char value[MAX_CATALOG_URL_LEN];
+    char digest[65];
     int flag = 0;
 
     package_catalog_init(&catalog);
     build_path(path, sizeof(path), "valid.cfg");
     write_valid_catalog(path);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, package_catalog_load_path(&catalog, path));
-    TEST_ASSERT_EQUAL_size_t(1, catalog.count);
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_resolve_stable(
-            &catalog, value, sizeof(value), "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("22.1.5", value);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_get_default_format(
-            &catalog, value, sizeof(value), "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("tar.xz", value);
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_is_stable(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_TRUE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_is_stable(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "21.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_catalog_has_package(
-                              &catalog, "compiler", "clang", "linux-x64", "linux-x64", &flag));
-    TEST_ASSERT_TRUE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_has_package(&catalog, "linker", "ld", "linux-x64", "linux-x64", &flag));
-    TEST_ASSERT_FALSE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_has_version(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "21.1.5", &flag));
-    TEST_ASSERT_TRUE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_has_version(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "20.1.0", &flag));
-    TEST_ASSERT_FALSE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_has_format(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "zip", &flag));
-    TEST_ASSERT_TRUE(flag);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_catalog_has_format(
-            &catalog, "compiler", "clang", "linux-x64", "linux-x64", "7z", &flag));
-    TEST_ASSERT_FALSE(flag);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_size_t(2, catalog.count);
+    TEST_ASSERT_EQUAL_UINT64(42, catalog.revision);
+    TEST_ASSERT_TRUE(catalog.packages[0].operational);
+    TEST_ASSERT_TRUE(catalog.packages[1].operational);
+    TEST_ASSERT_EQUAL_STRING("Packaging fix", catalog.packages[1].revision_reason);
 
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_catalog_build_url(&catalog,
-                                                    value,
-                                                    sizeof(value),
-                                                    "compiler",
-                                                    "clang",
-                                                    "linux-x64",
-                                                    "linux-x64",
-                                                    "22.1.5",
-                                                    "tar.xz"));
-    TEST_ASSERT_EQUAL_STRING("https://example.invalid/clang-22.1.5-linux-x64-linux-x64.tar.xz",
-                             value);
+                          package_catalog_resolve_stable(&catalog, value, sizeof(value),
+                                                         "compiler", "clang", "linux-x64", "linux-x64"));
+    TEST_ASSERT_EQUAL_STRING("24.0.0-rev1", value);
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_catalog_build_checksum_url(&catalog,
-                                                             value,
-                                                             sizeof(value),
-                                                             "compiler",
-                                                             "clang",
-                                                             "linux-x64",
-                                                             "linux-x64",
-                                                             "22.1.5"));
-    TEST_ASSERT_EQUAL_STRING("https://example.invalid/clang-22.1.5-linux-x64-linux-x64/SHA256SUMS",
-                             value);
+                          package_catalog_is_stable(&catalog, "compiler", "clang", "linux-x64",
+                                                    "linux-x64", "24.0.0-rev1", &flag));
+    TEST_ASSERT_TRUE(flag);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_catalog_has_version(&catalog, "compiler", "clang", "linux-x64",
+                                                      "linux-x64", "23.1.0", &flag));
+    TEST_ASSERT_TRUE(flag);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_catalog_resolve_artifact(&catalog, "compiler", "clang",
+                                                           "linux-x64", "linux-x64", "24.0.0-rev1",
+                                                           "zip", value, sizeof(value), digest, sizeof(digest)));
+    TEST_ASSERT_EQUAL_STRING("https://example.invalid/clang-24.0.0-rev1.zip", value);
+    TEST_ASSERT_EQUAL_STRING(SHA_B, digest);
     package_catalog_free(&catalog);
 }
 
-static void test_source_choice(void) {
+static void test_future_records_are_structural_not_operational(void) {
+    PackageCatalog catalog;
+    char path[256];
+    char stable[MAX_IDENTIFIER_LEN];
+    int available = 1;
+    FILE *file;
+
+    package_catalog_init(&catalog);
+    build_path(path, sizeof(path), "future.cfg");
+    file = fopen(path, "wb"); TEST_ASSERT_NOT_NULL(file);
+    write_header(file, 1);
+    write_package(file, 0, "future-component", "future-tool", "future-os-riscv128",
+                  "future-os-riscv128", "future-v1", 1, NULL, "future-format",
+                  "https://example.invalid/future.pkg", SHA_A);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_size_t(1, catalog.count);
+    TEST_ASSERT_FALSE(catalog.packages[0].operational);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_catalog_has_package(&catalog, "future-component", "future-tool",
+                                                      "future-os-riscv128", "future-os-riscv128", &available));
+    TEST_ASSERT_FALSE(available);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
+                          package_catalog_resolve_stable(&catalog, stable, sizeof(stable),
+                                                         "future-component", "future-tool",
+                                                         "future-os-riscv128", "future-os-riscv128"));
+    package_catalog_free(&catalog);
+}
+
+static void test_future_stable_does_not_promote_old_release(void) {
+    PackageCatalog catalog;
+    char path[256];
+    char stable[MAX_IDENTIFIER_LEN];
+    FILE *file;
+
+    package_catalog_init(&catalog);
+    build_path(path, sizeof(path), "future-stable.cfg");
+    file = fopen(path, "wb"); TEST_ASSERT_NOT_NULL(file);
+    write_header(file, 2);
+    write_package(file, 0, "compiler", "clang", "linux-x64", "linux-x64", "23.1.0", 0,
+                  NULL, "zip", "https://example.invalid/old.zip", SHA_A);
+    write_package(file, 1, "compiler", "clang", "linux-x64", "linux-x64", "24.0.0", 1,
+                  NULL, "future-format", "https://example.invalid/future.pkg", SHA_B);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_TRUE(catalog.packages[0].operational);
+    TEST_ASSERT_FALSE(catalog.packages[1].operational);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
+                          package_catalog_resolve_stable(&catalog, stable, sizeof(stable),
+                                                         "compiler", "clang", "linux-x64", "linux-x64"));
+    package_catalog_free(&catalog);
+}
+
+static void test_future_catalog_format_is_unsupported_not_corrupt(void) {
     PackageCatalog catalog;
     char path[256];
 
     package_catalog_init(&catalog);
-    build_path(path, sizeof(path), "installed.cfg");
-    write_valid_catalog(path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(installed_path, sizeof(installed_path), path));
-
-    installed_exists = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load(&catalog));
-    package_catalog_free(&catalog);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(installed_path, sizeof(installed_path), path));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_installed(&catalog));
-    package_catalog_free(&catalog);
-
-    {
-        char cwd[MAX_PATH_LEN];
-        char config_path[MAX_PATH_LEN];
-        char development_path[MAX_PATH_LEN];
-
-        TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
-        TEST_ASSERT_TRUE(snprintf(config_path, sizeof(config_path), "%s/config", temp_dir) > 0);
-        if (test_mkdir(config_path, 0755) != 0) {
-            TEST_ASSERT_EQUAL_INT(EEXIST, errno);
-        }
-        TEST_ASSERT_TRUE(
-            snprintf(development_path, sizeof(development_path), "%s/packages.cfg", config_path) >
-            0);
-        write_valid_catalog(development_path);
-        TEST_ASSERT_EQUAL_INT(0, chdir(temp_dir));
-        TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(installed_path, sizeof(installed_path), path));
-        installed_exists = 0;
-        development_exists = 1;
-        TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load(&catalog));
-        TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_development(&catalog));
-        package_catalog_free(&catalog);
-        TEST_ASSERT_EQUAL_INT(0, chdir(cwd));
-    }
-
-    layout_error = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_catalog_load_path(&catalog, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_catalog_load(&catalog));
+    build_path(path, sizeof(path), "future-format.cfg");
+    write_text(path,
+               "format=2\n"
+               "revision=1\n"
+               "update_url=https://example.invalid/catalog.cfg\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE, package_catalog_load_path(&catalog, path));
     TEST_ASSERT_EQUAL_size_t(0, catalog.count);
-    TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          package_catalog_load_path(&catalog, path));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_catalog_load_installed(&catalog));
-    TEST_ASSERT_EQUAL_size_t(0, catalog.count);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_catalog_load_installed(NULL));
-    layout_error = CUP_OK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_catalog_load(NULL));
 
-    exists_error = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, package_catalog_load(&catalog));
-    exists_error = CUP_OK;
-    installed_exists = 0;
-    development_exists = 0;
-    exists_calls = 0;
-    exists_error_call = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load(&catalog));
+    build_path(path, sizeof(path), "malformed-format-text.cfg");
+    write_text(path,
+               "format=x\n"
+               "revision=1\n"
+               "update_url=https://example.invalid/catalog.cfg\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
+
+    build_path(path, sizeof(path), "malformed-format-leading-zero.cfg");
+    write_text(path,
+               "format=01\n"
+               "revision=1\n"
+               "update_url=https://example.invalid/catalog.cfg\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
     package_catalog_free(&catalog);
 }
 
-static void test_tuple_growth(void) {
-    static const char *const platforms[] = {
-        "linux-x64", "linux-arm64", "windows-x64", "macos-x64", "macos-arm64"};
+static void test_structural_rejections(void) {
+    assert_rejected("missing-revision.cfg",
+                    "format=1\nupdate_url=https://example.invalid/catalog.cfg\n");
+    assert_rejected("noncanonical-revision.cfg",
+                    "format=1\nrevision=01\nupdate_url=https://example.invalid/catalog.cfg\n");
+    assert_rejected("bad-update-url.cfg",
+                    "format=1\nrevision=1\nupdate_url=http://example.invalid/catalog.cfg\n");
+    assert_rejected("unknown-core.cfg",
+                    "format=1\nrevision=1\nupdate_url=https://example.invalid/catalog.cfg\nfoo=bar\n");
+    assert_rejected("meta.cfg",
+                    "format=1\nrevision=1\nupdate_url=https://example.invalid/catalog.cfg\nmeta.generator=test\n");
+    assert_rejected("manifest.cfg",
+                    "format=1\nrevision=1\nupdate_url=https://example.invalid/catalog.cfg\n"
+                    "package.0.component=compiler\npackage.0.tool=clang\npackage.0.host=linux-x64\n"
+                    "package.0.target=linux-x64\npackage.0.version=23.1.0\npackage.0.stable=true\n"
+                    "package.0.manifest_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "package.0.artifact.0.format=zip\npackage.0.artifact.0.url=https://example.invalid/a.zip\n"
+                    "package.0.artifact.0.sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
+    assert_rejected("incomplete-artifact.cfg",
+                    "format=1\nrevision=1\nupdate_url=https://example.invalid/catalog.cfg\n"
+                    "package.0.component=compiler\npackage.0.tool=clang\npackage.0.host=linux-x64\n"
+                    "package.0.target=linux-x64\npackage.0.version=23.1.0\npackage.0.stable=true\n"
+                    "package.0.artifact.0.format=zip\npackage.0.artifact.0.url=https://example.invalid/a.zip\n");
+}
+
+static void test_duplicate_and_semantic_stable_rejected(void) {
+    PackageCatalog catalog;
+    char path[256];
+    FILE *file;
+
+    package_catalog_init(&catalog);
+    build_path(path, sizeof(path), "duplicate.cfg");
+    file = fopen(path, "wb"); TEST_ASSERT_NOT_NULL(file);
+    write_header(file, 1);
+    write_package(file, 0, "compiler", "clang", "linux-x64", "linux-x64", "23.1.0", 0,
+                  NULL, "zip", "https://example.invalid/a.zip", SHA_A);
+    write_package(file, 1, "compiler", "clang", "linux-x64", "linux-x64", "23.1.0", 1,
+                  NULL, "zip", "https://example.invalid/b.zip", SHA_B);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
+
+    build_path(path, sizeof(path), "wrong-stable.cfg");
+    file = fopen(path, "wb"); TEST_ASSERT_NOT_NULL(file);
+    write_header(file, 1);
+    write_package(file, 0, "compiler", "clang", "linux-x64", "linux-x64", "23.1.0", 1,
+                  NULL, "zip", "https://example.invalid/a.zip", SHA_A);
+    write_package(file, 1, "compiler", "clang", "linux-x64", "linux-x64", "24.0.0", 0,
+                  NULL, "zip", "https://example.invalid/b.zip", SHA_B);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
+    package_catalog_free(&catalog);
+}
+
+static void test_dynamic_artifact_storage(void) {
     PackageCatalog catalog;
     char path[256];
     FILE *file;
     size_t i;
 
     package_catalog_init(&catalog);
-    build_path(path, sizeof(path), "many.cfg");
-    file = fopen(path, "wb");
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0);
-    for (i = 0; i < 17; ++i) {
-        write_tuple(file,
-                    "compiler",
-                    "clang",
-                    platforms[i / 5],
-                    platforms[i % 5],
-                    "22.1.5",
-                    "22.1.5",
-                    "tar.xz",
-                    "tar.xz",
-                    "https://example.invalid/{version}-{host_platform}-"
-                    "{target_platform}.{format}",
-                    "https://example.invalid/{version}-{host_platform}-"
-                    "{target_platform}/SHA256SUMS");
+    build_path(path, sizeof(path), "many-artifacts.cfg");
+    file = fopen(path, "wb"); TEST_ASSERT_NOT_NULL(file);
+    write_header(file, 1);
+    TEST_ASSERT_TRUE(fprintf(file,
+                             "package.0.component=compiler\npackage.0.tool=clang\n"
+                             "package.0.host=linux-x64\npackage.0.target=linux-x64\n"
+                             "package.0.version=23.1.0\npackage.0.stable=true\n") > 0);
+    for (i = 0; i < 20; ++i) {
+        TEST_ASSERT_TRUE(fprintf(file,
+                                 "package.0.artifact.%zu.format=future%zu\n"
+                                 "package.0.artifact.%zu.url=https://example.invalid/%zu.pkg\n"
+                                 "package.0.artifact.%zu.sha256=%s\n",
+                                 i, i, i, i, i, SHA_A) > 0);
     }
     TEST_ASSERT_EQUAL_INT(0, fclose(file));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, package_catalog_load_path(&catalog, path));
-    TEST_ASSERT_EQUAL_size_t(17, catalog.count);
-    TEST_ASSERT_TRUE(catalog.capacity >= 17);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_size_t(20, catalog.packages[0].artifact_count);
+    TEST_ASSERT_FALSE(catalog.packages[0].operational);
     package_catalog_free(&catalog);
 }
 
-static void test_record_errors(void) {
-    assert_rejected_raw("missing-format.cfg",
-                        "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n");
-    assert_rejected_raw("wrong-format.cfg", "format=2\n");
-    assert_rejected_format_marker("leading-comment-format.cfg", "# comment\nformat=1");
-    assert_rejected_format_marker("spaced-format.cfg", "format = 1");
-    assert_rejected("empty.cfg", "# only comments\n\n");
-    assert_rejected("no-equals.cfg", "compiler.clang.linux-x64.linux-x64.stable_version\n");
-    assert_rejected("short-key.cfg", "compiler.clang.linux-x64.stable_version=1\n");
-    assert_rejected("unknown-field.cfg", "compiler.clang.linux-x64.linux-x64.unknown=value\n");
-    assert_rejected("bad-component.cfg", "unknown.clang.linux-x64.linux-x64.stable_version=1\n");
-    assert_rejected("bad-tool.cfg", "compiler.gdb.linux-x64.linux-x64.stable_version=1\n");
-    assert_rejected("bad-platform.cfg", "compiler.clang.plan9-x64.linux-x64.stable_version=1\n");
-    assert_rejected("bad-target.cfg", "compiler.clang.linux-x64.plan9-x64.stable_version=1\n");
-    assert_rejected("duplicate.cfg",
-                    "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                    "compiler.clang.linux-x64.linux-x64.stable_version=21.1.5\n");
-}
-
-static void test_value_errors(void) {
-    const char *head = "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                       "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5\n"
-                       "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                       "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n";
-    char body[4096];
-
-    TEST_ASSERT_TRUE(
-        snprintf(body,
-                 sizeof(body),
-                 "%s%s",
-                 head,
-                 "compiler.clang.linux-x64.linux-x64.url_template=https://example.invalid/"
-                 "{version}-{host_platform}-{target_platform}.{format}\n") > 0);
-    assert_rejected("missing-field.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=21.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("stable-missing.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=bad version\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=bad-version\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("bad-identifier.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=stable\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=stable\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("symbolic-concrete-version.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64."
-                              "available_versions=22.1.5,22.1.5-RC1\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("noncanonical-version.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=bad format\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=bad-format\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("bad-format-id.cfg", body);
-
-    TEST_ASSERT_TRUE(snprintf(body,
-                              sizeof(body),
-                              "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5\n"
-                              "compiler.clang.linux-x64.linux-x64.default_format=zip\n"
-                              "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                              "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}.{format}\n"
-                              "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                              "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("format-missing.cfg", body);
-
-    TEST_ASSERT_TRUE(
-        snprintf(body,
-                 sizeof(body),
-                 "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                 "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5,bad/value\n"
-                 "compiler.clang.linux-x64.linux-x64.default_format=tar.xz\n"
-                 "compiler.clang.linux-x64.linux-x64.formats=tar.xz\n"
-                 "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                 "{version}-{host_platform}-{target_platform}.{format}\n"
-                 "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                 "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("bad-list.cfg", body);
-
-    TEST_ASSERT_TRUE(
-        snprintf(body,
-                 sizeof(body),
-                 "compiler.clang.linux-x64.linux-x64.stable_version=22.1.5\n"
-                 "compiler.clang.linux-x64.linux-x64.available_versions=22.1.5,22.1.5\n"
-                 "compiler.clang.linux-x64.linux-x64.default_format=zip\n"
-                 "compiler.clang.linux-x64.linux-x64.formats=tar.xz,tar.xz\n"
-                 "compiler.clang.linux-x64.linux-x64.url_template=https://x/"
-                 "{version}-{host_platform}-{target_platform}.{format}\n"
-                 "compiler.clang.linux-x64.linux-x64.checksum_url_template=https://x/"
-                 "{version}-{host_platform}-{target_platform}\n") > 0);
-    assert_rejected("duplicate-list.cfg", body);
-}
-
-static void test_template_errors(void) {
-    const char *versions = "22.1.5";
-    const char *formats = "tar.xz";
-    const char *valid_checksum = "https://x/{version}-{host_platform}-{target_platform}";
-    char path[256];
-    FILE *file;
-    PackageCatalog catalog;
-
-#define WRITE_BAD(name, url, checksum) \
-    do { \
-        build_path(path, sizeof(path), (name)); \
-        file = fopen(path, "wb"); \
-        TEST_ASSERT_NOT_NULL(file); \
-        TEST_ASSERT_TRUE(fprintf(file, "format=1\n") > 0); \
-        write_tuple(file, \
-                    "compiler", \
-                    "clang", \
-                    "linux-x64", \
-                    "linux-x64", \
-                    "22.1.5", \
-                    versions, \
-                    "tar.xz", \
-                    formats, \
-                    (url), \
-                    (checksum)); \
-        TEST_ASSERT_EQUAL_INT(0, fclose(file)); \
-        package_catalog_init(&catalog); \
-        TEST_ASSERT_EQUAL_INT( \
-            CUP_ERR_CATALOG, \
-            package_catalog_load_path(&catalog, path)); \
-        package_catalog_free(&catalog); \
-    } while (0)
-
-    WRITE_BAD("http.cfg",
-              "http://x/{version}-{host_platform}-{target_platform}.{format}",
-              valid_checksum);
-    WRITE_BAD("space.cfg",
-              "https://x/{version}- {host_platform}-{target_platform}.{format}",
-              valid_checksum);
-    WRITE_BAD("close.cfg",
-              "https://x/}-{version}-{host_platform}-{target_platform}.{format}",
-              valid_checksum);
-    WRITE_BAD("open.cfg",
-              "https://x/{bad-{version}-{host_platform}-{target_platform}.{format}",
-              valid_checksum);
-    WRITE_BAD("unknown.cfg",
-              "https://x/{unknown}-{version}-{host_platform}-{target_platform}.{format}",
-              valid_checksum);
-    WRITE_BAD("unclosed.cfg", "https://x/{version", valid_checksum);
-    WRITE_BAD("missing.cfg", "https://x/{version}-{host_platform}.{format}", valid_checksum);
-    WRITE_BAD("checksum-format.cfg",
-              "https://x/{version}-{host_platform}-{target_platform}.{format}",
-              "https://x/{version}-{host_platform}-{target_platform}.{format}");
-#undef WRITE_BAD
-}
-
-static void assert_invalid_catalog_load_and_resolution(PackageCatalog *catalog, char *value) {
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            catalog, NULL, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            NULL, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            catalog, value, MAX_CATALOG_URL_LEN, "", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_resolve_stable(
-            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", ""));
-}
-
-static void assert_invalid_catalog_stability(PackageCatalog *catalog) {
-    int flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL, &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            NULL, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "compiler", "", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "compiler", "clang", "", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_is_stable(
-            catalog, "compiler", "clang", "linux-x64", "", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-}
-
-static void assert_invalid_catalog_package_presence(PackageCatalog *catalog) {
-    int flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL));
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(
-            NULL, "compiler", "clang", "linux-x64", "linux-x64", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(catalog, "", "clang", "linux-x64", "linux-x64", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(catalog, "compiler", "", "linux-x64", "linux-x64", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(catalog, "compiler", "clang", "", "linux-x64", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_package(catalog, "compiler", "clang", "linux-x64", "", &flag));
-    TEST_ASSERT_FALSE(flag);
-}
-
-static void assert_invalid_catalog_version_presence(PackageCatalog *catalog) {
-    int flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", NULL));
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            NULL, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "", "clang", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "compiler", "", "linux-x64", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "compiler", "clang", "", "linux-x64", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "compiler", "clang", "linux-x64", "", "22.1.5", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_version(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", "", &flag));
-    TEST_ASSERT_FALSE(flag);
-}
-
-static void assert_invalid_catalog_format_presence(PackageCatalog *catalog) {
-    int flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_format(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", NULL, &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_format(
-            catalog, "compiler", "clang", "linux-x64", "linux-x64", "tar.xz", NULL));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_has_format(
-            NULL, "compiler", "clang", "linux-x64", "linux-x64", "tar.xz", &flag));
-    TEST_ASSERT_FALSE(flag);
-}
-
-static void assert_invalid_catalog_default_format(PackageCatalog *catalog, char *value) {
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_get_default_format(
-            catalog, value, 0, "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_get_default_format(
-            catalog, NULL, MAX_CATALOG_URL_LEN, "compiler", "clang", "linux-x64", "linux-x64"));
-}
-
-static void assert_invalid_catalog_urls(PackageCatalog *catalog, char *value) {
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(NULL,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  NULL,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  0,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "",
-                                  "22.1.5",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "",
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "22.1.5",
-                                  ""));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_build_checksum_url(catalog,
-                                           value,
-                                           MAX_CATALOG_URL_LEN,
-                                           "compiler",
-                                           "clang",
-                                           "linux-x64",
-                                           "linux-x64",
-                                           ""));
-}
-
-static void assert_invalid_catalog_queries(PackageCatalog *catalog, char *value) {
-    assert_invalid_catalog_load_and_resolution(catalog, value);
-    assert_invalid_catalog_stability(catalog);
-    assert_invalid_catalog_package_presence(catalog);
-    assert_invalid_catalog_version_presence(catalog);
-    assert_invalid_catalog_format_presence(catalog);
-    assert_invalid_catalog_default_format(catalog, value);
-    assert_invalid_catalog_urls(catalog, value);
-}
-
-static void assert_missing_catalog_queries(PackageCatalog *catalog, char *value) {
-    int flag = 1;
-
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_resolve_stable(
-            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "gcc", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_is_stable(
-            catalog, "compiler", "gcc", "linux-x64", "linux-x64", "1", &flag));
-    TEST_ASSERT_FALSE(flag);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_has_version(
-            catalog, "compiler", "gcc", "linux-x64", "linux-x64", "1", &flag));
-    TEST_ASSERT_FALSE(flag);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_get_default_format(
-            catalog, value, MAX_CATALOG_URL_LEN, "compiler", "gcc", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    flag = 1;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_has_format(
-            catalog, "compiler", "gcc", "linux-x64", "linux-x64", "zip", &flag));
-    TEST_ASSERT_FALSE(flag);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "gcc",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  "1",
-                                  "zip"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_build_checksum_url(catalog,
-                                           value,
-                                           MAX_CATALOG_URL_LEN,
-                                           "compiler",
-                                           "gcc",
-                                           "linux-x64",
-                                           "linux-x64",
-                                           "1"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-}
-
-static void assert_catalog_query_bounds(PackageCatalog *catalog, char *value) {
-    char huge[MAX_CATALOG_URL_LEN + 32];
-
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_resolve_stable(
-            catalog, value, 2, "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_get_default_format(
-            catalog, value, 2, "compiler", "clang", "linux-x64", "linux-x64"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_build_url(
-            catalog, value, 4, "compiler", "clang", "linux-x64", "linux-x64", "22.1.5", "tar.xz"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-
-    memset(huge, 'v', sizeof(huge) - 1);
-    huge[sizeof(huge) - 1] = '\0';
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_build_url(catalog,
-                                  value,
-                                  MAX_CATALOG_URL_LEN,
-                                  "compiler",
-                                  "clang",
-                                  "linux-x64",
-                                  "linux-x64",
-                                  huge,
-                                  "tar.xz"));
-    TEST_ASSERT_EQUAL_STRING("", value);
-    strcpy(value, "stale");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_build_checksum_url(catalog,
-                                           value,
-                                           MAX_CATALOG_URL_LEN,
-                                           "compiler",
-                                           "clang",
-                                           "linux-x64",
-                                           "linux-x64",
-                                           huge));
-    TEST_ASSERT_EQUAL_STRING("", value);
-}
-
-static void test_query_errors(void) {
+static void test_query_errors_and_source_choice(void) {
     PackageCatalog catalog;
     char path[256];
     char value[MAX_CATALOG_URL_LEN];
+    char digest[65];
+    char cwd[MAX_PATH_LEN];
+    char config_path[MAX_PATH_LEN];
+    char development_path[MAX_PATH_LEN];
+    int flag = 1;
 
     package_catalog_init(&catalog);
-    build_path(path, sizeof(path), "queries.cfg");
+    build_path(path, sizeof(path), "installed.cfg");
     write_valid_catalog(path);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
+                          package_catalog_resolve_artifact(&catalog, "compiler", "clang", "linux-x64",
+                                                           "linux-x64", "24.0.0-rev1", "zip", value, 4,
+                                                           digest, sizeof(digest)));
+    TEST_ASSERT_EQUAL_STRING("", value);
+    TEST_ASSERT_EQUAL_STRING("", digest);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_catalog_has_package(&catalog, "compiler", "clang", "linux-x64",
+                                                      "linux-x64", NULL));
+    package_catalog_free(&catalog);
 
-    assert_invalid_catalog_queries(&catalog, value);
-    assert_missing_catalog_queries(&catalog, value);
-    assert_catalog_query_bounds(&catalog, value);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, text_copy(installed_path, sizeof(installed_path), path));
+    installed_exists = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load(&catalog));
+    package_catalog_free(&catalog);
+
+    TEST_ASSERT_NOT_NULL(getcwd(cwd, sizeof(cwd)));
+    TEST_ASSERT_TRUE(snprintf(config_path, sizeof(config_path), "%s/config", temp_dir) > 0);
+    if (test_mkdir(config_path, 0755) != 0) TEST_ASSERT_EQUAL_INT(EEXIST, errno);
+    TEST_ASSERT_TRUE(snprintf(development_path, sizeof(development_path), "%s/catalog.cfg", config_path) > 0);
+    write_valid_catalog(development_path);
+    TEST_ASSERT_EQUAL_INT(0, chdir(temp_dir));
+    installed_exists = 0; development_exists = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_catalog_load(&catalog));
+    package_catalog_free(&catalog);
+    TEST_ASSERT_EQUAL_INT(0, chdir(cwd));
+
+    installed_exists = 0; development_exists = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load(&catalog));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_catalog_load(NULL));
+    (void)flag;
     package_catalog_free(&catalog);
 }
 
@@ -1022,59 +406,27 @@ static void test_load_failures(void) {
     PackageCatalog catalog;
     char path[256];
     char long_path[MAX_PATH_LEN + 8];
-    unsigned char bad[] = {'k', 'e', 'y', '=', 'v', 1, '\n'};
-    FILE *file;
-
-    package_catalog_init(NULL);
-    package_catalog_free(NULL);
     package_catalog_init(&catalog);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
-                          package_catalog_load_path(NULL, "x"));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_catalog_load_path(&catalog, ""));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_catalog_load_path(NULL, "x"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_catalog_load_path(&catalog, ""));
     build_path(path, sizeof(path), "missing.cfg");
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_load_path(&catalog, path));
-
-    memset(long_path, 'p', sizeof(long_path) - 1);
-    long_path[sizeof(long_path) - 1] = '\0';
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_BUFFER_TOO_SMALL,
-        package_catalog_load_path(&catalog, long_path));
-
-    build_path(path, sizeof(path), "directory");
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0755));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM,
-        package_catalog_load_path(&catalog, path));
-    TEST_ASSERT_EQUAL_INT(0, test_rmdir(path));
-
-    build_path(path, sizeof(path), "bad-byte.cfg");
-    file = fopen(path, "wb");
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_EQUAL_size_t(9, fwrite("format=1\n", 1, 9, file));
-    TEST_ASSERT_EQUAL_size_t(sizeof(bad), fwrite(bad, 1, sizeof(bad), file));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_CATALOG,
-        package_catalog_load_path(&catalog, path));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, package_catalog_load_path(&catalog, path));
+    memset(long_path, 'p', sizeof(long_path) - 1); long_path[sizeof(long_path) - 1] = '\0';
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, package_catalog_load_path(&catalog, long_path));
     package_catalog_free(&catalog);
 }
 
-
 int main(void) {
-    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
-        temp_dir, sizeof(temp_dir), "cup-catalog-test"));
+    TEST_ASSERT_NOT_NULL(test_make_temp_directory(temp_dir, sizeof(temp_dir), "cup-catalog-test"));
     UNITY_BEGIN();
-    RUN_TEST(test_load_queries);
-    RUN_TEST(test_source_choice);
-    RUN_TEST(test_tuple_growth);
-    RUN_TEST(test_record_errors);
-    RUN_TEST(test_value_errors);
-    RUN_TEST(test_template_errors);
-    RUN_TEST(test_query_errors);
+    RUN_TEST(test_load_queries_and_artifacts);
+    RUN_TEST(test_future_records_are_structural_not_operational);
+    RUN_TEST(test_future_stable_does_not_promote_old_release);
+    RUN_TEST(test_future_catalog_format_is_unsupported_not_corrupt);
+    RUN_TEST(test_structural_rejections);
+    RUN_TEST(test_duplicate_and_semantic_stable_rejected);
+    RUN_TEST(test_dynamic_artifact_storage);
+    RUN_TEST(test_query_errors_and_source_choice);
     RUN_TEST(test_load_failures);
     return UNITY_END();
 }

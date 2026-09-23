@@ -3,7 +3,7 @@
 
 #include "commands.h"
 
-#include "assets.h"
+#include "generation.h"
 #include "package_selector.h"
 #include "wrappers.h"
 #include "filesystem.h"
@@ -38,15 +38,16 @@ static void report_incomplete(DoctorReport *report, const char *description) {
     report->incomplete_count++;
 }
 
-static void report_asset_status(DoctorReport *report,
-                                const char *description,
-                                AssetStatus status) {
-    if (status == CUP_ASSET_VALID) {
+static void report_generation_status(DoctorReport *report,
+                                     const char *description,
+                                     GenerationAssetStatus status) {
+    if (status == CUP_GENERATION_ASSET_VALID) {
         printf("OK: %s is valid.\n", description);
         return;
     }
-
-    printf("Issue: %s is %s.\n", description, status == CUP_ASSET_MISSING ? "missing" : "invalid");
+    printf("Issue: %s is %s.\n",
+           description,
+           status == CUP_GENERATION_ASSET_MISSING ? "missing" : "invalid");
     report->issue_count++;
 }
 
@@ -61,75 +62,62 @@ static void check_read_only_path(const char *path, const char *description, Doct
     }
 }
 
-static CupError load_diagnostic_catalog(const AssetsInspection *inspection,
-                                        PackageCatalog *catalog,
-                                        int *has_catalog) {
+static CupError load_diagnostic_catalog(PackageCatalog *catalog, int *has_catalog) {
     CupError err;
 
     *has_catalog = 0;
-    if (inspection->catalog == CUP_ASSET_VALID) {
-        err = package_catalog_load_installed(catalog);
-    } else if (inspection->development_catalog_valid) {
-        err = package_catalog_load_development(catalog);
-        if (err == CUP_OK) {
-            printf("Info: using the development catalog only for "
-                   "additional diagnostics.\n");
-        }
-    } else {
-        return CUP_OK;
-    }
-
+    err = package_catalog_load_installed(catalog);
     if (err == CUP_OK) {
         *has_catalog = 1;
+        printf("OK: live package catalog is valid.\n");
     }
     return err;
 }
 
-static void check_assets(PackageCatalog *catalog, DoctorReport *report, int *has_catalog) {
-    AssetsInspection inspection;
+static void check_generation_and_catalog(PackageCatalog *catalog,
+                                         DoctorReport *report,
+                                         int *has_catalog) {
+    GenerationInspection inspection;
+    GenerationAssetSpec specs[CUP_GENERATION_ASSET_COUNT];
     CupError err;
-    char path[MAX_PATH_LEN];
 
-    err = assets_inspect(&inspection);
+    *has_catalog = 0;
+    err = generation_inspect(&inspection);
     if (err != CUP_OK) {
-        report_incomplete(report, "cup assets");
-        return;
-    }
-
-    if (assets_has_installed_assets(&inspection)) {
-        report_asset_status(report, "installed cup executable", inspection.binary);
-        report_asset_status(report, "installed package catalog", inspection.catalog);
-        report_asset_status(report, "installation configuration", inspection.install_policy);
-        report_asset_status(report, "common checksum file", inspection.common_checksums);
-        report_asset_status(report, "platform checksum file", inspection.platform_checksums);
-
-        if (inspection.catalog == CUP_ASSET_VALID &&
-            layout_get_package_catalog_path(path, sizeof(path)) == CUP_OK) {
-            check_read_only_path(path, "installed package catalog", report);
+        report_incomplete(report, "cup generation");
+    } else if (generation_has_installed_assets(&inspection)) {
+        report_generation_status(report, "installed release manifest", inspection.release);
+        report_generation_status(report, "installed LICENSE", inspection.license);
+        report_generation_status(report, "installed third-party notices", inspection.notices);
+        report_generation_status(report, "installed cup executable", inspection.binary);
+        if (generation_asset_specs(specs) != CUP_OK) {
+            report_incomplete(report, "cup generation paths");
+        } else {
+            if (inspection.release == CUP_GENERATION_ASSET_VALID)
+                check_read_only_path(specs[CUP_GENERATION_ASSET_RELEASE].destination,
+                                     "installed release manifest", report);
+            if (inspection.license == CUP_GENERATION_ASSET_VALID)
+                check_read_only_path(specs[CUP_GENERATION_ASSET_LICENSE].destination,
+                                     "installed LICENSE", report);
+            if (inspection.notices == CUP_GENERATION_ASSET_VALID)
+                check_read_only_path(specs[CUP_GENERATION_ASSET_NOTICES].destination,
+                                     "installed third-party notices", report);
         }
-        if (inspection.install_policy == CUP_ASSET_VALID &&
-            layout_get_install_policy_path(path, sizeof(path)) == CUP_OK) {
-            check_read_only_path(path, "installation configuration", report);
-        }
-        if (inspection.common_checksums == CUP_ASSET_VALID &&
-            layout_get_common_checksums_path(path, sizeof(path)) == CUP_OK) {
-            check_read_only_path(path, "common checksum file", report);
-        }
-        if (inspection.platform_checksums == CUP_ASSET_VALID &&
-            layout_get_platform_checksums_path(path, sizeof(path)) == CUP_OK) {
-            check_read_only_path(path, "platform checksum file", report);
-        }
-    } else if (assets_development_is_valid(&inspection)) {
-        printf("OK: development cup assets are available.\n");
     } else {
-        printf("Issue: neither installed nor development cup assets "
-               "are complete and valid.\n");
+#if CUP_VERSION_OFFICIAL
+        printf("Issue: installed CUP generation is missing.\n");
         report->issue_count++;
+#else
+        printf("OK: development runtime has no managed official CUP generation.\n");
+#endif
     }
 
-    err = load_diagnostic_catalog(&inspection, catalog, has_catalog);
-    if (err != CUP_OK) {
-        report_incomplete(report, "current package catalog");
+    err = load_diagnostic_catalog(catalog, has_catalog);
+    if (err == CUP_ERR_CATALOG || err == CUP_ERR_FILESYSTEM) {
+        printf("Issue: live package catalog is missing or invalid.\n");
+        report->issue_count++;
+    } else if (err != CUP_OK) {
+        report_incomplete(report, "live package catalog");
     }
 }
 
@@ -213,15 +201,8 @@ static void check_scanned_packages(const PackageList *packages,
                                    DoctorReport *report) {
     size_t i;
 
-    if (packages->foreign_host_count > 0) {
-        printf("Warning: preserved %zu foreign-host package tree(s) without inspecting or adopting "
-               "them.\n",
-               packages->foreign_host_count);
-        report->warning_count++;
-    }
-
     if (!packages->complete) {
-        printf("Issue: package scan exceeded its in-memory capacity and is incomplete.\n");
+        printf("Issue: package scan issue inventory is incomplete.\n");
         report->issue_count++;
     }
 
@@ -380,8 +361,8 @@ static DoctorRuntimeSnapshot acquire_runtime_snapshot(DoctorReport *report, Syst
         return DOCTOR_RUNTIME_UNAVAILABLE;
     }
     if (root_kind == SYSTEM_PATH_MISSING) {
-        printf("Info: cup runtime is not initialized; "
-               "the first operational command will create it.\n");
+        printf("Info: cup runtime is not initialized; install, config set, or update catalog "
+               "can initialize development state when applicable.\n");
         return DOCTOR_RUNTIME_MISSING;
     }
     if (root_kind != SYSTEM_PATH_DIRECTORY) {
@@ -517,19 +498,13 @@ static void check_transaction_journal(DoctorReport *report) {
                    package_transaction.package.version);
         }
         report->issue_count++;
-    } else if (journal_kind == RUNTIME_JOURNAL_UPDATE) {
+    } else if (journal_kind == RUNTIME_JOURNAL_GENERATION) {
         err = update_journal_load(&update_journal, &update_status);
         if (err != CUP_OK || update_status != CUP_UPDATE_JOURNAL_LOADED) {
-            printf("Issue: cup update journal is invalid.\n");
-        } else if (update_journal.phase == CUP_UPDATE_PHASE_FAILED) {
-            printf("Issue: the previous cup update to version %s failed with error %d; "
-                   "recovery is %s.\n",
-                   update_journal.version,
-                   update_journal.error_code,
-                   update_failure_recovery_name(update_journal.recovery));
+            printf("Issue: CUP generation transaction journal is invalid.\n");
         } else {
-            printf("Issue: interrupted cup update transaction detected in phase '%s'.\n",
-                   update_phase_name(update_journal.phase));
+            printf("Issue: interrupted CUP generation transaction detected in workspace '%s'.\n",
+                   update_journal.temporary_name);
         }
         report->issue_count++;
     } else if (journal_kind == RUNTIME_JOURNAL_UNINSTALL) {
@@ -584,13 +559,17 @@ static void check_package_tree(const CupState *state,
                                int state_loaded,
                                DoctorReport *report) {
     PackageList packages;
-    CupError err = package_scan(&packages, NULL);
+    CupError err;
+
+    package_list_init(&packages);
+    err = package_scan(&packages, NULL);
 
     if (err == CUP_OK) {
         check_scanned_packages(&packages, state, state_loaded, report);
     } else {
         report_incomplete(report, "installed package tree");
     }
+    package_list_free(&packages);
 }
 
 static int path_entry_matches(const char *entry, size_t length, const char *directory) {
@@ -705,6 +684,7 @@ CupError command_doctor(void) {
     size_t root_issue_count = 0;
 
     package_catalog_init(&catalog);
+    state_init(&state);
     printf("==> Checking cup installation...\n");
 
     err = layout_check_root_candidates(&root_issue_count);
@@ -735,8 +715,8 @@ CupError command_doctor(void) {
         DoctorRuntimeSnapshot snapshot = acquire_runtime_snapshot(&report, &lock);
 
         if (snapshot == DOCTOR_RUNTIME_MISSING) {
-            check_assets(&catalog, &report, &has_catalog);
-            err = print_doctor_summary(&report);
+            fprintf(stderr, "Error: cup runtime is not installed.\n");
+            err = CUP_ERR_NOT_INSTALLED;
             goto done;
         }
         if (snapshot == DOCTOR_RUNTIME_UNAVAILABLE) {
@@ -744,7 +724,7 @@ CupError command_doctor(void) {
             goto done;
         }
     }
-    check_assets(&catalog, &report, &has_catalog);
+    check_generation_and_catalog(&catalog, &report, &has_catalog);
 
     check_runtime_contents(&report, current_host, sizeof(current_host));
     check_path_integration(&report);
@@ -758,6 +738,7 @@ CupError command_doctor(void) {
     err = print_doctor_summary(&report);
 
 done:
+    state_free(&state);
     package_catalog_free(&catalog);
     system_lock_release(&lock);
     if (root_snapshot_active) {

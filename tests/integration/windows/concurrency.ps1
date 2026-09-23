@@ -25,7 +25,7 @@ function Start-CupCapture {
     $process.StartInfo = $startInfo
     if (-not $process.Start()) {
         $process.Dispose()
-        Fail-Test "failed to start concurrent cup process"
+        Fail-Test 'failed to start concurrent cup process'
     }
     return [pscustomobject]@{
         Process = $process
@@ -40,7 +40,7 @@ function Complete-CupCapture {
     try {
         if (-not $Capture.Process.WaitForExit(30000)) {
             Stop-TestProcessTree -Process $Capture.Process
-            Fail-Test "concurrent cup process did not exit"
+            Fail-Test 'concurrent cup process did not exit'
         }
         $stdout = $Capture.Stdout.Result.TrimEnd([char[]]"`r`n")
         $stderr = $Capture.Stderr.Result.TrimEnd([char[]]"`r`n")
@@ -57,36 +57,28 @@ $server = $null
 $captureA = $null
 
 try {
-    Initialize-TestEnvironment -Name "concurrency" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
-    New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
-        -Entries @("clang", "clang++")
+    Initialize-TestEnvironment -Name 'concurrency' -ExecutablePath $CupExecutablePath
+    New-TestPackage -Component 'compiler' -Tool 'clang' -Version '23.1.0' `
+        -Entries @('clang', 'clang++')
 
-    $helper = Get-TestHelperPath -Name "network-helper"
-
-    $port = 0
-    $serverRoot = Join-Path $Script:CupTestRoot "http-root"
-    $ready = Join-Path $Script:CupTestRoot "http-ready"
-    $requestReady = Join-Path $Script:CupTestRoot "http-request-ready"
-    $serverLog = Join-Path $Script:CupTestRoot "http-server.log"
+    $helper = Get-TestHelperPath -Name 'network-helper'
+    $serverRoot = Join-Path $Script:CupTestRoot 'http-root'
+    $ready = Join-Path $Script:CupTestRoot 'http-ready'
+    $requestReady = Join-Path $Script:CupTestRoot 'http-request-ready'
+    $serverLog = Join-Path $Script:CupTestRoot 'http-server.log'
     New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
 
-    $cacheDir = Join-Path $Script:CupTestHome `
-        ".cup\cache\compiler\clang\windows-x64\windows-x64\23.1.0"
-    $archiveName = "clang-23.1.0-windows-x64-windows-x64.zip"
-    Move-Item -LiteralPath (Join-Path $cacheDir $archiveName) `
-        -Destination (Join-Path $serverRoot $archiveName)
-    $checksumRoot = Join-Path $serverRoot "23.1.0\windows-x64\windows-x64"
-    New-Item -ItemType Directory -Force -Path $checksumRoot | Out-Null
-    Move-Item -LiteralPath (Join-Path $cacheDir "SHA256SUMS") `
-        -Destination (Join-Path $checksumRoot "SHA256SUMS")
-    Remove-Item -LiteralPath (Join-Path $Script:CupTestHome ".cup\cache\compiler\clang") `
-        -Recurse -Force
+    $archiveName = 'clang-23.1.0-windows-x64-windows-x64.zip'
+    $archive = Join-Path $Script:CupTestRoot "artifacts\$archiveName"
+    $sha256 = Get-Sha256Lower -Path $archive
+    Copy-Item -LiteralPath $archive -Destination (Join-Path $serverRoot $archiveName) -Force
+    Remove-Item -LiteralPath (Join-Path $Script:CupTestHome ".cup\cache\$sha256") `
+        -Force -ErrorAction SilentlyContinue
 
     $serverArguments = @(
-        "http-server", "--root", $serverRoot, "--port", "$port",
-        "--ready-file", $ready, "--request-file", $requestReady,
-        "--delay-ms", "3000"
+        'http-server', '--root', $serverRoot, '--port', '0',
+        '--ready-file', $ready, '--request-file', $requestReady,
+        '--delay-ms', '3000'
     )
     $server = Start-TestHelperProcess -FilePath $helper `
         -ArgumentList $serverArguments `
@@ -104,43 +96,32 @@ try {
         Start-Sleep -Milliseconds 50
     }
     if (-not (Test-Path -LiteralPath $ready)) {
-        Fail-Test "concurrency package server did not become ready"
+        Fail-Test 'concurrency package server did not become ready'
     }
 
     $portText = (Get-Content -LiteralPath $ready -Raw).Trim()
-    $parsedPort = 0
-    if (-not [int]::TryParse($portText, [ref]$parsedPort) -or
-        $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+    $port = 0
+    if (-not [int]::TryParse($portText, [ref]$port) -or
+        $port -lt 1 -or $port -gt 65535) {
         Fail-Test "concurrency package server reported invalid port: $portText"
     }
-    $port = $parsedPort
 
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $catalogOriginal = @(Get-Content -LiteralPath $catalog)
-    $key = "compiler.clang.windows-x64.windows-x64"
-    $base = "http://127.0.0.1:$port"
-    $changed = 0
-    $updated = foreach ($line in Get-Content -LiteralPath $catalog) {
-        if ($line.StartsWith("$key.url_template=", [StringComparison]::Ordinal)) {
-            $changed++
-            "$key.url_template=$base/clang-{version}-{host_platform}-{target_platform}.{format}"
-        } elseif ($line.StartsWith("$key.checksum_url_template=", [StringComparison]::Ordinal)) {
-            $changed++
-            (
-                "$key.checksum_url_template=$base/{version}/" +
-                "{host_platform}/{target_platform}/SHA256SUMS")
-        } else {
-            $line
-        }
-    }
-    if ($changed -ne 2) {
-        Fail-Test "could not configure the concurrency package server"
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $updated
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    $runtimeCatalog = Join-Path $Script:CupTestHome '.cup\config\catalog.cfg'
+    $catalogBackup = Join-Path $Script:CupTestRoot 'catalog.cfg.original'
+    Copy-Item -LiteralPath $catalog -Destination $catalogBackup -Force
+    Set-PackageCatalogArtifact `
+        -Tool 'clang' `
+        -Version '23.1.0' `
+        -Format 'zip' `
+        -Url "http://127.0.0.1:$port/$archiveName" `
+        -Sha256 $sha256
 
-    $env:CUP_INSTALL_ALLOW_INSECURE = "1"
-    $captureA = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
-    $transaction = Join-Path $Script:CupTestHome ".cup\transaction.txt"
+    $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+    $env:NO_PROXY = '127.0.0.1'
+    $env:no_proxy = '127.0.0.1'
+    $captureA = Start-CupCapture -Arguments @('install', 'compiler', 'clang@23.1.0')
+    $transaction = Join-Path $Script:CupTestHome '.cup\transaction.txt'
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $requestReady) -and
            [DateTime]::UtcNow -lt $deadline) {
@@ -153,18 +134,26 @@ try {
         Start-Sleep -Milliseconds 50
     }
     if (-not (Test-Path -LiteralPath $requestReady)) {
-        Fail-Test "first install did not reach the synchronized download"
+        Fail-Test 'first install did not reach the synchronized download'
     }
 
-    # The same internal completion probe used by the installer must remain
-    # unavailable while the first mutation owns the runtime lock.
-    $readyBusy = Start-CupCapture -Arguments @("--internal-runtime-ready")
-    $readyBusyResult = Complete-CupCapture -Capture $readyBusy
-    if ($readyBusyResult.ExitCode -eq 0) {
-        Fail-Test "runtime readiness probe succeeded while a mutation held cup.lock"
+    # A public read-only command shares the runtime lock boundary and cannot
+    # observe a half-mutated root while the install owns the exclusive lock.
+    $listBusy = Start-CupCapture -Arguments @('list')
+    $listBusyResult = Complete-CupCapture -Capture $listBusy
+    if ($listBusyResult.ExitCode -eq 0) {
+        Fail-Test 'read-only list succeeded while a mutation held cup.lock'
     }
+    Assert-Contains $listBusyResult.Output 'another cup operation is currently running'
 
-    $captureB = Start-CupCapture -Arguments @("install", "compiler", "clang@stable")
+    $doctorBusy = Start-CupCapture -Arguments @('doctor')
+    $doctorBusyResult = Complete-CupCapture -Capture $doctorBusy
+    if ($doctorBusyResult.ExitCode -eq 0) {
+        Fail-Test 'doctor succeeded while a mutation held cup.lock'
+    }
+    Assert-Contains $doctorBusyResult.Output 'another cup operation is currently running'
+
+    $captureB = Start-CupCapture -Arguments @('install', 'compiler', 'clang@23.1.0')
     $resultB = Complete-CupCapture -Capture $captureB
     if ($resultB.ExitCode -eq 0) {
         Fail-Test ("overlapping install was not blocked while the first operation was active`n" +
@@ -177,34 +166,37 @@ try {
         Fail-Test ("first synchronized install failed`n" +
             "[$($resultA.ExitCode)] $($resultA.Output)")
     }
-    $readyAfter = Start-CupCapture -Arguments @("--internal-runtime-ready")
-    $readyAfterResult = Complete-CupCapture -Capture $readyAfter
-    if ($readyAfterResult.ExitCode -ne 0) {
-        Fail-Test "runtime readiness probe did not recover after the mutation completed"
+
+    Copy-Item -LiteralPath $catalogBackup -Destination $catalog -Force
+    Copy-Item -LiteralPath $catalogBackup -Destination $runtimeCatalog -Force
+    $listAfter = Start-CupCapture -Arguments @('list')
+    $listAfterResult = Complete-CupCapture -Capture $listAfter
+    if ($listAfterResult.ExitCode -ne 0) {
+        Fail-Test "read-only list did not recover after the mutation completed: $($listAfterResult.Output)"
     }
-    Assert-Contains $resultA.Output "Installed compiler clang@23.1.0"
-    if (-not ($resultB.Output.Contains("another cup operation is currently running") -or
-              $resultB.Output.Contains("a package transaction is active or requires recovery"))) {
+
+    Assert-Contains $resultA.Output 'Installed compiler clang@23.1.0'
+    if (-not ($resultB.Output.Contains('another cup operation is currently running') -or
+              $resultB.Output.Contains('a package transaction is active or requires recovery'))) {
         Fail-Test (
-            "overlapping install did not report the active operation or " +
+            'overlapping install did not report the active operation or ' +
             "transaction: $($resultB.Output)")
     }
-    Assert-NotContains $resultB.Output "already installed"
+    Assert-NotContains $resultB.Output 'already installed'
 
-    Write-Utf8NoBom -Path $catalog -Lines $catalogOriginal
     Assert-CupHealthy
     Assert-PathMissing $transaction
-    $stagingItems = @(Get-ChildItem (Join-Path $Script:CupTestHome ".cup\staging") `
+    $stagingItems = @(Get-ChildItem (Join-Path $Script:CupTestHome '.cup\staging') `
         -Force -ErrorAction SilentlyContinue)
     if ($stagingItems.Count -ne 0) {
-        Fail-Test "concurrent installs left temporary paths behind"
+        Fail-Test 'concurrent installs left temporary paths behind'
     }
-    Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `
-        "compiler [windows-x64]: clang@23.1.0 (stable)"
-    Assert-Equals (Invoke-ManagedCommand -Name "clang") `
-        "clang-23.1.0-windows-x64:clang"
+    Assert-Contains (Invoke-Cup -CommandArgs @('info', 'compiler')) `
+        'compiler [windows-x64]: clang@23.1.0 (stable)'
+    Assert-Equals (Invoke-ManagedCommand -Name 'clang') `
+        'clang-23.1.0-windows-x64:clang'
 
-    Write-Host "Windows concurrency tests passed."
+    Write-Host 'Windows concurrency tests passed.'
 } finally {
     if ($null -ne $captureA) {
         try {

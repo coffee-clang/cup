@@ -1,222 +1,161 @@
 # State
 
-CUP keeps application state, installed packages and derived launchers below one
-user-managed root. This page documents that layout and the persistent records
-that define an installed configuration.
+CUP keeps installed identities, user preferences, the live catalog and the
+installed CUP generation below one authenticated userspace root. Persistent
+objects are deliberately split by authority: package state is not inferred from
+wrappers, preferences are not defaults, and the catalog is not product policy.
 
-Interrupted mutations are covered separately in
-[Transactions and recovery](TRANSACTIONS.md).
+Interrupted mutations are described in [Transactions and recovery](TRANSACTIONS.md).
 
 ## Root selection and ownership
 
-The default roots are:
+The default managed root is:
 
 ```text
 POSIX    $HOME/.cup
 Windows  %USERPROFILE%\.cup
 ```
 
-If `.cup` already exists but is not a CUP root, base selection preserves it and
-uses `.coffee-cup` as the deterministic fallback. Both leaf names are part of the
-product layout; selecting another base does not allow an arbitrary leaf name.
+If `.cup` is a clear foreign-directory collision, CUP preserves it and may use
+`.coffee-cup`. The fallback is not a second installation slot and is never used
+to bypass a damaged recognized CUP root.
 
-The normal ownership marker is:
-
-```text
-root.txt
-```
-
-with:
+A managed root authenticates itself with:
 
 ```text
-format=1
+format=2
 product=coffee-clang/cup
-layout=1
+layout=2
+host=<platform>
 ```
 
-An installed executable derives its active root from its own real
-`<cup-root>/bin/cup[.exe]` location and then authenticates the marker. CUP does
-not use a persistent `CUP_HOME` override or a global root registry.
+The host belongs to the root. Local state, preferences, package paths and package
+journals therefore do not persist a second host dimension. Package/catalog
+objects that can cross roots still carry host explicitly.
 
-A markerless directory is never adopted only because it contains familiar files
-or a CUP-looking executable. Such a directory is preserved and reported rather
-than mutated.
+An installed executable binds itself to the root containing its real
+`bin/cup[.exe]` and authenticates that root. Markerless CUP-like roots are
+preserved and reported rather than adopted heuristically.
 
 ## Filesystem layout
 
-The normal layout is:
+A normal installed root is:
 
 ```text
 <cup-root>/
   root.txt
   cup.lock
   state.txt
-  transaction.txt          only while recovery/transaction state exists
+  transaction.txt              # only while a durable operation is pending
+  release.txt
+  LICENSE
+  THIRD_PARTY_NOTICES.txt
   bin/
+    cup[.exe]
+    <derived wrappers>
   components/
-  cache/
   staging/
-  recovery/                created when an invalid object must be preserved
   config/
-    packages.cfg
-    install.cfg
-    preferences.txt        created only when user preferences exist
-    SHA256SUMS.common
-    SHA256SUMS.<host>
-  helpers/
-    update-helper          update-helper.exe on Windows
+    catalog.cfg
+    preferences.txt            # only when non-empty
 ```
 
-The installer transports verified release files into a private location. Hidden
-bootstrap then creates/updates the managed layout through the same locking and
-update-transaction machinery used by the installed program.
+`cache/`, `helpers/` and `recovery/` are lazy and may be absent in a healthy
+installation. `components/` and `staging/` are runtime-core directories.
+
+Fresh installation is assembled first in a private sibling such as
+`.cup-install-<token>` and published by one no-clobber directory move. Ordinary
+commands never treat such a sibling as an installed root.
 
 ## Package and cache paths
 
-Installed package:
+Installed packages use the root host implicitly:
 
 ```text
-components/<component>/<tool>/<host>/<target>/<version>/
+components/<component>/<tool>/<target>/<version>/
 ```
 
-Cached archive:
+The cache is content-addressed:
 
 ```text
-cache/<component>/<tool>/<host>/<target>/<version>/
-  <tool>-<version>-<host>-<target>.<format>
+cache/<artifact-sha256>
 ```
 
-Staging names include the operation and complete package identity. Transaction
-recovery accepts only the staging name derived for the journal's own identity.
+There is no package identity sidecar, archive extension, TTL or LRU database.
+Every cache hit is rehashed before use. Cache failure is non-fatal when CUP can
+continue from a verified temporary artifact.
 
 ## `state.txt`
 
-State is line-based and begins with:
+State is a strict line-based format:
 
 ```text
-format=1
-```
-
-Installed records:
-
-```text
-installed.<component>.<host>.<target>=<tool>@<version>
-```
-
-Default records:
-
-```text
-default.<component>.<host>.<target>=<tool>@<version>
+format=2
+installed.<component>.<target>=<tool>@<version>
+default.<component>.<target>=<tool>@<version>
 ```
 
 Example:
 
 ```text
-format=1
-installed.compiler.linux-x64.linux-x64=gcc@16.2.0-rev1
-installed.compiler.linux-x64.windows-x64=gcc@16.2.0-rev1
-default.compiler.linux-x64.linux-x64=gcc@16.2.0-rev1
+format=2
+installed.compiler.linux-x64=clang@23.1.0
+installed.compiler.linux-x64=clang@23.1.0-rev1
+default.compiler.linux-x64=clang@23.1.0-rev1
 ```
 
-Only concrete versions are stored. `stable` is resolved before state is created.
+Only concrete package versions are stored. `stable` is a catalog selector and
+never becomes persistent state.
 
-A valid model requires:
+When a state file is loaded, CUP obtains the host from the authenticated root and
+reconstructs complete in-memory package identities. The parser first builds a
+private candidate, validates all global relationships and only then publishes
+that candidate to the caller.
 
-- valid component/tool/platform/version values;
+A valid state requires:
+
+- canonical component/tool/target/version values;
 - no duplicate installed identity;
-- at most one default per component/host/target scope;
+- at most one default for each `(component, target)` scope;
 - every default to reference an installed package in the same scope;
-- all records to fit the configured capacity;
-- normal operation to use records belonging to the current host.
+- the complete canonical document to fit the persistent state budget.
 
-The parser and semantic validator are intentionally separate: malformed text is
-never accepted partially, and a syntactically valid document still has to satisfy
-the complete state relationships above.
-
-## Persistent-file snapshots
-
-Persistent text that participates in a decision is read as one bounded snapshot:
-
-```text
-open expected regular file without following a final link
-record native identity and size
-read the bounded bytes once
-propagate read/close errors
-parse/hash that same snapshot
-```
-
-This avoids validating one file and later treating a replacement at the same
-pathname as if it were the validated object.
-
-Most persistent text uses printable ASCII with LF line endings and one complete
-final line. Individual formats define their own size and field limits; CUP does
-not silently truncate oversized state, journal or catalog data.
-
-## Host and target records
-
-One running CUP executable manages packages that run on its own host. A cross
-compiler is represented by a different **target**, not by a foreign host record.
-
-Foreign-host state/package entries are reported and preserved. Normal mutation
-does not adopt or silently delete them, and repair includes them when deciding
-whether reconstructed state would exceed its capacity.
-
-## Capacity
-
-The state model has independent hard bounds:
-
-```text
-installed entries  256
-default entries    175
-```
-
-Installed capacity is an explicit resource budget because multiple versions may
-coexist. Default capacity is derived from the finite
-component × host × target domain because there can be at most one default in each
-scope.
-
-Exceeding either capacity is an error rather than a truncation point.
+Installed entries are dynamically allocated. There is no historical-version
+record-count cap such as 256. The canonical `state.txt` byte budget is 4 MiB.
+Defaults remain naturally bounded by the finite component × target scope set.
 
 ## Publishing state
 
-`state_save` publishes the complete validated model atomically:
+`state_save` validates and measures the complete canonical document before
+publication. It then writes a sibling temporary file, applies the required mode,
+flushes the file and replaces only the exact `state.txt` identity previously
+observed. The caller receives the new identity.
 
-```text
-serialize to a sibling temporary file
-apply required mode
-flush/synchronize file content
-create state.txt without replacement for first initialization
-or replace only the exact state.txt identity previously loaded
-synchronize the parent directory where supported/required
-return the new state-file identity
-```
-
-The identity precondition prevents a command from overwriting a different
-`state.txt` that appeared after its snapshot was loaded.
-
-Publication can also fail after a rename/replacement has become visible but
-before durability is fully confirmed. In that case the surrounding transaction
-is preserved so recovery can inspect the real filesystem instead of assuming the
-old state is still selected.
+A replacement may become visible before durability can be fully confirmed. Such
+an outcome is not rewritten into a false pre-commit failure; the surrounding
+transaction remains available so recovery can inspect the actual filesystem.
 
 ## Defaults
 
 A default is keyed by:
 
 ```text
-component + host + target
+component + target
 ```
 
-and points to one installed tool/version in that scope.
+The root supplies host implicitly.
 
-The first valid package installed in an empty scope becomes the default. Later
-installs leave it unchanged. `cup default` changes it explicitly. `cup update`
-advances a default only when that default already selected the same tool at an
-older release.
+The first package installed in a genuinely empty scope may become the default.
+A scope that already contains package history but has no default stays without a
+default until the user chooses one. Installing another version does not invent a
+replacement default.
 
-Different targets therefore keep independent defaults on the same host.
+`cup default` changes only the default and never installs. Removing the active
+package clears the default; CUP does not choose another installed version
+implicitly. Package update advances a default only when it already selected the
+same tool at an older semantic version.
 
-## Preferences
+## Preferences and compiled policy
 
 User preferences live in:
 
@@ -227,119 +166,119 @@ config/preferences.txt
 with:
 
 ```text
-format=1
-preferred.<host>.<target>.<component>=<tool>
+format=2
+preferred.<target>.<component>=<tool>
 ```
 
-Preferences affect future abbreviated component/profile installs. They do not
-modify installed package records or current defaults. The file is removed when
-the last stored preference is reset.
+The file owns only user choices for future abbreviated installs. It does not
+contain fallback policy, installed state or defaults, and it is removed when the
+last preference is reset.
 
-## Managed launchers
+Official selections, profiles and toolchains are compiled policy belonging to
+the CUP binary generation. Install planning combines a user preference with
+compiled policy explicitly; persistence does not perform that fallback itself.
 
-`bin/` contains the CUP executable plus launchers derived from defaults.
+## Live catalog
 
-Naming is:
+The live package snapshot is:
 
 ```text
-native target  <entry>
-cross target   <target>-<entry>
+config/catalog.cfg
 ```
 
-For example:
+It is managed runtime state and can advance independently from the installed CUP
+generation. CUP source does not track a seed; an official CUP release contains
+the published catalog snapshot acquired before that candidate's qualification.
+Once a valid runtime catalog exists, reinstall and self-update preserve it.
+
+Catalog refresh has its own revision/CAS lifecycle. A well-formed catalog in a
+future unsupported format is preserved/refused rather than mislabeled as
+corruption and replaced with an older seed.
+
+## Managed wrappers
+
+`bin/` contains the CUP executable plus wrappers derived from recorded defaults.
+Wrapper naming is:
 
 ```text
-gcc
-clang
-windows-x64-gcc
+native target  <entry-basename>
+cross target   <target>-<entry-basename>
 ```
 
-CUP builds a complete launcher plan from validated defaults before committing a
-state change that needs it. Planning checks the declared package entries,
-reserved CUP name and collisions. After state commit the prepared plan is
-published.
+The metadata key after `entry.` is not the public alias; the basename of the
+entry path supplies the public command name. Windows adds the `.cmd` wrapper
+convention.
 
-Launchers are derived state. `doctor` reports missing, invalid, conflicting or
-stale launchers; `repair` rebuilds the desired set from valid defaults.
-
-POSIX launchers are executable shell wrappers. Windows launchers are `.cmd`
-files and disable delayed expansion so arguments/paths containing `!` survive.
-Name collision rules follow the case behavior observed in the selected root.
-
-## Runtime lock
-
-The root lock is:
-
-```text
-<cup-root>/cup.lock
-```
-
-Read-only commands that need the root use shared access. Mutating commands use
-exclusive non-blocking access.
-
-The lock coordinates **live processes**; it is not crash recovery. The OS drops a
-lock when a process terminates, while a half-completed filesystem transition may
-remain. `transaction.txt` records the information needed across process lifetime.
-
-Self-update/uninstall can transfer exclusive ownership to a detached helper; the
-platform-specific handoff is described in [Transactions](TRANSACTIONS.md) and
-[Platforms](PLATFORMS.md).
+Before a default-changing commit, CUP builds the prospective full wrapper
+namespace and rejects reserved-name or case-semantic collisions. After state
+commit, wrapper reconciliation may replace stale derived files. Wrappers never
+become authority for state or defaults.
 
 ## Installed CUP generation
 
-The files retained for the installed CUP generation are the main executable,
-`packages.cfg`, `install.cfg`, `SHA256SUMS.common` and the platform checksum.
-Release metadata/installers participate in bootstrap/update verification but are
-not all retained as runtime assets.
-
-`helpers/update-helper[.exe]` is operational data copied from the currently
-installed executable before self-update. It may therefore lag the main executable
-between updates; it is not release identity or root ownership evidence.
-
-`preferences.txt` is user state and is likewise outside the official asset
-generation.
-
-## Preservation and recovery storage
-
-When repair can safely reconstruct state, an invalid state object is preserved
-under the first free name:
+The immutable installed generation consists of:
 
 ```text
-state.txt.invalid
-state.txt.invalid.1
-state.txt.invalid.2
-...
+bin/cup[.exe]
+release.txt
+LICENSE
+THIRD_PARTY_NOTICES.txt
 ```
 
-Preservation is tied to the exact object repair diagnosed. A replacement that
-appears under the same pathname is not adopted automatically.
+`release.txt` authenticates the other three objects through the platform binary
+release name and SHA-256 digests. The live catalog, package state, preferences,
+cache and wrappers are outside the generation.
 
-`recovery/` is created only for package objects whose identity can be established
-safely but that cannot remain in the normal component tree. Unknown/ambiguous
-objects are reported and left in place.
+`helpers/update-helper[.exe]` is a lazy byte-identical handoff copy of the
+trusted running binary. It is disposable transaction machinery, not a generation
+asset or health requirement.
+
+## Persistent-file snapshots
+
+Persistent text used for a decision is read as one bounded regular-file
+snapshot: CUP records native identity/size, reads the bounded bytes once and
+parses/hashes that same snapshot. A later pathname replacement is not silently
+accepted as the validated object.
+
+Atomic writers use identity-bound create/replace/delete operations where the
+lifecycle requires them. Invalid or ambiguous bytes are preserved instead of
+being truncated or partly accepted.
+
+## Recovery storage
+
+When repair can prove a safe reconstruction, invalid state or preferences may be
+preserved under collision-safe `.invalid` names before the canonical object is
+recreated. `recovery/` is created lazily for identifiable invalid package trees
+that can be moved safely out of the managed component hierarchy.
+
+Unknown higher-level structures are reported and left in place. Repair never
+adopts an object merely because its pathname resembles a managed one.
 
 ## Consistency model
 
 In a healthy installation:
 
 ```text
-one installed state entry
-  <=> one valid canonical installed package
+one installed state identity
+  <=> one valid canonical package tree
 
 a default
-  => one matching installed package
+  => one matching installed identity
 
-a managed launcher
-  <=> an entry provided by one valid default package
+a managed wrapper
+  <=> one command provided by a valid default package
+
+release.txt + legal files + canonical binary
+  => one valid CUP generation
 ```
 
-A transaction may temporarily break these relationships. The committed state
-and transaction journal determine whether recovery finishes or rolls back the
-filesystem side of the operation.
+Transactions may temporarily break these relationships. State plus the relevant
+journal/workspace evidence determines what recovery may safely finish or roll
+back.
 
 ## Related documents
 
-- [Concepts](../user/CONCEPTS.md)
+- [Architecture](ARCHITECTURE.md)
 - [Packages](PACKAGES.md)
 - [Transactions and recovery](TRANSACTIONS.md)
 - [Commands](../user/COMMANDS.md)

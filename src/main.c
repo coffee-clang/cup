@@ -13,7 +13,7 @@
 #include "layout.h"
 #include "update_helper.h"
 #include "bootstrap.h"
-#include "assets.h"
+#include "generation.h"
 #include "uninstall_helper.h"
 #include "system.h"
 #include "package_selector.h"
@@ -56,7 +56,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "  -h, --help                   Show this help.\n"
      "Defaults:\n  Uses the current host and shows every target when --target is omitted.\n"
      "Examples:\n  cup search\n  cup search compiler --target linux-x64\n"
-     "Effects:\n  Read-only; never initializes the local cup installation."},
+     "Effects:\n  Never initializes the local cup installation. Existing runtimes may refresh the live catalog before displaying one snapshot."},
     {"list",
      "list [<component>] [--target <target-platform>]",
      "List installed packages.",
@@ -103,14 +103,15 @@ static const CommandHelp COMMAND_HELP[] = {
      "  cup remove compiler clang@23.1.0\n"
      "Effects:\n  Removes the selected package and updates defaults and provided commands."},
     {"update",
-     "update [cup|<tool>|<component>]",
-     "Update installed tools or the cup executable.",
-     "Description:\n  Update installed tools, or update the cup executable when cup is selected.\n"
-     "Arguments:\n  cup|tool|component  Optional update selector.\n"
+     "update [cup|catalog|<tool>|<component>]",
+     "Update installed tools, the package catalog, or cup.",
+     "Description:\n  Update installed tools, refresh the package catalog, or update cup.\n"
+     "Arguments:\n  cup|catalog|tool|component  Optional update selector.\n"
      "Options:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Without a selector, updates installed tools only; cup itself is not updated.\n"
-     "Examples:\n  cup update\n  cup update clang\n  cup update compiler\n  cup update cup\n"
+     "Examples:\n  cup update\n  cup update clang\n  cup update compiler\n  cup update catalog\n  cup update cup\n"
      "Effects:\n  Tool updates retain old releases.\n"
+     "  cup update catalog refreshes only the live package catalog.\n"
      "  A default moves only from an older release of the same tool.\n"
      "  cup update cup installs only a newer verified official release."},
     {"config",
@@ -797,7 +798,7 @@ static CupError parse_remove(int argc, char **argv, ParsedCommand *parsed) {
 }
 
 static CupError parse_update(int argc, char **argv, ParsedCommand *parsed) {
-    struct arg_str *selector = arg_str0(NULL, NULL, "[cup|tool|component]", NULL);
+    struct arg_str *selector = arg_str0(NULL, NULL, "[cup|catalog|tool|component]", NULL);
     struct arg_end *end = arg_end(4);
     void *table[] = {selector, end};
     UpdateArguments *arguments = &parsed->arguments.update;
@@ -819,6 +820,7 @@ static CupError parse_update(int argc, char **argv, ParsedCommand *parsed) {
                                    1);
         if (result == CUP_OK && !text_is_empty(arguments->selector) &&
             strcmp(arguments->selector, "cup") != 0 &&
+            strcmp(arguments->selector, "catalog") != 0 &&
             !registry_is_component(arguments->selector)) {
             char component[MAX_IDENTIFIER_LEN];
 
@@ -1173,17 +1175,13 @@ int main(int argc, char *argv[]) {
         return exit_status_from_error(result);
     }
     if (argc == 3 && strcmp(argv[1], "--internal-root-probe") == 0) {
-        AssetsInspection inspection;
+        GenerationInspection inspection;
         SystemPathIdentity identity;
 
         result = layout_validate_root_at(argv[2], &identity);
-        if (result == CUP_OK) {
-            result = layout_root_snapshot_begin_at(argv[2]);
-        }
-        if (result == CUP_OK) {
-            result = assets_inspect(&inspection);
-        }
-        if (result == CUP_OK && !assets_installed_is_valid(&inspection)) {
+        if (result == CUP_OK) result = layout_root_snapshot_begin_at(argv[2]);
+        if (result == CUP_OK) result = generation_inspect(&inspection);
+        if (result == CUP_OK && !generation_installed_is_valid(&inspection)) {
             result = CUP_ERR_VALIDATION;
         }
         layout_root_snapshot_end();
@@ -1198,40 +1196,13 @@ int main(int argc, char *argv[]) {
 
         result = layout_select_root_for_base(argv[3], selected, sizeof(selected));
         if (result == CUP_OK) {
-            result = layout_root_snapshot_begin_at(selected);
-        }
-        if (result == CUP_OK) {
             result = interrupt_enable();
         }
         if (result == CUP_OK) {
-            result = bootstrap_start(argv[2], argv[0]);
+            result = bootstrap_start(argv[2], argv[0], argv[3]);
         }
         status = exit_status_from_error(result);
-        layout_root_snapshot_end();
         return status;
-    }
-
-    /* Installer completion probes the normal read-only command context: success means the
-     * runtime can be locked and validated after helper handoff completes. */
-    if (argc == 2 && strcmp(argv[1], "--internal-runtime-ready") == 0) {
-        CommandContext context;
-        int context_active = 0;
-
-        result = layout_root_snapshot_begin();
-        if (result == CUP_OK) {
-            result = command_context_begin_read_only(&context, NULL);
-            if (result == CUP_OK) {
-                context_active = 1;
-                if (!context.runtime_available) {
-                    result = CUP_ERR_NOT_INSTALLED;
-                }
-            }
-        }
-        if (context_active) {
-            command_context_end(&context);
-        }
-        layout_root_snapshot_end();
-        return exit_status_from_error(result);
     }
 
     /* Internal helper modes bypass public parsing. They accept handoff and wait for parent exit

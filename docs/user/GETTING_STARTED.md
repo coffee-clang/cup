@@ -90,7 +90,7 @@ installed.
 ## 4. Understand defaults and commands
 
 CUP may keep several versions or tools for the same component. One installed
-package can be the **default** for each component/host/target scope.
+package can be the **default** for each component/target scope.
 
 Show installed packages and defaults:
 

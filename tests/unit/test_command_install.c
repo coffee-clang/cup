@@ -3,6 +3,7 @@
  * prevalidation and explicit toolchain plans.
  */
 
+#include "catalog_refresh.h"
 #include "command_context.h"
 #include "commands.h"
 #include "package_selector.h"
@@ -34,18 +35,19 @@ static int context_begin_calls;
 static CupError state_load_result;
 static CupError package_catalog_load_result;
 static CupError config_load_result;
-static CupError resolver_result;
 static CupError package_result;
 static CupError resolve_result;
-static CupError version_result;
-static CupError format_result;
-static CupError default_format_result;
-static int version_available;
-static int format_available;
+static CupError artifact_result;
+static int artifact_available;
+static const char *unavailable_tool;
 static char already_installed_entry[MAX_SELECTOR_LEN];
 static int install_fail_call;
 static CupError install_fail_result;
 static CupError installed_valid_result;
+static CupError catalog_refresh_result;
+static int catalog_refresh_calls;
+static CatalogRefreshDiagnostics catalog_refresh_diagnostics;
+static int refresh_enables_artifact;
 
 void setUp(void) {
     /* Curated policy fixtures cover component profiles and explicit toolchains. */
@@ -85,18 +87,19 @@ void setUp(void) {
     state_load_result = CUP_OK;
     package_catalog_load_result = CUP_OK;
     config_load_result = CUP_OK;
-    resolver_result = CUP_OK;
     package_result = CUP_OK;
     resolve_result = CUP_OK;
-    version_result = CUP_OK;
-    format_result = CUP_OK;
-    default_format_result = CUP_OK;
-    version_available = 1;
-    format_available = 1;
+    artifact_result = CUP_OK;
+    artifact_available = 1;
+    unavailable_tool = NULL;
     already_installed_entry[0] = '\0';
     install_fail_call = 0;
     install_fail_result = CUP_OK;
     installed_valid_result = CUP_OK;
+    catalog_refresh_result = CUP_OK;
+    catalog_refresh_calls = 0;
+    catalog_refresh_diagnostics = CATALOG_REFRESH_REPORT_ERRORS;
+    refresh_enables_artifact = 0;
     memset(installed_components, 0, sizeof(installed_components));
     memset(installed_entries, 0, sizeof(installed_entries));
     memset(installed_formats, 0, sizeof(installed_formats));
@@ -116,6 +119,12 @@ CupError command_context_begin(CommandContext *context,
     return context_begin_result;
 }
 
+CupError command_context_begin_initialize(CommandContext *context,
+                                          const char *target_override,
+                                          SystemLockMode mode) {
+    return command_context_begin(context, target_override, mode);
+}
+
 void command_context_end(CommandContext *context) {
     (void)context;
 }
@@ -128,6 +137,17 @@ CupError command_context_load_state(CommandContext *context) {
 CupError command_context_load_catalog(CommandContext *context) {
     context->has_catalog = 1;
     return package_catalog_load_result;
+}
+
+CupError catalog_refresh_existing(int *updated, CatalogRefreshDiagnostics diagnostics) {
+    catalog_refresh_diagnostics = diagnostics;
+    TEST_ASSERT_NOT_NULL(updated);
+    catalog_refresh_calls++;
+    *updated = catalog_refresh_result == CUP_OK;
+    if (catalog_refresh_result == CUP_OK && refresh_enables_artifact) {
+        artifact_available = 1;
+    }
+    return catalog_refresh_result;
 }
 
 void install_policy_init(InstallPolicy *config) {
@@ -144,7 +164,8 @@ void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
 
-CupError tool_preferences_load(ToolPreferences *preferences) {
+CupError tool_preferences_load(ToolPreferences *preferences, FILE *diagnostics) {
+    (void)diagnostics;
     (void)preferences;
     preferences_load_calls++;
     return preferences_load_result;
@@ -164,44 +185,48 @@ const InstallNamedList *install_policy_find_toolchain(const InstallPolicy *confi
     return strcmp(name, "gnu") == 0 ? &gnu_toolchain : NULL;
 }
 
-CupError tool_preferences_resolve(const InstallPolicy *config,
-                                  const ToolPreferences *preferences,
-                                  const char *host,
-                                  const char *target,
-                                  const char *component,
-                                  char *tool,
-                                  size_t tool_size,
-                                  ToolPreferenceSource *source) {
-    const char *selected = NULL;
+const ToolPreference *tool_preferences_find(const ToolPreferences *preferences,
+                                            const char *target,
+                                            const char *component) {
+    static ToolPreference preference;
 
-    (void)config;
     (void)preferences;
-    (void)host;
     (void)target;
     resolver_calls++;
-    if (resolver_result != CUP_OK) {
-        return resolver_result;
-    }
+    memset(&preference, 0, sizeof(preference));
+    strcpy(preference.scope.host_platform, "linux-x64");
+    strcpy(preference.scope.target_platform, target);
+    strcpy(preference.scope.component, component);
     if (strcmp(component, "compiler") == 0) {
-        selected = "gcc";
-    } else if (strcmp(component, "linker") == 0) {
-        selected = "lld";
-    } else if (strcmp(component, "debugger") == 0) {
-        selected = "gdb";
-    } else if (strcmp(component, "language-server") == 0) {
-        selected = "clangd";
+        strcpy(preference.tool, "gcc");
+        return &preference;
     }
-    if (selected == NULL) {
-        return CUP_ERR_VALIDATION;
+    if (strcmp(component, "debugger") == 0) {
+        strcpy(preference.tool, "gdb");
+        return &preference;
     }
-    *source = TOOL_PREFERENCE_USER;
-    return text_copy(tool, tool_size, selected);
+    return NULL;
 }
 
-CupError installed_package_require_valid(const CupState *state, const PackageIdentity *package) {
-    (void)state;
-    (void)package;
-    return installed_valid_result;
+const InstallDefault *install_policy_find_default(const InstallPolicy *config,
+                                                  const char *host,
+                                                  const char *target,
+                                                  const char *component) {
+    static InstallDefault entry;
+    const char *tool = NULL;
+
+    (void)config;
+    memset(&entry, 0, sizeof(entry));
+    strcpy(entry.scope.host_platform, host);
+    strcpy(entry.scope.target_platform, target);
+    strcpy(entry.scope.component, component);
+    if (strcmp(component, "compiler") == 0) tool = "clang";
+    else if (strcmp(component, "linker") == 0) tool = "lld";
+    else if (strcmp(component, "debugger") == 0) tool = "lldb";
+    else if (strcmp(component, "language-server") == 0) tool = "clangd";
+    if (tool == NULL) return NULL;
+    strcpy(entry.tool, tool);
+    return &entry;
 }
 
 CupError package_request_parse(const char *component, const char *entry, PackageRequest *request) {
@@ -259,60 +284,9 @@ CupError package_catalog_has_package(const PackageCatalog *catalog,
     if (package_result != CUP_OK) {
         return package_result;
     }
-    *available = strcmp(tool, "ld") != 0;
+    *available = strcmp(tool, "ld") != 0 &&
+                 (unavailable_tool == NULL || strcmp(tool, unavailable_tool) != 0);
     return CUP_OK;
-}
-
-CupError package_catalog_has_version(const PackageCatalog *catalog,
-                                     const char *component,
-                                     const char *tool,
-                                     const char *host,
-                                     const char *target,
-                                     const char *version,
-                                     int *available) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host;
-    (void)target;
-    (void)version;
-    *available = version_available;
-    return version_result;
-}
-
-CupError package_catalog_has_format(const PackageCatalog *catalog,
-                                    const char *component,
-                                    const char *tool,
-                                    const char *host,
-                                    const char *target,
-                                    const char *format,
-                                    int *available) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host;
-    (void)target;
-    (void)format;
-    *available = format_available;
-    return format_result;
-}
-
-CupError package_catalog_get_default_format(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host,
-                                            const char *target) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host;
-    (void)target;
-    if (default_format_result != CUP_OK) {
-        return default_format_result;
-    }
-    return text_copy(buffer, size, "tar.xz");
 }
 
 CupError package_identity_init(PackageIdentity *identity,
@@ -362,31 +336,15 @@ CupError package_artifact_spec_build(PackageArtifactSpec *spec,
                                      const PackageCatalog *catalog,
                                      const PackageIdentity *identity,
                                      const char *format_name) {
-    CupError err;
-    int available;
-
+    (void)catalog;
     TEST_ASSERT_NOT_NULL(spec);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_NOT_NULL(format_name);
-    err = package_catalog_has_version(catalog,
-                                      identity->component,
-                                      identity->tool,
-                                      identity->host_platform,
-                                      identity->target_platform,
-                                      identity->version,
-                                      &available);
-    if (err != CUP_OK || !available) {
-        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
+    if (artifact_result != CUP_OK) {
+        return artifact_result;
     }
-    err = package_catalog_has_format(catalog,
-                                     identity->component,
-                                     identity->tool,
-                                     identity->host_platform,
-                                     identity->target_platform,
-                                     format_name,
-                                     &available);
-    if (err != CUP_OK || !available) {
-        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
+    if (!artifact_available) {
+        return CUP_ERR_NOT_AVAILABLE;
     }
 
     memset(spec, 0, sizeof(*spec));
@@ -398,8 +356,11 @@ CupError package_artifact_spec_build(PackageArtifactSpec *spec,
     } else if (strcmp(format_name, "zip") == 0) {
         spec->format = PACKAGE_ARCHIVE_FORMAT_ZIP;
     } else {
-        return CUP_ERR_INVALID_INPUT;
+        return CUP_ERR_NOT_AVAILABLE;
     }
+    strcpy(spec->package_url, "https://example.invalid/package");
+    strcpy(spec->artifact_sha256,
+           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     return CUP_OK;
 }
 
@@ -427,6 +388,12 @@ CupError package_install_artifact(const PackageArtifactSpec *spec) {
     return CUP_OK;
 }
 
+CupError installed_package_require_valid(const CupState *state, const PackageIdentity *identity) {
+    (void)state;
+    (void)identity;
+    return installed_valid_result;
+}
+
 CupError package_install(const char *component,
                          const char *entry,
                          const char *target_override,
@@ -451,9 +418,10 @@ static void test_direct_selection(void) {
     TEST_ASSERT_EQUAL_INT(0, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(1, install_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
     TEST_ASSERT_EQUAL_STRING("compiler", installed_components[0]);
     TEST_ASSERT_EQUAL_STRING("clang@release-x", installed_entries[0]);
-    TEST_ASSERT_EQUAL_STRING("tar.xz", installed_formats[0]);
+    TEST_ASSERT_EQUAL_STRING("tar.gz", installed_formats[0]);
 }
 
 static void test_tool_first_selection(void) {
@@ -488,18 +456,18 @@ static void test_tool_first_stable_selection(void) {
 
 static void test_abbreviated_install(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("compiler", NULL, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(1, resolver_calls);
-    TEST_ASSERT_EQUAL_INT(1, config_load_calls);
-    TEST_ASSERT_EQUAL_INT(1, preferences_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, resolver_calls);
+    TEST_ASSERT_EQUAL_INT(2, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
 }
 
 static void test_profile_preferences(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("profile", "standard", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(4, resolver_calls);
-    TEST_ASSERT_EQUAL_INT(1, config_load_calls);
-    TEST_ASSERT_EQUAL_INT(1, preferences_load_calls);
+    TEST_ASSERT_EQUAL_INT(8, resolver_calls);
+    TEST_ASSERT_EQUAL_INT(2, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(4, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("lld@1.0.0", installed_entries[1]);
@@ -510,7 +478,7 @@ static void test_profile_preferences(void) {
 static void test_explicit_toolchain(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("toolchain", "llvm", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
-    TEST_ASSERT_EQUAL_INT(1, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(6, install_calls);
     TEST_ASSERT_EQUAL_STRING("clang@1.0.0", installed_entries[0]);
@@ -524,7 +492,7 @@ static void test_explicit_toolchain(void) {
 static void test_toolchain_no_prefs(void) {
     preferences_load_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("toolchain", "llvm", NULL, NULL));
-    TEST_ASSERT_EQUAL_INT(1, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
     TEST_ASSERT_EQUAL_INT(6, install_calls);
 }
@@ -533,8 +501,17 @@ static void test_group_prevalidation(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
                           command_install("toolchain", "gnu", NULL, NULL));
     TEST_ASSERT_EQUAL_INT(0, resolver_calls);
-    TEST_ASSERT_EQUAL_INT(1, config_load_calls);
+    TEST_ASSERT_EQUAL_INT(2, config_load_calls);
     TEST_ASSERT_EQUAL_INT(0, preferences_load_calls);
+    TEST_ASSERT_EQUAL_INT(0, install_calls);
+}
+
+static void test_group_preflight_checks_later_members_before_mutation(void) {
+    unavailable_tool = "gdb";
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
+                          command_install("profile", "standard", NULL, NULL));
+    TEST_ASSERT_TRUE(resolver_calls > 0);
     TEST_ASSERT_EQUAL_INT(0, install_calls);
 }
 
@@ -543,6 +520,58 @@ static void test_direct_stable(void) {
     TEST_ASSERT_EQUAL_INT(1, install_calls);
     TEST_ASSERT_EQUAL_STRING("gcc@1.0.0", installed_entries[0]);
     TEST_ASSERT_EQUAL_STRING("zip", installed_formats[0]);
+}
+
+static void test_exact_installed_is_local_noop(void) {
+    strcpy(already_installed_entry, "clang@release-x");
+    package_catalog_load_result = CUP_ERR_CATALOG;
+    catalog_refresh_result = CUP_ERR_FETCH;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_ALREADY_INSTALLED,
+        command_install("compiler", "clang@release-x", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, install_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+
+    setUp();
+    strcpy(already_installed_entry, "clang@release-x");
+    installed_valid_result = CUP_ERR_INCONSISTENT_STATE;
+    package_catalog_load_result = CUP_ERR_CATALOG;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INCONSISTENT_STATE,
+        command_install("compiler", "clang@release-x", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+}
+
+static void test_symbolic_refresh_failure_uses_valid_local_catalog(void) {
+    catalog_refresh_result = CUP_ERR_FETCH;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("clang@stable", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, catalog_refresh_calls);
+    TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_QUIET, catalog_refresh_diagnostics);
+    TEST_ASSERT_EQUAL_INT(2, context_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, install_calls);
+}
+
+static void test_exact_miss_refreshes_once(void) {
+    artifact_available = 0;
+    refresh_enables_artifact = 1;
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_install("clang@release-x", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, catalog_refresh_calls);
+    TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_REPORT_ERRORS, catalog_refresh_diagnostics);
+    TEST_ASSERT_EQUAL_INT(2, context_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, install_calls);
+}
+
+static void test_symbolic_refresh_failure_without_local_resolution_fails(void) {
+    catalog_refresh_result = CUP_ERR_FETCH;
+    artifact_available = 0;
+
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH, command_install("clang@stable", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(1, catalog_refresh_calls);
+    TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_QUIET, catalog_refresh_diagnostics);
+    TEST_ASSERT_EQUAL_INT(0, install_calls);
 }
 
 static void test_unknown_groups(void) {
@@ -577,11 +606,6 @@ static void test_plan_load_failures(void) {
 }
 
 static void test_plan_failures(void) {
-    resolver_result = CUP_ERR_VALIDATION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          command_install("compiler", NULL, NULL, NULL));
-
-    resolver_result = CUP_OK;
     resolve_result = CUP_ERR_NOT_AVAILABLE;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
                           command_install("compiler", "gcc@stable", NULL, NULL));
@@ -591,22 +615,14 @@ static void test_plan_failures(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, NULL));
 
     package_result = CUP_OK;
-    version_available = 0;
+    artifact_available = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
                           command_install("compiler", "gcc@stable", NULL, NULL));
 
-    version_available = 1;
-    format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, "zip"));
-
-    format_result = CUP_OK;
-    format_available = 0;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
+    artifact_available = 1;
+    artifact_result = CUP_ERR_CATALOG;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG,
                           command_install("compiler", "gcc@stable", NULL, "zip"));
-
-    format_available = 1;
-    default_format_result = CUP_ERR_CATALOG;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_install("compiler", "gcc@stable", NULL, NULL));
 }
 
 static void test_invalid_existing(void) {
@@ -662,7 +678,12 @@ int main(void) {
     RUN_TEST(test_explicit_toolchain);
     RUN_TEST(test_toolchain_no_prefs);
     RUN_TEST(test_group_prevalidation);
+    RUN_TEST(test_group_preflight_checks_later_members_before_mutation);
     RUN_TEST(test_direct_stable);
+    RUN_TEST(test_exact_installed_is_local_noop);
+    RUN_TEST(test_symbolic_refresh_failure_uses_valid_local_catalog);
+    RUN_TEST(test_exact_miss_refreshes_once);
+    RUN_TEST(test_symbolic_refresh_failure_without_local_resolution_fails);
     RUN_TEST(test_unknown_groups);
     RUN_TEST(test_plan_load_failures);
     RUN_TEST(test_plan_failures);

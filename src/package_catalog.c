@@ -1,7 +1,4 @@
-/*
- * Loads and validates packages.cfg, groups fields into concrete host/target package tuples,
- * resolves stable versions and expands HTTPS templates.
- */
+/* Load and query the concrete package availability snapshot in catalog.cfg. */
 
 #include "package_catalog.h"
 
@@ -9,35 +6,152 @@
 #include "download.h"
 #include "filesystem.h"
 #include "layout.h"
-#include "path.h"
 #include "package_archive.h"
 #include "package_selector.h"
+#include "path.h"
 #include "platform.h"
 #include "registry.h"
 #include "system.h"
 #include "text.h"
 #include "version.h"
 
-#include <ctype.h>
-#include <stddef.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define FIELD_STABLE_VERSION (1u << 0)
-#define FIELD_AVAILABLE_VERSIONS (1u << 1)
-#define FIELD_DEFAULT_FORMAT (1u << 2)
-#define FIELD_FORMATS (1u << 3)
-#define FIELD_URL_TEMPLATE (1u << 4)
-#define FIELD_CHECKSUM_URL (1u << 5)
-#define REQUIRED_FIELDS \
-    (FIELD_STABLE_VERSION | FIELD_AVAILABLE_VERSIONS | FIELD_DEFAULT_FORMAT | FIELD_FORMATS | \
-     FIELD_URL_TEMPLATE | FIELD_CHECKSUM_URL)
-#define DEVELOPMENT_CATALOG_PATH "config/packages.cfg"
+#define PACKAGE_FIELD_COMPONENT (1u << 0)
+#define PACKAGE_FIELD_TOOL (1u << 1)
+#define PACKAGE_FIELD_HOST (1u << 2)
+#define PACKAGE_FIELD_TARGET (1u << 3)
+#define PACKAGE_FIELD_VERSION (1u << 4)
+#define PACKAGE_FIELD_STABLE (1u << 5)
+#define PACKAGE_FIELD_REVISION_REASON (1u << 6)
+#define PACKAGE_REQUIRED_FIELDS \
+    (PACKAGE_FIELD_COMPONENT | PACKAGE_FIELD_TOOL | PACKAGE_FIELD_HOST | PACKAGE_FIELD_TARGET | \
+     PACKAGE_FIELD_VERSION | PACKAGE_FIELD_STABLE)
 
-/* Catalog lifetime and tuple assembly. A package becomes visible only after every required
- * field is present. */
+#define ARTIFACT_FIELD_FORMAT (1u << 0)
+#define ARTIFACT_FIELD_URL (1u << 1)
+#define ARTIFACT_FIELD_SHA256 (1u << 2)
+#define ARTIFACT_REQUIRED_FIELDS \
+    (ARTIFACT_FIELD_FORMAT | ARTIFACT_FIELD_URL | ARTIFACT_FIELD_SHA256)
+
+#define DEVELOPMENT_CATALOG_PATH "config/catalog.cfg"
+
+static int ascii_is_alnum(unsigned char value) {
+    return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') ||
+           (value >= 'a' && value <= 'z');
+}
+
+static int ascii_token_is_safe(const char *value, size_t capacity) {
+    const unsigned char *cursor;
+    size_t length;
+
+    if (text_is_empty(value)) {
+        return 0;
+    }
+    length = strlen(value);
+    if (length >= capacity || !ascii_is_alnum((unsigned char)value[0])) {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (ascii_is_alnum(*cursor) || *cursor == '.' || *cursor == '_' || *cursor == '+' ||
+            *cursor == '-' || *cursor == ':') {
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int text_value_is_safe(const char *value, size_t capacity) {
+    const unsigned char *cursor;
+    size_t length;
+
+    if (text_is_empty(value)) {
+        return 0;
+    }
+    length = strlen(value);
+    if (length >= capacity) {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
+        if (*cursor < 0x20 || *cursor > 0x7e) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int catalog_url_is_valid(const char *url) {
+    const unsigned char *cursor;
+
+    if (text_is_empty(url) || strlen(url) >= MAX_CATALOG_URL_LEN) {
+        return 0;
+    }
+    if (strncmp(url, "https://", 8) != 0) {
+        return download_insecure_loopback_is_allowed(url);
+    }
+    if (url[8] == '\0') {
+        return 0;
+    }
+    for (cursor = (const unsigned char *)url; *cursor != '\0'; ++cursor) {
+        if (*cursor < 0x21 || *cursor > 0x7e) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int parse_uint64_canonical(const char *value, uint64_t *result) {
+    unsigned long long parsed;
+    char *end = NULL;
+
+    if (text_is_empty(value) || result == NULL ||
+        (value[0] == '0' && value[1] != '\0')) {
+        return 0;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') {
+        return 0;
+    }
+    *result = (uint64_t)parsed;
+    return 1;
+}
+
+static CupError parse_index(const char *value, const char **rest, size_t *index) {
+    unsigned long long parsed;
+    char digits[32];
+    size_t length = 0;
+    char *end = NULL;
+
+    if (text_is_empty(value) || rest == NULL || index == NULL) {
+        return CUP_ERR_CATALOG;
+    }
+    while (value[length] >= '0' && value[length] <= '9') {
+        if (length + 1 >= sizeof(digits)) {
+            return CUP_ERR_CATALOG;
+        }
+        digits[length] = value[length];
+        length++;
+    }
+    if (length == 0 || value[length] != '.' || (length > 1 && digits[0] == '0')) {
+        return CUP_ERR_CATALOG;
+    }
+    digits[length] = '\0';
+    errno = 0;
+    parsed = strtoull(digits, &end, 10);
+    if (errno != 0 || end == digits || *end != '\0' || parsed > SIZE_MAX) {
+        return CUP_ERR_CATALOG;
+    }
+    *index = (size_t)parsed;
+    *rest = value + length + 1u;
+    return CUP_OK;
+}
+
 void package_catalog_init(PackageCatalog *catalog) {
     if (catalog != NULL) {
         memset(catalog, 0, sizeof(*catalog));
@@ -45,572 +159,408 @@ void package_catalog_init(PackageCatalog *catalog) {
 }
 
 void package_catalog_free(PackageCatalog *catalog) {
+    size_t i;
+
     if (catalog == NULL) {
         return;
     }
-
+    for (i = 0; i < catalog->count; ++i) {
+        free(catalog->packages[i].artifacts);
+    }
     free(catalog->packages);
     package_catalog_init(catalog);
 }
 
-/* Bounded storage ownership and duplicate-key detection. */
-static int find_package_index(const PackageCatalog *catalog,
-                              const char *component,
-                              const char *tool,
-                              const char *host,
-                              const char *target) {
-    size_t i;
-
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
-        text_is_empty(target)) {
-        return -1;
-    }
-
-    for (i = 0; i < catalog->count; ++i) {
-        const PackageCatalogEntry *package = &catalog->packages[i];
-
-        if (strcmp(package->component, component) == 0 && strcmp(package->tool, tool) == 0 &&
-            strcmp(package->host_platform, host) == 0 &&
-            strcmp(package->target_platform, target) == 0) {
-            return (int)i;
-        }
-    }
-
-    return -1;
-}
-
-static CupError append_package(PackageCatalog *catalog,
-                               const char *component,
-                               const char *tool,
-                               const char *host,
-                               const char *target,
-                               PackageCatalogEntry **result) {
-    PackageCatalogEntry candidate = {0};
+static CupError ensure_package(PackageCatalog *catalog,
+                               size_t index,
+                               PackageCatalogEntry **entry) {
     PackageCatalogEntry *packages;
-    CupError err;
     size_t capacity;
 
-    if (catalog->count == catalog->capacity) {
-        if (catalog->capacity > SIZE_MAX / 2) {
-            return CUP_ERR_TEMPORARY;
-        }
-        capacity = catalog->capacity == 0 ? 16 : catalog->capacity * 2;
-        if (capacity > SIZE_MAX / sizeof(*packages)) {
-            return CUP_ERR_TEMPORARY;
-        }
-        packages = realloc(catalog->packages, capacity * sizeof(*packages));
-        if (packages == NULL) {
-            return CUP_ERR_TEMPORARY;
-        }
-
-        catalog->packages = packages;
-        catalog->capacity = capacity;
-    }
-
-    err = text_copy(candidate.component, sizeof(candidate.component), component);
-    if (err == CUP_OK) {
-        err = text_copy(candidate.tool, sizeof(candidate.tool), tool);
-    }
-    if (err == CUP_OK) {
-        err = text_copy(candidate.host_platform, sizeof(candidate.host_platform), host);
-    }
-    if (err == CUP_OK) {
-        err = text_copy(candidate.target_platform, sizeof(candidate.target_platform), target);
-    }
-    if (err != CUP_OK) {
+    if (catalog == NULL || entry == NULL || index > catalog->count) {
         return CUP_ERR_CATALOG;
     }
-
-    catalog->packages[catalog->count] = candidate;
-    *result = &catalog->packages[catalog->count++];
-    return CUP_OK;
-}
-
-/* Temporary parser state for one component/tool/host/target tuple. */
-static CupError parse_package_key(const char *key,
-                                  char *component,
-                                  size_t component_size,
-                                  char *tool,
-                                  size_t tool_size,
-                                  char *host,
-                                  size_t host_size,
-                                  char *target,
-                                  size_t target_size,
-                                  char *field,
-                                  size_t field_size) {
-    char copy[MAX_CATALOG_KEY_LEN];
-    TextBuffer outputs[5];
-
-    if (text_copy(copy, sizeof(copy), key) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-
-    outputs[0] = (TextBuffer){.data = component, .capacity = component_size};
-    outputs[1] = (TextBuffer){.data = tool, .capacity = tool_size};
-    outputs[2] = (TextBuffer){.data = host, .capacity = host_size};
-    outputs[3] = (TextBuffer){.data = target, .capacity = target_size};
-    outputs[4] = (TextBuffer){.data = field, .capacity = field_size};
-
-    return text_split_exact(copy, '.', outputs, 5) == CUP_OK ? CUP_OK : CUP_ERR_CATALOG;
-}
-
-typedef struct {
-    const char *name;
-    unsigned bit;
-    size_t offset;
-    size_t capacity;
-} CatalogField;
-
-#define CATALOG_FIELD(name_value, bit_value, member) \
-    {name_value, \
-     bit_value, \
-     offsetof(PackageCatalogEntry, member), \
-     sizeof(((PackageCatalogEntry *)0)->member)}
-
-static const CatalogField PACKAGE_FIELDS[] = {
-    CATALOG_FIELD("stable_version", FIELD_STABLE_VERSION, stable_version),
-    CATALOG_FIELD("available_versions", FIELD_AVAILABLE_VERSIONS, available_versions),
-    CATALOG_FIELD("default_format", FIELD_DEFAULT_FORMAT, default_format),
-    CATALOG_FIELD("formats", FIELD_FORMATS, formats),
-    CATALOG_FIELD("url_template", FIELD_URL_TEMPLATE, url_template),
-    CATALOG_FIELD("checksum_url_template", FIELD_CHECKSUM_URL, checksum_url_template)};
-
-/* Assign one validated key/value record without exposing a partially assembled package. */
-static const CatalogField *find_catalog_field(const char *name) {
-    size_t i;
-
-    for (i = 0; i < sizeof(PACKAGE_FIELDS) / sizeof(PACKAGE_FIELDS[0]); ++i) {
-        if (strcmp(PACKAGE_FIELDS[i].name, name) == 0) {
-            return &PACKAGE_FIELDS[i];
-        }
-    }
-    return NULL;
-}
-
-static CupError set_package_field(PackageCatalogEntry *package,
-                                  const char *field,
-                                  const char *value) {
-    const CatalogField *descriptor;
-    char *destination;
-
-    descriptor = find_catalog_field(field);
-    if (descriptor == NULL) {
-        fprintf(stderr, "Error: unknown catalog field '%s'.\n", field);
-        return CUP_ERR_CATALOG;
-    }
-    if ((package->field_mask & descriptor->bit) != 0) {
-        fprintf(stderr, "Error: duplicate catalog field '%s'.\n", field);
-        return CUP_ERR_CATALOG;
-    }
-
-    destination = (char *)package + descriptor->offset;
-    if (text_copy(destination, descriptor->capacity, value) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-
-    package->field_mask |= descriptor->bit;
-    return CUP_OK;
-}
-
-static CupError parse_catalog_line(PackageCatalog *catalog, char *line) {
-    char key[MAX_CATALOG_KEY_LEN];
-    char value[MAX_CATALOG_URL_LEN];
-    char component[MAX_IDENTIFIER_LEN];
-    char tool[MAX_IDENTIFIER_LEN];
-    char host[MAX_PLATFORM_LEN];
-    char target[MAX_PLATFORM_LEN];
-    char field[MAX_IDENTIFIER_LEN];
-    PackageCatalogEntry *package;
-    int index;
-
-    if (text_parse_key_value(line, key, sizeof(key), value, sizeof(value)) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    if (parse_package_key(key,
-                          component,
-                          sizeof(component),
-                          tool,
-                          sizeof(tool),
-                          host,
-                          sizeof(host),
-                          target,
-                          sizeof(target),
-                          field,
-                          sizeof(field)) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    if (registry_validate_component(component) != CUP_OK ||
-        registry_validate_tool(component, tool) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    if (platform_validate(host) != CUP_OK || platform_validate(target) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-
-    index = find_package_index(catalog, component, tool, host, target);
-    if (index == -1) {
-        CupError err = append_package(catalog, component, tool, host, target, &package);
-
-        if (err != CUP_OK) {
-            return err;
-        }
-    } else {
-        package = &catalog->packages[index];
-    }
-
-    return set_package_field(package, field, value);
-}
-
-/* Cross-record validation after the full file has been parsed. */
-#define PLACEHOLDER_TOOL (1u << 0)
-#define PLACEHOLDER_HOST (1u << 1)
-#define PLACEHOLDER_TARGET (1u << 2)
-#define PLACEHOLDER_VERSION (1u << 3)
-#define PLACEHOLDER_FORMAT (1u << 4)
-#define PACKAGE_URL_REQUIRED_PLACEHOLDERS \
-    (PLACEHOLDER_HOST | PLACEHOLDER_TARGET | PLACEHOLDER_VERSION | PLACEHOLDER_FORMAT)
-#define CHECKSUM_URL_REQUIRED_PLACEHOLDERS \
-    (PLACEHOLDER_HOST | PLACEHOLDER_TARGET | PLACEHOLDER_VERSION)
-#define PACKAGE_URL_ALLOWED_PLACEHOLDERS (PLACEHOLDER_TOOL | PACKAGE_URL_REQUIRED_PLACEHOLDERS)
-#define CHECKSUM_URL_ALLOWED_PLACEHOLDERS (PLACEHOLDER_TOOL | CHECKSUM_URL_REQUIRED_PLACEHOLDERS)
-
-static CupError validate_value_list(const char *value, const char *expected, int *contains) {
-    char copy[MAX_CATALOG_VALUE_LEN];
-    char *parts[(MAX_CATALOG_VALUE_LEN + 1) / 2];
-    char *cursor;
-    size_t count = 0;
-
-    if (contains != NULL) {
-        *contains = 0;
-    }
-
-    if (text_copy(copy, sizeof(copy), value) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-
-    cursor = copy;
-    while (cursor != NULL) {
-        char *separator = strchr(cursor, ',');
-        char *part;
-        size_t i;
-
-        if (separator != NULL) {
-            *separator = '\0';
-        }
-
-        part = text_trim(cursor);
-        if (!path_is_safe_identifier(part)) {
-            fprintf(stderr, "Error: catalog list contains invalid value '%s'.\n", part);
-            return CUP_ERR_CATALOG;
-        }
-
-        for (i = 0; i < count; ++i) {
-            if (strcmp(parts[i], part) == 0) {
-                fprintf(stderr, "Error: catalog list contains duplicate value '%s'.\n", part);
-                return CUP_ERR_CATALOG;
+    if (index == catalog->count) {
+        if (catalog->count == catalog->capacity) {
+            capacity = catalog->capacity == 0 ? 16u : catalog->capacity * 2u;
+            if (capacity < catalog->capacity || capacity > SIZE_MAX / sizeof(*packages)) {
+                return CUP_ERR_TEMPORARY;
             }
+            packages = realloc(catalog->packages, capacity * sizeof(*packages));
+            if (packages == NULL) {
+                return CUP_ERR_TEMPORARY;
+            }
+            catalog->packages = packages;
+            catalog->capacity = capacity;
         }
-        parts[count++] = part;
-
-        if (contains != NULL && expected != NULL && strcmp(part, expected) == 0) {
-            *contains = 1;
-        }
-
-        cursor = separator == NULL ? NULL : separator + 1;
+        memset(&catalog->packages[catalog->count], 0, sizeof(*catalog->packages));
+        catalog->count++;
     }
-
+    *entry = &catalog->packages[index];
     return CUP_OK;
 }
 
-static CupError validate_concrete_release_list(const char *value) {
-    char copy[MAX_CATALOG_VALUE_LEN];
-    char *cursor;
+static CupError ensure_artifact(PackageCatalogEntry *entry,
+                                size_t index,
+                                PackageCatalogArtifact **artifact) {
+    PackageCatalogArtifact *items;
+    size_t capacity;
 
-    if (text_copy(copy, sizeof(copy), value) != CUP_OK) {
+    if (entry == NULL || artifact == NULL || index > entry->artifact_count) {
         return CUP_ERR_CATALOG;
     }
-    cursor = copy;
-    while (cursor != NULL) {
-        char *separator = strchr(cursor, ',');
-        char *part;
-
-        if (separator != NULL) {
-            *separator = '\0';
+    if (index == entry->artifact_count) {
+        if (entry->artifact_count == entry->artifact_capacity) {
+            capacity = entry->artifact_capacity == 0 ? 4u : entry->artifact_capacity * 2u;
+            if (capacity < entry->artifact_capacity || capacity > SIZE_MAX / sizeof(*items)) {
+                return CUP_ERR_TEMPORARY;
+            }
+            items = realloc(entry->artifacts, capacity * sizeof(*items));
+            if (items == NULL) {
+                return CUP_ERR_TEMPORARY;
+            }
+            entry->artifacts = items;
+            entry->artifact_capacity = capacity;
         }
-        part = text_trim(cursor);
-        if (package_release_validate_concrete(part) != CUP_OK) {
-            fprintf(stderr, "Error: catalog contains invalid concrete version '%s'.\n", part);
-            return CUP_ERR_CATALOG;
-        }
-        cursor = separator == NULL ? NULL : separator + 1;
+        memset(&entry->artifacts[entry->artifact_count], 0, sizeof(*entry->artifacts));
+        entry->artifact_count++;
     }
+    *artifact = &entry->artifacts[index];
     return CUP_OK;
 }
 
-/* URL templates and concrete package tuples are validated as closed schemas. */
-static unsigned placeholder_bit(const char *start, size_t length) {
-    static const struct {
-        const char *name;
-        unsigned bit;
-    } placeholders[] = {
-        {"{tool}", PLACEHOLDER_TOOL},
-        {"{host_platform}", PLACEHOLDER_HOST},
-        {"{target_platform}", PLACEHOLDER_TARGET},
-        {"{version}", PLACEHOLDER_VERSION},
-        {"{format}", PLACEHOLDER_FORMAT},
-    };
-    size_t i;
+static CupError set_token_field(char *destination,
+                                size_t size,
+                                unsigned *mask,
+                                unsigned bit,
+                                const char *value,
+                                size_t token_capacity) {
+    if ((*mask & bit) != 0 || !ascii_token_is_safe(value, token_capacity) ||
+        text_copy(destination, size, value) != CUP_OK) {
+        return CUP_ERR_CATALOG;
+    }
+    *mask |= bit;
+    return CUP_OK;
+}
 
-    for (i = 0; i < sizeof(placeholders) / sizeof(placeholders[0]); ++i) {
-        if (strlen(placeholders[i].name) == length &&
-            strncmp(start, placeholders[i].name, length) == 0) {
-            return placeholders[i].bit;
-        }
+static CupError parse_artifact_field(PackageCatalogEntry *entry,
+                                     const char *suffix,
+                                     const char *value) {
+    PackageCatalogArtifact *artifact;
+    const char *field;
+    size_t index;
+    CupError err;
+
+    err = parse_index(suffix, &field, &index);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = ensure_artifact(entry, index, &artifact);
+    if (err != CUP_OK) {
+        return err;
     }
 
+    if (strcmp(field, "format") == 0) {
+        return set_token_field(artifact->format,
+                               sizeof(artifact->format),
+                               &artifact->field_mask,
+                               ARTIFACT_FIELD_FORMAT,
+                               value,
+                               sizeof(artifact->format));
+    }
+    if (strcmp(field, "url") == 0) {
+        if ((artifact->field_mask & ARTIFACT_FIELD_URL) != 0 || !catalog_url_is_valid(value) ||
+            text_copy(artifact->url, sizeof(artifact->url), value) != CUP_OK) {
+            return CUP_ERR_CATALOG;
+        }
+        artifact->field_mask |= ARTIFACT_FIELD_URL;
+        return CUP_OK;
+    }
+    if (strcmp(field, "sha256") == 0) {
+        if ((artifact->field_mask & ARTIFACT_FIELD_SHA256) != 0 ||
+            !checksum_digest_is_canonical(value) ||
+            text_copy(artifact->sha256, sizeof(artifact->sha256), value) != CUP_OK) {
+            return CUP_ERR_CATALOG;
+        }
+        artifact->field_mask |= ARTIFACT_FIELD_SHA256;
+        return CUP_OK;
+    }
+    return CUP_ERR_CATALOG;
+}
+
+static CupError parse_package_field(PackageCatalog *catalog,
+                                    const char *suffix,
+                                    const char *value) {
+    PackageCatalogEntry *entry;
+    const char *field;
+    size_t index;
+    CupError err;
+
+    err = parse_index(suffix, &field, &index);
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = ensure_package(catalog, index, &entry);
+    if (err != CUP_OK) {
+        return err;
+    }
+
+    if (strncmp(field, "artifact.", 9) == 0) {
+        return parse_artifact_field(entry, field + 9, value);
+    }
+    if (strcmp(field, "component") == 0) {
+        return set_token_field(entry->component, sizeof(entry->component), &entry->field_mask,
+                               PACKAGE_FIELD_COMPONENT, value, sizeof(entry->component));
+    }
+    if (strcmp(field, "tool") == 0) {
+        return set_token_field(entry->tool, sizeof(entry->tool), &entry->field_mask,
+                               PACKAGE_FIELD_TOOL, value, sizeof(entry->tool));
+    }
+    if (strcmp(field, "host") == 0) {
+        return set_token_field(entry->host_platform, sizeof(entry->host_platform), &entry->field_mask,
+                               PACKAGE_FIELD_HOST, value, sizeof(entry->host_platform));
+    }
+    if (strcmp(field, "target") == 0) {
+        return set_token_field(entry->target_platform, sizeof(entry->target_platform),
+                               &entry->field_mask, PACKAGE_FIELD_TARGET, value,
+                               sizeof(entry->target_platform));
+    }
+    if (strcmp(field, "version") == 0) {
+        return set_token_field(entry->version, sizeof(entry->version), &entry->field_mask,
+                               PACKAGE_FIELD_VERSION, value, sizeof(entry->version));
+    }
+    if (strcmp(field, "revision_reason") == 0) {
+        if ((entry->field_mask & PACKAGE_FIELD_REVISION_REASON) != 0 ||
+            !text_value_is_safe(value, sizeof(entry->revision_reason)) ||
+            text_copy(entry->revision_reason, sizeof(entry->revision_reason), value) != CUP_OK) {
+            return CUP_ERR_CATALOG;
+        }
+        entry->field_mask |= PACKAGE_FIELD_REVISION_REASON;
+        return CUP_OK;
+    }
+    if (strcmp(field, "stable") == 0) {
+        if ((entry->field_mask & PACKAGE_FIELD_STABLE) != 0 ||
+            (strcmp(value, "true") != 0 && strcmp(value, "false") != 0)) {
+            return CUP_ERR_CATALOG;
+        }
+        entry->stable = strcmp(value, "true") == 0;
+        entry->field_mask |= PACKAGE_FIELD_STABLE;
+        return CUP_OK;
+    }
+    return CUP_ERR_CATALOG;
+}
+
+static int same_tuple(const PackageCatalogEntry *left, const PackageCatalogEntry *right) {
+    return strcmp(left->component, right->component) == 0 &&
+           strcmp(left->tool, right->tool) == 0 &&
+           strcmp(left->host_platform, right->host_platform) == 0 &&
+           strcmp(left->target_platform, right->target_platform) == 0;
+}
+
+static int entry_has_supported_artifact(const PackageCatalogEntry *entry) {
+    size_t i;
+
+    for (i = 0; i < entry->artifact_count; ++i) {
+        PackageArchiveFormat format;
+        if (package_archive_parse_format(entry->artifacts[i].format, &format) == CUP_OK) {
+            return 1;
+        }
+    }
     return 0;
 }
 
-static CupError validate_url_template(const char *url,
-                                      unsigned allowed,
-                                      unsigned required,
-                                      const char *field_name) {
-    const char *cursor;
-    unsigned seen = 0;
+static int entry_version_contract_is_operational(const PackageCatalogEntry *entry) {
+    char base[MAX_IDENTIFIER_LEN];
+    int revised;
+    int has_reason;
 
-    if (strncmp(url, "https://", 8) != 0 &&
-        !download_insecure_loopback_is_allowed(url)) {
-        fprintf(stderr, "Error: catalog URL templates must use HTTPS.\n");
+    if (package_release_validate_concrete(entry->version) != CUP_OK ||
+        package_release_base(entry->version, base, sizeof(base)) != CUP_OK) {
+        return 0;
+    }
+    revised = strcmp(base, entry->version) != 0;
+    has_reason = (entry->field_mask & PACKAGE_FIELD_REVISION_REASON) != 0;
+    return revised == has_reason;
+}
+
+static CupError classify_operational(PackageCatalogEntry *entry) {
+    int domain_operational = registry_tool_is_operational(entry->component, entry->tool) &&
+                             platform_is_supported(entry->host_platform) &&
+                             platform_is_supported(entry->target_platform);
+    int version_understood = package_release_validate_concrete(entry->version) == CUP_OK;
+
+    if (domain_operational && version_understood && !entry_version_contract_is_operational(entry)) {
         return CUP_ERR_CATALOG;
     }
+    entry->operational = domain_operational && version_understood &&
+                         entry_version_contract_is_operational(entry) &&
+                         entry_has_supported_artifact(entry);
+    return CUP_OK;
+}
 
-    cursor = url;
-    while (*cursor != '\0') {
-        const char *end;
-        unsigned bit;
+static CupError validate_catalog(PackageCatalog *catalog, int have_revision, int have_update_url) {
+    size_t i;
+    size_t j;
 
-        if (isspace((unsigned char)*cursor)) {
-            fprintf(stderr, "Error: catalog field '%s' contains whitespace.\n", field_name);
+    if (!have_revision || !have_update_url) {
+        return CUP_ERR_CATALOG;
+    }
+    for (i = 0; i < catalog->count; ++i) {
+        PackageCatalogEntry *entry = &catalog->packages[i];
+
+        if ((entry->field_mask & PACKAGE_REQUIRED_FIELDS) != PACKAGE_REQUIRED_FIELDS ||
+            entry->artifact_count == 0) {
             return CUP_ERR_CATALOG;
         }
-
-        if (*cursor == '}') {
+        for (j = 0; j < entry->artifact_count; ++j) {
+            size_t k;
+            if (entry->artifacts[j].field_mask != ARTIFACT_REQUIRED_FIELDS) {
+                return CUP_ERR_CATALOG;
+            }
+            for (k = j + 1; k < entry->artifact_count; ++k) {
+                if (strcmp(entry->artifacts[j].format, entry->artifacts[k].format) == 0) {
+                    return CUP_ERR_CATALOG;
+                }
+            }
+        }
+        if (classify_operational(entry) != CUP_OK) {
             return CUP_ERR_CATALOG;
         }
+        for (j = i + 1; j < catalog->count; ++j) {
+            PackageCatalogEntry *other = &catalog->packages[j];
+            if (!same_tuple(entry, other)) {
+                continue;
+            }
+            if (strcmp(entry->version, other->version) == 0 || (entry->stable && other->stable)) {
+                return CUP_ERR_CATALOG;
+            }
+        }
+    }
 
-        if (*cursor != '{') {
-            cursor++;
+    /* A stable record understood by this CUP must be the maximum understood version. A future
+     * non-operational stable remains the materialized stable and deliberately suppresses fallback. */
+    for (i = 0; i < catalog->count; ++i) {
+        PackageCatalogEntry *stable = &catalog->packages[i];
+        if (!stable->stable || !stable->operational) {
             continue;
         }
-
-        end = strchr(cursor, '}');
-        if (end == NULL) {
-            return CUP_ERR_CATALOG;
+        for (j = 0; j < catalog->count; ++j) {
+            PackageCatalogEntry *other = &catalog->packages[j];
+            int compared;
+            if (!other->operational || !same_tuple(stable, other)) {
+                continue;
+            }
+            if (package_release_compare(stable->version, other->version, &compared) != CUP_OK ||
+                compared < 0) {
+                return CUP_ERR_CATALOG;
+            }
         }
-
-        bit = placeholder_bit(cursor, (size_t)(end - cursor + 1));
-        if (bit == 0 || (allowed & bit) == 0) {
-            fprintf(stderr, "Error: invalid placeholder in catalog field '%s'.\n", field_name);
-            return CUP_ERR_CATALOG;
-        }
-        seen |= bit;
-        cursor = end + 1;
     }
-
-    if ((seen & required) != required) {
-        fprintf(
-            stderr, "Error: catalog field '%s' is missing required placeholders.\n", field_name);
-        return CUP_ERR_CATALOG;
-    }
-
     return CUP_OK;
 }
 
-static CupError validate_archive_format_list(const char *value) {
-    char copy[MAX_CATALOG_VALUE_LEN];
-    char *cursor;
-
-    if (text_copy(copy, sizeof(copy), value) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-
-    cursor = copy;
-    while (cursor != NULL) {
-        PackageArchiveFormat format;
-        char *separator = strchr(cursor, ',');
-        char *part;
-
-        if (separator != NULL) {
-            *separator = '\0';
-        }
-        part = text_trim(cursor);
-        if (package_archive_parse_format(part, &format) != CUP_OK) {
-            fprintf(stderr, "Error: catalog contains unsupported archive format '%s'.\n", part);
-            return CUP_ERR_CATALOG;
-        }
-        cursor = separator == NULL ? NULL : separator + 1;
-    }
-
-    return CUP_OK;
-}
-
-static CupError validate_catalog_entry(const PackageCatalogEntry *package) {
-    PackageArchiveFormat default_format;
-    int contains;
-
-    if (package->field_mask != REQUIRED_FIELDS) {
-        fprintf(stderr,
-                "Error: catalog package '%s.%s.%s.%s' is missing "
-                "one or more required fields.\n",
-                package->component,
-                package->tool,
-                package->host_platform,
-                package->target_platform);
-        return CUP_ERR_CATALOG;
-    }
-    if (package_release_validate_concrete(package->stable_version) != CUP_OK ||
-        package_archive_parse_format(package->default_format, &default_format) != CUP_OK) {
-        fprintf(stderr,
-                "Error: catalog package '%s.%s.%s.%s' contains an "
-                "invalid version or format identifier.\n",
-                package->component,
-                package->tool,
-                package->host_platform,
-                package->target_platform);
-        return CUP_ERR_CATALOG;
-    }
-
-    if (validate_value_list(package->available_versions, package->stable_version, &contains) !=
-            CUP_OK ||
-        validate_concrete_release_list(package->available_versions) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    if (!contains) {
-        fprintf(stderr,
-                "Error: stable_version is not listed in "
-                "available_versions for '%s.%s.%s.%s'.\n",
-                package->component,
-                package->tool,
-                package->host_platform,
-                package->target_platform);
-        return CUP_ERR_CATALOG;
-    }
-
-    if (validate_archive_format_list(package->formats) != CUP_OK ||
-        validate_value_list(package->formats, package->default_format, &contains) != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    if (!contains) {
-        fprintf(stderr,
-                "Error: default_format is not listed in formats for "
-                "'%s.%s.%s.%s'.\n",
-                package->component,
-                package->tool,
-                package->host_platform,
-                package->target_platform);
-        return CUP_ERR_CATALOG;
-    }
-
-    if (validate_url_template(package->url_template,
-                              PACKAGE_URL_ALLOWED_PLACEHOLDERS,
-                              PACKAGE_URL_REQUIRED_PLACEHOLDERS,
-                              "url_template") != CUP_OK) {
-        return CUP_ERR_CATALOG;
-    }
-    return validate_url_template(package->checksum_url_template,
-                                 CHECKSUM_URL_ALLOWED_PLACEHOLDERS,
-                                 CHECKSUM_URL_REQUIRED_PLACEHOLDERS,
-                                 "checksum_url_template");
-}
-
-/* Load from installed official assets or the explicit development fallback, never both. */
 CupError package_catalog_load_path(PackageCatalog *catalog, const char *path) {
     PersistentFileSnapshot snapshot;
     TextDocumentReader reader;
     CupError err;
     char line[MAX_CATALOG_LINE_LEN];
-    char expected_format[16];
-    size_t i;
+    char key[MAX_CATALOG_KEY_LEN];
+    char value[MAX_CATALOG_VALUE_LEN];
+    char expected_format[32];
     int missing;
     int has_line;
+    int have_revision = 0;
+    int have_update_url = 0;
 
     if (catalog == NULL || text_is_empty(path)) {
         return CUP_ERR_INVALID_INPUT;
     }
-
-    {
-        int written = snprintf(
-            expected_format, sizeof(expected_format), "format=%d", CUP_PACKAGE_CATALOG_FORMAT);
-
-        if (written < 0 || (size_t)written >= sizeof(expected_format)) {
-            return CUP_ERR_CATALOG;
-        }
-    }
-
     package_catalog_free(catalog);
     filesystem_snapshot_init(&snapshot);
-
-    err = filesystem_snapshot_read(
-        path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
+    err = filesystem_snapshot_read(path, MAX_PERSISTENT_METADATA_BYTES, &snapshot, &missing);
     if (err != CUP_OK || missing) {
-        package_catalog_free(catalog);
         return err != CUP_OK ? err : CUP_ERR_CATALOG;
     }
     err = text_document_reader_init(&reader, snapshot.data, snapshot.size);
     if (err != CUP_OK) {
         filesystem_snapshot_release(&snapshot);
-        package_catalog_free(catalog);
         return CUP_ERR_CATALOG;
     }
-
+    if (snprintf(expected_format, sizeof(expected_format), "format=%d", CUP_PACKAGE_CATALOG_FORMAT) < 0) {
+        filesystem_snapshot_release(&snapshot);
+        return CUP_ERR_CATALOG;
+    }
     err = text_document_read_raw_line(&reader, line, sizeof(line), &has_line);
     if (err != CUP_OK || !has_line || strcmp(line, expected_format) != 0) {
-        fprintf(stderr, "Error: package catalog must start with '%s'.\n", expected_format);
+        CupError format_error = CUP_ERR_CATALOG;
+        if (err == CUP_OK && has_line) {
+            char format_key[MAX_CATALOG_KEY_LEN];
+            char format_value[MAX_CATALOG_VALUE_LEN];
+            uint64_t format_number;
+            if (text_parse_key_value(line,
+                                     format_key,
+                                     sizeof(format_key),
+                                     format_value,
+                                     sizeof(format_value)) == CUP_OK &&
+                strcmp(format_key, "format") == 0 &&
+                parse_uint64_canonical(format_value, &format_number) &&
+                format_number != CUP_PACKAGE_CATALOG_FORMAT) {
+                format_error = CUP_ERR_NOT_AVAILABLE;
+            }
+        }
         filesystem_snapshot_release(&snapshot);
-        package_catalog_free(catalog);
-        return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_CATALOG;
+        return err == CUP_ERR_FILESYSTEM ? err : format_error;
     }
 
     while (1) {
         err = text_document_read_line(&reader, line, sizeof(line), &has_line);
-        if (err != CUP_OK) {
-            fprintf(stderr, "Error: invalid package catalog line %zu.\n", reader.line_number);
-            filesystem_snapshot_release(&snapshot);
-            package_catalog_free(catalog);
-            return err == CUP_ERR_FILESYSTEM ? err : CUP_ERR_CATALOG;
-        }
-        if (!has_line) {
+        if (err != CUP_OK || !has_line) {
             break;
         }
-
-        err = parse_catalog_line(catalog, line);
+        err = text_parse_key_value(line, key, sizeof(key), value, sizeof(value));
         if (err != CUP_OK) {
-            fprintf(stderr, "Error: invalid package catalog line %zu.\n", reader.line_number);
-            filesystem_snapshot_release(&snapshot);
-            package_catalog_free(catalog);
-            return err == CUP_ERR_TEMPORARY ? err : CUP_ERR_CATALOG;
+            break;
+        }
+        if (strcmp(key, "revision") == 0) {
+            if (have_revision || !parse_uint64_canonical(value, &catalog->revision)) {
+                err = CUP_ERR_CATALOG;
+                break;
+            }
+            have_revision = 1;
+        } else if (strcmp(key, "update_url") == 0) {
+            if (have_update_url || !catalog_url_is_valid(value) ||
+                text_copy(catalog->update_url, sizeof(catalog->update_url), value) != CUP_OK) {
+                err = CUP_ERR_CATALOG;
+                break;
+            }
+            have_update_url = 1;
+        } else if (strncmp(key, "package.", 8) == 0) {
+            err = parse_package_field(catalog, key + 8, value);
+            if (err != CUP_OK) {
+                break;
+            }
+        } else {
+            err = CUP_ERR_CATALOG;
+            break;
         }
     }
-    catalog->identity = snapshot.identity;
-    err = checksum_sha256_bytes(
-        snapshot.data, snapshot.size, catalog->digest, sizeof(catalog->digest));
+    if (err == CUP_OK && !has_line) {
+        err = validate_catalog(catalog, have_revision, have_update_url);
+    } else if (err == CUP_OK) {
+        err = CUP_ERR_CATALOG;
+    }
+    if (err == CUP_OK) {
+        catalog->identity = snapshot.identity;
+        err = checksum_sha256_bytes(snapshot.data, snapshot.size, catalog->digest, sizeof(catalog->digest));
+    }
     filesystem_snapshot_release(&snapshot);
     if (err != CUP_OK) {
         package_catalog_free(catalog);
-        return err;
+        return err == CUP_ERR_TEMPORARY || err == CUP_ERR_FILESYSTEM ||
+                       err == CUP_ERR_NOT_AVAILABLE
+                   ? err
+                   : CUP_ERR_CATALOG;
     }
-    if (catalog->count == 0) {
-        package_catalog_free(catalog);
-        return CUP_ERR_CATALOG;
-    }
-
-    for (i = 0; i < catalog->count; ++i) {
-        if (validate_catalog_entry(&catalog->packages[i]) != CUP_OK) {
-            package_catalog_free(catalog);
-            return CUP_ERR_CATALOG;
-        }
-    }
-
     return CUP_OK;
 }
 
@@ -623,15 +573,44 @@ CupError package_catalog_load_installed(PackageCatalog *catalog) {
     }
     package_catalog_free(catalog);
     err = layout_get_package_catalog_path(path, sizeof(path));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return package_catalog_load_path(catalog, path);
+    return err == CUP_OK ? package_catalog_load_path(catalog, path) : err;
 }
 
 CupError package_catalog_load_development(PackageCatalog *catalog) {
     return package_catalog_load_path(catalog, DEVELOPMENT_CATALOG_PATH);
+}
+
+
+CupError package_catalog_seed_runtime(void) {
+#if CUP_VERSION_OFFICIAL
+    return CUP_ERR_NOT_AVAILABLE;
+#else
+    PackageCatalog seed;
+    char installed[MAX_PATH_LEN];
+    CupError err;
+    int exists;
+
+    package_catalog_init(&seed);
+    err = layout_get_package_catalog_path(installed, sizeof(installed));
+    if (err == CUP_OK) {
+        err = system_path_exists(installed, &exists);
+    }
+    if (err == CUP_OK && exists) {
+        package_catalog_free(&seed);
+        return CUP_OK;
+    }
+    if (err == CUP_OK) {
+        err = package_catalog_load_development(&seed);
+    }
+    if (err == CUP_OK) {
+        err = layout_ensure_config();
+    }
+    if (err == CUP_OK) {
+        err = system_copy_file(DEVELOPMENT_CATALOG_PATH, installed);
+    }
+    package_catalog_free(&seed);
+    return err;
+#endif
 }
 
 CupError package_catalog_load(PackageCatalog *catalog) {
@@ -643,7 +622,6 @@ CupError package_catalog_load(PackageCatalog *catalog) {
         return CUP_ERR_INVALID_INPUT;
     }
     package_catalog_free(catalog);
-
     err = layout_get_package_catalog_path(installed, sizeof(installed));
     if (err != CUP_OK) {
         return err;
@@ -652,26 +630,21 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     if (err != CUP_OK) {
         return err;
     }
-
     if (exists) {
         return package_catalog_load_path(catalog, installed);
     }
-
 #if !CUP_VERSION_OFFICIAL
     err = system_path_exists(DEVELOPMENT_CATALOG_PATH, &exists);
     if (err != CUP_OK) {
         return err;
     }
-
     if (exists) {
         return package_catalog_load_development(catalog);
     }
 #endif
-
 #if CUP_VERSION_OFFICIAL
     fprintf(stderr,
-            "Error: installed package catalog not found at '%s'. "
-            "Run 'cup repair' to restore official configuration assets.\n",
+            "Error: installed package catalog not found at '%s'. Run 'cup repair' to restore it.\n",
             installed);
 #else
     fprintf(stderr,
@@ -682,105 +655,28 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     return CUP_ERR_CATALOG;
 }
 
-/* Read-only catalog queries preserve the distinction between package, version and format
- * availability. */
-static const PackageCatalogEntry *find_package(const PackageCatalog *catalog,
+static const PackageCatalogEntry *find_release(const PackageCatalog *catalog,
                                                const char *component,
                                                const char *tool,
                                                const char *host,
-                                               const char *target) {
-    int index = find_package_index(catalog, component, tool, host, target);
+                                               const char *target,
+                                               const char *version) {
+    size_t i;
 
-    return index == -1 ? NULL : &catalog->packages[index];
-}
-
-static const PackageCatalogEntry *require_package(const PackageCatalog *catalog,
-                                                  const char *component,
-                                                  const char *tool,
-                                                  const char *host,
-                                                  const char *target) {
-    const PackageCatalogEntry *package = find_package(catalog, component, tool, host, target);
-
-    if (package == NULL) {
-        fprintf(stderr,
-                "Error: tool '%s' for component '%s' is not "
-                "configured for host '%s', target '%s'.\n",
-                tool,
-                component,
-                host,
-                target);
+    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
+        text_is_empty(target)) {
+        return NULL;
     }
-
-    return package;
-}
-
-typedef enum {
-    CATALOG_VALUE_STABLE_VERSION,
-    CATALOG_VALUE_DEFAULT_FORMAT,
-    CATALOG_VALUE_AVAILABLE_VERSIONS,
-    CATALOG_VALUE_FORMATS
-} CatalogValue;
-
-static const char *catalog_value(const PackageCatalogEntry *package, CatalogValue value) {
-    switch (value) {
-        case CATALOG_VALUE_STABLE_VERSION:
-            return package->stable_version;
-        case CATALOG_VALUE_DEFAULT_FORMAT:
-            return package->default_format;
-        case CATALOG_VALUE_AVAILABLE_VERSIONS:
-            return package->available_versions;
-        case CATALOG_VALUE_FORMATS:
-            return package->formats;
+    for (i = 0; i < catalog->count; ++i) {
+        const PackageCatalogEntry *entry = &catalog->packages[i];
+        if (entry->operational && strcmp(entry->component, component) == 0 &&
+            strcmp(entry->tool, tool) == 0 && strcmp(entry->host_platform, host) == 0 &&
+            strcmp(entry->target_platform, target) == 0 &&
+            (version == NULL || strcmp(entry->version, version) == 0)) {
+            return entry;
+        }
     }
     return NULL;
-}
-
-static CupError copy_catalog_value(const PackageCatalog *catalog,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *component,
-                                   const char *tool,
-                                   const char *host,
-                                   const char *target,
-                                   CatalogValue value) {
-    const PackageCatalogEntry *package;
-
-    if (buffer == NULL || size == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    buffer[0] = '\0';
-    if (catalog == NULL || text_is_empty(component) ||
-        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = require_package(catalog, component, tool, host, target);
-    return package == NULL ? CUP_ERR_CATALOG
-                           : text_copy(buffer, size, catalog_value(package, value));
-}
-
-static CupError catalog_value_contains(const PackageCatalog *catalog,
-                                       const char *component,
-                                       const char *tool,
-                                       const char *host,
-                                       const char *target,
-                                       const char *expected,
-                                       CatalogValue value,
-                                       int *contains) {
-    const PackageCatalogEntry *package;
-
-    if (contains == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    *contains = 0;
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) ||
-        text_is_empty(host) || text_is_empty(target) || text_is_empty(expected)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    package = find_package(catalog, component, tool, host, target);
-    return package == NULL ? CUP_ERR_CATALOG
-                           : validate_value_list(catalog_value(package, value), expected, contains);
 }
 
 CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
@@ -788,269 +684,111 @@ CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
                                         size_t size,
                                         const char *component,
                                         const char *tool,
-                                        const char *host,
-                                        const char *target) {
-    return copy_catalog_value(catalog,
-                              buffer,
-                              size,
-                              component,
-                              tool,
-                              host,
-                              target,
-                              CATALOG_VALUE_STABLE_VERSION);
+                                        const char *host_platform,
+                                        const char *target_platform) {
+    size_t i;
+
+    if (buffer == NULL || size == 0 || catalog == NULL || text_is_empty(component) ||
+        text_is_empty(tool) || text_is_empty(host_platform) || text_is_empty(target_platform)) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    buffer[0] = '\0';
+    for (i = 0; i < catalog->count; ++i) {
+        const PackageCatalogEntry *entry = &catalog->packages[i];
+        if (entry->stable && entry->operational && strcmp(entry->component, component) == 0 &&
+            strcmp(entry->tool, tool) == 0 && strcmp(entry->host_platform, host_platform) == 0 &&
+            strcmp(entry->target_platform, target_platform) == 0) {
+            return text_copy(buffer, size, entry->version);
+        }
+    }
+    return CUP_ERR_NOT_AVAILABLE;
 }
 
 CupError package_catalog_is_stable(const PackageCatalog *catalog,
                                    const char *component,
                                    const char *tool,
-                                   const char *host,
-                                   const char *target,
+                                   const char *host_platform,
+                                   const char *target_platform,
                                    const char *version,
                                    int *is_stable) {
-    const PackageCatalogEntry *package;
+    const PackageCatalogEntry *entry;
 
-    if (is_stable == NULL) {
+    if (is_stable == NULL || text_is_empty(version)) {
         return CUP_ERR_INVALID_INPUT;
     }
     *is_stable = 0;
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
-        text_is_empty(target) || text_is_empty(version)) {
-        return CUP_ERR_INVALID_INPUT;
+    entry = find_release(catalog, component, tool, host_platform, target_platform, version);
+    if (entry == NULL) {
+        return catalog == NULL ? CUP_ERR_INVALID_INPUT : CUP_OK;
     }
-
-    package = find_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-
-    *is_stable = strcmp(package->stable_version, version) == 0;
+    *is_stable = entry->stable;
     return CUP_OK;
 }
 
 CupError package_catalog_has_package(const PackageCatalog *catalog,
                                      const char *component,
                                      const char *tool,
-                                     const char *host,
-                                     const char *target,
+                                     const char *host_platform,
+                                     const char *target_platform,
                                      int *is_available) {
     if (is_available == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
-    *is_available = 0;
-    if (catalog == NULL || text_is_empty(component) || text_is_empty(tool) || text_is_empty(host) ||
-        text_is_empty(target)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    *is_available = find_package(catalog, component, tool, host, target) != NULL;
-    return CUP_OK;
+    *is_available = find_release(catalog, component, tool, host_platform, target_platform, NULL) != NULL;
+    return catalog == NULL ? CUP_ERR_INVALID_INPUT : CUP_OK;
 }
 
 CupError package_catalog_has_version(const PackageCatalog *catalog,
                                      const char *component,
                                      const char *tool,
-                                     const char *host,
-                                     const char *target,
+                                     const char *host_platform,
+                                     const char *target_platform,
                                      const char *version,
                                      int *is_available) {
-    return catalog_value_contains(catalog,
-                                  component,
-                                  tool,
-                                  host,
-                                  target,
-                                  version,
-                                  CATALOG_VALUE_AVAILABLE_VERSIONS,
-                                  is_available);
-}
-
-CupError package_catalog_get_default_format(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host,
-                                            const char *target) {
-    return copy_catalog_value(catalog,
-                              buffer,
-                              size,
-                              component,
-                              tool,
-                              host,
-                              target,
-                              CATALOG_VALUE_DEFAULT_FORMAT);
-}
-
-CupError package_catalog_has_format(const PackageCatalog *catalog,
-                                    const char *component,
-                                    const char *tool,
-                                    const char *host,
-                                    const char *target,
-                                    const char *format,
-                                    int *is_supported) {
-    return catalog_value_contains(catalog,
-                                  component,
-                                  tool,
-                                  host,
-                                  target,
-                                  format,
-                                  CATALOG_VALUE_FORMATS,
-                                  is_supported);
-}
-
-/* Expand only known template placeholders after the selected package tuple is concrete. */
-static CupError replace_placeholder(
-    char *buffer, size_t size, const char *input, const char *placeholder, const char *value) {
-    const char *cursor;
-    const char *match;
-    size_t placeholder_length;
-    size_t value_length;
-    size_t written = 0;
-
-    if (buffer == NULL || size == 0 || input == NULL || text_is_empty(placeholder) ||
-        value == NULL) {
+    if (is_available == NULL || text_is_empty(version)) {
         return CUP_ERR_INVALID_INPUT;
     }
-
-    cursor = input;
-    placeholder_length = strlen(placeholder);
-    value_length = strlen(value);
-    while ((match = strstr(cursor, placeholder)) != NULL) {
-        size_t prefix_length = (size_t)(match - cursor);
-
-        if (prefix_length >= size - written) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        memcpy(buffer + written, cursor, prefix_length);
-        written += prefix_length;
-
-        if (value_length >= size - written) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        memcpy(buffer + written, value, value_length);
-        written += value_length;
-        cursor = match + placeholder_length;
-    }
-
-    {
-        size_t tail_length = strlen(cursor);
-        if (tail_length >= size - written) {
-            return CUP_ERR_BUFFER_TOO_SMALL;
-        }
-        memcpy(buffer + written, cursor, tail_length + 1);
-    }
-    return CUP_OK;
+    *is_available = find_release(catalog, component, tool, host_platform, target_platform, version) != NULL;
+    return catalog == NULL ? CUP_ERR_INVALID_INPUT : CUP_OK;
 }
 
-static CupError expand_package_url(const char *template_value,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *tool,
-                                   const char *host,
-                                   const char *target,
-                                   const char *version,
-                                   const char *format) {
-    char step1[MAX_CATALOG_URL_LEN];
-    char step2[MAX_CATALOG_URL_LEN];
-    char step3[MAX_CATALOG_URL_LEN];
-    char step4[MAX_CATALOG_URL_LEN];
+CupError package_catalog_resolve_artifact(const PackageCatalog *catalog,
+                                          const char *component,
+                                          const char *tool,
+                                          const char *host_platform,
+                                          const char *target_platform,
+                                          const char *version,
+                                          const char *format,
+                                          char *url,
+                                          size_t url_size,
+                                          char *artifact_sha256,
+                                          size_t artifact_sha256_size) {
+    const PackageCatalogEntry *entry;
+    size_t i;
     CupError err;
 
-    err = replace_placeholder(step1, sizeof(step1), template_value, "{tool}", tool);
-    if (err != CUP_OK) {
-        return err == CUP_ERR_BUFFER_TOO_SMALL ? err : CUP_ERR_CATALOG;
-    }
-    err = replace_placeholder(step2, sizeof(step2), step1, "{host_platform}", host);
-    if (err != CUP_OK) {
-        return err == CUP_ERR_BUFFER_TOO_SMALL ? err : CUP_ERR_CATALOG;
-    }
-    err = replace_placeholder(step3, sizeof(step3), step2, "{target_platform}", target);
-    if (err != CUP_OK) {
-        return err == CUP_ERR_BUFFER_TOO_SMALL ? err : CUP_ERR_CATALOG;
-    }
-    err = replace_placeholder(step4, sizeof(step4), step3, "{version}", version);
-    if (err != CUP_OK) {
-        return err == CUP_ERR_BUFFER_TOO_SMALL ? err : CUP_ERR_CATALOG;
-    }
-
-    err = replace_placeholder(buffer, size, step4, "{format}", format == NULL ? "" : format);
-    if (err != CUP_OK) {
-        return err == CUP_ERR_BUFFER_TOO_SMALL ? err : CUP_ERR_CATALOG;
-    }
-
-    if (strchr(buffer, '{') != NULL || strchr(buffer, '}') != NULL ||
-        (strncmp(buffer, "https://", 8) != 0 &&
-         !download_insecure_loopback_is_allowed(buffer))) {
-        return CUP_ERR_CATALOG;
-    }
-    return CUP_OK;
-}
-
-static CupError build_package_url(const PackageCatalog *catalog,
-                                  char *buffer,
-                                  size_t size,
-                                  const char *component,
-                                  const char *tool,
-                                  const char *host,
-                                  const char *target,
-                                  const char *version,
-                                  const char *format,
-                                  int checksum) {
-    const PackageCatalogEntry *package;
-    const char *template_value;
-    char expanded[MAX_CATALOG_URL_LEN];
-    CupError err;
-
-    if (buffer == NULL || size == 0) {
+    if (catalog == NULL || text_is_empty(version) || text_is_empty(format) || url == NULL ||
+        url_size == 0 || artifact_sha256 == NULL || artifact_sha256_size == 0) {
         return CUP_ERR_INVALID_INPUT;
     }
-    buffer[0] = '\0';
-    if (catalog == NULL || text_is_empty(component) ||
-        text_is_empty(tool) || text_is_empty(host) || text_is_empty(target) ||
-        text_is_empty(version) || (!checksum && text_is_empty(format))) {
-        return CUP_ERR_INVALID_INPUT;
+    url[0] = artifact_sha256[0] = '\0';
+    entry = find_release(catalog, component, tool, host_platform, target_platform, version);
+    if (entry == NULL) {
+        return CUP_ERR_NOT_AVAILABLE;
     }
-
-    package = require_package(catalog, component, tool, host, target);
-    if (package == NULL) {
-        return CUP_ERR_CATALOG;
-    }
-
-    template_value = checksum ? package->checksum_url_template : package->url_template;
-    err = expand_package_url(template_value,
-                             expanded,
-                             sizeof(expanded),
-                             tool,
-                             host,
-                             target,
-                             version,
-                             checksum ? "" : format);
-    if (err != CUP_OK) {
+    for (i = 0; i < entry->artifact_count; ++i) {
+        const PackageCatalogArtifact *artifact = &entry->artifacts[i];
+        if (strcmp(artifact->format, format) != 0) {
+            continue;
+        }
+        err = text_copy(url, url_size, artifact->url);
+        if (err == CUP_OK) {
+            err = text_copy(artifact_sha256, artifact_sha256_size, artifact->sha256);
+        }
+        if (err != CUP_OK) {
+            url[0] = artifact_sha256[0] = '\0';
+        }
         return err;
     }
-    return text_copy(buffer, size, expanded);
-}
-
-CupError package_catalog_build_url(const PackageCatalog *catalog,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *component,
-                                   const char *tool,
-                                   const char *host,
-                                   const char *target,
-                                   const char *version,
-                                   const char *format) {
-    return build_package_url(
-        catalog, buffer, size, component, tool, host, target, version, format, 0);
-}
-
-CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host,
-                                            const char *target,
-                                            const char *version) {
-    return build_package_url(
-        catalog, buffer, size, component, tool, host, target, version, NULL, 1);
+    return CUP_ERR_NOT_AVAILABLE;
 }

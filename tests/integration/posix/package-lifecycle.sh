@@ -11,11 +11,64 @@ test_begin package-lifecycle
 prepare_command_environment
 
 # Shared catalog and package fixtures for the public lifecycle.
-prepare_fixture() {
-    package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions 22.1.5 prepend
-    package_catalog_edit debugger lldb "$TEST_PLATFORM" available_versions 22.1.5 prepend
-    run_cup repair >/dev/null
+server_pid=
+cleanup_lifecycle_processes() {
+    test_stop_process "$server_pid"
+}
+lifecycle_exit_handler() {
+    status=$?
+    trap - 0 HUP INT TERM
+    cleanup_lifecycle_processes
+    test_cleanup_root || status=1
+    exit "$status"
+}
+lifecycle_signal_handler() {
+    status=$1
+    trap - 0 HUP INT TERM
+    cleanup_lifecycle_processes
+    test_cleanup_root || :
+    exit "$status"
+}
+trap lifecycle_exit_handler 0
+trap 'lifecycle_signal_handler 129' HUP
+trap 'lifecycle_signal_handler 130' INT
+trap 'lifecycle_signal_handler 143' TERM
 
+start_catalog_server() {
+    configuration=${CUP_TEST_CONFIGURATION:-development}
+    test_build_root=${CUP_TEST_BUILD_ROOT:-$PROJECT_ROOT/build}
+    helper=$test_build_root/$TEST_PLATFORM/$configuration/tests/helpers/network-helper
+    server_root=$TMP_ROOT/catalog-server
+    ready=$TMP_ROOT/catalog-server.ready
+    log=$TMP_ROOT/catalog-server.log
+    assert_file "$helper"
+    mkdir -p "$server_root"
+
+    "$helper" http-server --root "$server_root" --port 0 --ready-file "$ready" \
+        >"$log" 2>&1 &
+    server_pid=$!
+    attempt=0
+    while [ ! -s "$ready" ] && [ "$attempt" -lt 100 ]; do
+        kill -0 "$server_pid" 2>/dev/null || { cat "$log" >&2 || true; fail 'catalog server stopped'; }
+        attempt=$((attempt + 1))
+        sleep 0.05
+    done
+    [ -s "$ready" ] || fail 'catalog server did not become ready'
+    port=$(sed -n '1p' "$ready")
+    case "$port" in ''|*[!0-9]*) fail "invalid catalog server port: $port" ;; esac
+
+    url=http://127.0.0.1:$port/catalog.cfg
+    catalog=$DEV_ROOT/config/catalog.cfg
+    temporary=$catalog.tmp
+    awk -v url="$url" '/^update_url=/ { print "update_url=" url; next } { print }' \
+        "$catalog" > "$temporary"
+    mv "$temporary" "$catalog"
+    cp "$catalog" "$TEST_HOME/.cup/config/catalog.cfg"
+    cp "$catalog" "$server_root/catalog.cfg"
+    export CUP_INSTALL_ALLOW_INSECURE=1 NO_PROXY=127.0.0.1 no_proxy=127.0.0.1
+}
+
+prepare_fixture() {
     make_package compiler clang 22.1.5 "$TEST_PLATFORM" clang clang++
     make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
     make_package debugger lldb 22.1.5 "$TEST_PLATFORM" lldb
@@ -24,6 +77,7 @@ prepare_fixture() {
     if [ "$TEST_PLATFORM" = linux-x64 ]; then
         make_package compiler gcc 16.2.0-rev1 windows-x64 gcc g++
     fi
+    start_catalog_server
 }
 
 # Installation, catalog and default behavior.
@@ -99,7 +153,7 @@ test_missing_default() {
 test_updates() {
     component_update=$(run_cup update compiler)
     assert_contains "$component_update" \
-        '0 stable package(s) installed, 1 default(s) moved'
+        '0 package(s) installed, 1 default(s) moved'
     assert_contains "$(run_cup info compiler)" \
         "compiler [$TEST_PLATFORM]: clang@23.1.0 (stable)"
     assert_equals "$(run_native_wrapper clang)" \
@@ -107,11 +161,9 @@ test_updates() {
 
     global_update=$(run_cup update)
     assert_contains "$global_update" \
-        '1 stable package(s) installed, 1 default(s) moved'
-    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/"\
-"$TEST_PLATFORM/22.1.5/bin/lldb"
-    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/"\
-"$TEST_PLATFORM/23.1.0/bin/lldb"
+        '1 package(s) installed, 1 default(s) moved'
+    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/22.1.5/bin/lldb"
+    assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/23.1.0/bin/lldb"
     assert_contains "$(run_cup info debugger)" \
         "debugger [$TEST_PLATFORM]: lldb@23.1.0 (stable)"
     assert_equals "$(run_native_wrapper lldb)" \
@@ -123,8 +175,6 @@ test_updates() {
         'Package information for compiler clang@stable -> clang@23.1.0'
     assert_contains "$package_info" 'component          compiler'
     assert_contains "$package_info" 'version            23.1.0'
-    assert_contains "$package_info" 'mode               self-contained'
-    assert_contains "$package_info" 'formats            tar.xz,tar.gz,zip'
     assert_contains "$package_info" 'Platform:'
     assert_contains "$package_info" "host triple        $(package_fixture_triple "$TEST_PLATFORM")"
     assert_contains "$package_info" 'Source/build:'
@@ -138,7 +188,7 @@ test_updates() {
 
     idempotent=$(run_cup update clang)
     assert_contains "$idempotent" \
-        '0 stable package(s) installed, 0 default(s) moved'
+        '0 package(s) installed, 0 default(s) moved'
 }
 
 # Cross-target, development-update and removal boundaries.
@@ -183,15 +233,12 @@ test_remove_default_without_promotion() {
     assert_contains "$ambiguous" 'Specify one of the installed releases with:'
     assert_contains "$ambiguous" \
         "cup remove compiler clang@<release> --target $TEST_PLATFORM"
-    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
-"$TEST_PLATFORM/22.1.5/info.txt"
-    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
-"$TEST_PLATFORM/23.1.0/info.txt"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/22.1.5/info.txt"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/23.1.0/info.txt"
 
     run_cup remove compiler clang@stable >/dev/null
-    assert_missing "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0"
-    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/"\
-"$TEST_PLATFORM/22.1.5/info.txt"
+    assert_missing "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/23.1.0"
+    assert_file "$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/22.1.5/info.txt"
     assert_missing "$(native_wrapper_path clang)"
     assert_missing "$(native_wrapper_path clang++)"
     assert_contains "$(run_cup info compiler --target "$TEST_PLATFORM")" \

@@ -21,6 +21,7 @@
 #include "text.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Removal state retained across staging, commit and rollback. */
@@ -71,6 +72,17 @@ static int installed_identity_matches(const PackageIdentity *candidate,
            strcmp(candidate->target_platform, target) == 0;
 }
 
+static int compare_installed_release_pointers(const void *left, const void *right) {
+    const PackageIdentity *const *a = left;
+    const PackageIdentity *const *b = right;
+    int compared = 0;
+
+    if (package_release_compare((*a)->version, (*b)->version, &compared) != CUP_OK) {
+        return 0;
+    }
+    return compared;
+}
+
 static CupError resolve_unique_installed_release(const CupState *state,
                                                  const char *component,
                                                  const char *tool,
@@ -105,6 +117,19 @@ static CupError resolve_unique_installed_release(const CupState *state,
         return CUP_ERR_NOT_INSTALLED;
     }
     if (match_count > 1) {
+        const PackageIdentity **matches = malloc(match_count * sizeof(*matches));
+        size_t cursor = 0;
+
+        if (matches == NULL) {
+            return CUP_ERR_TEMPORARY;
+        }
+        for (i = 0; i < state->installed_count; ++i) {
+            if (installed_identity_matches(
+                    &state->installed[i], component, tool, host, target)) {
+                matches[cursor++] = &state->installed[i];
+            }
+        }
+        qsort(matches, match_count, sizeof(*matches), compare_installed_release_pointers);
         fprintf(stderr,
                 "Error: remove selection '%s:%s' is ambiguous for host '%s', target '%s'.\n"
                 "Installed releases:\n",
@@ -112,12 +137,10 @@ static CupError resolve_unique_installed_release(const CupState *state,
                 tool,
                 host,
                 target);
-        for (i = 0; i < state->installed_count; ++i) {
-            if (installed_identity_matches(
-                    &state->installed[i], component, tool, host, target)) {
-                fprintf(stderr, "  %s@%s\n", tool, state->installed[i].version);
-            }
+        for (i = 0; i < match_count; ++i) {
+            fprintf(stderr, "  %s@%s\n", tool, matches[i]->version);
         }
+        free(matches);
         fprintf(stderr,
                 "Specify one of the installed releases with:\n"
                 "  cup remove %s %s@<release> --target %s\n",

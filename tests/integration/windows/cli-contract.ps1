@@ -17,14 +17,16 @@ function Test-ReadOnlyNoInitialization {
         @{ Arguments = @("search", "compiler") },
         @{ Arguments = @("config") },
         @{ Arguments = @("list") },
-        @{ Arguments = @("info") },
-        @{ Arguments = @("doctor") }
+        @{ Arguments = @("info") }
     )
     foreach ($case in $cases) {
         Invoke-Cup -CommandArgs $case.Arguments | Out-Null
         Assert-PathMissing $cupRoot
     }
 
+    Assert-CupStatus -CommandArgs @("doctor") -ExpectedStatus 3 `
+        -ExpectedText "cup runtime is not installed" | Out-Null
+    Assert-PathMissing $cupRoot
     Assert-CupStatus -CommandArgs @("inspect", "compiler", "clang@21.1.5") `
         -ExpectedStatus 3 | Out-Null
     Assert-PathMissing $cupRoot
@@ -134,17 +136,19 @@ function Test-ForeignAndLegacyRootSelection {
             -Value "unrelated" -Encoding Ascii
 
         $env:USERPROFILE = $foreignHome
-        Write-Host "==> Checking foreign-primary fallback repair."
-        Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
+        Write-Host "==> Checking foreign-primary fallback initialization."
+        Assert-CupStatus -CommandArgs @("config", "set", "compiler", "clang") `
+            -ExpectedStatus 0 | Out-Null
         Assert-PathExists (Join-Path $foreignPrimary "foreign.txt")
         $foreignMarker = Join-Path $foreignHome ".coffee-cup\root.txt"
         Assert-PathExists $foreignMarker
         Assert-PathExists (Join-Path $foreignHome ".coffee-cup\state.txt")
         $markerLines = @(Get-Content -LiteralPath $foreignMarker)
-        Assert-Equals $markerLines.Count 3
-        Assert-Equals $markerLines[0] "format=1"
+        Assert-Equals $markerLines.Count 4
+        Assert-Equals $markerLines[0] "format=2"
         Assert-Equals $markerLines[1] "product=coffee-clang/cup"
-        Assert-Equals $markerLines[2] "layout=1"
+        Assert-Equals $markerLines[2] "layout=2"
+        Assert-Equals $markerLines[3] "host=windows-x64"
 
         $legacyHome = Join-Path $Script:CupTestRoot "legacy-root-home"
         foreach ($directory in @("components", "staging", "cache")) {
@@ -156,12 +160,28 @@ function Test-ForeignAndLegacyRootSelection {
         $legacyStateHash = (Get-FileHash -LiteralPath $legacyState -Algorithm SHA256).Hash
 
         $env:USERPROFILE = $legacyHome
-        Write-Host "==> Checking markerless-state fallback repair."
-        Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
+        Write-Host "==> Checking markerless-state fallback initialization."
+        Assert-CupStatus -CommandArgs @("config", "set", "compiler", "clang") `
+            -ExpectedStatus 0 | Out-Null
         Assert-Equals (Get-FileHash -LiteralPath $legacyState -Algorithm SHA256).Hash `
             $legacyStateHash
         Assert-PathMissing (Join-Path $legacyHome ".cup\root.txt")
         Assert-PathExists (Join-Path $legacyHome ".coffee-cup\root.txt")
+
+        $legacyMarkedHome = Join-Path $Script:CupTestRoot "legacy-marked-root-home"
+        New-Item -ItemType Directory -Force -Path (Join-Path $legacyMarkedHome ".cup") | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $legacyMarkedHome ".cup\root.txt") -Lines @(
+            "format=1",
+            "product=coffee-clang/cup",
+            "layout=1"
+        )
+        $env:USERPROFILE = $legacyMarkedHome
+        $legacyMarkedFailure = Assert-CupStatus `
+            -CommandArgs @("config", "set", "compiler", "clang") -ExpectedStatus 4
+        Assert-Contains $legacyMarkedFailure "recognized CUP 0.3.5/layout-1 root"
+        Assert-Contains $legacyMarkedFailure "cannot be upgraded in place"
+        Assert-Contains $legacyMarkedFailure "fresh CUP 0.4 installer"
+        Assert-PathMissing (Join-Path $legacyMarkedHome ".coffee-cup")
 
         Test-UnmarkedCupRootPreservation
         Test-LookalikeRootSelection
@@ -199,8 +219,9 @@ function Test-LookalikeRootSelection {
     $stateHash = (Get-FileHash -LiteralPath $lookalikeState -Algorithm SHA256).Hash
 
     $env:USERPROFILE = $lookalikeHome
-    Write-Host "==> Checking lookalike-primary fallback repair."
-    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
+    Write-Host "==> Checking lookalike-primary fallback initialization."
+    Assert-CupStatus -CommandArgs @("config", "set", "compiler", "clang") `
+        -ExpectedStatus 0 | Out-Null
     Assert-Equals (Get-FileHash -LiteralPath $lookalikeState -Algorithm SHA256).Hash $stateHash
     Assert-PathMissing (Join-Path $lookalikeHome ".cup\root.txt")
     Assert-PathExists (Join-Path $lookalikeHome ".coffee-cup\root.txt")
@@ -211,8 +232,9 @@ function Test-CorruptRecognizedRootPreservation {
     $corruptHome = New-RealTestDirectory `
         -Parent $Script:CupTestRoot -Name "corrupt-root-home"
     $env:USERPROFILE = $corruptHome
-    Write-Host "==> Checking recognized-root setup repair."
-    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
+    Write-Host "==> Checking recognized-root setup initialization."
+    Assert-CupStatus -CommandArgs @("config", "set", "compiler", "clang") `
+        -ExpectedStatus 0 | Out-Null
 
     $corruptRoot = Join-Path $corruptHome ".cup"
     $corruptState = Join-Path $corruptRoot "state.txt"
@@ -233,8 +255,9 @@ function Test-CorruptRecognizedRootPreservation {
 }
 
 function Test-SyntaxPrecedesRuntimePreflight {
-    Write-Host "==> Checking primary-root setup repair for syntax precedence."
-    Assert-CupStatus -CommandArgs @("repair") -ExpectedStatus 0 | Out-Null
+    Write-Host "==> Checking primary-root setup for syntax precedence."
+    Assert-CupStatus -CommandArgs @("config", "set", "compiler", "clang") `
+        -ExpectedStatus 0 | Out-Null
     $transactionPath = Join-Path $Script:CupTestHome ".cup\transaction.txt"
     Set-Content -LiteralPath $transactionPath -Value "invalid journal" -Encoding Ascii
 
@@ -289,9 +312,6 @@ function Test-RootHomeRejection {
 
 try {
     Initialize-TestEnvironment -Name "cli-contract" -ExecutablePath $CupExecutablePath
-    Set-PackageCatalogField -Component "compiler" -Tool "clang" `
-        -Field "available_versions" -Value "21.1.5" -Mode "Prepend"
-
     Test-ReadOnlyNoInitialization
     Test-DispatchAndInvalidSyntax
     Test-HelpAliases

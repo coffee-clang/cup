@@ -109,8 +109,8 @@ For the first package workflow, continue with [Getting started](GETTING_STARTED.
 ## Reinstall
 
 Running the official installer again verifies a complete release before
-replacing CUP's own program/configuration assets. Installed component packages,
-preferences and state remain in the selected root.
+replacing CUP's managed program-generation assets. Installed component packages,
+preferences, state and a valid live catalog remain in the selected root.
 
 The installer can update an older CUP or reinstall the same release. It does not
 silently replace a newer installed CUP with an older release. Reinstallation is
@@ -163,6 +163,11 @@ installation, move that directory to a backup location outside the managed
 
 Only restore data that the current CUP formats accept. Do not manufacture an
 ownership marker to force adoption of an unknown tree.
+
+A recognized CUP 0.3.5 layout-1 root is not upgraded in place and is not bypassed
+by silently switching to `.coffee-cup`. Back up anything you need, uninstall or
+move the old managed root out of the way, then run the current installer for a
+fresh CUP 0.4 root.
 
 ## Uninstall
 

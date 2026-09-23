@@ -1,6 +1,6 @@
 /*
- * Persists and validates package-operation journals and recovers interrupted install, update and
- * remove operations from their commit points.
+ * Persists and validates package-operation journals and recovers interrupted install and remove
+ * operations from their commit points.
  */
 
 #include "package_transaction.h"
@@ -8,6 +8,7 @@
 #include "filesystem.h"
 #include "layout.h"
 #include "path.h"
+#include "platform.h"
 #include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
@@ -15,9 +16,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define JOURNAL_FORMAT "1"
+#define JOURNAL_FORMAT "2"
 /* Package journal schema and operation names. state.txt remains the commit point for
- * package install, update and remove operations. */
+ * package install and remove operations; package update reuses install semantics. */
 void package_transaction_init(PackageTransaction *transaction) {
     if (transaction != NULL) {
         memset(transaction, 0, sizeof(*transaction));
@@ -31,15 +32,11 @@ const char *package_operation_name(PackageOperation operation) {
     if (operation == PACKAGE_OPERATION_REMOVE) {
         return "remove";
     }
-    if (operation == PACKAGE_OPERATION_UPDATE) {
-        return "update";
-    }
     return "none";
 }
 
 static int package_operation_is_valid(PackageOperation operation) {
-    return operation == PACKAGE_OPERATION_INSTALL || operation == PACKAGE_OPERATION_REMOVE ||
-           operation == PACKAGE_OPERATION_UPDATE;
+    return operation == PACKAGE_OPERATION_INSTALL || operation == PACKAGE_OPERATION_REMOVE;
 }
 
 static CupError package_transaction_get_staging_path(const PackageTransaction *transaction,
@@ -69,7 +66,7 @@ static int transaction_temporary_name_is_valid(const PackageTransaction *transac
            transaction->temporary_name[prefix_length + 1] != '\0';
 }
 
-/* Write and parse transaction.txt as a strict all-or-nothing format=1 record set. */
+/* Write and parse transaction.txt as a strict all-or-nothing format=2 record set. */
 static CupError write_package_journal(FILE *file, const void *value) {
     const PackageTransaction *transaction = value;
 
@@ -78,7 +75,6 @@ static CupError write_package_journal(FILE *file, const void *value) {
         fprintf(file, "operation=%s\n", package_operation_name(transaction->operation)) < 0 ||
         fprintf(file, "component=%s\n", transaction->package.component) < 0 ||
         fprintf(file, "tool=%s\n", transaction->package.tool) < 0 ||
-        fprintf(file, "host_platform=%s\n", transaction->package.host_platform) < 0 ||
         fprintf(file, "target_platform=%s\n", transaction->package.target_platform) < 0 ||
         fprintf(file, "package_version=%s\n", transaction->package.version) < 0 ||
         fprintf(file, "temporary_name=%s\n", transaction->temporary_name) < 0) {
@@ -169,8 +165,6 @@ static CupError set_package_transaction_field(PackageTransaction *transaction,
             transaction->operation = PACKAGE_OPERATION_INSTALL;
         } else if (strcmp(value, "remove") == 0) {
             transaction->operation = PACKAGE_OPERATION_REMOVE;
-        } else if (strcmp(value, "update") == 0) {
-            transaction->operation = PACKAGE_OPERATION_UPDATE;
         } else {
             return CUP_ERR_TRANSACTION;
         }
@@ -180,9 +174,6 @@ static CupError set_package_transaction_field(PackageTransaction *transaction,
     } else if (strcmp(key, "tool") == 0) {
         destination = transaction->package.tool;
         destination_size = sizeof(transaction->package.tool);
-    } else if (strcmp(key, "host_platform") == 0) {
-        destination = transaction->package.host_platform;
-        destination_size = sizeof(transaction->package.host_platform);
     } else if (strcmp(key, "target_platform") == 0) {
         destination = transaction->package.target_platform;
         destination_size = sizeof(transaction->package.target_platform);
@@ -204,7 +195,7 @@ static CupError set_package_transaction_field(PackageTransaction *transaction,
 
 static const char *const package_journal_keys[] = {
     "format", "operation", "component", "tool",
-    "host_platform", "target_platform", "package_version", "temporary_name"};
+    "target_platform", "package_version", "temporary_name"};
 
 static CupError parse_package_journal_field(const char *key,
                                             const char *value,
@@ -223,6 +214,7 @@ CupError package_transaction_load(PackageTransaction *transaction,
     SystemPathIdentity file_identity;
     PackageIdentity validated;
     CupError err;
+    char host[MAX_PLATFORM_LEN];
     int missing;
 
     if (transaction == NULL || status == NULL) {
@@ -244,14 +236,15 @@ CupError package_transaction_load(PackageTransaction *transaction,
     if (err != CUP_OK || missing) {
         return err;
     }
-    if (!package_operation_is_valid(candidate.operation)) {
+    if (!package_operation_is_valid(candidate.operation) ||
+        platform_get_host(host, sizeof(host)) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 
     if (package_identity_init(&validated,
                               candidate.package.component,
                               candidate.package.tool,
-                              candidate.package.host_platform,
+                              host,
                               candidate.package.target_platform,
                               candidate.package.version) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
@@ -307,7 +300,7 @@ static CupError inspect_package_validity(const char *path,
         return CUP_OK;
     }
 
-    err = package_validate_integrity(path, package, stderr);
+    err = package_validate_integrity(path, package, NULL);
     if (err == CUP_OK) {
         *valid = 1;
         return CUP_OK;
@@ -341,19 +334,37 @@ static CupError remove_transaction_path(const char *path, int exists) {
     return filesystem_remove_tree(path) == CUP_OK ? CUP_OK : CUP_ERR_COMMIT;
 }
 
-static CupError preserve_invalid_install(const char *install_path) {
+static CupError preserve_invalid_install(const PackageIdentity *package,
+                                         const char *install_path) {
+    SystemPathIdentity identity;
+    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     CupError err;
-    char backup_path[MAX_PATH_LEN];
+    char recovery_dir[MAX_PATH_LEN];
+    char recovery_path[MAX_PATH_LEN];
 
-    err = filesystem_backup_invalid(install_path, backup_path, sizeof(backup_path));
+    if (package == NULL || text_is_empty(install_path)) return CUP_ERR_INVALID_INPUT;
+    memset(&identity, 0, sizeof(identity));
+    err = system_get_path_identity(install_path, &identity);
+    if (err != CUP_OK || !identity.valid ||
+        (identity.kind != SYSTEM_PATH_DIRECTORY && identity.kind != SYSTEM_PATH_REGULAR_FILE)) {
+        return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
+    }
+    err = layout_create_recovery_dir(recovery_dir, sizeof(recovery_dir), package);
+    if (err == CUP_OK) err = path_join(recovery_path, sizeof(recovery_path), recovery_dir, "package");
+    if (err == CUP_OK) {
+        err = system_move_path_if_identity(
+            install_path, recovery_path, &identity, &commit_state);
+    }
     if (err != CUP_OK) {
-        if (err == CUP_ERR_COMMIT || err == CUP_ERR_ROLLBACK) {
+        if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
+            CupError cleanup = filesystem_remove_tree(recovery_dir);
+            if (cleanup != CUP_OK) return CUP_ERR_ROLLBACK;
             return err;
         }
-        return CUP_ERR_TRANSACTION;
+        return CUP_ERR_COMMIT;
     }
 
-    printf("Preserved invalid package path as '%s'.\n", backup_path);
+    printf("Preserved invalid package path as '%s'.\n", recovery_path);
     return CUP_OK;
 }
 
@@ -374,7 +385,7 @@ static CupError recover_installed_package(const PackageTransaction *transaction,
     }
 
     if (install_exists) {
-        err = preserve_invalid_install(install_path);
+        err = preserve_invalid_install(&transaction->package, install_path);
         if (err != CUP_OK) {
             return err;
         }
@@ -416,7 +427,7 @@ CupError package_transaction_recover(const PackageTransaction *transaction, CupS
         transaction->file_identity.kind != SYSTEM_PATH_REGULAR_FILE) {
         return CUP_ERR_TRANSACTION;
     }
-    if (state == NULL || state->installed_count > MAX_INSTALLED) {
+    if (state == NULL || state_validate(state, NULL) != CUP_OK) {
         return CUP_ERR_TRANSACTION;
     }
 

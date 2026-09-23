@@ -1,5 +1,6 @@
 /*
- * Selects one validated installed package as the default for its component, host and target.
+ * Selects one validated installed package as the default for its component and target.
+ * The host is authenticated once by the selected root.
  */
 
 #include "commands.h"

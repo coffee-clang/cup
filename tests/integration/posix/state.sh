@@ -8,22 +8,19 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin state
 prepare_command_environment
-package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions 21.1.5 prepend
-run_cup repair >/dev/null
-
 make_package compiler clang 21.1.5 "$TEST_PLATFORM" clang
 make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang
 make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
 make_package linker lld 23.1.0 "$TEST_PLATFORM" lld
 
 run_cup install compiler clang@21.1.5 >/dev/null
-run_cup install compiler clang@stable >/dev/null
-run_cup install debugger lldb@stable >/dev/null
-run_cup install linker lld@stable >/dev/null
+run_cup install compiler clang@23.1.0 >/dev/null
+run_cup install debugger lldb@23.1.0 >/dev/null
+run_cup install linker lld@23.1.0 >/dev/null
 
 state_file=$TEST_HOME/.cup/state.txt
 assert_file "$state_file"
-assert_equals "$(sed -n '1p' "$state_file")" 'format=1'
+assert_equals "$(sed -n '1p' "$state_file")" 'format=2'
 installed_count=$(grep -c '^installed\.' "$state_file")
 default_count=$(grep -c '^default\.' "$state_file")
 assert_equals "$installed_count" '4'
@@ -31,19 +28,19 @@ assert_equals "$default_count" '3'
 
 state_text=$(cat "$state_file")
 assert_contains "$state_text" \
-    "installed.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@21.1.5"
+    "installed.compiler.$TEST_PLATFORM=clang@21.1.5"
 assert_contains "$state_text" \
-    "installed.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@23.1.0"
+    "installed.compiler.$TEST_PLATFORM=clang@23.1.0"
 assert_contains "$state_text" \
-    "installed.debugger.$TEST_PLATFORM.$TEST_PLATFORM=lldb@23.1.0"
+    "installed.debugger.$TEST_PLATFORM=lldb@23.1.0"
 assert_contains "$state_text" \
-    "installed.linker.$TEST_PLATFORM.$TEST_PLATFORM=lld@23.1.0"
+    "installed.linker.$TEST_PLATFORM=lld@23.1.0"
 assert_contains "$state_text" \
-    "default.compiler.$TEST_PLATFORM.$TEST_PLATFORM=clang@21.1.5"
+    "default.compiler.$TEST_PLATFORM=clang@21.1.5"
 assert_contains "$state_text" \
-    "default.debugger.$TEST_PLATFORM.$TEST_PLATFORM=lldb@23.1.0"
+    "default.debugger.$TEST_PLATFORM=lldb@23.1.0"
 assert_contains "$state_text" \
-    "default.linker.$TEST_PLATFORM.$TEST_PLATFORM=lld@23.1.0"
+    "default.linker.$TEST_PLATFORM=lld@23.1.0"
 
 cp "$state_file" "$TMP_ROOT/state.valid"
 

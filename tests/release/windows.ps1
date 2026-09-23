@@ -122,15 +122,29 @@ function Invoke-PowerShellScript {
 }
 
 # Verify that the candidate directory contains only the exact public asset set.
-function Assert-ExactCandidateFiles {
-    $expected = @(
-        'packages.cfg', 'install.cfg', 'release.txt', 'provenance.txt',
-        'THIRD_PARTY_NOTICES.txt', 'install.sh', 'install.ps1',
-        'SHA256SUMS.common', 'SHA256SUMS.windows-x64', 'cup-windows-x64.exe'
+function Get-ExpectedPublicAssets {
+    return @(
+        'LICENSE',
+        'THIRD_PARTY_NOTICES.txt',
+        'catalog.cfg',
+        'cup-linux-arm64',
+        'cup-linux-x64',
+        'cup-macos-arm64',
+        'cup-macos-x64',
+        'cup-windows-x64.exe',
+        'install.ps1',
+        'install.sh',
+        'provenance.txt',
+        'release.txt'
     )
+}
+
+# Verify that the candidate directory contains exactly the published CUP 0.4 asset set.
+function Assert-ExactCandidateFiles {
+    $expected = @(Get-ExpectedPublicAssets)
     $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
     if ($entries.Count -ne $expected.Count) {
-        throw "Windows release candidate does not contain the exact public asset set"
+        throw 'Windows release candidate does not contain the exact public asset set'
     }
     foreach ($entry in $entries) {
         if (($expected -cnotcontains $entry.Name) -or $entry.PSIsContainer -or
@@ -141,144 +155,35 @@ function Assert-ExactCandidateFiles {
     }
 }
 
-# Verify one canonical checksum document and every referenced digest.
-function Assert-ChecksumFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Directory,
-        [Parameter(Mandatory = $true)]
-        [string]$ChecksumFile,
-        [Parameter(Mandatory = $true)]
-        [string[]]$ExpectedNames
-    )
+function Assert-ReleaseManifest {
+    $lines = @(Get-CanonicalAsciiLines -Path (Join-Path $ReleaseDir 'release.txt'))
+    if ($lines.Count -lt 6) { throw 'release.txt is incomplete' }
+    if ($lines[0] -cne 'format=2') { throw 'release.txt format is invalid' }
+    if ($lines[1] -cne "version=$Version") { throw 'release.txt version is invalid' }
+    if ($lines[2] -cne "commit=$SourceSha") { throw 'release.txt commit is invalid' }
+    if ($lines[3] -cne 'root_layout=2') { throw 'release.txt root layout is invalid' }
+    if ($lines[4] -cne 'catalog_format=1') { throw 'release.txt catalog format is invalid' }
+    if ($lines[5] -cnotmatch '^asset_count=([0-9]+)$') { throw 'release.txt asset count is invalid' }
+    $count = [int]$Matches[1]
 
-    $checksumPath = Join-Path $Directory $ChecksumFile
-    if (-not (Test-Path -LiteralPath $checksumPath)) {
-        throw "Missing checksum file: $ChecksumFile"
+    $expectedAssets = @(Get-ExpectedPublicAssets | Where-Object { $_ -cne 'release.txt' })
+    [Array]::Sort($expectedAssets, [StringComparer]::Ordinal)
+    if ($count -ne $expectedAssets.Count -or $lines.Count -ne 6 + 2 * $count) {
+        throw 'release.txt asset set is incomplete'
     }
-
-    $lines = @(Get-CanonicalAsciiLines -Path $checksumPath)
-    if ($lines.Count -ne $ExpectedNames.Count) {
-        throw "Unexpected checksum entry count in ${ChecksumFile}"
-    }
-
-    for ($index = 0; $index -lt $ExpectedNames.Count; $index++) {
-        $expectedName = $ExpectedNames[$index]
-        $match = [regex]::Match($lines[$index], '^([0-9a-f]{64})  ([^\s]+)$')
-        if (-not $match.Success -or $match.Groups[2].Value -cne $expectedName) {
-            throw "Non-canonical checksum entry in ${ChecksumFile}: $expectedName"
+    for ($i = 0; $i -lt $count; $i++) {
+        $nameLine = $lines[6 + 2 * $i]
+        $shaLine = $lines[7 + 2 * $i]
+        if ($nameLine -cne "asset.$i.name=$($expectedAssets[$i])") {
+            throw "release.txt asset name/order mismatch at index $i"
         }
-
-        $expectedHash = $match.Groups[1].Value
-        $path = Join-Path $Directory $expectedName
-        if (-not (Test-Path -LiteralPath $path)) {
-            throw "Checksum entry references missing file: $expectedName"
+        if ($shaLine -cnotmatch "^asset\.$i\.sha256=([0-9a-f]{64})$") {
+            throw "release.txt digest record is invalid at index $i"
         }
-
-        $actualHash = Get-Sha256Lower -Path $path
-        if ($actualHash -cne $expectedHash) {
-            throw "Checksum mismatch for ${expectedName}: expected $expectedHash, got $actualHash"
+        $actual = Get-Sha256Lower -Path (Join-Path $ReleaseDir $expectedAssets[$i])
+        if ($Matches[1] -cne $actual) {
+            throw "release.txt digest mismatch for $($expectedAssets[$i])"
         }
-    }
-}
-
-function Assert-ChecksumFixtureRejected {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Directory,
-        [Parameter(Mandatory = $true)]
-        [string]$ChecksumFile,
-        [Parameter(Mandatory = $true)]
-        [string[]]$ExpectedNames,
-        [Parameter(Mandatory = $true)]
-        [string]$CaseName,
-        [Parameter(Mandatory = $true)]
-        [string]$ExpectedMessage
-    )
-
-    $accepted = $false
-    try {
-        Assert-ChecksumFile -Directory $Directory -ChecksumFile $ChecksumFile `
-            -ExpectedNames $ExpectedNames
-        $accepted = $true
-    } catch {
-        if (-not $_.Exception.Message.Contains($ExpectedMessage)) {
-            throw "Checksum fixture '$CaseName' failed for the wrong reason: $($_.Exception.Message)"
-        }
-    }
-    if ($accepted) {
-        throw "Checksum validator accepted non-canonical fixture: $CaseName"
-    }
-}
-
-function Test-ChecksumFileAssertions {
-    $fixture = Join-Path $temporaryParent `
-        ("cup-release-checksum-test-" + [Guid]::NewGuid().ToString('N'))
-    $checksumFile = 'SHA256SUMS.fixture'
-    $checksumPath = Join-Path $fixture $checksumFile
-    $expectedNames = @('asset-a.txt', 'asset-b.txt')
-
-    try {
-        New-Item -ItemType Directory -Path $fixture | Out-Null
-        Write-CanonicalAsciiLines -Path (Join-Path $fixture $expectedNames[0]) `
-            -Lines @('asset-a')
-        Write-CanonicalAsciiLines -Path (Join-Path $fixture $expectedNames[1]) `
-            -Lines @('asset-b')
-
-        $hashA = Get-Sha256Lower -Path (Join-Path $fixture $expectedNames[0])
-        $hashB = Get-Sha256Lower -Path (Join-Path $fixture $expectedNames[1])
-        $validLines = @(
-            "$hashA  $($expectedNames[0])",
-            "$hashB  $($expectedNames[1])"
-        )
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines $validLines
-        Assert-ChecksumFile -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
-            $validLines[0], $validLines[0])
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'duplicate entry' `
-            -ExpectedMessage 'Non-canonical checksum entry'
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
-            "$hashA  ASSET-A.TXT", $validLines[1])
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'wrong-case filename' `
-            -ExpectedMessage 'Non-canonical checksum entry'
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
-            "$($hashA.ToUpperInvariant())  $($expectedNames[0])", $validLines[1])
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'uppercase hash' `
-            -ExpectedMessage 'Non-canonical checksum entry'
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
-            "$hashA $($expectedNames[0])", $validLines[1])
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'non-canonical spacing' `
-            -ExpectedMessage 'Non-canonical checksum entry'
-
-        Write-CanonicalAsciiLines -Path $checksumPath -Lines @(
-            $validLines[1], $validLines[0])
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'wrong ordering' `
-            -ExpectedMessage 'Non-canonical checksum entry'
-
-        [IO.File]::WriteAllText(
-            $checksumPath, ($validLines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'CRLF bytes' `
-            -ExpectedMessage 'contains non-canonical bytes'
-
-        [IO.File]::WriteAllText(
-            $checksumPath, ($validLines -join "`n"), [Text.Encoding]::ASCII)
-        Assert-ChecksumFixtureRejected -Directory $fixture -ChecksumFile $checksumFile `
-            -ExpectedNames $expectedNames -CaseName 'missing final LF' `
-            -ExpectedMessage 'is not canonical'
-    } finally {
-        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -296,11 +201,7 @@ function Test-InstallerMetadataFailure {
     $fixture = Join-Path $root $fixtureName
     $profile = Join-Path $testWorkRoot "installer-$fixtureName"
     $saved = @{}
-    foreach ($variable in @(
-        'USERPROFILE',
-        'CUP_INSTALL_ALLOW_INSECURE',
-        'CUP_INSTALL_BASE_URL'
-    )) {
+    foreach ($variable in @('USERPROFILE', 'CUP_INSTALL_ALLOW_INSECURE', 'CUP_INSTALL_BASE_URL')) {
         $item = Get-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
         $saved[$variable] = if ($null -eq $item) { $null } else { $item.Value }
     }
@@ -311,27 +212,10 @@ function Test-InstallerMetadataFailure {
         New-Item -ItemType Directory -Path $fixture | Out-Null
         New-Item -ItemType Directory -Path $profile | Out-Null
 
-        foreach ($asset in @(
-            'cup-windows-x64.exe',
-            'packages.cfg',
-            'install.cfg',
-            'install.sh',
-            'install.ps1',
-            'SHA256SUMS.common'
-        )) {
+        foreach ($asset in @('cup-windows-x64.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'catalog.cfg')) {
             Copy-Item -LiteralPath (Join-Path $ReleaseDir $asset) -Destination $fixture
         }
-        Write-CanonicalAsciiLines -Path (Join-Path $fixture 'release.txt') `
-            -Lines $Lines
-
-        $platformNames = @('cup-windows-x64.exe', 'release.txt', 'SHA256SUMS.common')
-        $checksumLines = foreach ($asset in $platformNames) {
-            $hash = Get-Sha256Lower -Path (Join-Path $fixture $asset)
-            "$hash  $asset"
-        }
-        Write-CanonicalAsciiLines `
-            -Path (Join-Path $fixture 'SHA256SUMS.windows-x64') `
-            -Lines $checksumLines
+        Write-CanonicalAsciiLines -Path (Join-Path $fixture 'release.txt') -Lines $Lines
 
         $env:USERPROFILE = $profile
         $env:CUP_INSTALL_ALLOW_INSECURE = '1'
@@ -342,15 +226,10 @@ function Test-InstallerMetadataFailure {
             -WorkingDirectory $profile
         $status = $result.ExitCode
         $text = $result.Output -join [Environment]::NewLine
-        if ($status -eq 0) {
-            throw "Metadata diagnostic case unexpectedly succeeded: $Name"
-        }
+        if ($status -eq 0) { throw "Metadata diagnostic case unexpectedly succeeded: $Name" }
         $normalizedText = [regex]::Replace($text, '\s+', ' ')
         $normalizedExpected = [regex]::Replace($ExpectedMessage, '\s+', ' ')
-        if ($normalizedText.IndexOf(
-                $normalizedExpected,
-                [StringComparison]::Ordinal
-            ) -lt 0) {
+        if ($normalizedText.IndexOf($normalizedExpected, [StringComparison]::Ordinal) -lt 0) {
             throw "Metadata diagnostic case '$Name' was not explained:`n$text"
         }
     } finally {
@@ -449,29 +328,9 @@ function Test-InstallerFinalLowSpeedWindow {
     }
 }
 
-# Validate the candidate checksums, metadata and native executable.
-Test-ChecksumFileAssertions
+# Validate the exact public candidate, authenticated manifest and native executable.
 Assert-ExactCandidateFiles
-Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.common" `
-    -ExpectedNames @("packages.cfg", "install.cfg", "install.sh", "install.ps1")
-Assert-ChecksumFile -Directory $ReleaseDir -ChecksumFile "SHA256SUMS.windows-x64" `
-    -ExpectedNames @("cup-windows-x64.exe", "release.txt", "SHA256SUMS.common")
-
-$releaseMetadataPath = Join-Path $ReleaseDir "release.txt"
-$releaseMetadata = @(Get-CanonicalAsciiLines -Path $releaseMetadataPath)
-$expectedMetadata = @(
-    "format=1",
-    "version=$Version",
-    "commit=$SourceSha"
-)
-if ($releaseMetadata.Count -ne $expectedMetadata.Count) {
-    throw "release.txt must contain exactly three lines"
-}
-for ($i = 0; $i -lt $expectedMetadata.Count; $i++) {
-    if ($releaseMetadata[$i] -cne $expectedMetadata[$i]) {
-        throw "Unexpected release.txt line $($i + 1): $($releaseMetadata[$i])"
-    }
-}
+Assert-ReleaseManifest
 
 $binary = (Resolve-Path (Join-Path $ReleaseDir "cup-windows-x64.exe")).Path
 $actual = & $binary --version
@@ -741,10 +600,11 @@ try {
     $foreignRoot = Join-Path $foreignProfile ".coffee-cup"
     $foreignInstalled = Join-Path $foreignRoot "bin\cup.exe"
     $foreignMarker = @(Get-Content -LiteralPath (Join-Path $foreignRoot "root.txt"))
-    if ($foreignMarker.Count -ne 3 -or
-        $foreignMarker[0] -cne "format=1" -or
+    if ($foreignMarker.Count -ne 4 -or
+        $foreignMarker[0] -cne "format=2" -or
         $foreignMarker[1] -cne "product=coffee-clang/cup" -or
-        $foreignMarker[2] -cne "layout=1") {
+        $foreignMarker[2] -cne "layout=2" -or
+        $foreignMarker[3] -cne "host=windows-x64") {
         throw "Fallback-root marker is invalid"
     }
     if (-not (Test-Path -LiteralPath (Join-Path $foreignPrimary "foreign.txt") -PathType Leaf)) {
@@ -794,7 +654,7 @@ try {
             Out-Null
     }
     Write-CanonicalAsciiLines -Path (Join-Path $corruptRoot "state.txt") `
-        -Lines @("format=1")
+        -Lines @("format=2")
     Set-Content -LiteralPath (Join-Path $corruptRoot "root.txt") `
         -Value "corrupt" -Encoding Ascii
     $corruptStateHash = (Get-FileHash -LiteralPath (Join-Path $corruptRoot "state.txt") `
@@ -944,16 +804,17 @@ try {
     if ($LASTEXITCODE -ne 0 -or $versionAfterReinstall -cne "cup $Version") {
         throw "Installed cup was not usable after reinstall"
     }
-    $helperHashBeforeUpdate = (Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash
-    if ($helperHashBeforeUpdate -ne $candidateHash) {
-        throw "Windows reinstall did not derive the update helper from cup.exe"
+    if (Test-Path -LiteralPath $updateHelper) {
+        throw "Windows reinstall eagerly created the lazy update helper"
     }
 
     # The private server fixture contains a genuine newer official build produced before this runner.
     $updateRoot = Join-Path $root 'update-fixture'
     $updateMetadata = Get-CanonicalAsciiLines (Join-Path $updateRoot 'release.txt')
-    if ($updateMetadata.Count -ne 3 -or $updateMetadata[0] -cne 'format=1' -or
+    if ($updateMetadata.Count -lt 6 -or $updateMetadata[0] -cne 'format=2' -or
         $updateMetadata[2] -cne "commit=$SourceSha" -or
+        $updateMetadata[3] -cne 'root_layout=2' -or
+        $updateMetadata[4] -cne 'catalog_format=1' -or
         -not $updateMetadata[1].StartsWith('version=', [StringComparison]::Ordinal)) {
         throw 'Update fixture release metadata is invalid'
     }
@@ -971,8 +832,10 @@ try {
         throw "cup update cup failed with exit code $LASTEXITCODE`n$($updateOutput -join "`n")"
     }
     $updateText = $updateOutput -join "`n"
-    if ($updateText -notlike "*Verified update from cup $Version to $nextVersion scheduled.*") {
-        throw "cup update cup did not report the scheduled version transition`n$updateText"
+    if ($updateText -notlike (
+            "*Verified CUP update handoff accepted for $nextVersion. " +
+            "The generation will be committed after this process exits.*")) {
+        throw "cup update cup did not report the accepted update handoff`n$updateText"
     }
 
     $transactionPath = Join-Path $env:USERPROFILE ".cup\transaction.txt"
@@ -1006,8 +869,11 @@ try {
     if ($installedUpdatedHash -ne $fixtureUpdatedHash) {
         throw "installed cup does not match the verified update executable"
     }
+    if (-not (Test-Path -LiteralPath $updateHelper -PathType Leaf)) {
+        throw "self-update did not create the lazy update helper"
+    }
     $helperHashAfterUpdate = (Get-FileHash -LiteralPath $updateHelper -Algorithm SHA256).Hash
-    if ($helperHashAfterUpdate -ne $helperHashBeforeUpdate -or
+    if ($helperHashAfterUpdate -ne $candidateHash -or
         $helperHashAfterUpdate -eq $installedUpdatedHash) {
         throw "derived update helper did not remain the previous runner after update"
     }
@@ -1083,32 +949,41 @@ try {
     # installer/runtime compatibility failures in the same native run.
     Test-InstallerFinalLowSpeedWindow
 
-    Test-InstallerMetadataFailure -Name 'format-key-case' -Lines @(
-        'Format=1',
-        "version=$Version",
-        "commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata has an unsupported format'
-    Test-InstallerMetadataFailure -Name 'version-key-case' -Lines @(
-        'format=1',
-        "Version=$Version",
-        "commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata version does not match the installer'
-    Test-InstallerMetadataFailure -Name 'commit-key-case' -Lines @(
-        'format=1',
-        "version=$Version",
-        "Commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata commit does not match the installer'
+    $licenseSha = Get-Sha256Lower -Path (Join-Path $ReleaseDir 'LICENSE')
+    $noticesSha = Get-Sha256Lower -Path (Join-Path $ReleaseDir 'THIRD_PARTY_NOTICES.txt')
+    $catalogSha = Get-Sha256Lower -Path (Join-Path $ReleaseDir 'catalog.cfg')
+    $binarySha = Get-Sha256Lower -Path (Join-Path $ReleaseDir 'cup-windows-x64.exe')
+    $validManifestTail = @(
+        'root_layout=2',
+        'catalog_format=1',
+        'asset_count=4',
+        'asset.0.name=LICENSE',
+        "asset.0.sha256=$licenseSha",
+        'asset.1.name=THIRD_PARTY_NOTICES.txt',
+        "asset.1.sha256=$noticesSha",
+        'asset.2.name=catalog.cfg',
+        "asset.2.sha256=$catalogSha",
+        'asset.3.name=cup-windows-x64.exe',
+        "asset.3.sha256=$binarySha"
+    )
+
+    Test-InstallerMetadataFailure -Name 'format-key-case' `
+        -Lines (@('Format=2', "version=$Version", "commit=$SourceSha") + $validManifestTail) `
+        -ExpectedMessage 'release metadata has an unsupported format'
+    Test-InstallerMetadataFailure -Name 'version-key-case' `
+        -Lines (@('format=2', "Version=$Version", "commit=$SourceSha") + $validManifestTail) `
+        -ExpectedMessage 'release metadata version does not match the installer'
+    Test-InstallerMetadataFailure -Name 'commit-key-case' `
+        -Lines (@('format=2', "version=$Version", "Commit=$SourceSha") + $validManifestTail) `
+        -ExpectedMessage 'release metadata commit does not match the installer'
     $mismatchedVersion = if ($Version -eq '0.0.0') { '0.0.1' } else { '0.0.0' }
-    Test-InstallerMetadataFailure -Name 'version-mismatch' -Lines @(
-        'format=1',
-        "version=$mismatchedVersion",
-        "commit=$SourceSha"
-    ) -ExpectedMessage 'release metadata version does not match the installer'
-    Test-InstallerMetadataFailure -Name 'commit-mismatch' -Lines @(
-        'format=1',
-        "version=$Version",
-        'commit=fedcba9876543210fedcba9876543210fedcba98'
-    ) -ExpectedMessage 'release metadata commit does not match the installer'
+    Test-InstallerMetadataFailure -Name 'version-mismatch' `
+        -Lines (@('format=2', "version=$mismatchedVersion", "commit=$SourceSha") + $validManifestTail) `
+        -ExpectedMessage 'release metadata version does not match the installer'
+    Test-InstallerMetadataFailure -Name 'commit-mismatch' `
+        -Lines (@('format=2', "version=$Version", 'commit=fedcba9876543210fedcba9876543210fedcba98') + `
+            $validManifestTail) `
+        -ExpectedMessage 'release metadata commit does not match the installer'
 } finally {
     Set-Location -LiteralPath $originalLocation
     foreach ($name in $originalEnvironment.Keys) {

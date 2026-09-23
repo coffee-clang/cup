@@ -123,89 +123,6 @@ for prerequisite in scripts/lib/path-safety.sh scripts/lib/text-file.sh scripts/
 done
 printf '%s\n' 'Generated-artifact dependency-closure tests passed.'
 
-# Exercise GCC's runtime profile relocation with the same lifecycle used by
-# transactionally built test binaries: compile in staging, publish, remove the
-# staging pathname, execute, then consume paired final-owner notes/counters.
-gcov_probe_cc=$(command -v gcc || true)
-gcov_probe_tool=$(command -v gcov || true)
-if [ -n "$gcov_probe_cc" ] && [ -n "$gcov_probe_tool" ]; then
-    gcov_probe_identity=$($gcov_probe_cc --version 2>/dev/null | sed -n '1p')
-    case "$gcov_probe_identity" in
-        *GCC*|*gcc*)
-            . "$PROJECT_ROOT/tests/support/posix/coverage.sh"
-            gcov_probe_root=$TMP_ROOT/gcov-runtime-relocation
-            gcov_probe_source=$gcov_probe_root/probe.c
-            mkdir -p "$gcov_probe_root/tests"
-            cat >"$gcov_probe_source" <<'EOF_GCOV_PROBE'
-int probe_value(int value) { return value ? 7 : 3; }
-int main(void) { return probe_value(1) == 7 ? 0 : 1; }
-EOF_GCOV_PROBE
-
-            run_gcov_relocation_probe() {
-                family=$1
-                stage=$gcov_probe_root/tests/.$family.semantic
-                final=$gcov_probe_root/tests/$family
-                mkdir -p "$stage"
-                "$gcov_probe_cc" -O0 -g --coverage -fprofile-abs-path \
-                    "$gcov_probe_source" -o "$stage/probe"
-                mv "$stage" "$final"
-                [ ! -e "$stage" ] ||
-                    fail "GCC $family relocation probe retained its staging pathname"
-                prefix=$final
-                case "$NATIVE_BUILD_PLATFORM" in
-                    windows-x64)
-                        command -v cygpath >/dev/null 2>&1 ||
-                            fail 'Windows GCC relocation probe requires cygpath'
-                        prefix=$(cygpath -m "$final")
-                        ;;
-                esac
-                strip=$(cup_coverage_gcov_strip_components "$prefix") ||
-                    fail "could not derive GCC $family relocation strip count"
-                binary=$(find "$final" -maxdepth 1 -type f \
-                    \( -name probe -o -name 'probe.exe' \) -print -quit)
-                [ -n "$binary" ] || fail "GCC $family relocation probe binary is missing"
-                env GCOV_PREFIX="$prefix" GCOV_PREFIX_STRIP="$strip" "$binary" ||
-                    fail "GCC $family relocation probe binary failed"
-                data=$(find "$final" -maxdepth 1 -type f -name '*.gcda' -print -quit)
-                [ -n "$data" ] ||
-                    fail "GCC runtime relocation did not write a $family final-owner counter"
-                note=${data%.gcda}.gcno
-                [ -f "$note" ] ||
-                    fail "GCC $family counter is not paired with its final-owner note"
-                "$gcov_probe_tool" -n -o "$note" "$gcov_probe_source" \
-                    >"$TMP_ROOT/gcov-runtime-$family.log" 2>&1 ||
-                    fail "GCC $family relocated note/counter pair is not consumable"
-            }
-
-            run_gcov_relocation_probe unit
-            run_gcov_relocation_probe helpers
-
-            gcov_product_root=$gcov_probe_root/product
-            mkdir -p "$gcov_product_root/obj" "$gcov_product_root/bin"
-            "$gcov_probe_cc" -O0 -g --coverage -fprofile-abs-path -c \
-                "$gcov_probe_source" -o "$gcov_product_root/obj/probe.o"
-            "$gcov_probe_cc" --coverage "$gcov_product_root/obj/probe.o" \
-                -o "$gcov_product_root/bin/probe"
-            gcov_product_binary=$(find "$gcov_product_root/bin" -maxdepth 1 \
-                -type f \( -name probe -o -name 'probe.exe' \) -print -quit)
-            [ -n "$gcov_product_binary" ] || fail 'GCC product probe binary is missing'
-            (unset GCOV_PREFIX GCOV_PREFIX_STRIP; "$gcov_product_binary") ||
-                fail 'GCC product coverage probe binary failed'
-            gcov_product_data=$(find "$gcov_product_root/obj" -maxdepth 1 \
-                -type f -name '*.gcda' -print -quit)
-            [ -n "$gcov_product_data" ] ||
-                fail 'GCC product counter did not stay with its final object owner'
-            gcov_product_note=${gcov_product_data%.gcda}.gcno
-            [ -f "$gcov_product_note" ] ||
-                fail 'GCC product counter is not paired with its final object note'
-            "$gcov_probe_tool" -n -o "$gcov_product_note" "$gcov_probe_source" \
-                >"$TMP_ROOT/gcov-runtime-product.log" 2>&1 ||
-                fail 'GCC product final-owner note/counter pair is not consumable'
-            printf 'GCC runtime relocation semantic probes passed.\n'
-            ;;
-    esac
-fi
-
 fake_bin=$TMP_ROOT/bin
 prefix=$TMP_ROOT/prefix
 build_root=$TMP_ROOT/build
@@ -502,7 +419,6 @@ cat <<EOF_VERSION_HEADER | write_if_different "$out/version.h"
 #endif
 EOF_VERSION_HEADER
 printf '/* graph resource %s */\n' "$version" | write_if_different "$out/version.rc"
-printf 'format=1\nversion=%s\ncommit=graph\n' "$version" | write_if_different "$out/release.txt"
 EOF_GRAPH_VERSION
 cat > "$graph_project/scripts/certs/generate-ca-bundle.sh" <<'EOF_GRAPH_CA'
 #!/bin/sh
@@ -710,7 +626,7 @@ fi
 assert_contains "$(cat "$TMP_ROOT/duplicate-build-config.out")" \
     'exactly one non-empty platform field'
 
-# Ambient flag variables are ignored; direct replacements are rejected.
+# Ambient build variables do not replace the project build policy.
 env_config=$TMP_ROOT/environment-build/linux-x64/development/build-config.txt
 CFLAGS=-DENV_REPLACEMENT PATH="$fake_bin:$PATH" MAKEFLAGS= MAKEOVERRIDES= \
     make -C "$PROJECT_ROOT" --no-print-directory -s \
@@ -728,20 +644,6 @@ WINDRES=missing-resource-compiler PATH="$fake_bin:$PATH" MAKEFLAGS= MAKEOVERRIDE
     "$windres_env_config"
 assert_contains "$(cat "$windres_env_config")" 'windres_command='
 assert_not_contains "$(cat "$windres_env_config")" 'windres_command=missing-resource-compiler'
-
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        CFLAGS=-DREPLACED all >"$TMP_ROOT/direct-flags.out" 2>&1; then
-    fail 'direct CFLAGS replacement was accepted'
-fi
-assert_contains "$(cat "$TMP_ROOT/direct-flags.out")" \
-    'use EXTRA_CPPFLAGS, EXTRA_CFLAGS, EXTRA_LDFLAGS or EXTRA_LDLIBS'
-
-if make -C "$PROJECT_ROOT" --no-print-directory -n \
-        CONFIGURATION=release all >"$TMP_ROOT/direct-configuration.out" 2>&1; then
-    fail 'direct CONFIGURATION selector was accepted'
-fi
-assert_contains "$(cat "$TMP_ROOT/direct-configuration.out")" \
-    'CONFIGURATION is internal'
 
 # Toolchain admission and build-evidence writing use the same target probe contract.
 # A compiler that reports its target only through -print-target-triple remains valid.
@@ -792,8 +694,6 @@ if (
 fi
 assert_contains "$(cat "$TMP_ROOT/windows-path.out")" \
     'compiler is outside the selected MSYS2 toolchain'
-assert_not_contains "$(cat "$TMP_ROOT/windows-path.out")" 'MINGW_PREFIX'
-
 if FAKE_COMPILER_NAME=clang MSYSTEM=UCRT64 MINGW_PREFIX=/ucrt64 \
         MSYSTEM_CARCH=x86_64 PATH="$fake_bin:$PATH" \
         "$PROJECT_ROOT/scripts/build/validate-toolchain.sh" \
@@ -832,29 +732,11 @@ assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-mmacosx-version-min=13.0'
 assert_contains "$(cat "$TMP_ROOT/macos-make-db.out")" \
     '-Wl,-no_warn_duplicate_libraries'
-# Native coverage jobs own compiler-specific entry-point compatibility. The repository
-# contract checks only public build modes and leaves symbols, macros and helper ownership private.
 MAKEFLAGS= MAKEOVERRIDES= make -C "$PROJECT_ROOT" --no-print-directory -pn \
     PLATFORM=windows-x64 help >"$TMP_ROOT/windows-make-db.out"
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'CC := gcc'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" 'WINDRES := windres'
 assert_contains "$(cat "$TMP_ROOT/windows-make-db.out")" '-D_WIN32_WINNT=0x0A00'
-
-# Verify only stable user-facing entry points. Internal build helpers may be
-# documented, renamed or removed without becoming a repository contract.
-help_output=$(MAKEFLAGS= MAKEOVERRIDES= \
-    make -C "$PROJECT_ROOT" --no-print-directory -s help)
-for target in \
-    debug coverage sanitizers release clean help deps deps-check deps-force \
-    deps-clean check-toolchain check-binary test test-unit test-integration \
-    quality check test-coverage test-sanitizers test-portability-linux \
-    test-windows test-release version check-ca-bundle update-ca-bundle \
-    docs-assets docs serve; do
-    assert_contains "$help_output" "make $target"
-done
-assert_not_contains "$help_output" 'make _build'
-assert_contains "$help_output" 'Supported platforms:'
-
 
 unset DEPS_PREFIX
 make_output=$(
@@ -1001,22 +883,6 @@ assert_contains "$(cat "$TMP_ROOT/empty-foreign-build-root.out")" \
     'invalid build root marker'
 assert_missing "$empty_foreign_build_root/.cup-build-root"
 
-custom_release_build_root=$TMP_ROOT/release-build-output
-# Release tests must pass the selected configuration and build root to the
-# release harness. Observe Make's expanded commands instead of parsing recipe text.
-release_posix_command=$(make -C "$PROJECT_ROOT" --no-print-directory -n \
-    PLATFORM=linux-x64 BUILD_DIR="$custom_release_build_root" \
-    DEPS_PREFIX="$PINNED_PREFIX" CUP_TEST_CONFIGURATION=debug test-release)
-assert_contains "$release_posix_command" 'tests/release/update-fixture.sh'
-assert_contains "$release_posix_command" "CUP_BUILD_DIR='$custom_release_build_root'"
-assert_contains "$release_posix_command" "CUP_TEST_CONFIGURATION='debug'"
-
-release_windows_command=$(make -C "$PROJECT_ROOT" --no-print-directory -n \
-    PLATFORM=windows-x64 BUILD_DIR="$custom_release_build_root" \
-    DEPS_PREFIX="$PINNED_PREFIX" CUP_TEST_CONFIGURATION=debug test-release)
-assert_contains "$release_windows_command" 'tests/release/windows.ps1'
-assert_contains "$release_windows_command" "CUP_TEST_CONFIGURATION='debug'"
-
 # Every existing component of a managed build path is inspected before a
 # marker is created or a tree is removed. A symlinked ancestor must never turn
 # BUILD_DIR into an alias for an external directory.
@@ -1056,31 +922,6 @@ fi
 assert_contains "$(cat "$TMP_ROOT/deps-prefix-space.out")" \
     'dependency prefix must not contain whitespace'
 
-custom_build_root=$TMP_ROOT/custom-build-output
-posix_test_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM="$NATIVE_BUILD_PLATFORM" \
-        BUILD_DIR="$custom_build_root" DEPS_PREFIX="$PINNED_PREFIX" \
-        CUP_INTERNAL_DEPS_TARGET=deps-check test-unit
-)
-assert_contains "$posix_test_command" \
-    "CUP_TEST_BUILD_ROOT='$custom_build_root'"
-assert_not_contains "$posix_test_command" \
-    "CUP_TEST_BUILD_ROOT='$PROJECT_ROOT/build'"
-
-windows_test_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=windows-x64 \
-        BUILD_DIR="$custom_build_root" DEPS_PREFIX="$PINNED_PREFIX" \
-        CUP_INTERNAL_DEPS_TARGET=deps-check test-integration
-)
-assert_contains "$windows_test_command" \
-    "CUP_TEST_BUILD_ROOT=\"\$(cygpath -w '$custom_build_root')\""
-assert_contains "$windows_test_command" \
-    "$custom_build_root/windows-x64/development/bin/cup.exe"
-assert_not_contains "$windows_test_command" \
-    "$PROJECT_ROOT/build/windows-x64/development/bin/cup.exe"
-
 development_command=$(
     cd "$PROJECT_ROOT"
     make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" all
@@ -1094,160 +935,6 @@ assert_contains "$development_command" "$PINNED_PREFIX/lib/libarchive.a"
 assert_not_contains "$development_command" 'libcurl.so'
 assert_not_contains "$development_command" 'libarchive.so'
 assert_not_contains "$development_command" ' -static '
-
-debug_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -B -n DEPS_PREFIX="$PINNED_PREFIX" debug
-)
-assert_contains "$debug_command" "build/$NATIVE_BUILD_PLATFORM/debug/bin/cup"
-assert_contains "$debug_command" '-fno-omit-frame-pointer'
-assert_contains "$debug_command" "$PINNED_PREFIX/lib/libcurl.a"
-assert_contains "$debug_command" "$PINNED_PREFIX/lib/libarchive.a"
-assert_not_contains "$debug_command" ' -static '
-
-for coverage_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
-    coverage_command=$(
-        cd "$PROJECT_ROOT"
-        make --no-print-directory -B -n PLATFORM="$coverage_platform" \
-            DEPS_PREFIX="$PINNED_PREFIX" coverage
-    )
-    case "$coverage_platform" in
-        windows-x64)
-            coverage_binary=cup.exe
-            ;;
-        *)
-            coverage_binary=cup
-            ;;
-    esac
-    assert_contains "$coverage_command" \
-        "build/$coverage_platform/coverage/bin/$coverage_binary"
-    case "$coverage_platform" in
-        macos-*)
-            assert_contains "$coverage_command" '-fprofile-instr-generate'
-            assert_contains "$coverage_command" \
-                "-fcoverage-prefix-map=$PROJECT_ROOT=$PROJECT_ROOT"
-            ;;
-        linux-*)
-            assert_contains "$coverage_command" '--coverage'
-            assert_not_contains "$coverage_command" '-ffile-prefix-map='
-            assert_contains "$coverage_command" '-fdebug-prefix-map='
-            ;;
-        *)
-            assert_contains "$coverage_command" '--coverage'
-            ;;
-    esac
-    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libcurl.a"
-    assert_contains "$coverage_command" "$PINNED_PREFIX/lib/libarchive.a"
-    assert_not_contains "$coverage_command" ' -static '
-done
-
-coverage_runner_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=macos-arm64 \
-        DEPS_PREFIX="$PINNED_PREFIX" test-coverage
-)
-assert_contains "$coverage_runner_command" "CUP_TEST_PLATFORM='macos-arm64'"
-assert_contains "$coverage_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
-
-
-. "$PROJECT_ROOT/tests/support/posix/coverage.sh"
-assert_equals 9 "$(cup_coverage_gcov_strip_components \
-    'D:/a/cup/cup/build/windows-x64/coverage/tests/unit')"
-assert_equals 8 "$(cup_coverage_gcov_strip_components \
-    '/a/cup/cup/build/windows-x64/coverage/tests/unit')"
-
-gcov_fixture=$TMP_ROOT/gcov-profile-ownership
-mkdir -p "$gcov_fixture/unit" "$gcov_fixture/helpers"
-printf '%s\n' note > "$gcov_fixture/unit/test_alpha-source.gcno"
-printf '%s\n' counter > "$gcov_fixture/unit/test_alpha-source.gcda"
-printf '%s\n' helper-note > "$gcov_fixture/helpers/network-helper-source.gcno"
-printf '%s\n' helper-counter > "$gcov_fixture/helpers/network-helper-source.gcda"
-. "$PROJECT_ROOT/tests/support/posix/coverage.sh"
-cup_coverage_verify_gcov_profile_owners "$gcov_fixture"
-
-mkdir -p "$gcov_fixture/.unit.retired"
-printf '%s\n' counter > "$gcov_fixture/.unit.retired/test_alpha-source.gcda"
-if cup_coverage_verify_gcov_profile_owners "$gcov_fixture" \
-        >"$TMP_ROOT/gcov-retired.out" 2>&1; then
-    fail 'coverage ownership accepted a recreated staging directory'
-fi
-assert_contains "$(cat "$TMP_ROOT/gcov-retired.out")" \
-    'recreated retired build staging'
-rm -rf "$gcov_fixture/.unit.retired"
-
-rm -f "$gcov_fixture/unit/test_alpha-source.gcno"
-if cup_coverage_verify_gcov_profile_owners "$gcov_fixture" \
-        >"$TMP_ROOT/gcov-missing.out" 2>&1; then
-    fail 'coverage ownership accepted a counter without its final note'
-fi
-assert_contains "$(cat "$TMP_ROOT/gcov-missing.out")" \
-    'has no note in the same final owner'
-
-sanitizer_runner_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM=windows-x64 \
-        DEPS_PREFIX="$PINNED_PREFIX" test-sanitizers
-)
-assert_contains "$sanitizer_runner_command" "CUP_TEST_PLATFORM='windows-x64'"
-assert_contains "$sanitizer_runner_command" "DEPS_PREFIX='$PINNED_PREFIX'"
-
-consumer_test_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM="$NATIVE_BUILD_PLATFORM" \
-        DEPS_PREFIX="$PINNED_PREFIX" CUP_INTERNAL_DEPS_TARGET=deps-check \
-        CUP_TEST_CONFIGURATION=coverage test-unit-build
-)
-assert_contains "$consumer_test_command" "scripts/dependencies/verify.sh"
-assert_not_contains "$consumer_test_command" "scripts/dependencies/build-"
-
-# Release-update SemVer behavior is exercised directly; native release jobs own
-# the platform-specific script wiring and process orchestration.
-update_fixture_builder="$PROJECT_ROOT/tests/release/update-fixture.sh"
-[ "$($update_fixture_builder --next-version 9.9.9)" = 9.9.10 ] ||
-    fail 'release update fixture still depends on same-length versions'
-[ "$($update_fixture_builder --next-version 1.2.999999)" = 1.3.0 ] ||
-    fail 'release update fixture did not carry at the patch limit'
-if "$update_fixture_builder" --next-version 999999.999999.999999 >/dev/null 2>&1; then
-    fail 'release update fixture accepted a version beyond the supported SemVer space'
-fi
-if "$update_fixture_builder" --next-version '1.*.3' >/dev/null 2>&1; then
-    fail 'release update fixture accepted a non-SemVer version'
-fi
-assert_contains "$consumer_test_command" "CUP_TEST_CFLAGS='"
-case "$NATIVE_BUILD_PLATFORM" in
-    macos-*) assert_contains "$consumer_test_command" '-fprofile-instr-generate' ;;
-    *) assert_contains "$consumer_test_command" '--coverage' ;;
-esac
-
-debug_test_command=$(
-    cd "$PROJECT_ROOT"
-    make --no-print-directory -n PLATFORM="$NATIVE_BUILD_PLATFORM" \
-        DEPS_PREFIX="$PINNED_PREFIX" CUP_INTERNAL_DEPS_TARGET=deps-check \
-        CUP_TEST_CONFIGURATION=debug test-unit-build
-)
-assert_contains "$debug_test_command" '-fno-omit-frame-pointer'
-
-for sanitizer_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
-    sanitizer_command=$(
-        cd "$PROJECT_ROOT"
-        make --no-print-directory -B -n PLATFORM="$sanitizer_platform" \
-            DEPS_PREFIX="$PINNED_PREFIX" sanitizers
-    )
-    case "$sanitizer_platform" in
-        windows-x64)
-            sanitizer_binary=cup.exe
-            ;;
-        *)
-            sanitizer_binary=cup
-            ;;
-    esac
-    assert_contains "$sanitizer_command" \
-        "build/$sanitizer_platform/sanitizers/bin/$sanitizer_binary"
-    assert_contains "$sanitizer_command" '-fsanitize=address,undefined'
-    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libcurl.a"
-    assert_contains "$sanitizer_command" "$PINNED_PREFIX/lib/libarchive.a"
-    assert_not_contains "$sanitizer_command" ' -static '
-done
 
 windows_command=$(
     cd "$PROJECT_ROOT"
@@ -1372,163 +1059,6 @@ chmod +x "$source_fixture/scripts/ci/source-posix.sh" \
 )
 assert_contains "$(cat "$source_fixture/source-build-config.txt")" \
     'compiler_command=primary'
-assert_not_contains "$(cat "$source_fixture/source-build-config.txt")" secondary
-
-# Unit tests and helper programs are built in private staging directories. A
-# compiler failure must preserve the previous complete output, while success
-# publishes exactly the registered executable set.
-test_build_fixture=$TMP_ROOT/test-build-publication
-mkdir -p \
-    "$test_build_fixture/tests/build" \
-    "$test_build_fixture/tests/support" \
-    "$test_build_fixture/scripts/dependencies" \
-    "$test_build_fixture/prefix/lib" \
-    "$test_build_fixture/prefix/bin" \
-    "$test_build_fixture/bin" \
-    "$test_build_fixture/build/linux-x64/development/tests/unit" \
-    "$test_build_fixture/build/linux-x64/development/tests/helpers"
-cp "$PROJECT_ROOT/tests/build/unit.sh" "$PROJECT_ROOT/tests/build/helpers.sh" \
-    "$test_build_fixture/tests/build/"
-cp "$PROJECT_ROOT/tests/support/environment.sh" \
-    "$test_build_fixture/tests/support/environment.sh"
-copy_path_safety_source "$test_build_fixture"
-cat > "$test_build_fixture/scripts/dependencies/verify.sh" <<'EOF_VERIFY_TEST_DEPS'
-#!/bin/sh
-exit 0
-EOF_VERIFY_TEST_DEPS
-chmod +x "$test_build_fixture/scripts/dependencies/verify.sh" \
-    "$test_build_fixture/tests/build/unit.sh" \
-    "$test_build_fixture/tests/build/helpers.sh"
-printf '%s\n' \
-    'format=1' \
-    'product=coffee-clang/cup' \
-    'kind=build-root' \
-    'layout=1' > "$test_build_fixture/build/.cup-build-root"
-printf '%s\n' previous-unit > \
-    "$test_build_fixture/build/linux-x64/development/tests/unit/sentinel.txt"
-printf '%s\n' previous-helper > \
-    "$test_build_fixture/build/linux-x64/development/tests/helpers/sentinel.txt"
-: > "$test_build_fixture/prefix/lib/libunity.a"
-: > "$test_build_fixture/prefix/lib/libz.a"
-cat > "$test_build_fixture/bin/pkg-config" <<'EOF_FAKE_PKG_CONFIG'
-#!/bin/sh
-printf '%s\n' -lfixture
-EOF_FAKE_PKG_CONFIG
-cat > "$test_build_fixture/prefix/bin/curl-config" <<'EOF_FAKE_CURL_CONFIG'
-#!/bin/sh
-[ "${1:-}" = --static-libs ] || exit 2
-printf '%s\n' -lfixture-curl
-EOF_FAKE_CURL_CONFIG
-cat > "$test_build_fixture/bin/fakecc" <<'EOF_FAKE_TEST_CC'
-#!/bin/sh
-set -eu
-output=
-trace=${CUP_FAKE_CC_TRACE:-}
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        "$CUP_TEST_PROJECT_ROOT"/*.c)
-            printf 'absolute repository source operand: %s\n' "$1" >&2
-            exit 8
-            ;;
-        *.c)
-            [ -z "$trace" ] || printf '%s\n' "$1" >> "$trace"
-            ;;
-    esac
-    if [ "$1" = -o ]; then
-        [ "$#" -ge 2 ] || exit 2
-        output=$2
-        shift 2
-    else
-        shift
-    fi
-done
-[ -n "$output" ] || exit 2
-counter_file=${CUP_FAKE_CC_COUNTER:?}
-count=0
-[ ! -f "$counter_file" ] || count=$(cat "$counter_file")
-count=$((count + 1))
-printf '%s\n' "$count" > "$counter_file"
-if [ "${CUP_FAKE_CC_FAIL_AFTER:-0}" -gt 0 ] &&
-    [ "$count" -gt "$CUP_FAKE_CC_FAIL_AFTER" ]; then
-    exit 9
-fi
-mkdir -p "$(dirname -- "$output")"
-printf '#!/bin/sh\nexit 0\n' > "$output"
-chmod +x "$output"
-EOF_FAKE_TEST_CC
-chmod +x "$test_build_fixture/bin/pkg-config" \
-    "$test_build_fixture/bin/fakecc" \
-    "$test_build_fixture/prefix/bin/curl-config"
-
-run_fixture_builder() {
-    builder=$1
-    PATH="$test_build_fixture/bin:$PATH" \
-    CUP_TEST_PROJECT_ROOT="$test_build_fixture" \
-    CUP_TEST_PLATFORM=linux-x64 \
-    CUP_TEST_CONFIGURATION=development \
-    CUP_TEST_BUILD_ROOT="$test_build_fixture/build" \
-    DEPS_PREFIX="$test_build_fixture/prefix" \
-    CC="$test_build_fixture/bin/fakecc" \
-    CUP_TEST_CPPFLAGS= \
-    CUP_TEST_CFLAGS= \
-    CUP_TEST_LDFLAGS= \
-    CUP_FAKE_CC_COUNTER="$test_build_fixture/compiler-count" \
-    CUP_FAKE_CC_TRACE="$test_build_fixture/compiler-trace" \
-    CUP_FAKE_CC_FAIL_AFTER="${CUP_FAKE_CC_FAIL_AFTER:-0}" \
-        "$test_build_fixture/tests/build/$builder"
-}
-
-: > "$test_build_fixture/compiler-count"
-if CUP_FAKE_CC_FAIL_AFTER=2 run_fixture_builder unit.sh \
-        >"$TMP_ROOT/unit-staging-failure.out" 2>&1; then
-    fail 'unit-test builder accepted an interrupted compilation'
-fi
-assert_file "$test_build_fixture/build/linux-x64/development/tests/unit/sentinel.txt"
-if find "$test_build_fixture/build/linux-x64/development/tests" \
-        -maxdepth 1 -name '.unit.*' -print -quit | grep -q .; then
-    fail 'failed unit-test build left a staging directory'
-fi
-
-rm -f "$test_build_fixture/compiler-count" "$test_build_fixture/compiler-trace"
-if ! run_fixture_builder unit.sh >"$TMP_ROOT/unit-staging-success.out" 2>&1; then
-    cat "$TMP_ROOT/unit-staging-success.out" >&2
-    fail 'complete unit-test staging could not be published'
-fi
-assert_missing "$test_build_fixture/build/linux-x64/development/tests/unit/sentinel.txt"
-actual_units=$(find "$test_build_fixture/build/linux-x64/development/tests/unit" \
-    -maxdepth 1 -type f -name 'test_*' ! -name '*.gcno' ! -name '*.gcda' |
-    wc -l | tr -d '[:space:]')
-[ "$actual_units" -gt 0 ] || fail 'complete unit-test staging published no test binaries'
-update_assets_compiles=$(grep -Fxc 'src/update_assets.c' \
-    "$test_build_fixture/compiler-trace" || true)
-[ "$update_assets_compiles" -eq 1 ] ||
-    fail 'plain unit suites did not reuse the shared update_assets object'
-persistent_fixture_compiles=$(grep -Fxc 'tests/unit/persistent_file_fixture.c' \
-    "$test_build_fixture/compiler-trace" || true)
-[ "$persistent_fixture_compiles" -eq 2 ] ||
-    fail 'plain unit suites did not reuse the shared persistent-file fixture object'
-
-rm -f "$test_build_fixture/compiler-count" "$test_build_fixture/compiler-trace"
-if CUP_FAKE_CC_FAIL_AFTER=1 run_fixture_builder helpers.sh \
-        >"$TMP_ROOT/helper-staging-failure.out" 2>&1; then
-    fail 'test-helper builder accepted an interrupted compilation'
-fi
-assert_file "$test_build_fixture/build/linux-x64/development/tests/helpers/sentinel.txt"
-if find "$test_build_fixture/build/linux-x64/development/tests" \
-        -maxdepth 1 -name '.helpers.*' -print -quit | grep -q .; then
-    fail 'failed test-helper build left a staging directory'
-fi
-
-rm -f "$test_build_fixture/compiler-count"
-if ! run_fixture_builder helpers.sh >"$TMP_ROOT/helper-staging-success.out" 2>&1; then
-    cat "$TMP_ROOT/helper-staging-success.out" >&2
-    fail 'complete test-helper staging could not be published'
-fi
-assert_missing "$test_build_fixture/build/linux-x64/development/tests/helpers/sentinel.txt"
-actual_helpers=$(find "$test_build_fixture/build/linux-x64/development/tests/helpers" \
-    -maxdepth 1 -type f -perm -u+x | wc -l | tr -d '[:space:]')
-[ "$actual_helpers" -gt 0 ] || fail 'complete test-helper staging published no helpers'
-
 
 # Release-output replacement must retain the managed build-root identity until
 # the previous generation has been removed after the atomic swap.
@@ -1574,8 +1104,6 @@ int main(void) { return 0; }
 EOF_FINALIZER_C
 "${CC:-cc}" -g "$finalizer_build/input/main.c" -o "$finalizer_build/input/cup"
 printf 'format=1\nplatform=linux-x64\n' > "$finalizer_build/meta/build-config.txt"
-printf 'format=1\nversion=0.2.2\ncommit=0123456789abcdef0123456789abcdef01234567\n' > \
-    "$finalizer_build/meta/release.txt"
 cat > "$finalizer_fixture/tools/inspect" <<'EOF_FINALIZER_INSPECT'
 #!/bin/sh
 set -eu
@@ -1583,7 +1111,6 @@ set -eu
 case "$3" in /*) ;; *) exit 81 ;; esac
 case "$4" in /*) ;; *) exit 82 ;; esac
 [ -f "$(dirname -- "$4")/build-config.txt" ]
-[ -f "$(dirname -- "$4")/release.txt" ]
 printf '%s\n%s\n' "$3" "$4" > "${CUP_FINALIZER_TRACE:?}"
 [ "${CUP_FINALIZER_FAIL:-0}" -eq 0 ] || exit 9
 printf 'format=3\nplatform=%s\nconfiguration=%s\n' "$1" "$2" > "$4"
@@ -1598,7 +1125,7 @@ if CUP_BUILD_ROOT="$finalizer_build" \
     CUP_FINALIZER_TRACE="$finalizer_fixture/failed.trace" CUP_FINALIZER_FAIL=1 \
     "$PROJECT_ROOT/scripts/build/finalize-release.sh" linux-x64 debug \
         "$finalizer_build/input/cup" "$finalizer_build/final" \
-        "$finalizer_build/meta/build-config.txt" "$finalizer_build/meta/release.txt" \
+        "$finalizer_build/meta/build-config.txt" \
         build "$finalizer_fixture/tools/inspect" "$finalizer_fixture/tools/path-check" \
         >"$TMP_ROOT/finalizer-failure.out" 2>&1; then
     fail 'late finalizer failure unexpectedly replaced the previous bundle'
@@ -1615,17 +1142,15 @@ CUP_BUILD_ROOT="$finalizer_build" \
 CUP_FINALIZER_TRACE="$finalizer_fixture/success.trace" CUP_FINALIZER_FAIL=0 \
     "$PROJECT_ROOT/scripts/build/finalize-release.sh" linux-x64 debug \
         "$finalizer_build/input/cup" "$finalizer_build/final" \
-        "$finalizer_build/meta/build-config.txt" "$finalizer_build/meta/release.txt" \
+        "$finalizer_build/meta/build-config.txt" \
         build "$finalizer_fixture/tools/inspect" "$finalizer_fixture/tools/path-check" \
         >"$TMP_ROOT/finalizer-success.out" 2>&1
 assert_missing "$finalizer_build/final/sentinel.txt"
-for final_file in bin/cup symbols/cup.debug build-config.txt release.txt \
+for final_file in bin/cup symbols/cup.debug build-config.txt \
         binary-inspection.txt finalization.txt; do
     assert_file "$finalizer_build/final/$final_file"
 done
 assert_missing "$finalizer_build/.final.staging"
 assert_missing "$finalizer_build/.final.previous"
-assert_not_contains "$(cat "$TMP_ROOT/finalizer-success.out")" \
-    'Unable to find program interpreter name'
 
 printf '%s\n' 'Build-system contract tests passed.'

@@ -21,17 +21,21 @@
 #include <string.h>
 
 /* TLS initialization and transfer limits. */
-static CupError initialize_tls_runtime(void) {
+static CupError initialize_tls_runtime(int report_errors) {
 #if defined(CUP_USE_OPENSSL_INIT)
     if (OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL) != 1) {
-        fprintf(stderr, "Error: could not initialize the TLS runtime.\n");
+        if (report_errors) {
+            fprintf(stderr, "Error: could not initialize the TLS runtime.\n");
+        }
         return CUP_ERR_FETCH;
     }
+#else
+    (void)report_errors;
 #endif
     return CUP_OK;
 }
 
-static CupError configure_tls_trust(CURL *curl) {
+static CupError configure_tls_trust(CURL *curl, int report_errors) {
 #if defined(CUP_USE_EMBEDDED_CA_BUNDLE)
     struct curl_blob ca_blob;
     CURLcode result;
@@ -44,13 +48,16 @@ static CupError configure_tls_trust(CURL *curl) {
 
     result = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &ca_blob);
     if (result != CURLE_OK) {
-        fprintf(stderr,
-                "Error: could not configure embedded CA bundle: %s.\n",
-                curl_easy_strerror(result));
+        if (report_errors) {
+            fprintf(stderr,
+                    "Error: could not configure embedded CA bundle: %s.\n",
+                    curl_easy_strerror(result));
+        }
         return CUP_ERR_FETCH;
     }
 #else
     (void)curl;
+    (void)report_errors;
 #endif
 
     return CUP_OK;
@@ -91,10 +98,12 @@ static int progress_callback(void *userdata,
     do { \
         CURLcode setopt_result = curl_easy_setopt((handle), (option), (value)); \
         if (setopt_result != CURLE_OK) { \
-            fprintf(stderr, \
-                    "Error: could not configure libcurl option %s: %s.\n", \
-                    #option, \
-                    curl_easy_strerror(setopt_result)); \
+            if (report_errors) { \
+                fprintf(stderr, \
+                        "Error: could not configure libcurl option %s: %s.\n", \
+                        #option, \
+                        curl_easy_strerror(setopt_result)); \
+            } \
             result = setopt_result; \
             goto cleanup; \
         } \
@@ -104,11 +113,12 @@ static CURLcode configure_transfer(CURL *curl,
                                    const char *url,
                                    DownloadValidation validation,
                                    FILE *file,
-                                   char *error_buffer) {
+                                   char *error_buffer,
+                                   int report_errors) {
     CURLcode result = CURLE_OK;
     int insecure_loopback;
 
-    if (configure_tls_trust(curl) != CUP_OK) {
+    if (configure_tls_trust(curl, report_errors) != CUP_OK) {
         return CURLE_FAILED_INIT;
     }
     insecure_loopback = download_insecure_loopback_is_allowed(url);
@@ -147,32 +157,39 @@ static CupError classify_transfer_result(const char *url,
                                          CURLcode result,
                                          CURLcode metadata_result,
                                          long response_code,
-                                         const char *error_buffer) {
+                                         const char *error_buffer,
+                                         int report_errors) {
     CupError err;
 
     if (result == CURLE_ABORTED_BY_CALLBACK && interrupt_requested()) {
         return remove_temporary_download(temporary_path, CUP_ERR_INTERRUPT);
     }
     if (result == CURLE_FILESIZE_EXCEEDED) {
-        fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
+        if (report_errors) {
+            fprintf(stderr, "Error: download exceeded the configured size limit: '%s'.\n", url);
+        }
         return remove_temporary_download(temporary_path, CUP_ERR_DOWNLOAD_TOO_LARGE);
     }
     if (result == CURLE_WRITE_ERROR) {
-        fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n", url);
+        if (report_errors) {
+            fprintf(stderr, "Error: failed to write downloaded data for '%s'.\n", url);
+        }
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
     if (result == CURLE_OK && metadata_result == CURLE_OK && response_code == 200) {
         return CUP_OK;
     }
 
-    fprintf(stderr, "Error: failed to download '%s'", url);
-    if (metadata_result == CURLE_OK && response_code > 0) {
-        fprintf(stderr, " (HTTP %ld)", response_code);
+    if (report_errors) {
+        fprintf(stderr, "Error: failed to download '%s'", url);
+        if (metadata_result == CURLE_OK && response_code > 0) {
+            fprintf(stderr, " (HTTP %ld)", response_code);
+        }
+        if (error_buffer[0] != '\0') {
+            fprintf(stderr, ": %s", error_buffer);
+        }
+        fputs(".\n", stderr);
     }
-    if (error_buffer[0] != '\0') {
-        fprintf(stderr, ": %s", error_buffer);
-    }
-    fputs(".\n", stderr);
 
     if (result == CURLE_OPERATION_TIMEDOUT) {
         err = CUP_ERR_TIMEOUT;
@@ -188,7 +205,7 @@ static CupError classify_transfer_result(const char *url,
 
 /* Content-class validation. Every download must be a nonempty regular file; structured
  * callers may additionally supply a format-specific validator before publication. */
-static CupError validate_download(const char *path, DownloadValidation validation) {
+static CupError validate_download(const char *path, DownloadValidation validation, int report_errors) {
     CupError err;
     long long size;
     int is_regular_file;
@@ -206,7 +223,9 @@ static CupError validate_download(const char *path, DownloadValidation validatio
         return err;
     }
     if (size <= 0) {
-        fprintf(stderr, "Error: downloaded resource is empty.\n");
+        if (report_errors) {
+            fprintf(stderr, "Error: downloaded resource is empty.\n");
+        }
         return validation == DOWNLOAD_VALIDATE_ARCHIVE ? CUP_ERR_ARCHIVE : CUP_ERR_FETCH;
     }
 
@@ -214,7 +233,7 @@ static CupError validate_download(const char *path, DownloadValidation validatio
     return CUP_OK;
 }
 
-static CupError prepare_destination(const char *path, int *restore_read_only) {
+static CupError prepare_destination(const char *path, int *restore_read_only, int report_errors) {
     CupError err;
     SystemPathKind kind;
     int is_read_only;
@@ -229,7 +248,9 @@ static CupError prepare_destination(const char *path, int *restore_read_only) {
         return CUP_OK;
     }
     if (kind != SYSTEM_PATH_REGULAR_FILE) {
-        fprintf(stderr, "Error: download destination '%s' is not a regular file.\n", path);
+        if (report_errors) {
+            fprintf(stderr, "Error: download destination '%s' is not a regular file.\n", path);
+        }
         return CUP_ERR_FILESYSTEM;
     }
 
@@ -248,12 +269,12 @@ static CupError prepare_destination(const char *path, int *restore_read_only) {
     return err;
 }
 
-static CupError commit_download(const char *temporary_path, const char *destination) {
+static CupError commit_download(const char *temporary_path, const char *destination, int report_errors) {
     CupError err;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
     int restore_read_only;
 
-    err = prepare_destination(destination, &restore_read_only);
+    err = prepare_destination(destination, &restore_read_only, report_errors);
     if (err != CUP_OK) {
         return err;
     }
@@ -274,11 +295,12 @@ static CupError commit_download(const char *temporary_path, const char *destinat
 
 /* Atomic download pipeline. Data is written to an exclusive temporary file, validated, synced and
  * then committed. */
-CupError download_file_checked(const char *url,
-                               const char *destination,
-                               DownloadValidation validation,
-                               DownloadValidator validator,
-                               void *validator_data) {
+static CupError download_file_checked_internal(const char *url,
+                                              const char *destination,
+                                              DownloadValidation validation,
+                                              DownloadValidator validator,
+                                              void *validator_data,
+                                              int report_errors) {
     CURL *curl = NULL;
     CURLcode result = CURLE_OK;
     CURLcode response_result = CURLE_OK;
@@ -303,12 +325,14 @@ CupError download_file_checked(const char *url,
         return err;
     }
 
-    err = initialize_tls_runtime();
+    err = initialize_tls_runtime(report_errors);
     if (err != CUP_OK) {
         return err;
     }
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        fprintf(stderr, "Error: could not initialize libcurl for '%s'.\n", url);
+        if (report_errors) {
+            fprintf(stderr, "Error: could not initialize libcurl for '%s'.\n", url);
+        }
         return CUP_ERR_FETCH;
     }
 
@@ -324,14 +348,16 @@ CupError download_file_checked(const char *url,
         int close_failed = fclose(file) != 0;
         CupError cleanup_error = system_remove_file(temporary_path);
 
-        fprintf(stderr, "Error: could not initialize a libcurl transfer for '%s'.\n", url);
+        if (report_errors) {
+            fprintf(stderr, "Error: could not initialize a libcurl transfer for '%s'.\n", url);
+        }
         curl_global_cleanup();
         return close_failed || cleanup_error != CUP_OK ? CUP_ERR_TEMPORARY : CUP_ERR_FETCH;
     }
 
     /* Apply protocol, trust, timeout and size policy before the first network byte is accepted. */
     error_buffer[0] = '\0';
-    result = configure_transfer(curl, url, validation, file, error_buffer);
+    result = configure_transfer(curl, url, validation, file, error_buffer, report_errors);
     if (result == CURLE_OK) {
         result = curl_easy_perform(curl);
         response_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -348,7 +374,8 @@ CupError download_file_checked(const char *url,
                                        result,
                                        response_result,
                                        response_code,
-                                       error_buffer);
+                                       error_buffer,
+                                       report_errors);
         return close_status == 0 ? err : CUP_ERR_FILESYSTEM;
     }
 
@@ -357,12 +384,14 @@ CupError download_file_checked(const char *url,
     file = NULL;
     curl_global_cleanup();
     if (sync_err != CUP_OK || close_status != 0) {
-        fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n", url);
+        if (report_errors) {
+            fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n", url);
+        }
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
 
     /* Content validation happens before the atomic destination replacement. */
-    err = validate_download(temporary_path, validation);
+    err = validate_download(temporary_path, validation, report_errors);
     if (err == CUP_OK && validator != NULL) {
         err = validator(temporary_path, validator_data);
     }
@@ -375,19 +404,42 @@ CupError download_file_checked(const char *url,
         return remove_temporary_download(temporary_path, err);
     }
 
-    err = commit_download(temporary_path, destination);
+    err = commit_download(temporary_path, destination, report_errors);
     if (err != CUP_OK && err != CUP_ERR_COMMIT) {
         return remove_temporary_download(temporary_path, err);
     }
     if (err == CUP_ERR_COMMIT) {
-        fprintf(stderr,
-                "Error: downloaded data may already be published at '%s', but final durability "
-                "could not be confirmed.\n",
-                destination);
+        if (report_errors) {
+            fprintf(stderr,
+                    "Error: downloaded data may already be published at '%s', but final durability "
+                    "could not be confirmed.\n",
+                    destination);
+        }
     }
     return err;
 }
 
+CupError download_file_checked(const char *url,
+                               const char *destination,
+                               DownloadValidation validation,
+                               DownloadValidator validator,
+                               void *validator_data) {
+    return download_file_checked_internal(
+        url, destination, validation, validator, validator_data, 1);
+}
+
 CupError download_file(const char *url, const char *destination, DownloadValidation validation) {
-    return download_file_checked(url, destination, validation, NULL, NULL);
+    return download_file_checked_internal(url, destination, validation, NULL, NULL, 1);
+}
+
+CupError download_file_with_diagnostics(const char *url,
+                                        const char *destination,
+                                        DownloadValidation validation,
+                                        DownloadDiagnostics diagnostics) {
+    if (diagnostics != DOWNLOAD_DIAGNOSTICS_REPORT &&
+        diagnostics != DOWNLOAD_DIAGNOSTICS_QUIET) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    return download_file_checked_internal(
+        url, destination, validation, NULL, NULL, diagnostics == DOWNLOAD_DIAGNOSTICS_REPORT);
 }

@@ -191,6 +191,16 @@ CupError layout_ensure_package_parent(const PackageIdentity *package) {
     return ensure_parent_result;
 }
 
+CupError layout_create_recovery_dir(char *buffer, size_t size, const PackageIdentity *package) {
+    char path[MAX_PATH_LEN];
+    (void)package;
+    backup_calls++;
+    if (backup_result != CUP_OK) return backup_result;
+    if (path_join(path, sizeof(path), root, "recovery") != CUP_OK) return CUP_ERR_BUFFER_TOO_SMALL;
+    if (test_mkdir(path, 0700) != 0 && errno != EEXIST) return CUP_ERR_FILESYSTEM;
+    return text_copy(buffer, size, path);
+}
+
 CupError layout_get_binary_path(char *buffer, size_t size) {
     char relative[MAX_PATH_LEN];
 
@@ -200,20 +210,8 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
     return path_join(buffer, size, root, relative);
 }
 
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "checksums.txt");
-}
-
 CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "packages.cfg");
-}
-
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "install.cfg");
-}
-
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    return path_join(buffer, size, root, "SHA256SUMS.common");
+    return path_join(buffer, size, root, "catalog.cfg");
 }
 
 CupError system_create_temp_file(
@@ -259,6 +257,19 @@ CupError system_replace_file_if_identity(const char *source,
     return system_move_path(source, destination, state);
 }
 
+CupError system_move_path_if_identity(const char *source,
+                                      const char *destination,
+                                      const SystemPathIdentity *expected_identity,
+                                      SystemCommitState *state) {
+    TEST_ASSERT_NOT_NULL(expected_identity);
+    TEST_ASSERT_TRUE(expected_identity->valid);
+    *state = SYSTEM_COMMIT_NOT_APPLIED;
+    if (test_access_exists(destination)) return CUP_ERR_FILESYSTEM;
+    if (rename(source, destination) != 0) return CUP_ERR_FILESYSTEM;
+    *state = SYSTEM_COMMIT_DURABLE;
+    return CUP_OK;
+}
+
 CupError system_get_path_identity(const char *path, SystemPathIdentity *identity) {
     TestPlatformStat status;
 
@@ -266,8 +277,10 @@ CupError system_get_path_identity(const char *path, SystemPathIdentity *identity
         return CUP_ERR_FILESYSTEM;
     }
     memset(identity, 0, sizeof(*identity));
-    identity->kind = test_stat_is_regular(&status) ? SYSTEM_PATH_REGULAR_FILE
-                                                   : SYSTEM_PATH_OTHER;
+    identity->kind = test_stat_is_regular(&status)
+                         ? SYSTEM_PATH_REGULAR_FILE
+                         : (test_stat_is_directory(&status) ? SYSTEM_PATH_DIRECTORY
+                                                            : SYSTEM_PATH_OTHER);
     identity->valid = 1;
     return CUP_OK;
 }
@@ -374,6 +387,19 @@ CupError package_identity_validate(const PackageIdentity *identity, FILE *diagno
     return CUP_OK;
 }
 
+CupError platform_get_host(char *buffer, size_t size) {
+    return text_copy(buffer, size, "linux-x64");
+}
+
+CupError state_validate(const CupState *state, FILE *diagnostics) {
+    (void)diagnostics;
+    if (state == NULL || state->installed_count > state->installed_capacity ||
+        (state->installed_count > 0 && state->installed == NULL)) {
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+    return CUP_OK;
+}
+
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
     size_t i;
 
@@ -406,8 +432,13 @@ static void write_journal(const char *content) {
 }
 
 static void set_installed(CupState *state) {
-    PackageIdentity *entry = &state->installed[state->installed_count++];
+    PackageIdentity *entry;
 
+    state->installed = calloc(1, sizeof(*state->installed));
+    TEST_ASSERT_NOT_NULL(state->installed);
+    state->installed_capacity = 1;
+    state->installed_count = 1;
+    entry = &state->installed[0];
     memset(entry, 0, sizeof(*entry));
     strcpy(entry->component, "compiler");
     strcpy(entry->tool, "clang");
@@ -425,7 +456,6 @@ static void test_init_and_names(void) {
     package_transaction_init(NULL);
     TEST_ASSERT_EQUAL_STRING("install", package_operation_name(PACKAGE_OPERATION_INSTALL));
     TEST_ASSERT_EQUAL_STRING("remove", package_operation_name(PACKAGE_OPERATION_REMOVE));
-    TEST_ASSERT_EQUAL_STRING("update", package_operation_name(PACKAGE_OPERATION_UPDATE));
     TEST_ASSERT_EQUAL_STRING("none", package_operation_name(PACKAGE_OPERATION_NONE));
 }
 
@@ -468,9 +498,7 @@ static void test_begin_valid(void) {
                   "target_platform=linux-x64\n"
                   "package_version=22.1.5\n"
                   "temporary_name=update-pkg-42\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_load(&transaction, &status));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_OPERATION_UPDATE, transaction.operation);
-    TEST_ASSERT_EQUAL_STRING("clang", transaction.package.tool);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 }
 
 static void test_begin_rejects(void) {
@@ -566,43 +594,43 @@ static void test_load_invalid(void) {
                   "temporary_name=install-pkg-1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
-    write_journal("format=1\noperation=unknown\n"
+    write_journal("format=2\noperation=unknown\n"
                   "temporary_name=unknown-pkg-1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
-    write_journal("format=1\noperation=install\n"
+    write_journal("format=2\noperation=install\n"
                   "operation=install\ntemporary_name=install-pkg-1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
-    write_journal("format=1\noperation=install\n"
-                  "component=compiler\ntool=clang\nhost_platform=linux-x64\n"
+    write_journal("format=2\noperation=install\n"
+                  "component=compiler\ntool=clang\n"
                   "target_platform=linux-x64\npackage_version=bad\n"
                   "temporary_name=install-pkg-1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
-    write_journal("format=1\noperation=update\n"
-                  "component=compiler\ntool=clang\nhost_platform=linux-x64\n"
+    write_journal("format=2\noperation=update\n"
+                  "component=compiler\ntool=clang\n"
                   "target_platform=linux-x64\npackage_version=22.1.5\n"
                   "temporary_name=bad\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
     {
         static const unsigned char hidden_nul[] =
-            "format=1\noperation=install\ncomponent=compiler\ntool=clang\n"
-            "host_platform=linux-x64\ntarget_platform=linux-x64\n"
+            "format=2\noperation=install\ncomponent=compiler\ntool=clang\n"
+            "target_platform=linux-x64\n"
             "package_version=22.1.5\ntemporary_name=install-pkg-1\0\n";
         write_journal_bytes(hidden_nul, sizeof(hidden_nul) - 1);
         TEST_ASSERT_EQUAL_INT(
             CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
     }
 
-    write_journal("format=1\noperation=install\ncomponent=compiler\ntool=clang\n"
-                  "host_platform=linux-x64\ntarget_platform=linux-x64\n"
+    write_journal("format=2\noperation=install\ncomponent=compiler\ntool=clang\n"
+                  "target_platform=linux-x64\n"
                   "package_version=22.1.5\ntemporary_name=install-pkg-1");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 
-    write_journal("format=1\r\noperation=install\ncomponent=compiler\ntool=clang\n"
-                  "host_platform=linux-x64\ntarget_platform=linux-x64\n"
+    write_journal("format=2\r\noperation=install\ncomponent=compiler\ntool=clang\n"
+                  "target_platform=linux-x64\n"
                   "package_version=22.1.5\ntemporary_name=install-pkg-1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, package_transaction_load(&transaction, &status));
 }
@@ -656,7 +684,7 @@ static void test_recover_installed(void) {
     make_dir(install);
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_transaction_recover(&transaction, &state));
     TEST_ASSERT_EQUAL_INT(1, backup_calls);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(backup, sizeof(backup), root, "install.invalid"));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(backup, sizeof(backup), root, "recovery/package"));
     TEST_ASSERT_TRUE(test_access_exists(backup));
     TEST_ASSERT_TRUE(!test_access_exists(staging));
     TEST_ASSERT_TRUE(test_access_exists(install));
@@ -788,7 +816,7 @@ static void test_recover_boundary_failures(void) {
     make_dir(install);
     make_valid_package(staging);
     backup_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
                           package_transaction_recover(&transaction, &state));
 
     backup_result = CUP_ERR_COMMIT;
@@ -831,7 +859,7 @@ static void test_recover_preserve_then_move_failure_is_commit(void) {
     TEST_ASSERT_EQUAL_INT(
         CUP_OK, build_staging_path_for_test(&transaction, staging, sizeof(staging)));
     TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_transaction_path(journal, sizeof(journal)));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, text_format(backup, sizeof(backup), "%s.invalid", install));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(backup, sizeof(backup), root, "recovery/package"));
 
     write_file(journal, "journal");
     make_dir(install);
@@ -905,7 +933,8 @@ static void test_recover_requires_bounded_state_and_journal_identity(void) {
     TEST_ASSERT_EQUAL_INT(0, remove_tree_calls);
 
     set_journal_identity(&transaction);
-    state.installed_count = MAX_INSTALLED + 1u;
+    state.installed_count = 1u;
+    state.installed_capacity = 0u;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
                           package_transaction_recover(&transaction, &state));
     TEST_ASSERT_TRUE(test_access_exists(install));

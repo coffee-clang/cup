@@ -27,7 +27,6 @@ static CupError begin_result;
 static CupError policy_result;
 static CupError load_result;
 static CupError save_result;
-static CupError resolve_result;
 static CupError safe_point_result;
 
 void setUp(void) {
@@ -41,7 +40,7 @@ void setUp(void) {
     save_calls = load_calls = policy_calls = operational_calls = read_only_calls = end_calls = 0;
     safe_point_calls = 0;
     context_runtime_available = 1;
-    begin_result = policy_result = load_result = save_result = resolve_result = CUP_OK;
+    begin_result = policy_result = load_result = save_result = CUP_OK;
     safe_point_result = CUP_OK;
 }
 
@@ -63,6 +62,12 @@ CupError command_context_begin(CommandContext *context, const char *target, Syst
     (void)mode;
     operational_calls++;
     return begin_common(context, target);
+}
+
+CupError command_context_begin_initialize(CommandContext *context,
+                                          const char *target_override,
+                                          SystemLockMode mode) {
+    return command_context_begin(context, target_override, mode);
 }
 
 CupError command_context_begin_read_only(CommandContext *context, const char *target) {
@@ -116,7 +121,8 @@ void tool_preferences_init(ToolPreferences *preferences) {
     memset(preferences, 0, sizeof(*preferences));
 }
 
-CupError tool_preferences_load(ToolPreferences *preferences) {
+CupError tool_preferences_load(ToolPreferences *preferences, FILE *diagnostics) {
+    (void)diagnostics;
     load_calls++;
     if (load_result == CUP_OK) {
         *preferences = loaded;
@@ -172,31 +178,18 @@ CupError tool_preferences_reset_scope(ToolPreferences *preferences,
     return CUP_OK;
 }
 
-CupError tool_preferences_resolve(const InstallPolicy *policy,
-                                  const ToolPreferences *preferences,
-                                  const char *host,
-                                  const char *target,
-                                  const char *component,
-                                  char *tool,
-                                  size_t tool_size,
-                                  ToolPreferenceSource *source) {
-    (void)policy;
-    (void)host;
-    (void)target;
-    if (resolve_result != CUP_OK) {
-        return resolve_result;
+const ToolPreference *tool_preferences_find(const ToolPreferences *preferences,
+                                            const char *target,
+                                            const char *component) {
+    if (preferences == NULL || target == NULL || component == NULL) {
+        return NULL;
     }
-    if (preferences->count != 0 && strcmp(preferences->items[0].scope.component, component) == 0) {
-        *source = TOOL_PREFERENCE_USER;
-        return text_copy(tool, tool_size, preferences->items[0].tool);
+    if (preferences->count != 0 &&
+        strcmp(preferences->items[0].scope.target_platform, target) == 0 &&
+        strcmp(preferences->items[0].scope.component, component) == 0) {
+        return &preferences->items[0];
     }
-    if (strcmp(component, "compiler") == 0) {
-        *source = TOOL_PREFERENCE_OFFICIAL_DEFAULT;
-        return text_copy(tool, tool_size, "clang");
-    }
-    *source = TOOL_PREFERENCE_NONE;
-    tool[0] = '\0';
-    return CUP_ERR_NOT_AVAILABLE;
+    return NULL;
 }
 
 static void seed_preference(const char *target, const char *component, const char *tool) {
@@ -315,12 +308,6 @@ static void test_interrupt_before_save(void) {
     TEST_ASSERT_EQUAL_INT(0, save_calls);
 }
 
-static void test_view_error(void) {
-    resolve_result = CUP_ERR_VALIDATION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, command_config(NULL, NULL, NULL, NULL));
-}
-
-
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_view_is_read_only);
@@ -331,6 +318,5 @@ int main(void) {
     RUN_TEST(test_reset_noop_does_not_persist);
     RUN_TEST(test_error_propagation);
     RUN_TEST(test_interrupt_before_save);
-    RUN_TEST(test_view_error);
     return UNITY_END();
 }

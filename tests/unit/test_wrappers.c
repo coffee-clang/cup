@@ -601,7 +601,9 @@ static void test_build_default(void) {
     WrapperPlan plan;
     PackageIdentity entry = default_entry("clang", TEST_HOST);
 
-    write_package_info("clang", TEST_HOST, "entry.clang=bin/clang\nentry.clang++=bin/clang++\n");
+    write_package_info("clang",
+                       TEST_HOST,
+                       "entry.clang=bin/clang\nentry.clang_tidy=bin/clang-tidy\n");
     wrapper_plan_init(&plan);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_build_default(&plan, &entry));
     TEST_ASSERT_EQUAL_INT(2, (int)plan.count);
@@ -611,6 +613,19 @@ static void test_build_default(void) {
         TEST_ASSERT_EQUAL_STRING(expected, plan.items[0].name);
     }
     TEST_ASSERT_TRUE(strstr(plan.items[0].target, "bin/clang") != NULL);
+    {
+        char expected[MAX_COMMAND_NAME_LEN];
+        snprintf(expected, sizeof(expected), "clang-tidy%s", TEST_WRAPPER_SUFFIX);
+        TEST_ASSERT_EQUAL_STRING(expected, plan.items[1].name);
+    }
+    {
+        char expected[MAX_PATH_LEN];
+        TEST_ASSERT_TRUE(snprintf(expected,
+                                  sizeof(expected),
+                                  "../components/compiler/clang/%s/22.1.5/bin/clang",
+                                  TEST_HOST) > 0);
+        TEST_ASSERT_EQUAL_STRING(expected, plan.items[0].target);
+    }
     wrapper_plan_free(&plan);
 }
 
@@ -647,7 +662,7 @@ static void test_build_conflicts(void) {
 
     state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
     state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
-    write_package_info("clang", TEST_HOST, "entry.cc=bin/clang\n");
+    write_package_info("clang", TEST_HOST, "entry.primary=bin/clang\n");
 
     wrapper_plan_init(&plan);
     TEST_ASSERT_EQUAL_INT(CUP_OK, wrapper_plan_build(&plan, &state));
@@ -657,12 +672,12 @@ static void test_build_conflicts(void) {
     state.default_count = 0;
     state.defaults[state.default_count++] = default_entry("clang", TEST_HOST);
     state.defaults[state.default_count++] = default_entry("gcc", TEST_HOST);
-    write_package_info("gcc", TEST_HOST, "entry.cc=bin/gcc\n");
+    write_package_info("gcc", TEST_HOST, "entry.primary=bin/clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, wrapper_plan_build(&plan, &state));
     wrapper_plan_free(&plan);
 
     state.default_count = 1;
-    write_package_info("clang", TEST_HOST, "entry.cup=bin/clang\n");
+    write_package_info("clang", TEST_HOST, "entry.primary=bin/cup\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, wrapper_plan_build(&plan, &state));
     wrapper_plan_free(&plan);
 }

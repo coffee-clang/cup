@@ -19,6 +19,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -140,7 +141,13 @@ static int compare_identity_values(const void *left_value, const void *right_val
         result = strcmp(left->tool, right->tool);
     }
     if (result == 0) {
-        result = strcmp(left->version, right->version);
+        int version_result = 0;
+
+        if (package_release_compare(left->version, right->version, &version_result) == CUP_OK) {
+            result = version_result;
+        } else {
+            result = strcmp(left->version, right->version);
+        }
     }
     return result;
 }
@@ -334,71 +341,39 @@ static CupError require_metadata_present(const PackageMetadata *metadata,
     return CUP_OK;
 }
 
-static CupError validate_package_formats(const PackageMetadata *metadata, FILE *diagnostics) {
-    const char *value = package_metadata_get(metadata, "package.formats");
-    const char *cursor = value;
-    unsigned seen = 0;
+static CupError validate_package_version_metadata(const PackageMetadata *metadata,
+                                                    const PackageIdentity *identity,
+                                                    FILE *diagnostics) {
+    const char *source_version;
+    const char *revision_reason;
+    char base[MAX_IDENTIFIER_LEN];
+    CupError err;
+    int revised;
 
-    while (cursor != NULL && *cursor != '\0') {
-        const char *comma = strchr(cursor, ',');
-        size_t length = comma != NULL ? (size_t)(comma - cursor) : strlen(cursor);
-        unsigned bit = 0;
-
-        if (length == strlen("tar.xz") && strncmp(cursor, "tar.xz", length) == 0) {
-            bit = 1u;
-        } else if (length == strlen("tar.gz") && strncmp(cursor, "tar.gz", length) == 0) {
-            bit = 2u;
-        } else if (length == strlen("zip") && strncmp(cursor, "zip", length) == 0) {
-            bit = 4u;
-        }
-        if (bit == 0 || (seen & bit) != 0) {
-            break;
-        }
-        seen |= bit;
-        cursor = comma != NULL ? comma + 1 : NULL;
-    }
-
-    if (seen != 7u || cursor != NULL) {
+    if (package_metadata_get(metadata, "package.mode") != NULL ||
+        package_metadata_get(metadata, "package.formats") != NULL ||
+        package_metadata_get(metadata, "package.revision") != NULL) {
         package_diagnostic(diagnostics,
-                           "Error: package metadata field 'package.formats' is missing or invalid.\n");
+                           "Error: package metadata contains obsolete package transport/revision fields.\n");
         return CUP_ERR_VALIDATION;
     }
-    return CUP_OK;
-}
 
-static int package_revision_is_canonical_positive(const char *value) {
-    const unsigned char *cursor;
-
-    if (value == NULL || value[0] < '1' || value[0] > '9') {
-        return 0;
+    err = package_release_base(identity->version, base, sizeof(base));
+    if (err != CUP_OK) {
+        return err;
     }
-    for (cursor = (const unsigned char *)value + 1; *cursor != '\0'; ++cursor) {
-        if (*cursor < '0' || *cursor > '9') {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static CupError validate_package_revision(const PackageMetadata *metadata,
-                                          const PackageIdentity *identity,
-                                          FILE *diagnostics) {
-    const char *revision = package_metadata_get(metadata, "package.revision");
-
-    if (strcmp(identity->tool, "gcc") == 0) {
-        const char *marker = strstr(identity->version, "-rev");
-        const char *expected = marker != NULL ? marker + 4 : NULL;
-
-        if (!package_revision_is_canonical_positive(revision) ||
-            expected == NULL || strcmp(revision, expected) != 0) {
-            package_diagnostic(
-                diagnostics, "Error: GCC package metadata revision does not match package.version.\n");
-            return CUP_ERR_VALIDATION;
-        }
-    } else if (revision != NULL) {
+    source_version = package_metadata_get(metadata, "source.primary.version");
+    if (source_version == NULL || strcmp(source_version, base) != 0) {
         package_diagnostic(diagnostics,
-                           "Error: package metadata field 'package.revision' is not valid for '%s'.\n",
-                           identity->tool);
+                           "Error: package metadata field 'source.primary.version' must match the upstream base version.\n");
+        return CUP_ERR_VALIDATION;
+    }
+
+    revised = strcmp(base, identity->version) != 0;
+    revision_reason = package_metadata_get(metadata, "package.revision_reason");
+    if ((revised && revision_reason == NULL) || (!revised && revision_reason != NULL)) {
+        package_diagnostic(diagnostics,
+                           "Error: package.revision_reason must be present exactly for -revN package versions.\n");
         return CUP_ERR_VALIDATION;
     }
     return CUP_OK;
@@ -423,10 +398,7 @@ static CupError validate_package_common_metadata(const PackageMetadata *metadata
     size_t i;
     CupError err;
 
-    err = require_metadata_value(metadata, "package.mode", "self-contained", diagnostics);
-    if (err == CUP_OK) {
-        err = validate_package_formats(metadata, diagnostics);
-    }
+    err = CUP_OK;
     for (i = 0; err == CUP_OK && i < sizeof(required_declarations) / sizeof(required_declarations[0]);
          ++i) {
         err = require_metadata_present(metadata, required_declarations[i], diagnostics);
@@ -440,7 +412,7 @@ static CupError validate_package_common_metadata(const PackageMetadata *metadata
         }
     }
     if (err == CUP_OK) {
-        err = validate_package_revision(metadata, identity, diagnostics);
+        err = validate_package_version_metadata(metadata, identity, diagnostics);
     }
     return err;
 }
@@ -689,7 +661,6 @@ CupError package_path_exists(const PackageIdentity *identity, int *exists) {
 typedef enum {
     PACKAGE_LEVEL_COMPONENT,
     PACKAGE_LEVEL_TOOL,
-    PACKAGE_LEVEL_HOST,
     PACKAGE_LEVEL_TARGET,
     PACKAGE_LEVEL_VERSION
 } PackagePathLevel;
@@ -705,7 +676,8 @@ typedef struct {
 int package_list_contains(const PackageList *packages, const PackageIdentity *package) {
     size_t i;
 
-    if (packages == NULL || package == NULL || packages->count > MAX_SCANNED_PACKAGES) {
+    if (packages == NULL || package == NULL ||
+        (packages->count > 0 && packages->items == NULL)) {
         return 0;
     }
 
@@ -726,8 +698,6 @@ const char *package_issue_reason_name(PackageIssueReason reason) {
             return "unknown component";
         case PACKAGE_ISSUE_INVALID_TOOL:
             return "unknown tool";
-        case PACKAGE_ISSUE_INVALID_HOST:
-            return "invalid host platform";
         case PACKAGE_ISSUE_INVALID_TARGET:
             return "invalid target platform";
         case PACKAGE_ISSUE_INVALID_VERSION:
@@ -774,14 +744,40 @@ static void record_scan_issue(PackageScanContext *context,
     }
 }
 
-static void record_valid_package(PackageList *packages, const PackageIdentity *package) {
-    packages->total_count++;
-    if (packages->count >= MAX_SCANNED_PACKAGES) {
-        packages->complete = 0;
+void package_list_init(PackageList *packages) {
+    if (packages != NULL) {
+        memset(packages, 0, sizeof(*packages));
+    }
+}
+
+void package_list_free(PackageList *packages) {
+    if (packages == NULL) {
         return;
+    }
+    free(packages->items);
+    package_list_init(packages);
+}
+
+static CupError record_valid_package(PackageList *packages, const PackageIdentity *package) {
+    PackageIdentity *items;
+    size_t capacity;
+
+    packages->total_count++;
+    if (packages->count == packages->capacity) {
+        capacity = packages->capacity == 0 ? 16u : packages->capacity * 2u;
+        if (capacity < packages->capacity || capacity > SIZE_MAX / sizeof(*items)) {
+            return CUP_ERR_TEMPORARY;
+        }
+        items = realloc(packages->items, capacity * sizeof(*items));
+        if (items == NULL) {
+            return CUP_ERR_TEMPORARY;
+        }
+        packages->items = items;
+        packages->capacity = capacity;
     }
 
     packages->items[packages->count++] = *package;
+    return CUP_OK;
 }
 
 static PackageIssueReason invalid_name_reason(PackagePathLevel level) {
@@ -790,8 +786,6 @@ static PackageIssueReason invalid_name_reason(PackagePathLevel level) {
             return PACKAGE_ISSUE_INVALID_COMPONENT;
         case PACKAGE_LEVEL_TOOL:
             return PACKAGE_ISSUE_INVALID_TOOL;
-        case PACKAGE_LEVEL_HOST:
-            return PACKAGE_ISSUE_INVALID_HOST;
         case PACKAGE_LEVEL_TARGET:
             return PACKAGE_ISSUE_INVALID_TARGET;
         case PACKAGE_LEVEL_VERSION:
@@ -837,8 +831,7 @@ static CupError scan_version_path(PackageScanContext *context,
         return err;
     }
 
-    record_valid_package(context->packages, &package);
-    return CUP_OK;
+    return record_valid_package(context->packages, &package);
 }
 
 static CupError scan_package_path(const char *path,
@@ -891,19 +884,6 @@ static CupError scan_package_path(const char *path,
             }
             break;
 
-        case PACKAGE_LEVEL_HOST:
-            if (platform_is_supported(name)) {
-                if (strcmp(name, context->current_host) != 0) {
-                    context->packages->foreign_host_count++;
-                    return CUP_OK;
-                }
-                err = text_copy(
-                    child.identity.host_platform, sizeof(child.identity.host_platform), name);
-            } else {
-                err = CUP_ERR_VALIDATION;
-            }
-            break;
-
         case PACKAGE_LEVEL_TARGET:
             if (platform_is_supported(name)) {
                 err = text_copy(
@@ -941,12 +921,18 @@ CupError package_scan(PackageList *packages, FILE *diagnostics) {
         return CUP_ERR_INVALID_INPUT;
     }
 
-    memset(packages, 0, sizeof(*packages));
+    package_list_free(packages);
     packages->complete = 1;
     memset(&context, 0, sizeof(context));
     context.packages = packages;
     context.diagnostics = diagnostics;
     err = platform_get_host(context.current_host, sizeof(context.current_host));
+    if (err != CUP_OK) {
+        return err;
+    }
+    err = text_copy(context.identity.host_platform,
+                    sizeof(context.identity.host_platform),
+                    context.current_host);
     if (err != CUP_OK) {
         return err;
     }

@@ -36,7 +36,7 @@ For the terminology behind these arguments, see [Concepts](CONCEPTS.md).
 | Command | Purpose | Changes the CUP root? |
 |---|---|---|
 | `help` / `--version` | CLI help and build identity | no |
-| `search` | show catalog packages | no |
+| `search` | show catalog packages | catalog refresh only |
 | `list` | show installed packages | no |
 | `info` | show defaults and provided commands | no |
 | `inspect` | show metadata for one installed package | no |
@@ -69,8 +69,12 @@ cup search <component>
 cup search <component> --target <platform>
 ```
 
-Shows packages available from the installed/current catalog. It is read-only and
-does not require installed package state.
+Shows packages available from the current catalog. On an existing runtime CUP
+performs one best-effort catalog refresh first; if refresh fails but the local
+snapshot is valid, it warns and shows that snapshot. From a source checkout
+with no runtime root, search may read a developer-provided
+`./config/catalog.cfg` snapshot without creating a root. That file is local input
+from `cup-components` and is not tracked by CUP.
 
 Examples:
 
@@ -129,10 +133,11 @@ cup config reset [<component>] [--target <platform>]
 
 The view form shows the effective tool used by abbreviated component installs.
 
-`config set` stores a preference for one component/host/target scope. It affects
-future `cup install <component>` and profile installs; it does not change the
-current default or existing packages. If no preference exists, CUP uses the
-official default from `install.cfg`.
+`config set` stores a preference for one component/target scope. The root supplies
+host implicitly. It affects future `cup install <component>` and profile installs;
+it does not change the current default or existing packages. If no preference
+exists, install planning uses the official default compiled into that CUP
+generation.
 
 `config reset <component>` removes one scoped preference. `config reset` without
 a component clears every preference for the selected target.
@@ -167,7 +172,7 @@ unavailable member does not cause a knowingly partial plan. Package commits are
 still sequential: if a later package fails, earlier completed packages remain
 installed.
 
-The first valid package installed in an empty component/host/target scope becomes
+The first valid package installed in an empty component/target scope may become
 the default. Later installs do not replace that default automatically. Installing
 an already valid package succeeds without changing it.
 
@@ -199,7 +204,7 @@ cup remove [<component>] <tool>[@<release>] [--target <platform>]
 ```
 
 Removes one installed package version. If the release is omitted, CUP proceeds
-only when exactly one installed version matches the selected tool/host/target.
+only when exactly one installed version matches the selected tool/target.
 With multiple matches it prints the candidates and requires an explicit release.
 
 Removing the current default clears that default and reconciles the provided
@@ -213,7 +218,7 @@ cup default <component> <tool>@<release> [--target <platform>]
 ```
 
 Selects an **already installed** package as the default for one
-component/host/target scope. `stable` resolves through the current catalog and
+component/target scope. `stable` resolves through the current local catalog and
 must already be installed. This command never installs a missing package.
 
 Examples:
@@ -229,12 +234,23 @@ cup default compiler clang@23.1.0 --target linux-x64
 cup update
 cup update <tool>
 cup update <component>
+cup update catalog
 cup update cup
 ```
 
-Without a selector, CUP updates installed tools to the current catalog stable
-release and does **not** update CUP itself. A tool or component limits the plan to
-matching installed scopes.
+Without a selector, CUP updates installed tool families and does **not** update
+CUP itself. If at least one family matches, package update performs one required
+catalog refresh before planning; no matching installed scope avoids network. A
+tool or component limits the plan to matching installed families.
+
+For each `(component, tool, target)` family, the reference is the active
+same-tool default when present, otherwise the semantic maximum installed version.
+A missing stable warns/skips that family, a lower stable never downgrades it, an
+equal stable is integrity-checked and left alone, and a newer stable is installed
+or adopted as another immutable identity.
+
+`cup update catalog` refreshes only the live catalog snapshot. It does not update
+packages or CUP itself.
 
 Old package versions are retained. A default advances only when it already
 selects the same tool at an older release; updating does not switch a default
@@ -251,8 +267,8 @@ releases.
 cup doctor
 ```
 
-Checks CUP assets, local state, preferences, packages, defaults, pending
-transactions and provided commands. It is strictly read-only. A nonzero exit
+Checks the installed CUP generation, live catalog, local state, preferences,
+packages, defaults, pending transactions and derived wrappers. It is strictly read-only. A nonzero exit
 status means at least one problem was found or an inspection could not complete.
 
 ## Recover: `repair`
@@ -264,7 +280,9 @@ cup repair
 `repair` handles states that can be reconstructed or recovered safely. It can,
 for example, finish or undo an interrupted package operation, reconcile valid
 packages with state, preserve invalid identifiable objects for diagnosis,
-restore verifiable CUP support assets and rebuild launchers from valid defaults.
+repair verifiable same-generation metadata/legal assets, restore a malformed
+official live catalog from its authenticated release snapshot, and rebuild
+wrappers from valid defaults. Development repair does not manufacture a catalog snapshot.
 
 Ambiguous data is left untouched and reported. `repair` does not replace its own
 main executable; reinstall CUP when `cup`/`cup.exe` itself is missing or damaged.

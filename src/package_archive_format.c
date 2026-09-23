@@ -41,3 +41,20 @@ const char *package_archive_format_name(PackageArchiveFormat format) {
             return NULL;
     }
 }
+
+CupError package_archive_default_format(const char *host_platform, PackageArchiveFormat *format) {
+    if (host_platform == NULL || format == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (strcmp(host_platform, "windows-x64") == 0) {
+        *format = PACKAGE_ARCHIVE_FORMAT_ZIP;
+        return CUP_OK;
+    }
+    if (strcmp(host_platform, "linux-x64") == 0 || strcmp(host_platform, "linux-arm64") == 0 ||
+        strcmp(host_platform, "macos-x64") == 0 || strcmp(host_platform, "macos-arm64") == 0) {
+        *format = PACKAGE_ARCHIVE_FORMAT_TAR_GZ;
+        return CUP_OK;
+    }
+    *format = PACKAGE_ARCHIVE_FORMAT_ANY;
+    return CUP_ERR_INVALID_INPUT;
+}

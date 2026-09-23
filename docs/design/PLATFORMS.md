@@ -34,9 +34,10 @@ linux-x64 -> linux-x64      native Linux package
 linux-x64 -> windows-x64    Windows cross-target tool running on Linux
 ```
 
-Target defaults to host. State, package paths, preferences and defaults preserve
-both values. One running CUP instance manages packages for its own host; foreign-
-host records are reported/preserved rather than adopted automatically.
+Target defaults to host. The root marker authenticates the host once; package paths,
+state, preferences and defaults persist the target without duplicating that host field.
+In-memory package identities recover the host from the selected root, and one running CUP
+instance manages only packages for that authenticated host.
 
 ## User root and executable names
 
@@ -185,8 +186,8 @@ executable after the initiating process exits. Parent lifetime is observed
 through inherited OS objects, not PID polling. Detached helpers do not retain the
 caller's standard streams.
 
-- update uses the persistent `helpers/update-helper[.exe]` refreshed from the
-  installed executable before each operation;
+- update uses a derived `helpers/update-helper[.exe]` copy prepared from the
+  verified installed executable when a handoff is needed;
 - uninstall uses one token-bound temporary helper outside the managed root;
 - Windows temporary-helper deletion uses the handle-lifetime carrier described
   above; all root/journal cleanup remains native C.

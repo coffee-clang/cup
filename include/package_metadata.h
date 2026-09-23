@@ -27,7 +27,7 @@ typedef struct {
     SystemPathIdentity identity;
 } PackageMetadata;
 
-/* One package command decoded from the external entry.<name> boundary. */
+/* One package command decoded from an entry.<id> path. The public name comes from the command path. */
 typedef struct {
     char name[MAX_COMMAND_NAME_LEN];
     char path[MAX_METADATA_VALUE_LEN];
@@ -51,8 +51,9 @@ const PackageMetadataField *package_metadata_next(const PackageMetadata *metadat
                                                   const char *prefix,
                                                   size_t *cursor);
 
-/* Decode the next package command while keeping entry.* at this boundary. Output is cleared when
- * no command is returned. */
+/* Decode the next package command while keeping entry.* metadata identifiers at this boundary.
+ * The public command name is derived from the entry path basename. Output is cleared when no
+ * command is returned. */
 int package_metadata_next_command(const PackageMetadata *metadata,
                                   PackageCommand *command,
                                   size_t *cursor);

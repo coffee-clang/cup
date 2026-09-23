@@ -1,7 +1,6 @@
 #!/bin/sh
 
-# Exercises development-catalog fallback, checksum schema and secure-URL validation
-# through the real CLI. Installed-source precedence is covered by the catalog unit suite.
+# Exercises development-catalog fallback and the concrete artifact schema through the real CLI.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -9,29 +8,69 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin catalog
 prepare_command_environment
-catalog=$DEV_ROOT/config/packages.cfg
-original=$TMP_ROOT/packages.cfg.original
-cp "$catalog" "$original"
+catalog=$DEV_ROOT/config/catalog.cfg
 
-awk '
-    !removed && /\.checksum_url_template=/ { removed = 1; next }
-    { print }
-    END { if (!removed) exit 2 }
-' "$original" > "$catalog" || fail 'could not remove checksum_url_template'
-run_cup_expect_failure "$TMP_ROOT/missing-checksum.out" search
-assert_contains "$(cat "$TMP_ROOT/missing-checksum.out")" \
-    'is missing one or more required fields'
+# Source-only discovery uses the local development catalog without creating a runtime root.
+run_cup search compiler >"$TMP_ROOT/seed-search.out"
+assert_missing "$TEST_HOME/.cup"
 
-awk '
-    !changed && /\.checksum_url_template=https:/ {
-        sub(/=https:/, "=http:")
-        changed = 1
-    }
-    { print }
-    END { if (!changed) exit 2 }
-' "$original" > "$catalog" || fail 'could not alter checksum URL'
-run_cup_expect_failure "$TMP_ROOT/insecure-checksum.out" search
-assert_contains "$(cat "$TMP_ROOT/insecure-checksum.out")" \
-    'catalog URL templates must use HTTPS'
+cat > "$catalog" <<'CATALOG'
+format=1
+revision=1
+update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
+package.0.component=compiler
+package.0.tool=clang
+package.0.host=linux-x64
+package.0.target=linux-x64
+package.0.version=98.0.1
+package.0.stable=true
+package.0.artifact.0.format=tar.gz
+package.0.artifact.0.url=https://example.invalid/clang-98.0.1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
+CATALOG
+run_cup search compiler >"$TMP_ROOT/concrete-search.out"
+assert_contains "$(cat "$TMP_ROOT/concrete-search.out")" '98.0.1'
+assert_missing "$TEST_HOME/.cup"
 
-printf '%s\n' 'Package catalog checksum schema tests passed.'
+# A current-schema artifact without its digest is malformed, not merely unavailable.
+awk '!/\.artifact\.0\.sha256=/' "$catalog" > "$TMP_ROOT/missing-sha.cfg"
+cp "$TMP_ROOT/missing-sha.cfg" "$catalog"
+run_cup_expect_failure "$TMP_ROOT/missing-sha.out" search compiler
+
+# Production catalog artifact URLs require HTTPS; loopback HTTP is reserved for explicit tests.
+cat > "$catalog" <<'CATALOG'
+format=1
+revision=1
+update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
+package.0.component=compiler
+package.0.tool=clang
+package.0.host=linux-x64
+package.0.target=linux-x64
+package.0.version=98.0.1
+package.0.stable=true
+package.0.artifact.0.format=tar.gz
+package.0.artifact.0.url=http://example.invalid/clang-98.0.1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
+CATALOG
+run_cup_expect_failure "$TMP_ROOT/insecure-artifact.out" search compiler
+
+# A structurally safe future version is tolerated but is not made operational by guessing.
+cat > "$catalog" <<'CATALOG'
+format=1
+revision=2
+update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
+package.0.component=compiler
+package.0.tool=clang
+package.0.host=linux-x64
+package.0.target=linux-x64
+package.0.version=future-1
+package.0.stable=true
+package.0.artifact.0.format=tar.gz
+package.0.artifact.0.url=https://example.invalid/clang-future-1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
+CATALOG
+run_cup search compiler >"$TMP_ROOT/future-search.out"
+assert_not_contains "$(cat "$TMP_ROOT/future-search.out")" 'future-1'
+assert_missing "$TEST_HOME/.cup"
+
+printf '%s\n' 'Package catalog runtime schema tests passed.'

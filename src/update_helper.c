@@ -1,259 +1,17 @@
-/*
- * Runs the managed native helper copy used to complete a cup update after the parent process
- * exits while exclusive authority remains continuous through the operation handoff.
- */
+/* Runs the verified native helper used to complete a CUP generation update after parent exit. */
 
 #include "update_helper.h"
 
-#include "constants.h"
 #include "checksum.h"
-#include "assets.h"
-#include "update_journal.h"
-#include "update_assets.h"
-#include "filesystem.h"
 #include "layout.h"
-#include "path.h"
 #include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
+#include "update_journal.h"
 
 #include <stdio.h>
 #include <string.h>
 
-typedef struct {
-    UpdateAssetSpec spec;
-    char destination[MAX_PATH_LEN];
-} HelperAsset;
-
-static CupError initialize_assets(HelperAsset assets[CUP_UPDATE_ASSET_COUNT]) {
-    size_t i;
-    CupError err;
-
-    if (assets == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    memset(assets, 0, sizeof(*assets) * CUP_UPDATE_ASSET_COUNT);
-    for (i = 0; i < CUP_UPDATE_ASSET_COUNT; ++i) {
-        err = update_asset_spec((UpdateAssetId)i, &assets[i].spec);
-        if (err == CUP_OK) {
-            err = update_asset_destination((UpdateAssetId)i,
-                                           assets[i].destination,
-                                           sizeof(assets[i].destination));
-        }
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-    return CUP_OK;
-}
-
-static CupError validate_staged_assets(const char *staging,
-                                       const HelperAsset *assets,
-                                       size_t count) {
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char source[MAX_PATH_LEN];
-        SystemPathKind kind;
-
-        if (path_join(source, sizeof(source), staging, assets[i].spec.new_name) != CUP_OK ||
-            system_get_path_kind(source, &kind) != CUP_OK || kind != SYSTEM_PATH_REGULAR_FILE) {
-            return CUP_ERR_VALIDATION;
-        }
-    }
-    return CUP_OK;
-}
-
-/* Commit protocol. Backups are copies so every canonical destination remains present until its
- * atomically verified replacement is committed. */
-static CupError create_absent_evidence(const char *path) {
-    FILE *file = NULL;
-    CupError err = system_create_file_exclusive(path, &file);
-    int failed = 0;
-
-    if (err != CUP_OK) {
-        return err;
-    }
-    if (system_sync_file(file) != CUP_OK) {
-        failed = 1;
-    }
-    if (fclose(file) != 0) {
-        failed = 1;
-    }
-    if (failed || system_sync_parent_directory(path) != CUP_OK) {
-        return CUP_ERR_COMMIT;
-    }
-    return CUP_OK;
-}
-
-static CupError backup_destinations(const char *staging, const HelperAsset *assets, size_t count) {
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        char backup[MAX_PATH_LEN];
-        char absent[MAX_PATH_LEN];
-        SystemPathKind destination_kind;
-        SystemPathKind backup_kind;
-        SystemPathKind absent_kind;
-        CupError err;
-
-        if (path_join(backup, sizeof(backup), staging, assets[i].spec.old_name) != CUP_OK ||
-            path_join(absent, sizeof(absent), staging, assets[i].spec.absent_name) != CUP_OK ||
-            system_get_path_kind(assets[i].destination, &destination_kind) != CUP_OK ||
-            system_get_path_kind(backup, &backup_kind) != CUP_OK ||
-            system_get_path_kind(absent, &absent_kind) != CUP_OK) {
-            return CUP_ERR_TRANSACTION;
-        }
-        if (backup_kind != SYSTEM_PATH_MISSING || absent_kind != SYSTEM_PATH_MISSING) {
-            return CUP_ERR_TRANSACTION;
-        }
-        if (destination_kind == SYSTEM_PATH_MISSING) {
-            err = create_absent_evidence(absent);
-        } else if (destination_kind == SYSTEM_PATH_REGULAR_FILE) {
-            err = system_copy_file(assets[i].destination, backup);
-        } else {
-            return CUP_ERR_VALIDATION;
-        }
-        if (err != CUP_OK) {
-            return err == CUP_ERR_COMMIT ? err : CUP_ERR_TRANSACTION;
-        }
-    }
-    return CUP_OK;
-}
-
-static CupError install_staged_asset(const char *staging, const HelperAsset *asset) {
-    char source[MAX_PATH_LEN];
-    SystemPathKind destination_kind;
-    SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
-    CupError err;
-
-    if (path_join(source, sizeof(source), staging, asset->spec.new_name) != CUP_OK ||
-        system_get_path_kind(asset->destination, &destination_kind) != CUP_OK) {
-        return CUP_ERR_TRANSACTION;
-    }
-    if (destination_kind == SYSTEM_PATH_REGULAR_FILE) {
-        if (system_set_read_only(asset->destination, 0) != CUP_OK) {
-            return CUP_ERR_TRANSACTION;
-        }
-    } else if (destination_kind != SYSTEM_PATH_MISSING) {
-        return CUP_ERR_VALIDATION;
-    }
-
-    err = system_replace_file(source, asset->destination, &commit_state);
-    if (err != CUP_OK) {
-        return commit_state == SYSTEM_COMMIT_NOT_APPLIED ? CUP_ERR_TRANSACTION : CUP_ERR_COMMIT;
-    }
-    err = filesystem_apply_required_permissions(
-        asset->destination, asset->spec.executable, asset->spec.read_only);
-    if (err != CUP_OK) {
-        fprintf(stderr,
-                "Error: could not apply permissions to update asset '%s'.\n",
-                asset->destination);
-        return CUP_ERR_COMMIT;
-    }
-    return CUP_OK;
-}
-
-static CupError install_supporting_assets(const char *staging,
-                                          const HelperAsset *assets,
-                                          size_t count) {
-    size_t i;
-
-    for (i = 1; i < count; ++i) {
-        CupError err = install_staged_asset(staging, &assets[i]);
-
-        if (err != CUP_OK) {
-            return err;
-        }
-    }
-    return CUP_OK;
-}
-
-static CupError commit_update(UpdateJournal *journal, const char *staging) {
-    HelperAsset assets[CUP_UPDATE_ASSET_COUNT];
-    char staged_binary[MAX_PATH_LEN];
-    CupError err;
-
-    err = initialize_assets(assets);
-    if (err == CUP_OK) {
-        err = validate_staged_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
-    }
-    if (err == CUP_OK) {
-        err = backup_destinations(staging, assets, sizeof(assets) / sizeof(assets[0]));
-    }
-    /* Publish COMMITTING only after every destination has durable rollback evidence. Before
-     * then, canonical assets are unchanged and recovery may discard staging. */
-    if (err == CUP_OK) {
-        err = update_journal_set_phase(journal, CUP_UPDATE_PHASE_COMMITTING, 0);
-    }
-    if (err == CUP_OK) {
-        err = install_supporting_assets(staging, assets, sizeof(assets) / sizeof(assets[0]));
-    }
-    if (err == CUP_OK) {
-        err = path_join(
-            staged_binary, sizeof(staged_binary), staging, assets[CUP_UPDATE_ASSET_BINARY].spec.new_name);
-    }
-    if (err == CUP_OK) {
-        err = update_write_generation_marker(staging, journal->version, staged_binary);
-    }
-    /* Replace the executable last, after supporting assets and the durable marker. Until then,
-     * journal/backups still describe deterministic rollback. */
-    if (err == CUP_OK) {
-        err = install_staged_asset(staging, &assets[0]);
-    }
-    if (err == CUP_OK) {
-        AssetsInspection inspection;
-
-        err = assets_inspect(&inspection);
-        if (err == CUP_OK && !assets_installed_is_valid(&inspection)) {
-            err = CUP_ERR_VALIDATION;
-        }
-    }
-    if (err == CUP_OK) {
-        err = runtime_journal_clear_if_identity(&journal->file_identity);
-    }
-    if (err == CUP_OK) {
-        if (filesystem_remove_tree(staging) != CUP_OK) {
-            fprintf(stderr,
-                    "Warning: cup was updated successfully, but stale update staging could not "
-                    "be removed. Run 'cup repair'.\n");
-        }
-    }
-    return err;
-}
-
-/* Persist one detached failure in transaction.txt before attempting deterministic recovery. */
-static CupError record_helper_failure(UpdateJournal *journal,
-                                      CupError error,
-                                      int recover) {
-    CupError err;
-    int finalized = 0;
-
-    if (journal == NULL || error == CUP_OK) {
-        return error;
-    }
-
-    err = update_journal_set_phase(journal, CUP_UPDATE_PHASE_FAILED, (int)error);
-    if (err != CUP_OK) {
-        fprintf(stderr,
-                "Error: the update failure could not be persisted; transaction evidence "
-                "was preserved.\n");
-        return err;
-    }
-    if (!recover) {
-        return error;
-    }
-
-    err = update_journal_recover(
-        journal, CUP_UPDATE_RECOVER_REPLACE_BINARY, &finalized);
-    if (err != CUP_OK) {
-        return error;
-    }
-    return finalized ? CUP_OK : error;
-}
-
-/* Parent-side handoff. Ensure the canonical helper matches the running cup binary before the
- * parent releases control. */
 static CupError helper_matches_binary(const char *binary, const char *helper, int *matches) {
     char binary_hash[CHECKSUM_SHA256_HEX_LENGTH + 1];
     char helper_hash[CHECKSUM_SHA256_HEX_LENGTH + 1];
@@ -293,7 +51,7 @@ CupError update_helper_prepare_from(const char *source_binary) {
     if (text_is_empty(source_binary)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    err = layout_ensure_assets();
+    err = layout_ensure_helpers();
     if (err == CUP_OK) {
         err = layout_get_update_helper_path(helper, sizeof(helper));
     }
@@ -323,13 +81,6 @@ CupError update_helper_prepare_from(const char *source_binary) {
     return err;
 }
 
-CupError update_helper_prepare(void) {
-    char binary[MAX_PATH_LEN];
-    CupError err = layout_get_binary_path(binary, sizeof(binary));
-
-    return err == CUP_OK ? update_helper_prepare_from(binary) : err;
-}
-
 CupError update_helper_start(const char *root, const char *token, SystemLock *lock) {
     char helper[MAX_PATH_LEN];
 
@@ -342,6 +93,18 @@ CupError update_helper_start(const char *root, const char *token, SystemLock *lo
 
 /* Detached helper execution. Handoff authority remains continuous while the parent exits and this
  * helper returns to the canonical lock before it touches update state. */
+static int token_matches_temporary_name(const char *token, const char *temporary_name) {
+    size_t token_length;
+    size_t name_length;
+    if (!runtime_journal_token_is_valid(token) || text_is_empty(temporary_name)) return 0;
+    token_length = strlen(token);
+    name_length = strlen(temporary_name);
+    return token_length > name_length && token[token_length - name_length - 1u] == '-' &&
+           strcmp(token + token_length - name_length, temporary_name) == 0;
+}
+
+/* Detached helper execution. Handoff authority remains continuous while the parent exits and this
+ * helper returns to the canonical lock before touching generation state. */
 CupError update_helper_run(const char *root,
                            const char *token,
                            const char *parent_signal_value,
@@ -352,60 +115,29 @@ CupError update_helper_run(const char *root,
     SystemLock lock = {0};
     char selected_root[MAX_PATH_LEN];
     char lock_path[MAX_PATH_LEN];
-    char staging[MAX_PATH_LEN];
     CupError err;
 
-    if (text_is_empty(root) || text_is_empty(token)) {
-        return CUP_ERR_INVALID_INPUT;
-    }
+    if (text_is_empty(root) || text_is_empty(token)) return CUP_ERR_INVALID_INPUT;
     err = system_handoff_accept(&handoff, parent_signal_value, authority_value);
-    if (err == CUP_OK) {
-        err = layout_build_lock_path(lock_path, sizeof(lock_path), root);
-    }
-    if (err == CUP_OK) {
-        err = system_handoff_acquire_lock(&handoff, &lock, lock_path);
-    }
+    if (err == CUP_OK) err = layout_build_lock_path(lock_path, sizeof(lock_path), root);
+    if (err == CUP_OK) err = system_handoff_acquire_lock(&handoff, &lock, lock_path);
     if (err != CUP_OK) {
         system_handoff_release(&handoff);
         return err;
     }
 
     err = layout_root_snapshot_begin_at(root);
-    if (err == CUP_OK) {
-        err = layout_get_root(selected_root, sizeof(selected_root));
-    }
-    /* Helper argv preserves the parent's normalized root spelling, so exact equality is a
-     * deliberate transaction check rather than a filesystem-equivalence comparison. */
-    if (err == CUP_OK && strcmp(selected_root, root) != 0) {
+    if (err == CUP_OK) err = layout_get_root(selected_root, sizeof(selected_root));
+    if (err == CUP_OK && strcmp(selected_root, root) != 0) err = CUP_ERR_TRANSACTION;
+    if (err == CUP_OK) err = layout_root_snapshot_validate();
+    if (err == CUP_OK) err = update_journal_load(&journal, &status);
+    if (err == CUP_OK &&
+        (status != CUP_UPDATE_JOURNAL_LOADED ||
+         !token_matches_temporary_name(token, journal.temporary_name))) {
         err = CUP_ERR_TRANSACTION;
     }
-    if (err == CUP_OK) {
-        err = layout_root_snapshot_validate();
-    }
-    if (err != CUP_OK) {
-        layout_root_snapshot_end();
-        system_lock_release(&lock);
-        return err;
-    }
+    if (err == CUP_OK) err = update_generation_commit(&journal);
 
-    err = update_journal_load(&journal, &status);
-    if (err != CUP_OK || status != CUP_UPDATE_JOURNAL_LOADED || strcmp(journal.token, token) != 0 ||
-        journal.phase != CUP_UPDATE_PHASE_SCHEDULED) {
-        layout_root_snapshot_end();
-        system_lock_release(&lock);
-        return CUP_ERR_TRANSACTION;
-    }
-    err = update_journal_get_staging_path(&journal, staging, sizeof(staging));
-    if (err != CUP_OK) {
-        layout_root_snapshot_end();
-        system_lock_release(&lock);
-        return err;
-    }
-
-    err = commit_update(&journal, staging);
-    if (err != CUP_OK && journal.phase != CUP_UPDATE_PHASE_SCHEDULED) {
-        err = record_helper_failure(&journal, err, 1);
-    }
     layout_root_snapshot_end();
     system_lock_release(&lock);
     return err;

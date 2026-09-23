@@ -4,6 +4,7 @@
  */
 
 #include "command_context.h"
+#include "catalog_refresh.h"
 #include "installed_package.h"
 #include "interrupt.h"
 #include "commands.h"
@@ -33,6 +34,7 @@ static size_t package_metadata_count;
 static CupError begin_result;
 static CupError load_state_result;
 static CupError load_catalog_result;
+static CupError catalog_refresh_result;
 static CupError valid_installed_result;
 static CupError plan_build_result;
 static CupError plan_apply_result;
@@ -46,6 +48,9 @@ static CupError set_default_result;
 static CupError safe_point_result;
 static int plan_matches;
 static int end_calls;
+static int catalog_refresh_calls;
+static CatalogRefreshDiagnostics catalog_refresh_diagnostics;
+static int load_catalog_calls;
 static int safe_point_calls;
 static int state_save_calls;
 static int plan_apply_calls;
@@ -57,6 +62,7 @@ static CupError buffer_write_result(int written, size_t size) {
 }
 
 static void reset_scenario(void) {
+    free(scenario_state.installed);
     memset(&scenario_state, 0, sizeof(scenario_state));
     memset(package_catalog_items, 0, sizeof(package_catalog_items));
     memset(package_metadata_fields, 0, sizeof(package_metadata_fields));
@@ -66,6 +72,7 @@ static void reset_scenario(void) {
     begin_result = CUP_OK;
     load_state_result = CUP_OK;
     load_catalog_result = CUP_OK;
+    catalog_refresh_result = CUP_OK;
     valid_installed_result = CUP_OK;
     plan_build_result = CUP_OK;
     plan_apply_result = CUP_OK;
@@ -79,6 +86,9 @@ static void reset_scenario(void) {
     safe_point_result = CUP_OK;
     plan_matches = 1;
     end_calls = 0;
+    catalog_refresh_calls = 0;
+    catalog_refresh_diagnostics = CATALOG_REFRESH_REPORT_ERRORS;
+    load_catalog_calls = 0;
     safe_point_calls = 0;
     state_save_calls = 0;
     plan_apply_calls = 0;
@@ -118,8 +128,16 @@ static void add_installed(const char *component,
                           const char *host,
                           const char *target,
                           const char *entry) {
-    PackageIdentity *item = &scenario_state.installed[scenario_state.installed_count++];
-    fill_identity(item, component, host, target, entry);
+    PackageIdentity *items;
+    size_t needed = scenario_state.installed_count + 1u;
+    if (needed > scenario_state.installed_capacity) {
+        size_t capacity = scenario_state.installed_capacity == 0 ? 8u : scenario_state.installed_capacity * 2u;
+        items = realloc(scenario_state.installed, capacity * sizeof(*items));
+        TEST_ASSERT_NOT_NULL(items);
+        scenario_state.installed = items;
+        scenario_state.installed_capacity = capacity;
+    }
+    fill_identity(&scenario_state.installed[scenario_state.installed_count++], component, host, target, entry);
 }
 
 static void add_default(const char *component,
@@ -136,13 +154,32 @@ static void add_catalog_entry(const char *component,
                               const char *target,
                               const char *stable,
                               const char *versions) {
-    PackageCatalogEntry *item = &package_catalog_items[package_catalog_count++];
-    strcpy(item->component, component);
-    strcpy(item->tool, tool);
-    strcpy(item->host_platform, host);
-    strcpy(item->target_platform, target);
-    strcpy(item->stable_version, stable);
-    strcpy(item->available_versions, versions);
+    char copy[256];
+    char *cursor;
+
+    TEST_ASSERT_TRUE(strlen(versions) < sizeof(copy));
+    strcpy(copy, versions);
+    cursor = copy;
+    while (cursor != NULL && *cursor != '\0') {
+        char *separator = strchr(cursor, ',');
+        PackageCatalogEntry *item;
+
+        if (separator != NULL) {
+            *separator = '\0';
+        }
+        TEST_ASSERT_TRUE(package_catalog_count < sizeof(package_catalog_items) /
+                                                     sizeof(package_catalog_items[0]));
+        item = &package_catalog_items[package_catalog_count++];
+        memset(item, 0, sizeof(*item));
+        strcpy(item->component, component);
+        strcpy(item->tool, tool);
+        strcpy(item->host_platform, host);
+        strcpy(item->target_platform, target);
+        strcpy(item->version, cursor);
+        item->stable = strcmp(cursor, stable) == 0;
+        item->operational = 1;
+        cursor = separator == NULL ? NULL : separator + 1;
+    }
 }
 
 static void add_info(const char *key, const char *value) {
@@ -237,10 +274,19 @@ CupError command_context_load_state(CommandContext *context) {
 
 CupError command_context_load_catalog(CommandContext *context) {
     TEST_ASSERT_NOT_NULL(context);
+    load_catalog_calls++;
     if (load_catalog_result == CUP_OK) {
         context->has_catalog = 1;
     }
     return load_catalog_result;
+}
+
+CupError catalog_refresh_existing(int *updated, CatalogRefreshDiagnostics diagnostics) {
+    catalog_refresh_diagnostics = diagnostics;
+    TEST_ASSERT_NOT_NULL(updated);
+    catalog_refresh_calls++;
+    *updated = 0;
+    return catalog_refresh_result;
 }
 
 CupError package_identity_from_selector(PackageIdentity *identity,
@@ -389,7 +435,7 @@ CupError package_catalog_is_stable(const PackageCatalog *catalog,
         if (strcmp(item->component, component) == 0 && strcmp(item->tool, tool) == 0 &&
             strcmp(item->host_platform, host_platform) == 0 &&
             strcmp(item->target_platform, target_platform) == 0 &&
-            strcmp(item->stable_version, version) == 0) {
+            strcmp(item->version, version) == 0 && item->stable) {
             *is_stable = 1;
             break;
         }
@@ -455,6 +501,22 @@ CupError package_request_parse(const char *component, const char *entry, Package
 
 int package_release_is_stable(const char *release) {
     return release != NULL && strcmp(release, "stable") == 0;
+}
+
+CupError package_release_compare(const char *left, const char *right, int *result) {
+    unsigned left_major, left_minor, right_major, right_minor;
+
+    if (left == NULL || right == NULL || result == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    if (sscanf(left, "%u.%u", &left_major, &left_minor) != 2 ||
+        sscanf(right, "%u.%u", &right_major, &right_minor) != 2) {
+        return CUP_ERR_INVALID_RELEASE;
+    }
+    *result = left_major != right_major ? (left_major < right_major ? -1 : 1)
+                                      : left_minor != right_minor ? (left_minor < right_minor ? -1 : 1)
+                                                                  : 0;
+    return CUP_OK;
 }
 
 CupError package_request_resolve(const PackageCatalog *catalog,
@@ -740,6 +802,50 @@ static void test_list_entries(void) {
     free(output);
 }
 
+static void test_default_and_inspect_catalog_policy(void) {
+    add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0");
+    add_info("package.component", "compiler");
+    add_info("package.tool", "clang");
+    add_info("package.version", "1.0");
+    add_info("platform.host", "linux-x64");
+    add_info("platform.target", "linux-x64");
+    add_info("entry.clang", "bin/clang");
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_default("compiler", "clang@1.0", NULL));
+    TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+
+    reset_scenario();
+    add_installed("compiler", "linux-x64", "linux-x64", "clang@2.0");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_default("compiler", "clang@stable", NULL));
+    TEST_ASSERT_EQUAL_INT(1, load_catalog_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+
+    reset_scenario();
+    add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0");
+    add_info("package.component", "compiler");
+    add_info("package.tool", "clang");
+    add_info("package.version", "1.0");
+    add_info("platform.host", "linux-x64");
+    add_info("platform.target", "linux-x64");
+    add_info("entry.clang", "bin/clang");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_inspect("compiler", "clang@1.0", NULL));
+    TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+
+    reset_scenario();
+    add_installed("compiler", "linux-x64", "linux-x64", "clang@2.0");
+    add_info("package.component", "compiler");
+    add_info("package.tool", "clang");
+    add_info("package.version", "2.0");
+    add_info("platform.host", "linux-x64");
+    add_info("platform.target", "linux-x64");
+    add_info("entry.clang", "bin/clang");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_inspect("compiler", "clang@stable", NULL));
+    TEST_ASSERT_EQUAL_INT(1, load_catalog_calls);
+    TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
+}
+
 static void test_default_flow(void) {
 
     add_installed("compiler", "linux-x64", "linux-x64", "clang@2.0");
@@ -815,9 +921,12 @@ static void test_search_catalog(void) {
 
     output = capture_result(run_search_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(1, catalog_refresh_calls);
+    TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_QUIET, catalog_refresh_diagnostics);
     TEST_ASSERT_NOT_NULL(strstr(output, "compiler:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "debugger:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "windows-x64: stable 2.0"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "linux-x64: stable 2.0; versions 2.0,1.0"));
     free(output);
 
     output = capture_result(run_search_target, &result);
@@ -946,6 +1055,14 @@ static void test_search_variants(void) {
     free(output);
 
     reset_scenario();
+    add_catalog_entry("compiler", "clang", "linux-x64", "linux-x64", "future-1", "future-1");
+    package_catalog_items[0].operational = 0;
+    output = capture_result(run_search_component, &result);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_NULL(strstr(output, "future-1"));
+    free(output);
+
+    reset_scenario();
     load_catalog_result = CUP_ERR_CATALOG;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_search(NULL, NULL));
 }
@@ -1020,6 +1137,7 @@ static void test_list_variants(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@1.0 [target linux-x64] (default)"));
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@2.0 [target linux-x64] (stable)"));
+    TEST_ASSERT_TRUE(strstr(output, "clang@2.0") < strstr(output, "clang@1.0"));
     TEST_ASSERT_NULL(strstr(output, "default, stable"));
     free(output);
 
@@ -1105,20 +1223,20 @@ static void test_inspect_setup(void) {
 }
 
 
-static void test_query_catalog_failure_is_explicit(void) {
+static void test_query_catalog_failure_degrades_to_local_data(void) {
     CupError result;
     char *output;
 
     load_catalog_result = CUP_ERR_CATALOG;
     output = capture_result(run_list_empty, &result);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, result);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "No packages installed"));
     free(output);
 
     reset_scenario();
     load_catalog_result = CUP_ERR_CATALOG;
     output = capture_result(run_info_all, &result);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, result);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "No defaults for host"));
     free(output);
 
@@ -1126,7 +1244,7 @@ static void test_query_catalog_failure_is_explicit(void) {
     add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0");
     load_catalog_result = CUP_ERR_CATALOG;
     output = capture_result(run_list_full, &result);
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, result);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@1.0"));
     free(output);
 }
@@ -1136,6 +1254,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_list_empty);
     RUN_TEST(test_list_entries);
+    RUN_TEST(test_default_and_inspect_catalog_policy);
     RUN_TEST(test_default_flow);
     RUN_TEST(test_info_states);
     RUN_TEST(test_search_catalog);
@@ -1147,7 +1266,7 @@ int main(void) {
     RUN_TEST(test_list_variants);
     RUN_TEST(test_default_errors);
     RUN_TEST(test_metadata_filters);
-    RUN_TEST(test_query_catalog_failure_is_explicit);
+    RUN_TEST(test_query_catalog_failure_degrades_to_local_data);
     RUN_TEST(test_inspect_setup);
     return UNITY_END();
 }

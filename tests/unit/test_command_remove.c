@@ -58,6 +58,7 @@ static int plan_build_calls;
 static int plan_apply_calls;
 static int interrupt_calls;
 static size_t installed_match_count;
+static int load_catalog_calls;
 
 static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
@@ -98,6 +99,7 @@ static void reset_scenario(void) {
     plan_apply_calls = 0;
     interrupt_calls = 0;
     installed_match_count = 0;
+    load_catalog_calls = 0;
 }
 
 void setUp(void) {
@@ -147,6 +149,17 @@ CupError text_copy_lower_ascii(char *destination, size_t size, const char *sourc
             destination[i] = (char)(destination[i] - 'A' + 'a');
         }
     }
+    return CUP_OK;
+}
+
+CupError package_release_compare(const char *left, const char *right, int *result) {
+    int compared;
+
+    if (left == NULL || right == NULL || result == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    compared = strcmp(left, right);
+    *result = compared < 0 ? -1 : compared > 0 ? 1 : 0;
     return CUP_OK;
 }
 
@@ -219,6 +232,10 @@ CupError command_context_begin(CommandContext *context,
 
 void command_context_end(CommandContext *context) {
     TEST_ASSERT_NOT_NULL(context);
+    free(context->state.installed);
+    context->state.installed = NULL;
+    context->state.installed_count = 0;
+    context->state.installed_capacity = 0;
     context_end_calls++;
 }
 
@@ -236,6 +253,11 @@ CupError command_context_load_state(CommandContext *context) {
     context->state_identity.kind = SYSTEM_PATH_REGULAR_FILE;
     context->state_identity.volume = 1;
     context->state_identity.object = 1;
+    if (installed_match_count > 0) {
+        context->state.installed = calloc(installed_match_count, sizeof(*context->state.installed));
+        TEST_ASSERT_NOT_NULL(context->state.installed);
+        context->state.installed_capacity = installed_match_count;
+    }
     for (i = 0; i < installed_match_count; ++i) {
         PackageIdentity *identity = &context->state.installed[i];
 
@@ -255,6 +277,7 @@ int package_release_is_stable(const char *release) {
 
 CupError command_context_load_catalog(CommandContext *context) {
     TEST_ASSERT_NOT_NULL(context);
+    load_catalog_calls++;
     if (load_catalog_result == CUP_OK) {
         context->has_catalog = 1;
     }
@@ -524,6 +547,7 @@ static void test_remove_prepare_fail(void) {
     stable_request = 1;
     load_catalog_result = CUP_ERR_CATALOG;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_CATALOG, command_remove("compiler", "clang@stable", NULL));
+    TEST_ASSERT_EQUAL_INT(1, load_catalog_calls);
 
     reset_scenario();
     resolve_result = CUP_ERR_NOT_AVAILABLE;
@@ -687,6 +711,7 @@ static void test_inferred_remove_selection(void) {
     reset_scenario();
     installed_match_count = 1;
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_remove("compiler", "clang", NULL));
+    TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
 
     reset_scenario();
     installed_match_count = 2;

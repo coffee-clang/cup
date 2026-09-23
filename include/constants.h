@@ -5,10 +5,9 @@
 
 /* Central capacities, transfer/archive limits, and canonical cup asset filenames. */
 
-/* Bounded state capacity: packages may keep multiple concrete versions, while defaults remain
- * one-per component/host/target scope. */
-#define MAX_INSTALLED 256
-#define MAX_STATE_DEFAULTS CUP_GLOBAL_SCOPE_COUNT
+/* Installed package history is dynamically represented. Defaults remain one-per
+ * component/target scope because the host belongs to the authenticated root. */
+#define MAX_STATE_DEFAULTS CUP_LOCAL_SCOPE_COUNT
 
 /* Generic buffer sizes. */
 #define MAX_IDENTIFIER_LEN 32
@@ -21,17 +20,17 @@
 #define MAX_PATH_LEN 1024
 
 /* State file. */
-#define CUP_STATE_FORMAT 1
+#define CUP_STATE_FORMAT 2
 #define MAX_STATE_LINE_LEN 256
-#define MAX_STATE_FILE_BYTES ((1u + MAX_INSTALLED + MAX_STATE_DEFAULTS) * MAX_STATE_LINE_LEN)
+#define MAX_STATE_FILE_BYTES MAX_PERSISTENT_METADATA_BYTES
 
 /* Persistent root identity and deterministic fallback. */
 #define CUP_PRIMARY_ROOT_DIRECTORY ".cup"
 #define CUP_FALLBACK_ROOT_DIRECTORY ".coffee-cup"
 #define CUP_ROOT_MARKER_FILENAME "root.txt"
-#define CUP_ROOT_MARKER_FORMAT 1
+#define CUP_ROOT_MARKER_FORMAT 2
 #define CUP_ROOT_MARKER_PRODUCT "coffee-clang/cup"
-#define CUP_ROOT_LAYOUT_FORMAT 1
+#define CUP_ROOT_LAYOUT_FORMAT 2
 
 /* Package catalog file. */
 #define CUP_PACKAGE_CATALOG_FORMAT 1
@@ -43,6 +42,7 @@
 /* Scoped install defaults, profiles, toolchains and local preferences. */
 #define MAX_INSTALL_POLICY_LINE_LEN 512
 #define MAX_INSTALL_DEFAULTS CUP_GLOBAL_SCOPE_COUNT
+#define MAX_TOOL_PREFERENCES CUP_LOCAL_SCOPE_COUNT
 #define MAX_INSTALL_PROFILES 8
 #define MAX_INSTALL_TOOLCHAINS 8
 #define MAX_INSTALL_LIST_ITEMS 16
@@ -68,22 +68,12 @@
 #define MAX_PACKAGE_PATH_TABLE_BYTES (256ULL * 1024ULL * 1024ULL)
 
 /* Canonical installed asset filenames. */
-#define CUP_PACKAGES_FILENAME "packages.cfg"
-#define CUP_INSTALL_POLICY_FILENAME "install.cfg"
+#define CUP_CATALOG_FILENAME "catalog.cfg"
 #define CUP_INSTALL_POSIX_FILENAME "install.sh"
 #define CUP_INSTALL_WINDOWS_FILENAME "install.ps1"
 #define CUP_PREFERENCES_FILENAME "preferences.txt"
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_MANIFEST_FILENAME "manifest.txt"
-#define CUP_COMMON_CHECKSUMS_FILENAME "SHA256SUMS.common"
-#define CUP_PLATFORM_CHECKSUMS_FILENAME_TEMPLATE "SHA256SUMS.%s"
-#define CUP_COMMON_CHECKSUM_ASSET_COUNT 4u
-#define CUP_PLATFORM_CHECKSUM_ASSET_COUNT 3u
-#define CUP_COMMON_CHECKSUM_ASSETS \
-    ((const char *const[]){CUP_PACKAGES_FILENAME, \
-                           CUP_INSTALL_POLICY_FILENAME, \
-                           CUP_INSTALL_POSIX_FILENAME, \
-                           CUP_INSTALL_WINDOWS_FILENAME})
 
 /* Official release locations. */
 #define CUP_RELEASE_LATEST_URL "https://github.com/coffee-clang/cup/releases/latest/download"
@@ -92,32 +82,17 @@
 #define CUP_RELEASE_METADATA_FILENAME "release.txt"
 
 /* Shared detached update/uninstall protocol names. */
+#define CUP_INSTALL_TEMP_PREFIX ".cup-install"
 #define CUP_UPDATE_TEMP_PREFIX "cup-update"
+#define CUP_UPDATE_NEW_DIRECTORY "new"
+#define CUP_UPDATE_OLD_DIRECTORY "old"
 #define CUP_UNINSTALL_TEMP_PREFIX ".cup-uninstall"
-#define CUP_UPDATE_JOURNAL_OPERATION "cup-update"
+#define CUP_UPDATE_JOURNAL_OPERATION "cup-generation"
 #define CUP_UNINSTALL_JOURNAL_OPERATION "uninstall"
 #define CUP_INTERNAL_UPDATE_HELPER_ARGUMENT "--internal-update-helper"
 #define CUP_INTERNAL_UNINSTALL_HELPER_ARGUMENT "--internal-uninstall-helper"
 
-/* cup update staging, backup, absence, and commit names. */
-#define CUP_UPDATE_BINARY_NEW "binary.new"
-#define CUP_UPDATE_PLATFORM_CHECKSUMS_NEW "platform-checksums.new"
-#define CUP_UPDATE_PACKAGES_NEW "package-catalog.new"
-#define CUP_UPDATE_INSTALL_POLICY_NEW "install-config.new"
-#define CUP_UPDATE_COMMON_CHECKSUMS_NEW "common-checksums.new"
-#define CUP_UPDATE_BINARY_OLD "binary.old"
-#define CUP_UPDATE_PLATFORM_CHECKSUMS_OLD "platform-checksums.old"
-#define CUP_UPDATE_PACKAGES_OLD "package-catalog.old"
-#define CUP_UPDATE_INSTALL_POLICY_OLD "install-config.old"
-#define CUP_UPDATE_COMMON_CHECKSUMS_OLD "common-checksums.old"
-#define CUP_UPDATE_BINARY_ABSENT "binary.absent"
-#define CUP_UPDATE_PLATFORM_CHECKSUMS_ABSENT "platform-checksums.absent"
-#define CUP_UPDATE_PACKAGES_ABSENT "package-catalog.absent"
-#define CUP_UPDATE_INSTALL_POLICY_ABSENT "install-config.absent"
-#define CUP_UPDATE_COMMON_CHECKSUMS_ABSENT "common-checksums.absent"
-#define CUP_UPDATE_COMMITTED "committed"
-
-/* Platform-specific executable and persistent update-helper name. */
+/* Platform-specific executable and derived update-helper name. */
 #if defined(_WIN32)
 #define CUP_BINARY_FILENAME "cup.exe"
 #define CUP_UPDATE_HELPER_FILENAME "update-helper.exe"
@@ -127,6 +102,5 @@
 #endif
 
 /* Development-only repository path. */
-#define CUP_DEVELOPMENT_INSTALL_POLICY_PATH "config/install.cfg"
 
 #endif /* CUP_CONSTANTS_H */

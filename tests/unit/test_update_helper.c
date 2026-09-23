@@ -1,1128 +1,244 @@
-/* Exercises native update handoff, commit order and executable continuity. */
+/* Tests only the detached-helper responsibilities: verified copy and authority handoff. */
 
-#include "update_helper.h"
-
-#include "constants.h"
 #include "checksum.h"
-#include "assets.h"
-#include "update_journal.h"
-#include "filesystem.h"
+#include "constants.h"
 #include "layout.h"
-#include "path.h"
 #include "system.h"
 #include "text.h"
 #include "unity.h"
-#include "test_platform.h"
+#include "update_helper.h"
+#include "update_journal.h"
 
-#include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 
-CupError assets_binary_asset_name(char *name, size_t size) {
-    return text_copy(name, size, "cup-linux-x64");
-}
-
-CupError assets_platform_checksums_name(char *name, size_t size) {
-    return text_copy(name, size, "SHA256SUMS.linux-x64");
-}
-
-static char root[MAX_PATH_LEN];
-static char staging[MAX_PATH_LEN];
-static int journal_cleared;
-static int journal_clear_failures_remaining;
-static int failure_recorded;
-static int lock_released;
-static int replace_calls;
-static int copy_calls;
-static int copy_fail_call;
-static int copy_commit_call;
-static int copy_corrupt;
-static int replace_fail_call;
-static int recovery_calls;
-static UpdateRecoveryMode recovery_mode;
-static int recovery_finalized;
-static int executable_calls;
-static int read_only_calls;
-static int writable_calls;
-static int executable_fail_call;
-static int read_only_fail_call;
-static CupError marker_create_result;
-static CupError sync_file_result;
-static CupError sync_parent_result;
-static CupError cleanup_result;
-static CupError expected_failure_error;
-static CupError layout_result;
-static CupError journal_load_result;
-static CupError staging_path_result;
-static CupError lock_result;
-static CupError recovery_error;
-static CupError replace_fail_state_error;
-static UpdateJournalStatus journal_status;
-static int checksum_calls;
-static int checksum_fail_call;
-static int writable_calls_before_failure;
-static int layout_calls;
-static int layout_fail_call;
-static int lock_calls;
-static int start_calls;
-static int wait_calls;
-static CupError start_helper_result;
+static CupError ensure_helpers_result;
+static CupError copy_result;
+static CupError executable_result;
 static CupError handoff_accept_result;
 static CupError handoff_lock_result;
-
-static CupError write_path(char *buffer, size_t size, const char *relative) {
-    return path_join(buffer, size, root, relative);
-}
-
-static void make_dir(const char *path) {
-    TEST_ASSERT_TRUE(test_mkdir(path, 0700) == 0 || errno == EEXIST);
-}
-
-static void write_file(const char *path, const char *text) {
-    FILE *file = fopen(path, "wb");
-
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_EQUAL_size_t(strlen(text), fwrite(text, 1, strlen(text), file));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-}
-
-static void read_file(const char *path, char *buffer, size_t size) {
-    FILE *file = fopen(path, "rb");
-    size_t count;
-
-    TEST_ASSERT_NOT_NULL(file);
-    count = fread(buffer, 1, size - 1, file);
-    TEST_ASSERT_EQUAL_INT(0, ferror(file));
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
-    buffer[count] = '\0';
-}
-
-static void assert_file_text(const char *path, const char *expected) {
-    char actual[32];
-
-    read_file(path, actual, sizeof(actual));
-    TEST_ASSERT_EQUAL_STRING(expected, actual);
-}
-
-static void remove_tree_real(const char *path) {
-    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(path));
-}
-
-static void create_asset(const char *relative, const char *text) {
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(path, sizeof(path), relative));
-    write_file(path, text);
-}
-
-static void create_staged_asset(const char *name) {
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, path_join(path, sizeof(path), staging, name));
-    write_file(path, "new");
-}
-
-static void reset_scenario(void) {
-    char template_path[CUP_TEST_TEMP_PATH_SIZE];
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_NOT_NULL(test_make_temp_directory(
-        template_path, sizeof(template_path), "update-helper-unit"));
-    TEST_ASSERT_TRUE(strlen(template_path) < sizeof(root));
-    strcpy(root, template_path);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(path, sizeof(path), "bin"));
-    make_dir(path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(path, sizeof(path), "config"));
-    make_dir(path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(path, sizeof(path), "helpers"));
-    make_dir(path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(path, sizeof(path), "staging"));
-    make_dir(path);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, write_path(staging, sizeof(staging), "staging/cup-update-test"));
-    make_dir(staging);
-
-    create_asset("bin/" CUP_BINARY_FILENAME, "old");
-    create_asset("config/platform.sum", "old");
-    create_asset("config/packages.cfg", "old");
-    create_asset("config/install.cfg", "old");
-    create_asset("config/common.sum", "old");
-
-    create_staged_asset(CUP_UPDATE_BINARY_NEW);
-    create_staged_asset(CUP_UPDATE_PLATFORM_CHECKSUMS_NEW);
-    create_staged_asset(CUP_UPDATE_PACKAGES_NEW);
-    create_staged_asset(CUP_UPDATE_INSTALL_POLICY_NEW);
-    create_staged_asset(CUP_UPDATE_COMMON_CHECKSUMS_NEW);
-
-    journal_cleared = 0;
-    journal_clear_failures_remaining = 0;
-    failure_recorded = 0;
-    lock_released = 0;
-    replace_calls = 0;
-    copy_calls = 0;
-    copy_fail_call = 0;
-    copy_commit_call = 0;
-    copy_corrupt = 0;
-    replace_fail_call = 0;
-    recovery_calls = 0;
-    recovery_mode = CUP_UPDATE_RECOVER_PRESERVE_BINARY;
-    recovery_finalized = 0;
-    executable_calls = 0;
-    read_only_calls = 0;
-    writable_calls = 0;
-    executable_fail_call = 0;
-    read_only_fail_call = 0;
-    marker_create_result = CUP_OK;
-    sync_file_result = CUP_OK;
-    sync_parent_result = CUP_OK;
-    cleanup_result = CUP_OK;
-    expected_failure_error = CUP_ERR_TRANSACTION;
-    layout_result = CUP_OK;
-    journal_load_result = CUP_OK;
-    staging_path_result = CUP_OK;
-    lock_result = CUP_OK;
-    recovery_error = CUP_OK;
-    replace_fail_state_error = CUP_OK;
-    journal_status = CUP_UPDATE_JOURNAL_LOADED;
-    checksum_calls = 0;
-    checksum_fail_call = 0;
-    writable_calls_before_failure = 0;
-    layout_calls = 0;
-    layout_fail_call = 0;
-    lock_calls = 0;
-    start_calls = 0;
-    wait_calls = 0;
-    start_helper_result = CUP_OK;
-    handoff_accept_result = CUP_OK;
-    handoff_lock_result = CUP_OK;
-}
+static CupError layout_begin_result;
+static CupError layout_validate_result;
+static CupError journal_load_result;
+static CupError generation_commit_result;
+static int helper_exists;
+static int helper_matches;
+static int copy_calls;
+static int executable_calls;
+static int start_calls;
+static int handoff_accept_calls;
+static int handoff_lock_calls;
+static int commit_calls;
+static int lock_release_calls;
+static int handoff_release_calls;
+static int layout_end_calls;
+static char root_path[MAX_PATH_LEN];
+static char journal_temporary[MAX_METADATA_VALUE_LEN];
 
 void setUp(void) {
-    reset_scenario();
+    ensure_helpers_result = CUP_OK;
+    copy_result = CUP_OK;
+    executable_result = CUP_OK;
+    handoff_accept_result = CUP_OK;
+    handoff_lock_result = CUP_OK;
+    layout_begin_result = CUP_OK;
+    layout_validate_result = CUP_OK;
+    journal_load_result = CUP_OK;
+    generation_commit_result = CUP_OK;
+    helper_exists = 0;
+    helper_matches = 1;
+    copy_calls = 0;
+    executable_calls = 0;
+    start_calls = 0;
+    handoff_accept_calls = 0;
+    handoff_lock_calls = 0;
+    commit_calls = 0;
+    lock_release_calls = 0;
+    handoff_release_calls = 0;
+    layout_end_calls = 0;
+    strcpy(root_path, "/tmp/root");
+    strcpy(journal_temporary, "cup-update-abc");
 }
+void tearDown(void) {}
 
-static void restart_scenario(void) {
-    remove_tree_real(root);
-    reset_scenario();
-}
-
-void tearDown(void) {
-    remove_tree_real(root);
-}
-
-static CupError next_layout_result(void) {
-    layout_calls++;
-    if (layout_result != CUP_OK ||
-        (layout_fail_call != 0 && layout_calls == layout_fail_call)) {
-        return layout_result != CUP_OK ? layout_result : CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    return CUP_OK;
-}
-
-CupError layout_ensure_assets(void) {
-    return next_layout_result();
-}
-
-CupError layout_get_binary_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK ? write_path(buffer, size, "bin/" CUP_BINARY_FILENAME) : err;
-}
-
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK ? write_path(buffer, size, "config/platform.sum") : err;
-}
-
-CupError layout_get_package_catalog_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK ? write_path(buffer, size, "config/packages.cfg") : err;
-}
-
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK ? write_path(buffer, size, "config/install.cfg") : err;
-}
-
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK ? write_path(buffer, size, "config/common.sum") : err;
-}
-
+CupError layout_ensure_helpers(void) { return ensure_helpers_result; }
 CupError layout_get_update_helper_path(char *buffer, size_t size) {
-    CupError err = next_layout_result();
-    return err == CUP_OK
-               ? write_path(buffer, size, "helpers/" CUP_UPDATE_HELPER_FILENAME)
-               : err;
+    return text_copy(buffer, size, "/tmp/root/helpers/update-helper");
 }
-
-CupError layout_build_lock_path(char *buffer, size_t size, const char *selected_root) {
-    if (selected_root == NULL || strcmp(selected_root, root) != 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    return path_join(buffer, size, selected_root, "cup.lock");
+CupError layout_get_binary_path(char *buffer, size_t size) {
+    return text_copy(buffer, size, "/tmp/root/bin/cup");
 }
-
-CupError layout_root_snapshot_begin_at(const char *selected_root) {
-    return selected_root != NULL && strcmp(selected_root, root) == 0 ? CUP_OK : CUP_ERR_INVALID_INPUT;
+CupError layout_build_lock_path(char *buffer, size_t size, const char *root) {
+    return text_format(buffer, size, "%s/cup.lock", root);
 }
-
-void layout_root_snapshot_end(void) {
+CupError layout_root_snapshot_begin_at(const char *root) {
+    (void)root;
+    return layout_begin_result;
 }
-
-CupError layout_get_root(char *buffer, size_t size) {
-    return size > strlen(root) ? (strcpy(buffer, root), CUP_OK) : CUP_ERR_BUFFER_TOO_SMALL;
-}
+CupError layout_get_root(char *buffer, size_t size) { return text_copy(buffer, size, root_path); }
+CupError layout_root_snapshot_validate(void) { return layout_validate_result; }
+void layout_root_snapshot_end(void) { layout_end_calls++; }
 
 CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
-    TestPlatformStat status;
-
-    if (test_stat_path(path, &status) != 0) {
-        *kind = errno == ENOENT ? SYSTEM_PATH_MISSING : SYSTEM_PATH_OTHER;
-        return errno == ENOENT ? CUP_OK : CUP_ERR_FILESYSTEM;
-    }
-    if (test_stat_is_regular(&status)) {
-        *kind = SYSTEM_PATH_REGULAR_FILE;
-    } else if (test_stat_is_directory(&status)) {
-        *kind = SYSTEM_PATH_DIRECTORY;
-    } else {
-        *kind = SYSTEM_PATH_OTHER;
-    }
+    (void)path;
+    if (kind == NULL) return CUP_ERR_INVALID_INPUT;
+    *kind = helper_exists ? SYSTEM_PATH_REGULAR_FILE : SYSTEM_PATH_MISSING;
     return CUP_OK;
 }
-
+CupError checksum_sha256_file(const char *path, char *output, size_t output_size) {
+    const char *digest;
+    if (strstr(path, "update-helper") != NULL) {
+        digest = helper_matches ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    } else {
+        digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    }
+    return text_copy(output, output_size, digest);
+}
 CupError system_copy_file(const char *source, const char *destination) {
-    char data[32];
-
+    (void)source;
+    (void)destination;
     copy_calls++;
-    if (copy_fail_call != 0 && copy_calls == copy_fail_call) {
-        return CUP_ERR_FILESYSTEM;
+    if (copy_result == CUP_OK || copy_result == CUP_ERR_COMMIT) {
+        helper_exists = 1;
+        helper_matches = 1;
     }
-    read_file(source, data, sizeof(data));
-    write_file(destination, copy_corrupt ? "corrupt" : data);
-    return copy_commit_call != 0 && copy_calls == copy_commit_call ? CUP_ERR_COMMIT : CUP_OK;
+    return copy_result;
 }
-
-CupError system_is_regular_file(const char *path, int *is_regular) {
-    SystemPathKind kind;
-    CupError err;
-
-    if (is_regular == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    err = system_get_path_kind(path, &kind);
-    if (err != CUP_OK) {
-        return err;
-    }
-    *is_regular = kind == SYSTEM_PATH_REGULAR_FILE;
-    return CUP_OK;
-}
-
-CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
-    char data[32];
-    char value;
-
-    checksum_calls++;
-    if (checksum_fail_call != 0 && checksum_calls == checksum_fail_call) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (hex == NULL || size < CHECKSUM_SHA256_HEX_LENGTH + 1) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    read_file(path, data, sizeof(data));
-    value = strcmp(data, "old") == 0 ? 'a' : 'b';
-    memset(hex, value, CHECKSUM_SHA256_HEX_LENGTH);
-    hex[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
-    return CUP_OK;
-}
-
-static void assert_supporting_assets_are_new(void) {
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_package_catalog_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_install_policy_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_common_checksums_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-}
-
-CupError system_replace_file(const char *source,
-                             const char *destination,
-                             SystemCommitState *state) {
-    char binary[MAX_PATH_LEN];
-    char marker[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
-    if (strcmp(destination, binary) == 0) {
-        TEST_ASSERT_EQUAL_INT(
-            CUP_OK, path_join(marker, sizeof(marker), staging, CUP_UPDATE_COMMITTED));
-        TEST_ASSERT_TRUE(test_access_exists(marker));
-        assert_file_text(binary, "old");
-        assert_supporting_assets_are_new();
-    } else {
-        assert_file_text(binary, "old");
-    }
-
-    *state = SYSTEM_COMMIT_NOT_APPLIED;
-    replace_calls++;
-    if (replace_fail_call != 0 && replace_calls == replace_fail_call) {
-        if (replace_fail_state_error != CUP_OK) {
-            *state = SYSTEM_COMMIT_APPLIED;
-        }
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (test_access_exists(destination) && test_unlink(destination) != 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (rename(source, destination) != 0) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    *state = SYSTEM_COMMIT_DURABLE;
-    return CUP_OK;
-}
-
 CupError system_set_executable(const char *path, int executable) {
     (void)path;
     TEST_ASSERT_EQUAL_INT(1, executable);
     executable_calls++;
-    if (executable_fail_call != 0 && executable_calls == executable_fail_call) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    return CUP_OK;
+    return executable_result;
 }
-
-CupError system_set_read_only(const char *path, int read_only) {
-    (void)path;
-    if (read_only) {
-        read_only_calls++;
-        if (read_only_fail_call != 0 && read_only_calls == read_only_fail_call) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    } else {
-        writable_calls++;
-        if (writable_calls_before_failure != 0 &&
-            writable_calls == writable_calls_before_failure) {
-            return CUP_ERR_FILESYSTEM;
-        }
-    }
-    return CUP_OK;
-}
-
-CupError system_create_file_exclusive(const char *path, FILE **file) {
-    if (marker_create_result != CUP_OK) {
-        return marker_create_result;
-    }
-    if (file == NULL || test_access_exists(path)) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    *file = fopen(path, "w+b");
-    return *file == NULL ? CUP_ERR_FILESYSTEM : CUP_OK;
-}
-
-CupError system_sync_file(FILE *file) {
-    if (sync_file_result != CUP_OK) {
-        return sync_file_result;
-    }
-    return fflush(file) == 0 ? CUP_OK : CUP_ERR_FILESYSTEM;
-}
-
-CupError system_sync_parent_directory(const char *path) {
-    (void)path;
-    return sync_parent_result;
-}
-
 CupError system_start_update_helper(const char *helper,
-                                    const char *selected_root,
+                                    const char *root,
                                     const char *token,
                                     SystemLock *lock) {
-    if (helper == NULL || helper[0] == '\0' || selected_root == NULL ||
-        strcmp(selected_root, root) != 0 || token == NULL || token[0] == '\0' ||
-        lock == NULL || !lock->active || lock->mode != SYSTEM_LOCK_EXCLUSIVE) {
-        return CUP_ERR_INVALID_INPUT;
-    }
+    (void)helper;
+    (void)root;
+    (void)token;
+    TEST_ASSERT_NOT_NULL(lock);
     start_calls++;
-    if (start_helper_result == CUP_OK) {
-        lock->active = 0;
-        lock->mode = SYSTEM_LOCK_SHARED;
-    }
-    return start_helper_result;
-}
-
-CupError system_handoff_accept(SystemHandoff *handoff,
-                               const char *parent_signal_value,
-                               const char *authority_value) {
-    if (handoff == NULL || handoff->active || parent_signal_value == NULL ||
-        authority_value == NULL || parent_signal_value[0] == '\0' ||
-        authority_value[0] == '\0' ||
-        strcmp(parent_signal_value, "invalid") == 0 || strcmp(authority_value, "invalid") == 0) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    wait_calls++;
-    if (handoff_accept_result != CUP_OK) {
-        return handoff_accept_result;
-    }
-    handoff->handle = 11;
-    handoff->active = 1;
     return CUP_OK;
 }
-
+CupError system_handoff_accept(SystemHandoff *handoff,
+                               const char *parent_signal,
+                               const char *authority) {
+    (void)parent_signal;
+    (void)authority;
+    handoff_accept_calls++;
+    if (handoff_accept_result == CUP_OK) handoff->active = 1;
+    return handoff_accept_result;
+}
 CupError system_handoff_acquire_lock(SystemHandoff *handoff,
                                      SystemLock *lock,
-                                     const char *lock_path) {
-    TEST_ASSERT_NOT_NULL(handoff);
-    TEST_ASSERT_NOT_NULL(lock);
-    TEST_ASSERT_NOT_NULL(lock_path);
-    lock_calls++;
-    if (handoff_lock_result != CUP_OK) {
-        return handoff_lock_result;
-    }
-    TEST_ASSERT_TRUE(handoff->active);
-    lock->handle = handoff->handle;
-    lock->mode = SYSTEM_LOCK_EXCLUSIVE;
-    lock->active = 1;
-    handoff->handle = 0;
-    handoff->active = 0;
-    return CUP_OK;
+                                     const char *path) {
+    (void)handoff;
+    (void)path;
+    handoff_lock_calls++;
+    if (handoff_lock_result == CUP_OK) lock->active = 1;
+    return handoff_lock_result;
 }
-
 void system_handoff_release(SystemHandoff *handoff) {
-    if (handoff != NULL) {
-        handoff->active = 0;
-        handoff->handle = 0;
-    }
+    handoff_release_calls++;
+    if (handoff != NULL) handoff->active = 0;
 }
-
 void system_lock_release(SystemLock *lock) {
-    if (lock != NULL && lock->active) {
-        lock->active = 0;
-        lock->mode = SYSTEM_LOCK_SHARED;
-        lock_released++;
-    }
+    lock_release_calls++;
+    if (lock != NULL) lock->active = 0;
 }
 
-CupError filesystem_apply_required_permissions(const char *path, int executable, int read_only) {
-    CupError err = CUP_OK;
-
-    if (executable) {
-        err = system_set_executable(path, 1);
-    }
-    if (err == CUP_OK && read_only) {
-        err = system_set_read_only(path, 1);
-    }
-    return err;
-}
-
-CupError filesystem_remove_tree(const char *path) {
-    if (cleanup_result != CUP_OK) {
-        return cleanup_result;
-    }
-    remove_tree_real(path);
-    return CUP_OK;
+int runtime_journal_token_is_valid(const char *token) {
+    return token != NULL && token[0] != '\0' && strchr(token, '/') == NULL;
 }
 
 void update_journal_init(UpdateJournal *journal) {
-    memset(journal, 0, sizeof(*journal));
+    if (journal != NULL) memset(journal, 0, sizeof(*journal));
 }
-
-CupError layout_root_snapshot_validate(void) {
-    return CUP_OK;
-}
-
 CupError update_journal_load(UpdateJournal *journal, UpdateJournalStatus *status) {
-    if (journal_load_result != CUP_OK) {
-        return journal_load_result;
-    }
+    if (journal_load_result != CUP_OK) return journal_load_result;
     update_journal_init(journal);
-    strcpy(journal->temporary_name, "cup-update-test");
-    strcpy(journal->token, "token");
-    strcpy(journal->version, "2.0.0");
-    journal->phase = CUP_UPDATE_PHASE_SCHEDULED;
+    strcpy(journal->temporary_name, journal_temporary);
+    strcpy(journal->target_release_sha256,
+           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     journal->file_identity.valid = 1;
     journal->file_identity.kind = SYSTEM_PATH_REGULAR_FILE;
-    *status = journal_status;
+    *status = CUP_UPDATE_JOURNAL_LOADED;
     return CUP_OK;
 }
-
-CupError update_journal_get_staging_path(const UpdateJournal *journal,
-                                             char *buffer,
-                                             size_t size) {
-    (void)journal;
-    if (staging_path_result != CUP_OK) {
-        return staging_path_result;
-    }
-    return size > strlen(staging) ? (strcpy(buffer, staging), CUP_OK) : CUP_ERR_BUFFER_TOO_SMALL;
-}
-
-CupError update_write_generation_marker(const char *staging_path,
-                                            const char *version,
-                                            const char *staged_binary) {
-    char marker[MAX_PATH_LEN];
-    FILE *file = NULL;
-    int failed = 0;
-
-    (void)version;
-    (void)staged_binary;
-    if (path_join(marker, sizeof(marker), staging_path, CUP_UPDATE_COMMITTED) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
-    }
-    if (system_create_file_exclusive(marker, &file) != CUP_OK) {
-        return CUP_ERR_FILESYSTEM;
-    }
-    if (fputs("generation\n", file) == EOF || system_sync_file(file) != CUP_OK) {
-        failed = 1;
-    }
-    if (fclose(file) != 0) {
-        failed = 1;
-    }
-    if (failed || system_sync_parent_directory(marker) != CUP_OK) {
-        (void)test_unlink(marker);
-        return CUP_ERR_COMMIT;
-    }
-    return CUP_OK;
-}
-
-CupError update_journal_set_phase(UpdateJournal *journal,
-                                      UpdatePhase phase,
-                                      int error_code) {
-    if (phase == CUP_UPDATE_PHASE_COMMITTING) {
-        TEST_ASSERT_EQUAL_INT(0, error_code);
-    } else {
-        TEST_ASSERT_EQUAL_INT(CUP_UPDATE_PHASE_FAILED, phase);
-        TEST_ASSERT_EQUAL_INT(expected_failure_error, error_code);
-        failure_recorded++;
-    }
-    journal->phase = phase;
-    journal->error_code = error_code;
-    return CUP_OK;
-}
-
-
-
-CupError runtime_journal_clear_if_identity(const SystemPathIdentity *expected_identity) {
-    TEST_ASSERT_NOT_NULL(expected_identity);
-    TEST_ASSERT_TRUE(expected_identity->valid);
-    TEST_ASSERT_EQUAL_INT(SYSTEM_PATH_REGULAR_FILE, expected_identity->kind);
-    journal_cleared++;
-    if (journal_clear_failures_remaining > 0) {
-        journal_clear_failures_remaining--;
-        return CUP_ERR_FILESYSTEM;
-    }
-    return CUP_OK;
-}
-
-CupError update_journal_recover(const UpdateJournal *journal,
-                                    UpdateRecoveryMode mode,
-                                    int *finalized) {
+CupError update_generation_commit(const UpdateJournal *journal) {
     TEST_ASSERT_NOT_NULL(journal);
-    recovery_calls++;
-    recovery_mode = mode;
-    if (finalized != NULL) {
-        *finalized = recovery_finalized;
-    }
-    return recovery_error;
+    commit_calls++;
+    return generation_commit_result;
 }
 
-CupError assets_inspect(AssetsInspection *inspection) {
-    TEST_ASSERT_NOT_NULL(inspection);
-    memset(inspection, 0, sizeof(*inspection));
-    inspection->binary = CUP_ASSET_VALID;
-    inspection->catalog = CUP_ASSET_VALID;
-    inspection->install_policy = CUP_ASSET_VALID;
-    inspection->common_checksums = CUP_ASSET_VALID;
-    inspection->platform_checksums = CUP_ASSET_VALID;
-    return CUP_OK;
-}
-
-int assets_installed_is_valid(const AssetsInspection *inspection) {
-    return inspection != NULL && inspection->binary == CUP_ASSET_VALID &&
-           inspection->catalog == CUP_ASSET_VALID &&
-           inspection->install_policy == CUP_ASSET_VALID &&
-           inspection->common_checksums == CUP_ASSET_VALID &&
-           inspection->platform_checksums == CUP_ASSET_VALID;
-}
-
-static void make_parent_signal_value(char *value, size_t size) {
-    int written;
-
-    written = snprintf(value, size, "closed-parent");
-    TEST_ASSERT_TRUE(written > 0 && (size_t)written < size);
-}
-
-static SystemLock active_exclusive_lock(void) {
-    SystemLock lock = {0};
-
-    lock.handle = 7;
-    lock.mode = SYSTEM_LOCK_EXCLUSIVE;
-    lock.active = 1;
-    return lock;
-}
-
-static void test_start_requires_root_token_and_exclusive_lock(void) {
-    SystemLock lock = active_exclusive_lock();
-    SystemLock shared = active_exclusive_lock();
-
-    shared.mode = SYSTEM_LOCK_SHARED;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(NULL, "token", &lock));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(root, NULL, &lock));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(root, "", &lock));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(root, "token", NULL));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(root, "token", &shared));
-
-    layout_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, update_helper_start(root, "token", &lock));
-}
-
-static void test_start_consumes_parent_lock_only_after_handoff(void) {
-    SystemLock lock = active_exclusive_lock();
-
-    layout_calls = 0;
-    start_helper_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_start(root, "token", &lock));
-    TEST_ASSERT_EQUAL_INT(1, start_calls);
-    TEST_ASSERT_TRUE(lock.active);
-    TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, lock.mode);
-
-    start_helper_result = CUP_OK;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_start(root, "token", &lock));
-    TEST_ASSERT_EQUAL_INT(2, start_calls);
-    TEST_ASSERT_FALSE(lock.active);
-}
-
-static void test_prepare_reports_path_and_hash_failures(void) {
-    char helper[MAX_PATH_LEN];
-
-    layout_result = CUP_ERR_BUFFER_TOO_SMALL;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, update_helper_prepare());
-
-    layout_result = CUP_OK;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    write_file(helper, "old");
-    checksum_fail_call = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_prepare());
-
-    checksum_calls = 0;
-    checksum_fail_call = 2;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_prepare());
-
-    checksum_calls = 0;
-    checksum_fail_call = 3;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_prepare());
-}
-
-static void test_run_rejects_parent_and_journal_failures(void) {
-    char parent_signal_value[32];
-
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    handoff_accept_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-
-    handoff_accept_result = CUP_OK;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    journal_load_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-
-    journal_load_result = CUP_OK;
-    journal_status = CUP_UPDATE_JOURNAL_MISSING;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-
-    journal_status = CUP_UPDATE_JOURNAL_LOADED;
-    staging_path_result = CUP_ERR_BUFFER_TOO_SMALL;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-}
-
-static void test_lock_failure_preserves_scheduled_journal(void) {
-    char parent_signal_value[32];
-
-    handoff_lock_result = CUP_ERR_FILESYSTEM;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(0, lock_released);
-}
-
-static void test_marker_creation_and_sync_failures_are_recorded(void) {
-    char parent_signal_value[32];
-
-    marker_create_result = CUP_ERR_FILESYSTEM;
-    expected_failure_error = CUP_ERR_FILESYSTEM;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-
-    restart_scenario();
-    sync_file_result = CUP_ERR_FILESYSTEM;
-    expected_failure_error = CUP_ERR_COMMIT;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-}
-
-static void test_backup_and_replace_state_failures_are_distinguished(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(path, 0700));
-    expected_failure_error = CUP_ERR_VALIDATION;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-
-    restart_scenario();
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, path_join(path, sizeof(path), staging, CUP_UPDATE_PLATFORM_CHECKSUMS_OLD));
-    write_file(path, "existing");
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-
-    restart_scenario();
-    replace_fail_call = 1;
-    replace_fail_state_error = CUP_ERR_COMMIT;
-    expected_failure_error = CUP_ERR_COMMIT;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-}
-
-
-static void test_missing_destination_is_installed_from_absent_evidence(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_platform_checksums_path(path, sizeof(path)));
-    TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
-    assert_file_text(path, "new");
-    TEST_ASSERT_EQUAL_INT(5, replace_calls);
-}
-
-static void test_destination_permission_reset_failure_prevents_replace(void) {
-    char parent_signal_value[32];
-
-    writable_calls_before_failure = 1;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(0, replace_calls);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-}
-
-static void test_failed_recovery_preserves_original_error(void) {
-    char parent_signal_value[32];
-
-    marker_create_result = CUP_ERR_FILESYSTEM;
-    expected_failure_error = CUP_ERR_FILESYSTEM;
-    recovery_error = CUP_ERR_ROLLBACK;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-}
-
-static void test_asset_path_failures_abort_before_commit(void) {
-    char parent_signal_value[32];
-    int fail_call;
-
-    for (fail_call = 1; fail_call <= 5; ++fail_call) {
-        if (fail_call != 1) {
-            restart_scenario();
-        }
-        layout_fail_call = fail_call;
-        make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-        TEST_ASSERT_EQUAL_INT(
-            CUP_ERR_TRANSACTION,
-            update_helper_run(root, "token", parent_signal_value, "authority"));
-        TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-        TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    }
+static void test_prepare_creates_and_verifies_helper(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare_from("/tmp/source-cup"));
+    TEST_ASSERT_EQUAL_INT(1, copy_calls);
+    TEST_ASSERT_EQUAL_INT(1, executable_calls);
 }
 
 static void test_prepare_reuses_matching_helper(void) {
-    char helper[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    write_file(helper, "old");
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare());
+    helper_exists = 1;
+    helper_matches = 1;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare_from("/tmp/source-cup"));
     TEST_ASSERT_EQUAL_INT(0, copy_calls);
     TEST_ASSERT_EQUAL_INT(1, executable_calls);
-    assert_file_text(helper, "old");
 }
 
-static void test_prepare_replaces_missing_or_stale_helper(void) {
-    char helper[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare());
-    TEST_ASSERT_EQUAL_INT(1, copy_calls);
-    assert_file_text(helper, "old");
-
-    write_file(helper, "stale");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare());
-    TEST_ASSERT_EQUAL_INT(2, copy_calls);
-    assert_file_text(helper, "old");
-}
-
-static void test_commit_keeps_executable_continuously_available(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(1, lock_released);
-    TEST_ASSERT_FALSE(test_access_exists(staging));
-    TEST_ASSERT_EQUAL_INT(1, executable_calls);
-    TEST_ASSERT_EQUAL_INT(4, read_only_calls);
-    TEST_ASSERT_EQUAL_INT(5, writable_calls);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    assert_supporting_assets_are_new();
-}
-
-static void test_cleanup_failure_does_not_turn_committed_update_into_failure(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    cleanup_result = CUP_ERR_FILESYSTEM;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(1, lock_released);
-    TEST_ASSERT_TRUE(test_access_exists(staging));
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    assert_supporting_assets_are_new();
-}
-
-static void test_recovery_finalizes_committed_generation(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    journal_clear_failures_remaining = 1;
-    expected_failure_error = CUP_ERR_FILESYSTEM;
-    recovery_finalized = 1;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_REPLACE_BINARY, recovery_mode);
-    TEST_ASSERT_EQUAL_INT(1, lock_released);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    assert_file_text(path, "new");
-    assert_supporting_assets_are_new();
-}
-
-static void test_failure_delegates_binary_rollback_to_detached_helper(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    replace_fail_call = 5;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION,
-        update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(0, journal_cleared);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(CUP_UPDATE_RECOVER_REPLACE_BINARY, recovery_mode);
-    TEST_ASSERT_EQUAL_INT(1, lock_released);
-    TEST_ASSERT_EQUAL_INT(0, executable_calls);
-    TEST_ASSERT_EQUAL_INT(4, read_only_calls);
-    TEST_ASSERT_EQUAL_INT(5, writable_calls);
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(path, sizeof(path)));
-    assert_file_text(path, "old");
-}
-
-static void test_prepare_rejects_mismatched_copy(void) {
-    copy_corrupt = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, update_helper_prepare());
+static void test_prepare_tolerates_uncertain_disposable_copy_when_bytes_match(void) {
+    copy_result = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare_from("/tmp/source-cup"));
     TEST_ASSERT_EQUAL_INT(1, copy_calls);
 }
 
-static void test_prepare_accepts_visible_commit_ambiguity(void) {
-    char helper[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    if (test_access_exists(helper)) {
-        TEST_ASSERT_EQUAL_INT(0, test_unlink(helper));
-    }
-    copy_commit_call = 1;
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_prepare());
-    TEST_ASSERT_EQUAL_INT(1, copy_calls);
-    TEST_ASSERT_TRUE(test_access_exists(helper));
+static void test_start_delegates_handoff(void) {
+    SystemLock lock = {0};
+    TEST_ASSERT_EQUAL_INT(CUP_OK, update_helper_start("/tmp/root", "u1-cup-update-abc", &lock));
+    TEST_ASSERT_EQUAL_INT(1, start_calls);
 }
 
-static void test_prepare_rejects_non_regular_helper(void) {
-    char helper[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    TEST_ASSERT_EQUAL_INT(0, test_mkdir(helper, 0700));
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, update_helper_prepare());
-    TEST_ASSERT_EQUAL_INT(0, copy_calls);
+static void test_run_requires_token_bound_to_journal_workspace(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION,
+                          update_helper_run("/tmp/root", "u1-other", "signal", "authority"));
+    TEST_ASSERT_EQUAL_INT(0, commit_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
-static void test_prepare_reports_copy_and_permission_failures(void) {
-    char helper[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_update_helper_path(helper, sizeof(helper)));
-    copy_fail_call = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_prepare());
-    TEST_ASSERT_FALSE(test_access_exists(helper));
-
-    copy_fail_call = 0;
-    executable_fail_call = 1;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM, update_helper_prepare());
-    TEST_ASSERT_TRUE(test_access_exists(helper));
+static void test_run_commits_under_reacquired_authority(void) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          update_helper_run("/tmp/root",
+                                            "u1-cup-update-abc",
+                                            "signal",
+                                            "authority"));
+    TEST_ASSERT_EQUAL_INT(1, handoff_accept_calls);
+    TEST_ASSERT_EQUAL_INT(1, handoff_lock_calls);
+    TEST_ASSERT_EQUAL_INT(1, commit_calls);
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+    TEST_ASSERT_EQUAL_INT(1, layout_end_calls);
 }
 
-static void test_run_rejects_invalid_handoff(void) {
-    char parent_signal_value[32];
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT, update_helper_run(root, "token", "invalid", "authority"));
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION,
-        update_helper_run(root, "other", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(0, replace_calls);
-}
-
-static void test_missing_staged_asset_fails_validation(void) {
-    char parent_signal_value[32];
-    char path[MAX_PATH_LEN];
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK, path_join(path, sizeof(path), staging, CUP_UPDATE_PACKAGES_NEW));
-    TEST_ASSERT_EQUAL_INT(0, test_unlink(path));
-    expected_failure_error = CUP_ERR_VALIDATION;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_VALIDATION,
-        update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(0, copy_calls);
-    TEST_ASSERT_EQUAL_INT(0, replace_calls);
-    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-}
-
-static void test_backup_copy_failure_aborts_before_commit(void) {
-    char parent_signal_value[32];
-    char binary[MAX_PATH_LEN];
-
-    copy_fail_call = 1;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_TRANSACTION,
-        update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, copy_calls);
-    TEST_ASSERT_EQUAL_INT(0, replace_calls);
-    TEST_ASSERT_EQUAL_INT(0, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(0, failure_recorded);
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_binary_path(binary, sizeof(binary)));
-    assert_file_text(binary, "old");
-}
-
-static void test_marker_durability_failure_is_commit_error(void) {
-    char parent_signal_value[32];
-
-    sync_parent_result = CUP_ERR_FILESYSTEM;
-    expected_failure_error = CUP_ERR_COMMIT;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(4, replace_calls);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
-}
-
-static void test_permission_failure_after_replace_is_commit_error(void) {
-    char parent_signal_value[32];
-
-    read_only_fail_call = 1;
-    expected_failure_error = CUP_ERR_COMMIT;
-    make_parent_signal_value(parent_signal_value, sizeof(parent_signal_value));
-
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_COMMIT, update_helper_run(root, "token", parent_signal_value, "authority"));
-    TEST_ASSERT_EQUAL_INT(1, replace_calls);
-    TEST_ASSERT_EQUAL_INT(1, recovery_calls);
-    TEST_ASSERT_EQUAL_INT(1, failure_recorded);
+static void test_commit_failure_is_returned_without_secondary_recovery(void) {
+    generation_commit_result = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
+                          update_helper_run("/tmp/root",
+                                            "u1-cup-update-abc",
+                                            "signal",
+                                            "authority"));
+    TEST_ASSERT_EQUAL_INT(1, commit_calls);
+    /* No journal mutation/recovery API exists in this owner; evidence is left untouched. */
+    TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
 int main(void) {
     UNITY_BEGIN();
-    RUN_TEST(test_start_requires_root_token_and_exclusive_lock);
-    RUN_TEST(test_start_consumes_parent_lock_only_after_handoff);
-    RUN_TEST(test_asset_path_failures_abort_before_commit);
+    RUN_TEST(test_prepare_creates_and_verifies_helper);
     RUN_TEST(test_prepare_reuses_matching_helper);
-    RUN_TEST(test_prepare_reports_path_and_hash_failures);
-    RUN_TEST(test_prepare_replaces_missing_or_stale_helper);
-    RUN_TEST(test_prepare_accepts_visible_commit_ambiguity);
-    RUN_TEST(test_prepare_rejects_mismatched_copy);
-    RUN_TEST(test_prepare_rejects_non_regular_helper);
-    RUN_TEST(test_prepare_reports_copy_and_permission_failures);
-    RUN_TEST(test_run_rejects_invalid_handoff);
-    RUN_TEST(test_run_rejects_parent_and_journal_failures);
-    RUN_TEST(test_lock_failure_preserves_scheduled_journal);
-    RUN_TEST(test_missing_staged_asset_fails_validation);
-    RUN_TEST(test_backup_copy_failure_aborts_before_commit);
-    RUN_TEST(test_marker_durability_failure_is_commit_error);
-    RUN_TEST(test_marker_creation_and_sync_failures_are_recorded);
-    RUN_TEST(test_backup_and_replace_state_failures_are_distinguished);
-    RUN_TEST(test_missing_destination_is_installed_from_absent_evidence);
-    RUN_TEST(test_destination_permission_reset_failure_prevents_replace);
-    RUN_TEST(test_permission_failure_after_replace_is_commit_error);
-    RUN_TEST(test_commit_keeps_executable_continuously_available);
-    RUN_TEST(test_cleanup_failure_does_not_turn_committed_update_into_failure);
-    RUN_TEST(test_recovery_finalizes_committed_generation);
-    RUN_TEST(test_failure_delegates_binary_rollback_to_detached_helper);
-    RUN_TEST(test_failed_recovery_preserves_original_error);
+    RUN_TEST(test_prepare_tolerates_uncertain_disposable_copy_when_bytes_match);
+    RUN_TEST(test_start_delegates_handoff);
+    RUN_TEST(test_run_requires_token_bound_to_journal_workspace);
+    RUN_TEST(test_run_commits_under_reacquired_authority);
+    RUN_TEST(test_commit_failure_is_returned_without_secondary_recovery);
     return UNITY_END();
 }

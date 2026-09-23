@@ -21,6 +21,7 @@ typedef enum {
 
 CupError package_archive_parse_format(const char *value, PackageArchiveFormat *format);
 const char *package_archive_format_name(PackageArchiveFormat format);
+CupError package_archive_default_format(const char *host_platform, PackageArchiveFormat *format);
 
 /* Open one already owned stream with only cup-supported formats and filters enabled. */
 CupError package_archive_open_stream(struct archive **reader, FILE *file);

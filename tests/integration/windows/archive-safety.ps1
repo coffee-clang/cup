@@ -6,15 +6,14 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-
 function Assert-InstallRejected(
     [string]$Version,
-    [string]$ExpectedDiagnostic = ""
+    [string]$ExpectedDiagnostic = "",
+    [string[]]$ExtraArgs = @()
 ) {
-    $output = Invoke-Cup `
-        -CommandArgs @('install', 'compiler', "clang@$Version") `
-        -ExpectFailure
-    Assert-Contains $output 'Cached package is invalid; downloading it again...'
+    $arguments = @('install', 'compiler', "clang@$Version") + $ExtraArgs
+    $output = Invoke-Cup -CommandArgs $arguments -ExpectFailure
+    Assert-NotContains $output 'Cached package is invalid; downloading it again...'
     Assert-NotContains $output '==> Validating package...'
     if (-not [string]::IsNullOrEmpty($ExpectedDiagnostic)) {
         Assert-Contains $output $ExpectedDiagnostic
@@ -22,42 +21,16 @@ function Assert-InstallRejected(
     Assert-NotContains `
         (Invoke-Cup -CommandArgs @('list', 'compiler')) `
         "compiler:clang@$Version"
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     return $output
 }
 
 try {
-    Initialize-TestEnvironment -Name "archive-safety" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+    Initialize-TestEnvironment -Name 'archive-safety' -ExecutablePath $CupExecutablePath
 
-    $cupRoot = Join-Path $Script:CupTestHome ".cup"
-    # Invalid cached archives refresh through a bounded loopback target so this
-    # native integration never contacts the public release service.
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $updatedCatalog = foreach ($line in (Get-Content -LiteralPath $catalog)) {
-        if ($line.StartsWith(
-                "compiler.clang.windows-x64.windows-x64.url_template=",
-                [System.StringComparison]::Ordinal)) {
-            "compiler.clang.windows-x64.windows-x64.url_template=" +
-                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/" +
-                "clang-{version}-{host_platform}-{target_platform}.{format}"
-        } elseif ($line.StartsWith(
-                "compiler.clang.windows-x64.windows-x64.checksum_url_template=",
-                [System.StringComparison]::Ordinal)) {
-            "compiler.clang.windows-x64.windows-x64.checksum_url_template=" +
-                "https://127.0.0.1:1/{version}-{host_platform}-{target_platform}/SHA256SUMS"
-        } else {
-            $line
-        }
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $updatedCatalog
+    $cupRoot = Join-Path $Script:CupTestHome '.cup'
 
-    $caseVersion = "30.1.1"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $caseVersion `
-        -Mode "Prepend"
+    $caseVersion = '30.1.1'
     $casePackage = "clang-$caseVersion-windows-x64-windows-x64"
     [void](New-ZipPackageFixture `
         -Version $caseVersion `
@@ -66,30 +39,17 @@ try {
     [void](Assert-InstallRejected $caseVersion `
         'archive contains a duplicate, case-colliding, or path-type-colliding path')
 
-    $traversalVersion = "30.1.2"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $traversalVersion `
-        -Mode "Prepend"
+    $traversalVersion = '30.1.2'
     $traversalPackage = "clang-$traversalVersion-windows-x64-windows-x64"
     [void](New-ZipPackageFixture `
         -Version $traversalVersion `
         -ExtraPath "$traversalPackage/../escape.txt" `
         -ExtraContent "escape`n")
     [void](Assert-InstallRejected $traversalVersion 'archive contains an unsafe path')
-    $escapedPath = Join-Path $cupRoot (
-        "components\compiler\clang\windows-x64\windows-x64\escape.txt")
+    $escapedPath = Join-Path $cupRoot 'components\compiler\clang\windows-x64\escape.txt'
     Assert-PathMissing $escapedPath
 
-    $backslashVersion = "30.1.5"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $backslashVersion `
-        -Mode "Prepend"
+    $backslashVersion = '30.1.5'
     $backslashPackage = "clang-$backslashVersion-windows-x64-windows-x64"
     $backslashEntry = "$backslashPackage/bin\escape.cmd"
     [void](New-ZipPackageFixture `
@@ -99,57 +59,40 @@ try {
     [void](Assert-InstallRejected $backslashVersion `
         'archive contains multiple or unsafe top-level roots')
 
-    $mismatchVersion = "30.1.3"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $mismatchVersion `
-        -Mode "Prepend"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "default_format" `
-        -Value "tar.gz" `
-        -Mode "Replace"
+    $mismatchVersion = '30.1.3'
     $mismatchFixture = New-ZipPackageFixture -Version $mismatchVersion
-    $mismatchArchive = Join-Path (Split-Path -Parent $mismatchFixture.Archive) `
-        "$($mismatchFixture.PackageName).tar.gz"
-    Move-Item -LiteralPath $mismatchFixture.Archive -Destination $mismatchArchive
-    $mismatchHash = Get-Sha256Lower -Path $mismatchArchive
-    Write-Utf8NoBom -Path (Join-Path (Split-Path -Parent $mismatchArchive) "SHA256SUMS") -Lines @(
-        "$mismatchHash  $(Split-Path -Leaf $mismatchArchive)")
-    $mismatchOutput = Assert-InstallRejected $mismatchVersion `
-        "archive content does not match declared format 'tar.gz'"
-    Assert-Contains $mismatchOutput "failed to download"
+    Set-PackageCatalogArtifact `
+        -Tool 'clang' `
+        -Version $mismatchVersion `
+        -Format 'tar.gz' `
+        -Url "https://example.invalid/$($mismatchFixture.PackageName).tar.gz" `
+        -Sha256 $mismatchFixture.Sha256
+    [void](Assert-InstallRejected `
+        -Version $mismatchVersion `
+        -ExpectedDiagnostic "archive content does not match declared format 'tar.gz'" `
+        -ExtraArgs @('--format', 'tar.gz'))
 
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "default_format" `
-        -Value "zip" `
-        -Mode "Replace"
-    $invalidVersion = "30.1.4"
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value $invalidVersion `
-        -Mode "Prepend"
+    $invalidVersion = '30.1.4'
     $invalidPackage = "clang-$invalidVersion-windows-x64-windows-x64"
-    $invalidCache = Join-Path $cupRoot (
-        "cache\compiler\clang\windows-x64\windows-x64\$invalidVersion")
-    New-Item -ItemType Directory -Force -Path $invalidCache | Out-Null
-    $invalidArchive = Join-Path $invalidCache "$invalidPackage.zip"
-    Set-Content -LiteralPath $invalidArchive -Encoding ascii -Value "not a zip archive"
-    $invalidHash = Get-Sha256Lower -Path $invalidArchive
-    Write-Utf8NoBom -Path (Join-Path $invalidCache "SHA256SUMS") -Lines @(
-        "$invalidHash  $(Split-Path -Leaf $invalidArchive)")
-    $invalidOutput = Assert-InstallRejected $invalidVersion
-    Assert-Contains $invalidOutput "failed to download"
+    Ensure-FixtureRuntimeRoot
+    $invalidArtifact = Join-Path $Script:CupTestRoot "artifacts\$invalidPackage.zip"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $invalidArtifact) | Out-Null
+    [IO.File]::WriteAllText($invalidArtifact, 'not a zip archive', [Text.Encoding]::ASCII)
+    $invalidHash = Get-Sha256Lower -Path $invalidArtifact
+    $cacheRoot = Join-Path $cupRoot 'cache'
+    New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+    Copy-Item -LiteralPath $invalidArtifact -Destination (Join-Path $cacheRoot $invalidHash) -Force
+    Add-PackageCatalogRecord `
+        -Component 'compiler' `
+        -Tool 'clang' `
+        -Version $invalidVersion `
+        -Format 'zip' `
+        -Url "https://example.invalid/$invalidPackage.zip" `
+        -Sha256 $invalidHash
+    [void](Assert-InstallRejected $invalidVersion)
 
     Assert-CupHealthy
-    Write-Host "Windows archive safety tests passed."
+    Write-Host 'Windows archive safety tests passed.'
 } finally {
     Remove-TestEnvironment
 }

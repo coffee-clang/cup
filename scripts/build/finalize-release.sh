@@ -20,11 +20,10 @@ mode=${2:?mode is required}
 input=${3:?input binary is required}
 output_root=${4:?output root is required}
 build_config=${5:?build configuration metadata is required}
-release_metadata=${6:?release metadata is required}
-inspection_policy=${7:?inspection policy is required}
-inspector=${8:?binary inspector is required}
-path_leak_checker=${9:?path leak checker is required}
-shift 9
+inspection_policy=${6:?inspection policy is required}
+inspector=${7:?binary inspector is required}
+path_leak_checker=${8:?path leak checker is required}
+shift 8
 build_root=${CUP_BUILD_ROOT:?CUP_BUILD_ROOT is required}
 
 fail() {
@@ -43,8 +42,7 @@ if [ "$platform" = windows-x64 ]; then
     SOURCE_DATE_EPOCH=1
     export SOURCE_DATE_EPOCH
 fi
-for absolute_path in "$input" "$output_root" "$build_config" "$release_metadata" \
-        "$inspector" "$path_leak_checker"; do
+for absolute_path in "$input" "$output_root" "$build_config" "$inspector" "$path_leak_checker"; do
     case "$absolute_path" in
         /*|[A-Za-z]:/*) ;;
         *) fail "finalization path is not absolute: $absolute_path" ;;
@@ -57,7 +55,7 @@ cup_path_require_regular_file "$input" "input binary" ||
     fail "input is not a regular no-follow file: $input"
 [ -s "$input" ] || fail "input is empty: $input"
 [ -x "$input" ] || fail "input is not executable: $input"
-for metadata in "$build_config" "$release_metadata"; do
+for metadata in "$build_config"; do
     cup_path_require_within "$build_root" "$metadata" 'bundle metadata' ||
         fail "metadata is outside the managed build root: $metadata"
     cup_path_require_regular_file "$metadata" 'bundle metadata' ||
@@ -165,8 +163,6 @@ esac
 [ -s "$executable" ] && [ -x "$executable" ] || fail 'final executable is invalid'
 cup_path_copy_file "$build_config" "$staging/build-config.txt" 0644 replace ||
     fail 'could not stage build configuration metadata'
-cup_path_copy_file "$release_metadata" "$staging/release.txt" 0644 replace ||
-    fail 'could not stage release metadata'
 
 if [ "$mode" = release ]; then
     "$path_leak_checker" "$executable" "$@" ||

@@ -168,6 +168,10 @@ CupError command_info(const char *component, const char *target_override) {
         }
     }
     catalog_err = command_context_load_catalog(&context);
+    if (catalog_err != CUP_OK) {
+        fprintf(stderr,
+                "Warning: package catalog is unavailable; showing local defaults without stable annotations.\n");
+    }
 
     package_identity_sort(context.state.defaults, context.state.default_count);
     for (i = 0; i < context.state.default_count; ++i) {
@@ -180,13 +184,13 @@ CupError command_info(const char *component, const char *target_override) {
     }
     if (entry_count == 0) {
         print_empty_info(&context, component, target_override);
-        err = catalog_err;
+        err = CUP_OK;
         goto done;
     }
 
     print_info_heading(&context, component, target_override);
     invalid = print_info_entries(&context, component, target_override);
-    err = invalid ? CUP_ERR_INCONSISTENT_STATE : catalog_err;
+    err = invalid ? CUP_ERR_INCONSISTENT_STATE : CUP_OK;
 
 done:
     command_context_end(&context);

@@ -9,12 +9,10 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin wrappers
 prepare_command_environment
-run_cup repair >/dev/null
-
 make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
 make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
-run_cup install compiler clang@stable >/dev/null
-run_cup install debugger lldb@stable >/dev/null
+run_cup install compiler clang@23.1.0 >/dev/null
+run_cup install debugger lldb@23.1.0 >/dev/null
 
 assert_equals "$(run_native_wrapper clang)" \
     "clang-23.1.0-$TEST_PLATFORM:clang"
@@ -26,7 +24,7 @@ run_cup_expect_failure "$TMP_ROOT/info-altered.out" info
 assert_contains "$(cat "$TMP_ROOT/info-altered.out")" 'status: invalid'
 run_cup_expect_failure "$TMP_ROOT/doctor-altered.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-altered.out")" 'wrapper'
-run_cup repair >/dev/null
+run_cup default compiler clang@23.1.0 >/dev/null
 assert_equals "$(run_native_wrapper clang)" \
     "clang-23.1.0-$TEST_PLATFORM:clang"
 
@@ -35,19 +33,19 @@ printf '#!/bin/sh\nexit 0\n' > "$stale"
 chmod +x "$stale"
 run_cup_expect_failure "$TMP_ROOT/doctor-stale.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-stale.out")" 'stale or unmanaged wrapper'
-run_cup repair >/dev/null
+run_cup default compiler clang@23.1.0 >/dev/null
 assert_missing "$stale"
 
 make_package linker lld 23.1.0 "$TEST_PLATFORM" cup
 run_cup_expect_failure "$TMP_ROOT/reserved-entry.out" \
-    install linker lld@stable
+    install linker lld@23.1.0
 assert_contains "$(cat "$TMP_ROOT/reserved-entry.out")" 'conflicts with cup itself'
 assert_not_contains "$(run_cup list)" 'linker:lld@23.1.0'
 
 if [ "${TEST_PLATFORM%%-*}" = macos ]; then
     make_package formatter clang-format 23.1.0 "$TEST_PLATFORM" CLANG
     run_cup_expect_failure "$TMP_ROOT/case-collision.out" \
-        install formatter clang-format@stable
+        install formatter clang-format@23.1.0
     assert_contains "$(cat "$TMP_ROOT/case-collision.out")" \
         'declared by more than one default package'
 fi

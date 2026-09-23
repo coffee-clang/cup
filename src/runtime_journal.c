@@ -267,11 +267,10 @@ static CupError detect_journal_field(const char *key,
     }
 
     detection->operation_seen = 1;
-    if (strcmp(value, "install") == 0 || strcmp(value, "remove") == 0 ||
-        strcmp(value, "update") == 0) {
+    if (strcmp(value, "install") == 0 || strcmp(value, "remove") == 0) {
         detection->detected = RUNTIME_JOURNAL_PACKAGE;
     } else if (strcmp(value, CUP_UPDATE_JOURNAL_OPERATION) == 0) {
-        detection->detected = RUNTIME_JOURNAL_UPDATE;
+        detection->detected = RUNTIME_JOURNAL_GENERATION;
     } else if (strcmp(value, CUP_UNINSTALL_JOURNAL_OPERATION) == 0) {
         detection->detected = RUNTIME_JOURNAL_UNINSTALL;
     } else {
@@ -336,7 +335,7 @@ CupError runtime_journal_require_none(void) {
     if (kind == RUNTIME_JOURNAL_MISSING) {
         return CUP_OK;
     }
-    if (kind == RUNTIME_JOURNAL_UPDATE) {
+    if (kind == RUNTIME_JOURNAL_GENERATION) {
         fprintf(stderr,
                 "Error: a cup update is pending or failed; retry shortly or run 'cup repair'.\n");
     } else if (kind == RUNTIME_JOURNAL_UNINSTALL) {

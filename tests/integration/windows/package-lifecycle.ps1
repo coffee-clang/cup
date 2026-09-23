@@ -6,46 +6,62 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-function Initialize-LifecycleFixture {
-    Set-PackageCatalogField -Component "compiler" -Tool "clang" `
-        -Field "available_versions" -Value "22.1.5" -Mode "Prepend"
-    Set-PackageCatalogField -Component "debugger" -Tool "gdb" `
-        -Field "available_versions" -Value "17.1" -Mode "Prepend"
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
+$catalogServer = $null
 
+function Start-CatalogServer {
+    $helper = Get-TestHelperPath -Name 'network-helper'
+    $serverRoot = Join-Path $Script:CupTestRoot 'catalog-server'
+    $readyFile = Join-Path $Script:CupTestRoot 'catalog-server.ready'
+    $stdoutFile = Join-Path $Script:CupTestRoot 'catalog-server.stdout'
+    $stderrFile = Join-Path $Script:CupTestRoot 'catalog-server.stderr'
+    New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
+    $script:catalogServer = Start-TestHelperProcess -FilePath $helper `
+        -ArgumentList @('http-server', '--root', $serverRoot, '--port', '0', '--ready-file', $readyFile) `
+        -WorkingDirectory $Script:CupTestRoot `
+        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ($true) {
+        if ($script:catalogServer.HasExited) {
+            $errorText = if (Test-Path -LiteralPath $stderrFile) { Get-Content -LiteralPath $stderrFile -Raw } else { '' }
+            Fail-Test "catalog server exited before becoming ready`n$errorText"
+        }
+        if (Test-Path -LiteralPath $readyFile -PathType Leaf) {
+            $readyItem = Get-Item -LiteralPath $readyFile -ErrorAction SilentlyContinue
+            if ($null -ne $readyItem -and $readyItem.Length -gt 0) { break }
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { Fail-Test 'catalog server did not become ready' }
+        Start-Sleep -Milliseconds 50
+    }
+    $portText = (Get-Content -LiteralPath $readyFile -Raw).Trim()
+    $port = 0
+    if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+        Fail-Test "invalid catalog server port: $portText"
+    }
+    $url = "http://127.0.0.1:$port/catalog.cfg"
+    $catalogPath = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    $updated = foreach ($line in (Get-Content -LiteralPath $catalogPath)) {
+        if ($line.StartsWith('update_url=', [StringComparison]::Ordinal)) { "update_url=$url" } else { $line }
+    }
+    Write-Utf8NoBom -Path $catalogPath -Lines $updated
+    Copy-Item -LiteralPath $catalogPath -Destination (Join-Path $Script:CupTestHome '.cup\config\catalog.cfg') -Force
+    Copy-Item -LiteralPath $catalogPath -Destination (Join-Path $serverRoot 'catalog.cfg') -Force
+    $env:CUP_INSTALL_ALLOW_INSECURE = '1'
+    $env:NO_PROXY = '127.0.0.1'
+}
+
+function Initialize-LifecycleFixture {
     New-TestPackage -Component "compiler" -Tool "clang" -Version "22.1.5" `
         -Entries @("clang", "clang++")
     New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++")
     New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.1" -Entries @("gdb")
     New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.2" -Entries @("gdb")
-
-    $catalogPath = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $catalogLines = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Get-Content -LiteralPath $catalogPath)) {
-        $catalogLines.Add($line)
-    }
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.stable_version=23.1.0")
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.available_versions=23.1.0")
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.default_format=zip")
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.formats=zip")
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.url_template=" +
-        "https://example.invalid/clang-{version}-{host_platform}-{target_platform}.{format}")
-    $catalogLines.Add(
-        "compiler.clang.windows-x64.linux-x64.checksum_url_template=" +
-        "https://example.invalid/clang-{version}-{host_platform}-" +
-        "{target_platform}/SHA256SUMS")
-    Write-Utf8NoBom -Path $catalogPath -Lines $catalogLines
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
-
     New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++") -TargetPlatform "linux-x64"
+    Start-CatalogServer
 }
+
 
 function Test-InstallDefaults {
     $installed = Invoke-Cup -CommandArgs @("install", "clang@22.1.5")
@@ -135,14 +151,14 @@ function Test-CatalogViews {
 
 function Test-Updates {
     $componentUpdate = Invoke-Cup -CommandArgs @("update", "compiler")
-    Assert-Contains $componentUpdate "0 stable package(s) installed, 1 default(s) moved"
+    Assert-Contains $componentUpdate "0 package(s) installed, 1 default(s) moved"
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `
         "compiler [windows-x64]: clang@23.1.0 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") `
         "clang-23.1.0-windows-x64:clang"
 
     $globalUpdate = Invoke-Cup -CommandArgs @("update")
-    Assert-Contains $globalUpdate "1 stable package(s) installed, 1 default(s) moved"
+    Assert-Contains $globalUpdate "1 package(s) installed, 1 default(s) moved"
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "debugger")) `
         "debugger [windows-x64]: gdb@17.2 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "gdb") "gdb-17.2-windows-x64:gdb"
@@ -152,8 +168,6 @@ function Test-Updates {
     Assert-Contains $packageInfo "Package information for compiler clang@stable -> clang@23.1.0"
     Assert-Contains $packageInfo "component          compiler"
     Assert-Contains $packageInfo "version            23.1.0"
-    Assert-Contains $packageInfo "mode               self-contained"
-    Assert-Contains $packageInfo "formats            zip,tar.xz,tar.gz"
     Assert-Contains $packageInfo "Platform:"
     Assert-Contains $packageInfo "host triple        x86_64-w64-mingw32"
     Assert-Contains $packageInfo "Source/build:"
@@ -165,7 +179,7 @@ function Test-Updates {
         "compiler [windows-x64]: clang@22.1.5"
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@stable") | Out-Null
     Assert-Contains (Invoke-Cup -CommandArgs @("update", "clang")) `
-        "0 stable package(s) installed, 0 default(s) moved"
+        "0 package(s) installed, 0 default(s) moved"
 }
 
 function Test-RemoveDefaultWithoutPromotion {
@@ -177,15 +191,15 @@ function Test-RemoveDefaultWithoutPromotion {
     Assert-Contains $ambiguous (
         "cup remove compiler clang@<release> --target windows-x64")
     Assert-PathExists (Join-Path $Script:CupTestHome (
-        ".cup\components\compiler\clang\windows-x64\windows-x64\22.1.5\info.txt"))
+        ".cup\components\compiler\clang\windows-x64\22.1.5\info.txt"))
     Assert-PathExists (Join-Path $Script:CupTestHome (
-        ".cup\components\compiler\clang\windows-x64\windows-x64\23.1.0\info.txt"))
+        ".cup\components\compiler\clang\windows-x64\23.1.0\info.txt"))
 
     Invoke-Cup -CommandArgs @("remove", "compiler", "clang@stable") | Out-Null
     Assert-PathMissing (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\clang\windows-x64\windows-x64\23.1.0")
+        ".cup\components\compiler\clang\windows-x64\23.1.0")
     Assert-PathExists (Join-Path $Script:CupTestHome `
-        ".cup\components\compiler\clang\windows-x64\windows-x64\22.1.5\info.txt")
+        ".cup\components\compiler\clang\windows-x64\22.1.5\info.txt")
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\bin\clang.cmd")
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\bin\clang++.cmd")
     Assert-Contains (Invoke-Cup -CommandArgs @(
@@ -220,5 +234,9 @@ try {
     Test-RemoveDefaultWithoutPromotion
     Write-Host "Windows package lifecycle tests passed."
 } finally {
+    if ($null -ne $catalogServer) {
+        try { Stop-TestProcessTree -Process $catalogServer } catch { }
+        $catalogServer.Dispose()
+    }
     Remove-TestEnvironment
 }

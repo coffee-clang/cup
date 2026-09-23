@@ -2,8 +2,7 @@
 #define CUP_INSTALL_POLICY_H
 
 /*
- * Strict official scoped defaults, profiles and curated toolchains loaded from the immutable
- * install.cfg policy document.
+ * Official scoped defaults, profiles and curated toolchains compiled into this CUP generation.
  */
 
 #include <stddef.h>
@@ -36,8 +35,6 @@ typedef struct {
  * Query functions require a successfully loaded, unmodified model. */
 void install_policy_init(InstallPolicy *policy);
 CupError install_policy_load(InstallPolicy *policy);
-CupError install_policy_load_development(InstallPolicy *policy);
-CupError install_policy_load_path(InstallPolicy *policy, const char *path);
 
 /* Query immutable defaults and named plans after a successful load. */
 const InstallDefault *install_policy_find_default(const InstallPolicy *policy,

@@ -12,15 +12,11 @@ prepare_command_environment
 # Shared package fixture for scoped defaults and curated plans.
 component_root() {
     component=$1 tool=$2 version=$3
-    printf '%s/.cup/components/%s/%s/%s/%s/%s\n' \
-        "$TEST_HOME" "$component" "$tool" "$TEST_PLATFORM" \
-        "$TEST_PLATFORM" "$version"
+    printf '%s/.cup/components/%s/%s/%s/%s\n' \
+        "$TEST_HOME" "$component" "$tool" "$TEST_PLATFORM" "$version"
 }
 
 prepare_fixture() {
-    run_cup repair >/dev/null
-    package_catalog_ensure_package compiler gcc "$TEST_PLATFORM" \
-        16.2.0-rev1 tar.gz
     make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
     make_package compiler gcc 16.2.0-rev1 "$TEST_PLATFORM" gcc g++
     make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
@@ -30,6 +26,16 @@ prepare_fixture() {
     make_package formatter clang-format 23.1.0 "$TEST_PLATFORM" clang-format
     make_package linter clang-tidy 23.1.0 "$TEST_PLATFORM" clang-tidy
     make_package language-server clangd 23.1.0 "$TEST_PLATFORM" clangd
+
+    # Symbolic installs refresh best-effort once. Use a closed loopback endpoint so the
+    # failure is immediate and the already-complete local catalog remains authoritative.
+    catalog=$DEV_ROOT/config/catalog.cfg
+    temporary=$catalog.tmp
+    awk '/^update_url=/ { print "update_url=http://127.0.0.1:9/catalog.cfg"; next } { print }' \
+        "$catalog" > "$temporary"
+    mv "$temporary" "$catalog"
+    cp "$catalog" "$TEST_HOME/.cup/config/catalog.cfg"
+    export CUP_INSTALL_ALLOW_INSECURE=1 NO_PROXY=127.0.0.1 no_proxy=127.0.0.1
 }
 
 # Profile/default resolution and user preference scenarios.
@@ -68,22 +74,21 @@ test_scoped_preferences() {
     assert_contains "$(run_cup config set compiler gcc --target windows-x64)" \
         "Preferred tool for 'compiler' on target 'windows-x64' set to 'gcc'."
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        "preferred.$TEST_PLATFORM.$TEST_PLATFORM.compiler=gcc"
+        "preferred.$TEST_PLATFORM.compiler=gcc"
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        "preferred.$TEST_PLATFORM.windows-x64.compiler=gcc"
+        "preferred.windows-x64.compiler=gcc"
 
-    printf '# preserve on no-op reset\n' >> "$TEST_HOME/.cup/config/preferences.txt"
+    preferences_hash=$(hash_file "$TEST_HOME/.cup/config/preferences.txt")
     assert_contains "$(run_cup config reset debugger --target windows-x64)" \
         "No preference was set for 'debugger' on target 'windows-x64'."
-    assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        '# preserve on no-op reset'
+    assert_equals "$(hash_file "$TEST_HOME/.cup/config/preferences.txt")" "$preferences_hash"
 
     assert_contains "$(run_cup config reset compiler)" \
         "Preference for 'compiler' on target '$TEST_PLATFORM' was reset."
     assert_not_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        "preferred.$TEST_PLATFORM.$TEST_PLATFORM.compiler="
+        "preferred.$TEST_PLATFORM.compiler="
     assert_contains "$(cat "$TEST_HOME/.cup/config/preferences.txt")" \
-        "preferred.$TEST_PLATFORM.windows-x64.compiler=gcc"
+        "preferred.windows-x64.compiler=gcc"
 
     assert_contains "$(run_cup config reset --target windows-x64)" \
         "Reset 1 preference(s) for target 'windows-x64'."

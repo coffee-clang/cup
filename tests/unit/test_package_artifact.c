@@ -16,8 +16,7 @@ static const char DIGEST_A[] =
 static const char DIGEST_B[] =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-static int version_available;
-static int format_available;
+static int artifact_available;
 static CupError catalog_result;
 static CupError path_kind_result;
 static SystemPathKind path_kind;
@@ -54,7 +53,7 @@ static void make_spec(PackageArtifactSpec *spec) {
     make_identity(&spec->identity);
     spec->format = PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
     strcpy(spec->package_url, "https://example.invalid/gcc-15.2.0.tar.xz");
-    strcpy(spec->checksum_url, "https://example.invalid/SHA256SUMS");
+    strcpy(spec->artifact_sha256, DIGEST_A);
 }
 
 static FILE *make_open_file(void) {
@@ -67,8 +66,7 @@ static FILE *make_open_file(void) {
 }
 
 void setUp(void) {
-    version_available = 1;
-    format_available = 1;
+    artifact_available = 1;
     catalog_result = CUP_OK;
     path_kind_result = CUP_OK;
     path_kind = SYSTEM_PATH_REGULAR_FILE;
@@ -143,101 +141,46 @@ CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
                                                                  : CUP_ERR_BUFFER_TOO_SMALL;
 }
 
-CupError package_catalog_get_default_format(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    if (catalog_result != CUP_OK) {
-        return catalog_result;
+CupError package_archive_default_format(const char *host_platform, PackageArchiveFormat *format) {
+    if (host_platform == NULL || format == NULL) {
+        return CUP_ERR_INVALID_INPUT;
     }
-    return snprintf(buffer, size, "%s", "tar.xz") < (int)size ? CUP_OK
-                                                                 : CUP_ERR_BUFFER_TOO_SMALL;
-}
-
-CupError package_catalog_has_version(const PackageCatalog *catalog,
-                                     const char *component,
-                                     const char *tool,
-                                     const char *host_platform,
-                                     const char *target_platform,
-                                     const char *version,
-                                     int *is_available) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    (void)version;
-    if (catalog_result != CUP_OK) {
-        return catalog_result;
-    }
-    *is_available = version_available;
+    *format = PACKAGE_ARCHIVE_FORMAT_TAR_XZ;
     return CUP_OK;
 }
 
-CupError package_catalog_has_format(const PackageCatalog *catalog,
-                                    const char *component,
-                                    const char *tool,
-                                    const char *host_platform,
-                                    const char *target_platform,
-                                    const char *format,
-                                    int *is_supported) {
+const char *package_archive_format_name(PackageArchiveFormat format) {
+    return format == PACKAGE_ARCHIVE_FORMAT_TAR_XZ ? "tar.xz" : NULL;
+}
+
+CupError package_catalog_resolve_artifact(const PackageCatalog *catalog,
+                                          const char *component,
+                                          const char *tool,
+                                          const char *host_platform,
+                                          const char *target_platform,
+                                          const char *version,
+                                          const char *format,
+                                          char *url,
+                                          size_t url_size,
+                                          char *artifact_sha256,
+                                          size_t artifact_sha256_size) {
+    int written;
     (void)catalog;
     (void)component;
-    (void)tool;
     (void)host_platform;
     (void)target_platform;
-    (void)format;
     if (catalog_result != CUP_OK) {
         return catalog_result;
     }
-    *is_supported = format_available;
+    if (!artifact_available) {
+        return CUP_ERR_NOT_AVAILABLE;
+    }
+    written = snprintf(url, url_size, "https://example.invalid/%s-%s.%s", tool, version, format);
+    if (written < 0 || (size_t)written >= url_size || artifact_sha256_size < sizeof(DIGEST_A)) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    strcpy(artifact_sha256, DIGEST_A);
     return CUP_OK;
-}
-
-CupError package_catalog_build_url(const PackageCatalog *catalog,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *component,
-                                   const char *tool,
-                                   const char *host_platform,
-                                   const char *target_platform,
-                                   const char *version,
-                                   const char *format) {
-    (void)catalog;
-    (void)component;
-    (void)host_platform;
-    (void)target_platform;
-    return snprintf(buffer, size, "https://example.invalid/%s-%s.%s", tool, version, format) <
-                   (int)size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
-}
-
-CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform,
-                                            const char *version) {
-    (void)catalog;
-    (void)component;
-    (void)tool;
-    (void)host_platform;
-    (void)target_platform;
-    (void)version;
-    return snprintf(buffer, size, "%s", "https://example.invalid/SHA256SUMS") < (int)size
-               ? CUP_OK
-               : CUP_ERR_BUFFER_TOO_SMALL;
 }
 
 CupError layout_build_cache_archive_path(char *buffer,
@@ -326,24 +269,18 @@ static void test_spec_build_pins_catalog_snapshot_and_urls(void) {
                       package_artifact_spec_build(&spec, &catalog, &identity, "tar.xz"));
     TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_TAR_XZ, spec.format);
     TEST_ASSERT_EQUAL_STRING("https://example.invalid/gcc-15.2.0.tar.xz", spec.package_url);
-    TEST_ASSERT_EQUAL_STRING("https://example.invalid/SHA256SUMS", spec.checksum_url);
+    TEST_ASSERT_EQUAL_STRING(DIGEST_A, spec.artifact_sha256);
     TEST_ASSERT_EQUAL_STRING(identity.component, spec.identity.component);
     TEST_ASSERT_EQUAL_STRING(identity.tool, spec.identity.tool);
     TEST_ASSERT_EQUAL_STRING(identity.host_platform, spec.identity.host_platform);
     TEST_ASSERT_EQUAL_STRING(identity.target_platform, spec.identity.target_platform);
     TEST_ASSERT_EQUAL_STRING(identity.version, spec.identity.version);
 
-    version_available = 0;
-    TEST_ASSERT_EQUAL(CUP_ERR_NOT_AVAILABLE,
-                      package_artifact_spec_build(&spec, &catalog, &identity, "tar.xz"));
-    TEST_ASSERT_EQUAL_CHAR('\0', spec.identity.component[0]);
-    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_ANY, spec.format);
-    version_available = 1;
-    format_available = 0;
+    artifact_available = 0;
     TEST_ASSERT_EQUAL(CUP_ERR_NOT_AVAILABLE,
                       package_artifact_spec_build(&spec, &catalog, &identity, "tar.xz"));
     TEST_ASSERT_EQUAL_CHAR('\0', spec.package_url[0]);
-    format_available = 1;
+    artifact_available = 1;
 
     memset(catalog.digest, 'A', CHECKSUM_SHA256_HEX_LENGTH);
     catalog.digest[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
@@ -353,7 +290,7 @@ static void test_spec_build_pins_catalog_snapshot_and_urls(void) {
     TEST_ASSERT_EQUAL_CHAR('\0', spec.identity.component[0]);
     TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_ANY, spec.format);
     TEST_ASSERT_EQUAL_CHAR('\0', spec.package_url[0]);
-    TEST_ASSERT_EQUAL_CHAR('\0', spec.checksum_url[0]);
+    TEST_ASSERT_EQUAL_CHAR('\0', spec.artifact_sha256[0]);
 }
 
 static void test_stable_resolution_builds_concrete_spec(void) {
@@ -392,23 +329,25 @@ static void test_open_reports_non_file_states_without_opening(void) {
     verified_artifact_init(&artifact);
 
     {
-        char invalid_digest[CHECKSUM_SHA256_HEX_LENGTH + 1];
-        memset(invalid_digest, 'g', CHECKSUM_SHA256_HEX_LENGTH);
-        invalid_digest[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
+        char saved_digest[CHECKSUM_SHA256_HEX_LENGTH + 1];
+        strcpy(saved_digest, spec.artifact_sha256);
+        memset(spec.artifact_sha256, 'g', CHECKSUM_SHA256_HEX_LENGTH);
+        spec.artifact_sha256[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
         TEST_ASSERT_EQUAL(
             CUP_ERR_INVALID_INPUT,
-            verified_artifact_open(&artifact, "/cache/a", &spec, invalid_digest, &status));
+            verified_artifact_open(&artifact, "/cache/a", &spec, &status));
+        strcpy(spec.artifact_sha256, saved_digest);
     }
 
     path_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_MISSING, status);
     TEST_ASSERT_NULL(artifact.file);
 
     path_kind = SYSTEM_PATH_DIRECTORY;
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_WRONG_TYPE, status);
     TEST_ASSERT_NULL(artifact.file);
 }
@@ -423,20 +362,20 @@ static void test_open_reports_size_and_digest_decisions(void) {
 
     open_size = 0;
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_REJECTED, status);
     TEST_ASSERT_NOT_NULL(artifact.file);
 
     open_size = MAX_PACKAGE_DOWNLOAD_BYTES + 1;
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_REJECTED, status);
     TEST_ASSERT_NOT_NULL(artifact.file);
 
     open_size = 4;
     calculated_digest = DIGEST_B;
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_DIGEST_MISMATCH, status);
     TEST_ASSERT_NOT_NULL(artifact.file);
     verified_artifact_release(&artifact);
@@ -452,22 +391,15 @@ static void test_valid_artifact_remains_bound_to_opened_bytes(void) {
     verified_artifact_init(&artifact);
 
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_VALID, status);
     TEST_ASSERT_EQUAL_STRING(DIGEST_A, artifact.digest);
 
-    {
-        char invalid_digest[CHECKSUM_SHA256_HEX_LENGTH + 1];
-        memset(invalid_digest, 'G', CHECKSUM_SHA256_HEX_LENGTH);
-        invalid_digest[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
-        TEST_ASSERT_EQUAL(CUP_ERR_INVALID_INPUT,
-                          verified_artifact_verify_expected(&artifact, invalid_digest, &status));
-        TEST_ASSERT_NOT_NULL(artifact.file);
-    }
-
-    TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_verify_expected(&artifact, DIGEST_B, &status));
-    TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_DIGEST_MISMATCH, status);
+    /* Verification is pinned to the spec at open time; later caller changes cannot
+     * rewrite the digest of the already-opened bytes. */
+    strcpy(spec.artifact_sha256, DIGEST_B);
+    calculated_digest = DIGEST_B;
+    TEST_ASSERT_EQUAL_STRING(DIGEST_A, artifact.digest);
     TEST_ASSERT_NOT_NULL(artifact.file);
 
     verified_artifact_release(&artifact);
@@ -484,7 +416,7 @@ static void test_verification_io_error_releases_owned_stream(void) {
     checksum_result = CUP_ERR_FILESYSTEM;
 
     TEST_ASSERT_EQUAL(CUP_ERR_FILESYSTEM,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
     TEST_ASSERT_EQUAL(ARTIFACT_VERIFY_NONE, status);
     TEST_ASSERT_NULL(artifact.file);
 }
@@ -498,7 +430,7 @@ static void test_discard_uses_opened_identity(void) {
     make_spec(&spec);
     verified_artifact_init(&artifact);
     TEST_ASSERT_EQUAL(CUP_OK,
-                      verified_artifact_open(&artifact, "/cache/a", &spec, DIGEST_A, &status));
+                      verified_artifact_open(&artifact, "/cache/a", &spec, &status));
 
     TEST_ASSERT_EQUAL(CUP_OK, verified_artifact_discard(&artifact));
     TEST_ASSERT_EQUAL_size_t(1, remove_calls);

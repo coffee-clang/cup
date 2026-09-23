@@ -204,10 +204,9 @@ function New-ZipPackageFixture {
 
     $platform = 'windows-x64'
     $packageName = "clang-$Version-$platform-$platform"
-    $cacheDir = Join-Path $Script:CupTestHome (
-        ".cup\cache\compiler\clang\$platform\$platform\$Version")
-    $archive = Join-Path $cacheDir "$packageName.zip"
-    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    $artifactDir = Join-Path $Script:CupTestRoot 'artifacts'
+    $archive = Join-Path $artifactDir "$packageName.zip"
+    New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
 
     $arguments = @($packageName, $Version, $platform, $platform, $archive)
@@ -227,12 +226,16 @@ function New-ZipPackageFixture {
     }
 
     $hash = Get-Sha256Lower -Path $archive
-    # MSYS2 GNU sha256sum marks archive records as binary with '*'.
-    Write-Utf8NoBom -Path (Join-Path $cacheDir 'SHA256SUMS') -Lines @(
-        "$hash *$(Split-Path -Leaf $archive)")
+    Ensure-FixtureRuntimeRoot
+    $cacheDir = Join-Path $Script:CupTestHome '.cup\cache'
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    Copy-Item -LiteralPath $archive -Destination (Join-Path $cacheDir $hash) -Force
+    Add-PackageCatalogRecord -Component 'compiler' -Tool 'clang' -Version $Version `
+        -Format 'zip' -Url "https://example.invalid/$packageName.zip" -Sha256 $hash
     return [pscustomobject]@{
         PackageName = $packageName
         Archive = $archive
+        Sha256 = $hash
     }
 }
 
@@ -510,10 +513,8 @@ function Initialize-TestEnvironment {
 
     New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Script:CupTestDevRoot "config") | Out-Null
-    Copy-Item (Join-Path $Script:CupTestProjectRoot "config\packages.cfg") (
-        Join-Path $Script:CupTestDevRoot "config\packages.cfg")
-    Copy-Item (Join-Path $Script:CupTestProjectRoot "config\install.cfg") (
-        Join-Path $Script:CupTestDevRoot "config\install.cfg")
+    Copy-Item (Join-Path $Script:CupTestProjectRoot "tests\fixtures\catalog.cfg") (
+        Join-Path $Script:CupTestDevRoot "config\catalog.cfg")
 
     $env:USERPROFILE = $Script:CupTestHome
 }
@@ -627,49 +628,178 @@ function Assert-CupStatus {
 }
 
 # Catalog and package fixtures used by command-level suites.
-function Set-PackageCatalogField {
+function Ensure-FixtureRuntimeRoot {
+    $root = Join-Path $Script:CupTestHome '.cup'
+    foreach ($child in @('components', 'staging', 'config', 'bin')) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $root $child) | Out-Null
+    }
+    $rootMarker = Join-Path $root 'root.txt'
+    if (-not (Test-Path -LiteralPath $rootMarker)) {
+        Write-Utf8NoBom -Path $rootMarker -Lines @(
+            'format=2',
+            'product=coffee-clang/cup',
+            'layout=2',
+            'host=windows-x64')
+    }
+    $state = Join-Path $root 'state.txt'
+    if (-not (Test-Path -LiteralPath $state)) {
+        Write-Utf8NoBom -Path $state -Lines @('format=2')
+    }
+    $lock = Join-Path $root 'cup.lock'
+    if (-not (Test-Path -LiteralPath $lock)) {
+        [IO.File]::WriteAllBytes($lock, [byte[]]@())
+    }
+    $runtimeCatalog = Join-Path $root 'config\catalog.cfg'
+    if (-not (Test-Path -LiteralPath $runtimeCatalog)) {
+        Copy-Item -LiteralPath (Join-Path $Script:CupTestDevRoot 'config\catalog.cfg') `
+            -Destination $runtimeCatalog
+    }
+}
+
+function Add-PackageCatalogRecord {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Component,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Tool,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Field,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Value,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateSet("Prepend", "Replace")]
-        [string]$Mode,
-
-        [string]$HostPlatform = "windows-x64",
-
-        [string]$TargetPlatform = "windows-x64"
+        [Parameter(Mandatory = $true)][string]$Component,
+        [Parameter(Mandatory = $true)][string]$Tool,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Format,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Sha256,
+        [string]$HostPlatform = 'windows-x64',
+        [string]$TargetPlatform = 'windows-x64'
     )
 
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $key = "$Component.$Tool.$HostPlatform.$TargetPlatform.$Field="
-    $content = Get-Content -LiteralPath $catalog
-    $found = $false
-    $updated = foreach ($line in $content) {
-        if ($line.StartsWith($key, [System.StringComparison]::Ordinal)) {
-            $found = $true
-            if ($Mode -eq "Prepend") {
-                $key + $Value + "," + $line.Substring($key.Length)
-            } else {
-                $key + $Value
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    [string[]]$content = Get-Content -LiteralPath $catalog
+    $records = @{}
+    $maximumIndex = -1
+    foreach ($line in $content) {
+        if ($line -match '^package\.([0-9]+)\.(component|tool|host|target)=(.*)$') {
+            $index = [int]$Matches[1]
+            if ($index -gt $maximumIndex) { $maximumIndex = $index }
+            if (-not $records.ContainsKey($index)) { $records[$index] = @{} }
+            $records[$index][$Matches[2]] = $Matches[3]
+        } elseif ($line -match '^package\.([0-9]+)\.') {
+            $index = [int]$Matches[1]
+            if ($index -gt $maximumIndex) { $maximumIndex = $index }
+        }
+    }
+    $index = $maximumIndex + 1
+
+    $revisionSeen = $false
+    $updated = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $content) {
+        if ($line -match '^revision=([0-9]+)$') {
+            $updated.Add('revision=' + ([uint64]$Matches[1] + 1))
+            $revisionSeen = $true
+            continue
+        }
+        if ($line -match '^package\.([0-9]+)\.stable=') {
+            $recordIndex = [int]$Matches[1]
+            if ($records.ContainsKey($recordIndex)) {
+                $record = $records[$recordIndex]
+                if ($record['component'] -ceq $Component -and
+                    $record['tool'] -ceq $Tool -and
+                    $record['host'] -ceq $HostPlatform -and
+                    $record['target'] -ceq $TargetPlatform) {
+                    $updated.Add("package.$recordIndex.stable=false")
+                    continue
+                }
             }
+        }
+        $updated.Add($line)
+    }
+    if (-not $revisionSeen) { Fail-Test 'fixture catalog has no canonical revision' }
+
+    $updated.Add("package.$index.component=$Component")
+    $updated.Add("package.$index.tool=$Tool")
+    $updated.Add("package.$index.host=$HostPlatform")
+    $updated.Add("package.$index.target=$TargetPlatform")
+    $updated.Add("package.$index.version=$Version")
+    if ($Version -match '-rev[1-9][0-9]*$') {
+        $updated.Add("package.$index.revision_reason=integration fixture revision")
+    }
+    $updated.Add("package.$index.stable=true")
+    $updated.Add("package.$index.artifact.0.format=$Format")
+    $updated.Add("package.$index.artifact.0.url=$Url")
+    $updated.Add("package.$index.artifact.0.sha256=$Sha256")
+    Write-Utf8NoBom -Path $catalog -Lines $updated
+
+    $rootMarker = Join-Path $Script:CupTestHome '.cup\root.txt'
+    if (Test-Path -LiteralPath $rootMarker) {
+        Copy-Item -LiteralPath $catalog `
+            -Destination (Join-Path $Script:CupTestHome '.cup\config\catalog.cfg') -Force
+    }
+}
+
+function Set-PackageCatalogUpdateUrl {
+    param([Parameter(Mandatory = $true)][string]$Url)
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    $found = $false
+    $updated = foreach ($line in (Get-Content -LiteralPath $catalog)) {
+        if ($line.StartsWith('update_url=', [StringComparison]::Ordinal)) {
+            $found = $true
+            "update_url=$Url"
         } else {
             $line
         }
     }
-    if (-not $found) {
-        Fail-Test "catalog entry not found: $key"
+    if (-not $found) { Fail-Test 'fixture catalog has no update_url' }
+    Write-Utf8NoBom -Path $catalog -Lines $updated
+    if (Test-Path -LiteralPath (Join-Path $Script:CupTestHome '.cup\root.txt')) {
+        Copy-Item -LiteralPath $catalog `
+            -Destination (Join-Path $Script:CupTestHome '.cup\config\catalog.cfg') -Force
+    }
+}
+
+function Find-PackageCatalogIndex {
+    param(
+        [Parameter(Mandatory = $true)][string]$Tool,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [string]$HostPlatform = 'windows-x64',
+        [string]$TargetPlatform = 'windows-x64'
+    )
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    $records = @{}
+    foreach ($line in (Get-Content -LiteralPath $catalog)) {
+        if ($line -match '^package\.([0-9]+)\.(tool|host|target|version)=(.*)$') {
+            $index = [int]$Matches[1]
+            if (-not $records.ContainsKey($index)) { $records[$index] = @{} }
+            $records[$index][$Matches[2]] = $Matches[3]
+        }
+    }
+    foreach ($index in ($records.Keys | Sort-Object {[int]$_})) {
+        $record = $records[$index]
+        if ($record['tool'] -ceq $Tool -and $record['version'] -ceq $Version -and
+            $record['host'] -ceq $HostPlatform -and $record['target'] -ceq $TargetPlatform) {
+            return [int]$index
+        }
+    }
+    Fail-Test "catalog entry not found: $Tool@$Version [$TargetPlatform]"
+}
+
+function Set-PackageCatalogArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$Tool,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Format,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Sha256,
+        [string]$TargetPlatform = 'windows-x64'
+    )
+    $index = Find-PackageCatalogIndex -Tool $Tool -Version $Version -TargetPlatform $TargetPlatform
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
+    $prefix = "package.$index.artifact.0."
+    $updated = foreach ($line in (Get-Content -LiteralPath $catalog)) {
+        if ($line.StartsWith($prefix + 'format=', [StringComparison]::Ordinal)) { $prefix + 'format=' + $Format }
+        elseif ($line.StartsWith($prefix + 'url=', [StringComparison]::Ordinal)) { $prefix + 'url=' + $Url }
+        elseif ($line.StartsWith($prefix + 'sha256=', [StringComparison]::Ordinal)) { $prefix + 'sha256=' + $Sha256 }
+        else { $line }
     }
     Write-Utf8NoBom -Path $catalog -Lines $updated
+    if (Test-Path -LiteralPath (Join-Path $Script:CupTestHome '.cup\root.txt')) {
+        Copy-Item -LiteralPath $catalog `
+            -Destination (Join-Path $Script:CupTestHome '.cup\config\catalog.cfg') -Force
+    }
 }
 
 
@@ -712,12 +842,7 @@ function Get-TestPrimarySourceName([string]$Tool) {
 }
 
 function Get-TestPrimarySourceVersion([string]$Tool, [string]$Version) {
-    if ($Tool -eq 'gcc') {
-        if ($Version -notmatch '^(.+)-rev[1-9][0-9]*$') {
-            Fail-Test "invalid GCC fixture revision: $Version"
-        }
-        return $Matches[1]
-    }
+    if ($Version -match '^(.+)-rev[1-9][0-9]*$') { return $Matches[1] }
     return $Version
 }
 
@@ -783,26 +908,20 @@ function New-TestPackage {
 
     $packageName = "$Tool-$Version-$HostPlatform-$TargetPlatform"
     $packageRoot = Join-Path $Script:CupTestRoot "packages\$packageName"
-    $cacheDir = Join-Path $Script:CupTestHome (
-        ".cup\cache\$Component\$Tool\$HostPlatform\$TargetPlatform\$Version")
-    $archive = Join-Path $cacheDir "$packageName.zip"
+    $artifactDir = Join-Path $Script:CupTestRoot 'artifacts'
+    $archive = Join-Path $artifactDir "$packageName.zip"
 
     Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "bin") | Out-Null
-    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 
     $info = [System.Collections.Generic.List[string]]::new()
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
-    if ($Tool -eq "gcc") {
-        if ($Version -notmatch "-rev([1-9][0-9]*)$") {
-            Fail-Test "invalid GCC fixture revision: $Version"
-        }
-        $info.Add("package.revision=$($Matches[1])")
+    if ($Version -match "-rev[1-9][0-9]*$") {
+        $info.Add("package.revision_reason=integration fixture revision")
     }
-    $info.Add("package.mode=self-contained")
-    $info.Add("package.formats=zip,tar.xz,tar.gz")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
     $info.Add("platform.host_triple=$(Get-TestPlatformTriple $HostPlatform)")
@@ -814,7 +933,8 @@ function New-TestPackage {
     $info.Add("build.source_policy=fixture")
     $info.Add("source.primary.name=$(Get-TestPrimarySourceName $Tool)")
     $info.Add("source.primary.version=$(Get-TestPrimarySourceVersion $Tool $Version)")
-    $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
+    $sourceVersion = Get-TestPrimarySourceVersion $Tool $Version
+    $info.Add("source.primary.url=https://example.invalid/$Tool-$sourceVersion.tar.xz")
     $info.Add("source.primary.sha256=$('0' * 64)")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")
@@ -833,10 +953,13 @@ function New-TestPackage {
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive
 
     $hash = Get-Sha256Lower -Path $archive
-    # MSYS2 GNU sha256sum marks archive records as binary with '*'.
-    Write-Utf8NoBom -Path (Join-Path $cacheDir "SHA256SUMS") -Lines @(
-        "$hash *$(Split-Path -Leaf $archive)"
-    )
+    Ensure-FixtureRuntimeRoot
+    $cacheDir = Join-Path $Script:CupTestHome '.cup\cache'
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    Copy-Item -LiteralPath $archive -Destination (Join-Path $cacheDir $hash) -Force
+    Add-PackageCatalogRecord -Component $Component -Tool $Tool -Version $Version `
+        -Format 'zip' -Url "https://example.invalid/$packageName.zip" -Sha256 $hash `
+        -HostPlatform $HostPlatform -TargetPlatform $TargetPlatform
 }
 
 function New-InstalledPackageFixture {
@@ -859,7 +982,7 @@ function New-InstalledPackageFixture {
     )
 
     $packageRoot = Join-Path $Script:CupTestHome (
-        ".cup\components\$Component\$Tool\$HostPlatform\$TargetPlatform\$Version")
+        ".cup\components\$Component\$Tool\$TargetPlatform\$Version")
     $bin = Join-Path $packageRoot "bin"
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
@@ -867,14 +990,9 @@ function New-InstalledPackageFixture {
     $info.Add("package.component=$Component")
     $info.Add("package.tool=$Tool")
     $info.Add("package.version=$Version")
-    if ($Tool -eq "gcc") {
-        if ($Version -notmatch "-rev([1-9][0-9]*)$") {
-            Fail-Test "invalid GCC fixture revision: $Version"
-        }
-        $info.Add("package.revision=$($Matches[1])")
+    if ($Version -match "-rev[1-9][0-9]*$") {
+        $info.Add("package.revision_reason=integration fixture revision")
     }
-    $info.Add("package.mode=self-contained")
-    $info.Add("package.formats=zip,tar.xz,tar.gz")
     $info.Add("platform.host=$HostPlatform")
     $info.Add("platform.target=$TargetPlatform")
     $info.Add("platform.host_triple=$(Get-TestPlatformTriple $HostPlatform)")
@@ -886,7 +1004,8 @@ function New-InstalledPackageFixture {
     $info.Add("build.source_policy=fixture")
     $info.Add("source.primary.name=$(Get-TestPrimarySourceName $Tool)")
     $info.Add("source.primary.version=$(Get-TestPrimarySourceVersion $Tool $Version)")
-    $info.Add("source.primary.url=https://example.invalid/$Tool-$Version.tar.xz")
+    $sourceVersion = Get-TestPrimarySourceVersion $Tool $Version
+    $info.Add("source.primary.url=https://example.invalid/$Tool-$sourceVersion.tar.xz")
     $info.Add("source.primary.sha256=$('0' * 64)")
     foreach ($entry in $Entries) {
         $info.Add("entry.$entry=bin/$entry.cmd")

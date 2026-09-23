@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Verifies package download through a loopback address and checksum rejection on POSIX.
+# Verifies current package/catalog network boundaries through an explicitly allowed loopback origin.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -11,8 +11,6 @@ export TESTS_ROOT
 test_begin network
 prepare_command_environment
 require_test_binary
-# Initialize the isolated runtime; repair behavior is owned by repair.sh.
-run_cup repair >/dev/null
 
 configuration=${CUP_TEST_CONFIGURATION:-development}
 test_build_root=${CUP_TEST_BUILD_ROOT:-$ROOT/build}
@@ -47,11 +45,10 @@ trap 'network_signal_handler 129' HUP
 trap 'network_signal_handler 130' INT
 trap 'network_signal_handler 143' TERM
 
-compressed_version=97.0.3
-compressed_path="/compressed-limit/$compressed_version-$TEST_PLATFORM-$TEST_PLATFORM/SHA256SUMS"
+oversized_catalog_path=/catalog-too-large
 "$helper" http-server --root "$server_root" --port 0 \
     --ready-file "$ready_file" \
-    --gzip-path "$compressed_path" --gzip-bytes 4194305 \
+    --gzip-path "$oversized_catalog_path" --gzip-bytes 4194305 \
     >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -70,90 +67,74 @@ case "$port" in
     ''|*[!0-9]*) fail "invalid local HTTP port: $port" ;;
 esac
 
-set_network_catalog() {
-    catalog=$DEV_ROOT/config/packages.cfg
-    temporary=$catalog.tmp
-    awk -v platform="$TEST_PLATFORM" -v port="$port" '
-        $0 ~ "^compiler\\.clang\\." platform "\\." platform "\\.url_template=" {
-            print "compiler.clang." platform "." platform ".url_template=" \
-                "http://127.0.0.1:" port "/{version}-{host_platform}-{target_platform}/" \
-                "clang-{version}-{host_platform}-{target_platform}.{format}"
-            next
-        }
-        $0 ~ "^compiler\\.clang\\." platform "\\." platform "\\.checksum_url_template=" {
-            print "compiler.clang." platform "." platform ".checksum_url_template=" \
-                "http://127.0.0.1:" port "/{version}-{host_platform}-{target_platform}/SHA256SUMS"
-            next
-        }
-        { print }
-    ' "$catalog" > "$temporary"
-    mv "$temporary" "$catalog"
-}
-
-publish_package() {
-    version=$1
-    make_package_format compiler clang "$version" "$TEST_PLATFORM" tar.gz clang
-    package_name=clang-$version-$TEST_PLATFORM-$TEST_PLATFORM
-    cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$version
-    release_dir=$server_root/$version-$TEST_PLATFORM-$TEST_PLATFORM
-    mkdir -p "$release_dir"
-    cp "$cache_dir/$package_name.tar.gz" "$release_dir/$package_name.tar.gz"
-    cp "$cache_dir/SHA256SUMS" "$release_dir/SHA256SUMS"
-    rm -rf "$cache_dir"
-}
-
-set_network_catalog
-valid_version=97.0.1
-package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions \
-    "$valid_version" prepend
-package_catalog_edit compiler clang "$TEST_PLATFORM" default_format tar.gz replace
-publish_package "$valid_version"
-
 export CUP_INSTALL_ALLOW_INSECURE=1
 export NO_PROXY=127.0.0.1
 export no_proxy=127.0.0.1
 
-printf '==> Downloading a package through the loopback address...\n'
+publish_artifact() {
+    version=$1
+    archive=$TMP_ROOT/artifacts/clang-$version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
+    name=$(basename "$archive")
+    sha=$(hash_file "$archive")
+
+    cp "$archive" "$server_root/$name"
+    rm -f "$TEST_HOME/.cup/cache/$sha"
+    package_catalog_rewrite_artifact clang "$version" tar.gz \
+        "http://127.0.0.1:$port/$name" "$sha"
+}
+
+valid_version=97.0.1
+make_package_format compiler clang "$valid_version" "$TEST_PLATFORM" tar.gz clang
+publish_artifact "$valid_version"
+
+printf '==> Downloading a concrete package artifact through loopback...\n'
 run_cup install compiler "clang@$valid_version" >/dev/null
+assert_contains "$(run_cup list compiler 2>/dev/null)" "compiler:clang@$valid_version"
+assert_missing "$TEST_HOME/.cup/transaction.txt"
+assert_cup_healthy
 
 bad_version=97.0.2
-package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions \
-    "$bad_version" prepend
-publish_package "$bad_version"
-printf '%064d  %s\n' 0 \
-    "clang-$bad_version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz" \
-    > "$server_root/$bad_version-$TEST_PLATFORM-$TEST_PLATFORM/SHA256SUMS"
+make_package_format compiler clang "$bad_version" "$TEST_PLATFORM" tar.gz clang
+bad_archive=$TMP_ROOT/artifacts/clang-$bad_version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
+bad_name=$(basename "$bad_archive")
+bad_real_sha=$(hash_file "$bad_archive")
+bad_expected_sha=$(printf '%064d' 0)
+cp "$bad_archive" "$server_root/$bad_name"
+rm -f "$TEST_HOME/.cup/cache/$bad_real_sha" "$TEST_HOME/.cup/cache/$bad_expected_sha"
+package_catalog_rewrite_artifact clang "$bad_version" tar.gz \
+    "http://127.0.0.1:$port/$bad_name" "$bad_expected_sha"
 
-printf '==> Rejecting a package whose downloaded checksum does not match...\n'
+printf '==> Rejecting an artifact whose bytes do not match the catalog digest...\n'
 if run_cup install compiler "clang@$bad_version" \
-        >"$TMP_ROOT/checksum-mismatch.out" 2>&1; then
-    fail 'package with a mismatched downloaded checksum was accepted'
+        >"$TMP_ROOT/digest-mismatch.out" 2>&1; then
+    fail 'package with a mismatched catalog digest was accepted'
 fi
-assert_contains "$(cat "$TMP_ROOT/checksum-mismatch.out")" \
+assert_contains "$(cat "$TMP_ROOT/digest-mismatch.out")" \
     'downloaded package failed SHA-256 verification'
-bad_cache=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$bad_version
-assert_missing "$bad_cache/clang-$bad_version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz"
+assert_missing "$TEST_HOME/.cup/cache/$bad_expected_sha"
 assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
     "compiler:clang@$bad_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
-package_catalog_edit compiler clang "$TEST_PLATFORM" available_versions \
-    "$compressed_version" prepend
-package_catalog_edit compiler clang "$TEST_PLATFORM" checksum_url_template \
-    "http://127.0.0.1:$port/compressed-limit/{version}-{host_platform}-{target_platform}/SHA256SUMS" replace
+printf '==> Rejecting catalog metadata whose decompressed body exceeds the metadata limit...\n'
+runtime_catalog=$TEST_HOME/.cup/config/catalog.cfg
+catalog_before=$(hash_file "$runtime_catalog")
+temporary=$runtime_catalog.tmp
+awk -v url="http://127.0.0.1:$port$oversized_catalog_path" '
+    /^update_url=/ { print "update_url=" url; next }
+    { print }
+' "$runtime_catalog" > "$temporary"
+mv "$temporary" "$runtime_catalog"
+catalog_before=$(hash_file "$runtime_catalog")
 
-printf '==> Rejecting checksum metadata whose decompressed body exceeds the limit...\n'
-if run_cup install compiler "clang@$compressed_version" \
-        >"$TMP_ROOT/compressed-limit.out" 2>&1; then
-    fail 'oversized decompressed checksum metadata was accepted'
+if run_cup update catalog >"$TMP_ROOT/catalog-limit.out" 2>&1; then
+    fail 'oversized decompressed catalog metadata was accepted'
 fi
-assert_contains "$(cat "$TMP_ROOT/compressed-limit.out")" \
+assert_contains "$(cat "$TMP_ROOT/catalog-limit.out")" \
     'download exceeded the configured size limit'
-compressed_cache=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/$compressed_version
-assert_missing "$compressed_cache/SHA256SUMS"
-assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
-    "compiler:clang@$compressed_version"
+assert_equals "$catalog_before" "$(hash_file "$runtime_catalog")" \
+    'failed catalog refresh changed the local snapshot'
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 

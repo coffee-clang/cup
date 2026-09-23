@@ -168,29 +168,63 @@ verify_checksum_file_exact() (
 
 validate_release_file() (
     release_file=$1
+    release_directory=$(dirname -- "$release_file")
     require_nonempty_file "$release_file"
-    expected_release=$(mktemp "${TMPDIR:-/tmp}/cup-release-metadata.XXXXXX") ||
-        fail 'could not create release metadata comparison file'
-    cleanup_expected_release() { rm -f -- "$expected_release"; }
-    trap cleanup_expected_release EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    printf 'format=1\nversion=%s\ncommit=%s\n' "$VERSION" "$SHA" > "$expected_release"
-    cmp -s "$expected_release" "$release_file" ||
-        fail "invalid release metadata: $release_file"
-    rm -f -- "$expected_release"
-    trap - EXIT HUP INT TERM
+    expected=$(mktemp "${TMPDIR:-/tmp}/cup-release-manifest.XXXXXX") ||
+        fail 'could not create release manifest comparison file'
+    names=$(mktemp "${TMPDIR:-/tmp}/cup-release-names.XXXXXX") ||
+        fail 'could not create release manifest name list'
+    cleanup_release_validation() { rm -f -- "$expected" "$names"; }
+    trap cleanup_release_validation EXIT HUP INT TERM
+    (
+        cd "$release_directory"
+        find . -mindepth 1 -maxdepth 1 -type f -print | sed 's|^./||' |
+            grep -v '^release\.txt$' | LC_ALL=C sort
+    ) > "$names"
+    {
+        printf 'format=2\nversion=%s\ncommit=%s\nroot_layout=2\ncatalog_format=1\n' "$VERSION" "$SHA"
+        count=$(wc -l < "$names" | tr -d ' ')
+        printf 'asset_count=%s\n' "$count"
+        index=0
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            printf 'asset.%s.name=%s\n' "$index" "$name"
+            printf 'asset.%s.sha256=%s\n' "$index" "$(hash_file "$release_directory/$name")"
+            index=$((index + 1))
+        done < "$names"
+    } > "$expected"
+    cmp -s "$expected" "$release_file" || fail "invalid release manifest: $release_file"
 )
 
-release_common_checksum_assets() (
-    printf '%s\n' packages.cfg install.cfg install.sh install.ps1
+generate_release_file() (
+    release_directory=$1
+    require_real_directory "$release_directory"
+    [ ! -e "$release_directory/release.txt" ] && [ ! -L "$release_directory/release.txt" ] ||
+        fail 'release.txt must be generated last'
+    names=$(mktemp "${TMPDIR:-/tmp}/cup-release-names.XXXXXX") || exit 1
+    trap 'rm -f -- "$names"' EXIT HUP INT TERM
+    (
+        cd "$release_directory"
+        find . -mindepth 1 -maxdepth 1 -type f -print | sed 's|^./||' | LC_ALL=C sort
+    ) > "$names"
+    {
+        printf 'format=2\nversion=%s\ncommit=%s\nroot_layout=2\ncatalog_format=1\n' "$VERSION" "$SHA"
+        count=$(wc -l < "$names" | tr -d ' ')
+        printf 'asset_count=%s\n' "$count"
+        index=0
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            printf 'asset.%s.name=%s\n' "$index" "$name"
+            printf 'asset.%s.sha256=%s\n' "$index" "$(hash_file "$release_directory/$name")"
+            index=$((index + 1))
+        done < "$names"
+    } | cup_path_write_file "$release_directory/release.txt" 0644 replace ||
+        fail 'could not generate release.txt'
+    validate_release_file "$release_directory/release.txt"
 )
 
 release_common_public_assets() (
-    printf '%s\n' \
-        THIRD_PARTY_NOTICES.txt SHA256SUMS.common install.cfg install.ps1 install.sh \
-        packages.cfg provenance.txt release.txt
+    printf '%s\n' LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg install.ps1 install.sh provenance.txt
 )
 
 release_platform_binary_name() (
@@ -205,34 +239,13 @@ release_platform_binary_name() (
 release_platform_binary_mode() (
     platform=$1
     cup_platform_valid "$platform" || return 1
-    case "$platform" in
-        windows-x64) printf '0644\n' ;;
-        *) printf '0755\n' ;;
-    esac
-)
-
-release_platform_checksum_name() (
-    platform=$1
-    cup_platform_valid "$platform" || return 1
-    printf 'SHA256SUMS.%s\n' "$platform"
-)
-
-release_platform_checksum_assets() (
-    platform=$1
-    binary=$(release_platform_binary_name "$platform") || return 1
-    printf '%s\n' "$binary" release.txt SHA256SUMS.common
+    case "$platform" in windows-x64) printf '0644\n' ;; *) printf '0755\n' ;; esac
 )
 
 release_public_assets() (
-    printf '%s\n' packages.cfg install.cfg release.txt provenance.txt \
-        THIRD_PARTY_NOTICES.txt install.sh install.ps1
-    for platform in $CUP_SUPPORTED_PLATFORMS; do
-        release_platform_binary_name "$platform" || return 1
-    done
-    printf '%s\n' SHA256SUMS.common
-    for platform in $CUP_SUPPORTED_PLATFORMS; do
-        release_platform_checksum_name "$platform" || return 1
-    done
+    release_common_public_assets
+    for platform in $CUP_SUPPORTED_PLATFORMS; do release_platform_binary_name "$platform" || return 1; done
+    printf '%s\n' release.txt
 )
 
 release_asset_mode() (

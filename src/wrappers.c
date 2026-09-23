@@ -240,10 +240,9 @@ static CupError collect_package_commands(WrapperPlan *wrappers,
         }
         err = text_format(target,
                           sizeof(target),
-                          "../components/%s/%s/%s/%s/%s/%s",
+                          "../components/%s/%s/%s/%s/%s",
                           default_identity->component,
                           default_identity->tool,
-                          default_identity->host_platform,
                           default_identity->target_platform,
                           default_identity->version,
                           command.path);

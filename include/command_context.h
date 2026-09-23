@@ -27,6 +27,10 @@ typedef struct {
 CupError command_context_begin(CommandContext *context,
                                const char *target_override,
                                SystemLockMode mode);
+/* Same context, but explicitly permits creation/initialization of a missing development runtime. */
+CupError command_context_begin_initialize(CommandContext *context,
+                                          const char *target_override,
+                                          SystemLockMode mode);
 
 /* Begin a query without creating the cup root when it is absent. */
 CupError command_context_begin_read_only(CommandContext *context, const char *target_override);

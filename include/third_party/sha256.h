@@ -1,7 +1,7 @@
 #ifndef CUP_SHA256_H
 #define CUP_SHA256_H
 
-/* Adapted third-party incremental SHA-256 primitive; file and SHA256SUMS handling belong to checksum.h. */
+/* Adapted third-party incremental SHA-256 primitive; public hashing helpers belong to checksum.h. */
 
 #include <stddef.h>
 #include <stdint.h>

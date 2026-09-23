@@ -13,7 +13,8 @@
     X("formatter")                \
     X("linter")                   \
     X("language-server")          \
-    X("analyzer")
+    X("analyzer")                 \
+    X("package-manager")
 
 #define CUP_TOOL_REGISTRY(X)       \
     X("compiler", "gcc")           \
@@ -25,7 +26,8 @@
     X("formatter", "clang-format") \
     X("linter", "clang-tidy")      \
     X("language-server", "clangd") \
-    X("analyzer", "valgrind")
+    X("analyzer", "valgrind")      \
+    X("package-manager", "coffee")
 
 #define CUP_PLATFORM_REGISTRY(X) \
     X("linux", "x64")            \
@@ -39,6 +41,7 @@ enum {
     CUP_COMPONENT_COUNT = 0 CUP_COMPONENT_REGISTRY(CUP_COUNT_ENTRY),
     CUP_TOOL_COUNT = 0 CUP_TOOL_REGISTRY(CUP_COUNT_ENTRY),
     CUP_PLATFORM_COUNT = 0 CUP_PLATFORM_REGISTRY(CUP_COUNT_ENTRY),
+    CUP_LOCAL_SCOPE_COUNT = CUP_COMPONENT_COUNT * CUP_PLATFORM_COUNT,
     CUP_GLOBAL_SCOPE_COUNT = CUP_COMPONENT_COUNT * CUP_PLATFORM_COUNT * CUP_PLATFORM_COUNT
 };
 #undef CUP_COUNT_ENTRY

@@ -192,6 +192,10 @@ build_libarchive() {
     echo "==> Building libarchive ${LIBARCHIVE_VERSION} for ${HOST_TRIPLE}"
     cd "$source"
 
+    # libarchive probes ambient libmd unconditionally after its other crypto backends. CUP does
+    # not use that optional digest backend, so force the probe off rather than leaking an
+    # unpinned host library into the private static link metadata.
+
     # shellcheck disable=SC2086
     CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" WINDRES="$WINDRES" \
     CFLAGS="$CUP_DEPENDENCY_CFLAGS" CPPFLAGS="-I$PREFIX/include" \
@@ -199,6 +203,7 @@ build_libarchive() {
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
     PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig" \
     PKG_CONFIG_SYSROOT_DIR="" \
+    ac_cv_lib_md_MD5Init=no \
     ./configure \
         --host="$HOST_TRIPLE" \
         --prefix="$INSTALL_PREFIX" \
@@ -209,6 +214,9 @@ build_libarchive() {
         --disable-bsdcat \
         --disable-bsdunzip \
         --disable-acl \
+        --disable-xattr \
+        --disable-posix-regex-lib \
+        --without-libb2 \
         --without-bz2lib \
         --without-lzo2 \
         --without-lz4 \

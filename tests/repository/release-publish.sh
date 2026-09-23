@@ -22,21 +22,38 @@ REMOTE_ASSETS=$TMP_ROOT/remote-assets
 mkdir -p "$DIST" "$MOCK_BIN" "$MOCK_STATE" "$REMOTE_ASSETS"
 
 public_assets=(
-    packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_NOTICES.txt
-    install.sh install.ps1
+    LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg install.ps1 install.sh provenance.txt
     cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64
-    cup-windows-x64.exe SHA256SUMS.common SHA256SUMS.linux-x64
-    SHA256SUMS.linux-arm64 SHA256SUMS.macos-x64
-    SHA256SUMS.macos-arm64 SHA256SUMS.windows-x64
+    cup-windows-x64.exe release.txt
 )
 printf '%s\n' "${public_assets[@]}" > "$MOCK_STATE/expected-assets"
+
+write_release_manifest() {
+    local names index name
+    names=$TMP_ROOT/release-names
+    (
+        cd "$DIST"
+        find . -mindepth 1 -maxdepth 1 -type f -print | sed 's|^./||' |
+            grep -v '^release\.txt$' | LC_ALL=C sort
+    ) > "$names"
+    {
+        printf 'format=2\nversion=%s\ncommit=%s\nroot_layout=2\ncatalog_format=1\n' "$VERSION" "$SHA"
+        printf 'asset_count=%s\n' "$(wc -l < "$names" | tr -d ' ')"
+        index=0
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            printf 'asset.%s.name=%s\n' "$index" "$name"
+            printf 'asset.%s.sha256=%s\n' "$index" "$(hash_file "$DIST/$name")"
+            index=$((index + 1))
+        done < "$names"
+    } > "$DIST/release.txt"
+}
 
 write_candidate() {
     rm -rf "$DIST"
     mkdir -p "$DIST"
-    printf 'packages\n' > "$DIST/packages.cfg"
-    printf 'install configuration\n' > "$DIST/install.cfg"
-    printf 'format=1\nversion=%s\ncommit=%s\n' "$VERSION" "$SHA" > "$DIST/release.txt"
+    printf 'license\n' > "$DIST/LICENSE"
+    printf 'packages\n' > "$DIST/catalog.cfg"
     cat > "$DIST/provenance.txt" <<EOF_PROVENANCE
 format=4
 version=$VERSION
@@ -55,57 +72,60 @@ EOF_PROVENANCE
         printf '%s\n' "$platform" > "$DIST/cup-$platform"
     done
     printf 'windows\n' > "$DIST/cup-windows-x64.exe"
-    write_checksums SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1
-    write_checksums SHA256SUMS.linux-x64 cup-linux-x64 release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.linux-arm64 cup-linux-arm64 release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.macos-x64 cup-macos-x64 release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.macos-arm64 cup-macos-arm64 release.txt SHA256SUMS.common
-    write_checksums SHA256SUMS.windows-x64 cup-windows-x64.exe release.txt SHA256SUMS.common
     chmod 0755 "$DIST" "$DIST/install.sh" \
         "$DIST/cup-linux-x64" "$DIST/cup-linux-arm64" \
         "$DIST/cup-macos-x64" "$DIST/cup-macos-arm64"
     find "$DIST" -type f ! -perm -0100 -exec chmod 0644 {} +
-}
-
-write_checksums() {
-    local output=$1
-    shift
-    : > "$DIST/$output"
-    for name in "$@"; do
-        printf '%s  %s\n' "$(hash_file "$DIST/$name")" "$name" >> "$DIST/$output"
-    done
+    write_release_manifest
 }
 write_candidate
 
-# Shared release validators must enforce the same physical documents produced for users.
+# Common release assembly preserves the acquired published catalog bytes.
+common_build=$TMP_ROOT/common-build
+mkdir -p "$common_build"
+printf '%s\n' 'format=1' 'product=coffee-clang/cup' 'kind=build-root' 'layout=1' > \
+    "$common_build/.cup-build-root"
+published_catalog=$TMP_ROOT/published-catalog.cfg
+cat > "$published_catalog" <<'EOF_PUBLISHED_CATALOG'
+format=1
+revision=7
+update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
+EOF_PUBLISHED_CATALOG
+CATALOG_SOURCE="$published_catalog" CUP_BUILD_ROOT="$common_build" \
+    SOURCE_REPOSITORY=example/cup-source TESTS_RUN_ID="$TESTS_RUN_ID" \
+    TESTS_RUN_ATTEMPT="$TESTS_RUN_ATTEMPT" RELEASE_RUN_ID="$RELEASE_RUN_ID" \
+    VERSION="$VERSION" TAG="$TAG" SHA="$SHA" \
+    "$ROOT/scripts/release/common-assets.sh" "$common_build/common" >/dev/null
+cmp -s "$published_catalog" "$common_build/common/public/catalog.cfg" ||
+    fail 'common release assets did not preserve the acquired catalog snapshot exactly'
+printf 'revision=8\n' >> "$published_catalog"
+cmp -s "$published_catalog" "$common_build/common/public/catalog.cfg" &&
+    fail 'common release catalog changed after its input snapshot was pinned'
+
+# The release manifest authenticates the exact public set except itself.
 validator_fixture=$TMP_ROOT/validator-fixture
 cp -a "$DIST" "$validator_fixture"
-awk 'NR == 1 { sub(/  /, " *") } { print }' \
-    "$validator_fixture/SHA256SUMS.common" > "$validator_fixture/SHA256SUMS.common.bad"
-mv "$validator_fixture/SHA256SUMS.common.bad" "$validator_fixture/SHA256SUMS.common"
+printf 'tampered\n' >> "$validator_fixture/catalog.cfg"
 if SCRIPT_DIR="$ROOT/scripts/release" VERSION="$VERSION" SHA="$SHA" \
-    sh -c '
-        . "$SCRIPT_DIR/common.sh"
-        verify_checksum_file_exact "$1" SHA256SUMS.common \
-            packages.cfg install.cfg install.sh install.ps1
-    ' sh "$validator_fixture" > "$TMP_ROOT/noncanonical-checksum.out" 2>&1; then
-    fail 'non-canonical checksum document unexpectedly passed exact validation'
+    sh -c '. "$SCRIPT_DIR/common.sh"; validate_release_file "$1"' \
+    sh "$validator_fixture/release.txt" > "$TMP_ROOT/tampered-release.out" 2>&1; then
+    fail 'release manifest unexpectedly accepted modified public bytes'
 fi
-assert_contains "$(cat "$TMP_ROOT/noncanonical-checksum.out")" \
-    'checksum file is not the exact canonical document: SHA256SUMS.common'
+assert_contains "$(cat "$TMP_ROOT/tampered-release.out")" 'invalid release manifest:'
 
-cp "$DIST/release.txt" "$validator_fixture/release.txt"
+rm -rf "$validator_fixture"
+cp -a "$DIST" "$validator_fixture"
 {
     sed -n '2p' "$DIST/release.txt"
     sed -n '1p' "$DIST/release.txt"
-    sed -n '3p' "$DIST/release.txt"
+    sed -n '3,$p' "$DIST/release.txt"
 } > "$validator_fixture/release.txt"
 if SCRIPT_DIR="$ROOT/scripts/release" VERSION="$VERSION" SHA="$SHA" \
     sh -c '. "$SCRIPT_DIR/common.sh"; validate_release_file "$1"' \
     sh "$validator_fixture/release.txt" > "$TMP_ROOT/reordered-release.out" 2>&1; then
-    fail 'reordered release metadata unexpectedly passed exact validation'
+    fail 'reordered release manifest unexpectedly passed exact validation'
 fi
-assert_contains "$(cat "$TMP_ROOT/reordered-release.out")" 'invalid release metadata:'
+assert_contains "$(cat "$TMP_ROOT/reordered-release.out")" 'invalid release manifest:'
 
 cat > "$MOCK_BIN/gh" <<'EOF_GH'
 #!/usr/bin/env bash
@@ -138,7 +158,7 @@ copy_dist_assets() {
 
 if [ "${MUTATE_CANDIDATE_ON_FIRST_API:-0}" = 1 ] && [ ! -f "$MOCK_STATE/mutated" ]; then
     : > "$MOCK_STATE/mutated"
-    printf 'swapped-after-snapshot\n' > "$MOCK_DIST/packages.cfg"
+    printf 'swapped-after-snapshot\n' > "$MOCK_DIST/catalog.cfg"
 fi
 
 case "${1:-}" in
@@ -294,6 +314,7 @@ part_platform=$TMP_ROOT/part-platform
 assembled=$TMP_ROOT/assembled
 mkdir -p "$part_common" "$part_platform"
 for asset in "${public_assets[@]}"; do
+    [ "$asset" != release.txt ] || continue
     case "$asset" in
         cup-*) cp "$DIST/$asset" "$part_platform/$asset" ;;
         *) cp "$DIST/$asset" "$part_common/$asset" ;;
@@ -301,7 +322,9 @@ for asset in "${public_assets[@]}"; do
     chmod 0644 "$part_common/$asset" 2>/dev/null || true
     chmod 0644 "$part_platform/$asset" 2>/dev/null || true
 done
-"$ROOT/scripts/release/assemble-candidate.sh" "$assembled"     "$part_common" "$part_platform" >/dev/null
+VERSION="$VERSION" TAG="$TAG" SHA="$SHA" \
+    "$ROOT/scripts/release/assemble-candidate.sh" "$assembled" \
+    "$part_common" "$part_platform" >/dev/null
 for executable in install.sh cup-linux-x64 cup-linux-arm64 cup-macos-x64 cup-macos-arm64; do
     [ "$(stat -c '%a' "$assembled/$executable")" = 755 ] ||
         fail "assembled executable mode is not 0755: $executable"
@@ -316,7 +339,8 @@ assembly_failure_part=$TMP_ROOT/assembly-failure-part
 assembly_failure_tmp=$TMP_ROOT/assembly-failure-tmp
 mkdir -p "$assembly_failure_part" "$assembly_failure_tmp"
 : > "$assembly_failure_part/empty"
-if TMPDIR="$assembly_failure_tmp" "$ROOT/scripts/release/assemble-candidate.sh" \
+if TMPDIR="$assembly_failure_tmp" VERSION="$VERSION" TAG="$TAG" SHA="$SHA" \
+        "$ROOT/scripts/release/assemble-candidate.sh" \
         "$TMP_ROOT/assembly-failure-output" "$assembly_failure_part" \
         >"$TMP_ROOT/assembly-failure.out" 2>&1; then
     fail 'candidate assembly unexpectedly accepted an empty release asset'
@@ -363,11 +387,15 @@ fi
 # Invalid provenance fails before any GitHub operation.
 cp "$DIST/provenance.txt" "$TMP_ROOT/provenance.valid"
 printf 'release_run_id=%s\n' "$RELEASE_RUN_ID" >> "$DIST/provenance.txt"
+rm -f "$DIST/release.txt"
+write_release_manifest
 if run_publish > "$TMP_ROOT/provenance.out" 2>&1; then
     fail 'duplicate provenance unexpectedly passed validation'
 fi
 assert_contains "$(cat "$TMP_ROOT/provenance.out")" 'invalid provenance file'
 mv "$TMP_ROOT/provenance.valid" "$DIST/provenance.txt"
+rm -f "$DIST/release.txt"
+write_release_manifest
 
 # Release-list API failures remain fail-closed and cannot trigger creation.
 reset_remote
@@ -391,19 +419,19 @@ mutations_after=$(grep -Ec '^(create|upload|delete:|edit)' "$MOCK_STATE/calls")
 [ "$mutations_before" -eq "$mutations_after" ] || fail 'published release was mutated'
 
 # Byte equality, not only names, is required.
-printf 'corrupt\n' >> "$REMOTE_ASSETS/packages.cfg"
+printf 'corrupt\n' >> "$REMOTE_ASSETS/catalog.cfg"
 if run_publish > "$TMP_ROOT/corrupt.out" 2>&1; then
     fail 'corrupt published asset unexpectedly passed verification'
 fi
-assert_contains "$(cat "$TMP_ROOT/corrupt.out")" 'immutable candidate: packages.cfg'
+assert_contains "$(cat "$TMP_ROOT/corrupt.out")" 'immutable candidate: catalog.cfg'
 
 # An ambiguous draft is preserved unchanged.
 reset_remote
 : > "$MOCK_STATE/release"
 printf 'true\n' > "$MOCK_STATE/draft"
 printf '%s\n' "$PUBLIC_SHA" > "$MOCK_STATE/tag-sha"
-printf 'packages.cfg\nunexpected.bin\n' > "$MOCK_STATE/assets"
-printf 'stale\n' > "$REMOTE_ASSETS/packages.cfg"
+printf 'catalog.cfg\nunexpected.bin\n' > "$MOCK_STATE/assets"
+printf 'stale\n' > "$REMOTE_ASSETS/catalog.cfg"
 printf 'unexpected\n' > "$REMOTE_ASSETS/unexpected.bin"
 if run_publish > "$TMP_ROOT/ambiguous.out" 2>&1; then
     fail 'ambiguous draft unexpectedly resumed'
@@ -456,9 +484,9 @@ grep -Fxq edit "$MOCK_STATE/calls"
 # Candidate mutation after snapshot creation cannot affect uploaded bytes.
 reset_remote
 write_candidate
-cp "$DIST/packages.cfg" "$TMP_ROOT/packages.snapshot"
+cp "$DIST/catalog.cfg" "$TMP_ROOT/packages.snapshot"
 MUTATE_CANDIDATE_ON_FIRST_API=1 run_publish >/dev/null
-cmp -s "$REMOTE_ASSETS/packages.cfg" "$TMP_ROOT/packages.snapshot" ||
+cmp -s "$REMOTE_ASSETS/catalog.cfg" "$TMP_ROOT/packages.snapshot" ||
     fail 'publisher uploaded bytes reopened from the mutable candidate path'
 write_candidate
 

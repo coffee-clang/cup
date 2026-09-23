@@ -11,6 +11,8 @@ umask 022
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 . "$SCRIPT_DIR/common.sh"
 
+validate_release_inputs
+
 [ "$#" -ge 2 ] || {
     printf 'Usage: %s <output-directory> <part-directory>...\n' "$0" >&2
     exit 2
@@ -52,6 +54,7 @@ for part in "$@"; do
             fail "unsafe release asset name: $name"
             ;;
         esac
+        [ "$name" != release.txt ] || fail 'release.txt must be generated only after final assembly'
         source=$part/$name
         require_nonempty_file "$source"
         [ ! -e "$staging/$name" ] && [ ! -L "$staging/$name" ] ||
@@ -67,6 +70,12 @@ done
 assembled_assets=$(
     for assembled in "$staging"/*; do basename -- "$assembled"; done | LC_ALL=C sort
 )
+# shellcheck disable=SC2086
+validate_release_asset_modes "$staging" $assembled_assets
+generate_release_file "$staging"
+# shellcheck disable=SC2086
+validate_exact_directory_files "$staging" $(release_public_assets)
+assembled_assets=$(for assembled in "$staging"/*; do basename -- "$assembled"; done | LC_ALL=C sort)
 # shellcheck disable=SC2086
 validate_release_asset_modes "$staging" $assembled_assets
 cup_path_move_entry "$staging" "$output" || fail "could not commit candidate output"

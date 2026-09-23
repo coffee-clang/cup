@@ -8,40 +8,32 @@ param(
 
 try {
     Initialize-TestEnvironment -Name "state" -ExecutablePath $CupExecutablePath
-    Set-PackageCatalogField `
-        -Component "compiler" `
-        -Tool "clang" `
-        -Field "available_versions" `
-        -Value "21.1.5" `
-        -Mode "Prepend"
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
-
     New-TestPackage -Component "compiler" -Tool "clang" -Version "21.1.5" -Entries @("clang")
     New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" -Entries @("clang")
     New-TestPackage -Component "debugger" -Tool "gdb" -Version "17.2" -Entries @("gdb")
     New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" -Entries @("lld")
 
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@21.1.5") | Out-Null
-    Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
-    Invoke-Cup -CommandArgs @("install", "debugger", "gdb@stable") | Out-Null
-    Invoke-Cup -CommandArgs @("install", "linker", "lld@stable") | Out-Null
+    Invoke-Cup -CommandArgs @("install", "compiler", "clang@23.1.0") | Out-Null
+    Invoke-Cup -CommandArgs @("install", "debugger", "gdb@17.2") | Out-Null
+    Invoke-Cup -CommandArgs @("install", "linker", "lld@23.1.0") | Out-Null
 
     $statePath = Join-Path $Script:CupTestHome ".cup\state.txt"
     $state = Get-Content -LiteralPath $statePath
-    Assert-Equals $state[0] "format=1"
+    Assert-Equals $state[0] "format=2"
     $installedCount = ($state | Where-Object { $_.StartsWith("installed.") }).Count
     $defaultCount = ($state | Where-Object { $_.StartsWith("default.") }).Count
     Assert-Equals ([string]$installedCount) "4"
     Assert-Equals ([string]$defaultCount) "3"
 
     $stateText = $state -join "`n"
-    Assert-Contains $stateText "installed.compiler.windows-x64.windows-x64=clang@21.1.5"
-    Assert-Contains $stateText "installed.compiler.windows-x64.windows-x64=clang@23.1.0"
-    Assert-Contains $stateText "installed.debugger.windows-x64.windows-x64=gdb@17.2"
-    Assert-Contains $stateText "installed.linker.windows-x64.windows-x64=lld@23.1.0"
-    Assert-Contains $stateText "default.compiler.windows-x64.windows-x64=clang@21.1.5"
-    Assert-Contains $stateText "default.debugger.windows-x64.windows-x64=gdb@17.2"
-    Assert-Contains $stateText "default.linker.windows-x64.windows-x64=lld@23.1.0"
+    Assert-Contains $stateText "installed.compiler.windows-x64=clang@21.1.5"
+    Assert-Contains $stateText "installed.compiler.windows-x64=clang@23.1.0"
+    Assert-Contains $stateText "installed.debugger.windows-x64=gdb@17.2"
+    Assert-Contains $stateText "installed.linker.windows-x64=lld@23.1.0"
+    Assert-Contains $stateText "default.compiler.windows-x64=clang@21.1.5"
+    Assert-Contains $stateText "default.debugger.windows-x64=gdb@17.2"
+    Assert-Contains $stateText "default.linker.windows-x64=lld@23.1.0"
 
     Copy-Item $statePath "$statePath.valid"
 

@@ -165,25 +165,40 @@ compile_test() {
     done
     if [ -n "$UNIT_OBJECT_CACHE" ]; then
         cacheable=1
+        persistent_fixture_cacheable=1
         for compile_arg in "${compile_args[@]}"; do
             case "$compile_arg" in
+                -DCUP_PERSISTENT_FIXTURE_NATIVE_SYSTEM)
+                    cacheable=0
+                    persistent_fixture_cacheable=0
+                    ;;
                 *.c) ;;
-                *) cacheable=0; break ;;
+                *) cacheable=0 ;;
             esac
         done
-        if [ "$cacheable" -eq 1 ]; then
-            cached_args=()
-            for compile_arg in "${compile_args[@]}"; do
-                case "$compile_arg" in
-                    src/*.c|tests/unit/persistent_file_fixture.c)
+        cached_args=()
+        for compile_arg in "${compile_args[@]}"; do
+            case "$compile_arg" in
+                src/*.c)
+                    if [ "$cacheable" -eq 1 ]; then
                         compile_cached_unit_object "$compile_arg"
                         cached_args+=("$CACHED_OBJECT")
-                        ;;
-                    *) cached_args+=("$compile_arg") ;;
-                esac
-            done
-            compile_args=("${cached_args[@]}")
-        fi
+                    else
+                        cached_args+=("$compile_arg")
+                    fi
+                    ;;
+                tests/unit/persistent_file_fixture.c)
+                    if [ "$persistent_fixture_cacheable" -eq 1 ]; then
+                        compile_cached_unit_object "$compile_arg"
+                        cached_args+=("$CACHED_OBJECT")
+                    else
+                        cached_args+=("$compile_arg")
+                    fi
+                    ;;
+                *) cached_args+=("$compile_arg") ;;
+            esac
+        done
+        compile_args=("${cached_args[@]}")
     fi
     printf '==> Compiling C unit test: %s\n' "$name"
     compile_command=("$CC" "${TEST_CPPFLAGS[@]}" "${TEST_CFLAGS[@]}")
@@ -230,27 +245,38 @@ compile_test test_package_transaction \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
 
-compile_test test_update_assets \
-    "$ROOT/tests/unit/test_update_assets.c" \
-    "$ROOT/src/update_assets.c" \
-    "$ROOT/src/text.c"
 
+case "$PLATFORM" in
+    windows-x64)
+        UPDATE_JOURNAL_SYSTEM_SOURCE="$ROOT/src/system_windows.c"
+        UPDATE_JOURNAL_SYSTEM_LIBS=-ladvapi32
+        ;;
+    *)
+        UPDATE_JOURNAL_SYSTEM_SOURCE="$ROOT/src/system_posix.c"
+        UPDATE_JOURNAL_SYSTEM_LIBS=
+        ;;
+esac
 compile_test test_update_journal \
     "$ROOT/tests/unit/test_update_journal.c" \
     "$ROOT/src/update_journal.c" \
-    "$ROOT/src/update_assets.c" \
+    "$ROOT/src/generation.c" \
     "$ROOT/src/release_metadata.c" \
     "$ROOT/src/runtime_journal.c" \
     "$ROOT/src/checksum.c" \
     "$ROOT/src/third_party/sha256.c" \
+    "$ROOT/src/filesystem.c" \
+    "$ROOT/src/layout.c" \
+    "$ROOT/src/interrupt.c" \
+    "$ROOT/src/platform.c" \
+    "$ROOT/src/system.c" \
+    "$UPDATE_JOURNAL_SYSTEM_SOURCE" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
-    "$PERSISTENT_FILE_FIXTURE"
+    $UPDATE_JOURNAL_SYSTEM_LIBS
 
 compile_test test_update_helper \
     "$ROOT/tests/unit/test_update_helper.c" \
     "$ROOT/src/update_helper.c" \
-    "$ROOT/src/update_assets.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
 
@@ -270,13 +296,21 @@ compile_test test_uninstall_journal \
 
 compile_test test_command_repair \
     "$ROOT/tests/unit/test_command_repair.c" \
+    -DCUP_VERSION_OFFICIAL=0 \
     "$ROOT/src/command_repair.c" \
+    "$ROOT/src/runtime_recovery.c" \
     "$ROOT/src/text.c"
 
 
 compile_test test_exit_status \
     "$ROOT/tests/unit/test_exit_status.c" \
     "$ROOT/src/exit_status.c"
+
+compile_test test_generation \
+    "$ROOT/tests/unit/test_generation.c" \
+    "$ROOT/src/generation.c" \
+    "$ROOT/src/path.c" \
+    "$ROOT/src/text.c"
 
 compile_test test_release_metadata \
     "$ROOT/tests/unit/test_release_metadata.c" \
@@ -320,11 +354,15 @@ compile_test test_checksum \
     "$ROOT/src/checksum.c" \
     "$ROOT/src/third_party/sha256.c" \
     "$ROOT/src/text.c" \
-    "$ROOT/src/path.c" \
     "$PERSISTENT_FILE_FIXTURE"
+
+compile_test test_catalog_refresh \
+    "$ROOT/tests/unit/test_catalog_refresh.c" \
+    "$ROOT/src/catalog_refresh.c"
 
 compile_test test_package_catalog \
     "$ROOT/tests/unit/test_package_catalog.c" \
+    -DCUP_VERSION_OFFICIAL=0 \
     "$ROOT/src/package_catalog.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/third_party/sha256.c" \
@@ -343,11 +381,6 @@ compile_test test_install_policy \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c" \
     "$PERSISTENT_FILE_FIXTURE"
-
-compile_test test_assets \
-    "$ROOT/tests/unit/test_assets.c" \
-    "$ROOT/src/assets.c" \
-    "$ROOT/src/text.c"
 
 compile_test test_command_update \
     "$ROOT/tests/unit/test_command_update.c" \
@@ -583,6 +616,7 @@ esac
 compile_test test_state \
     "$ROOT/tests/unit/test_state.c" \
     "$ROOT/src/state.c" \
+    "$ROOT/src/package_selector.c" \
     "$ROOT/src/filesystem.c" \
     "$ROOT/src/interrupt.c" \
     "$ROOT/src/system.c" \
@@ -594,11 +628,8 @@ compile_test test_state \
 compile_test test_self_update \
     "$ROOT/tests/unit/test_self_update.c" \
     "$ROOT/src/self_update.c" \
-    "$ROOT/src/update_assets.c" \
-    "$ROOT/src/release_metadata.c" \
     "$ROOT/src/path.c" \
-    "$ROOT/src/text.c" \
-    "$PERSISTENT_FILE_FIXTURE"
+    "$ROOT/src/text.c"
 
 compile_test test_uninstall_helper \
     "$ROOT/tests/unit/test_uninstall_helper.c" \

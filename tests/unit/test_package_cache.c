@@ -1,6 +1,6 @@
 /*
- * Exercises transfer validation, limits, TLS/timeout mapping, cache refresh and
- * checksum policy with libcurl/system boundaries simulated.
+ * Exercises transfer validation, limits, TLS/timeout mapping and digest-authenticated
+ * archive reuse with libcurl/system boundaries simulated.
  */
 
 #include "checksum.h"
@@ -70,41 +70,22 @@ static curl_off_t mock_max_filesize;
 static curl_xferinfo_callback mock_progress_callback;
 static void *mock_progress_userdata;
 
-static CupError document_load_result;
-static CupError document_find_result;
 static CupError artifact_open_results[MAX_SEQUENCE];
 static ArtifactVerificationStatus artifact_open_statuses[MAX_SEQUENCE];
 static size_t artifact_open_count;
 static size_t artifact_open_index;
-static CupError artifact_revalidate_results[MAX_SEQUENCE];
-static ArtifactVerificationStatus artifact_revalidate_statuses[MAX_SEQUENCE];
-static size_t artifact_revalidate_count;
-static size_t artifact_revalidate_index;
 static CupError artifact_discard_result;
 static size_t artifact_discard_calls;
 
 /* layout.c links its strong markerless-root verifier into this suite. Cache tests never exercise
  * that verifier, so these boundary doubles keep the suite focused on cache behavior. */
-CupError checksum_validate_assets(const char *checksum_path,
-                                  const char *const *asset_names,
-                                  size_t asset_count) {
-    (void)checksum_path;
-    (void)asset_names;
-    (void)asset_count;
-    return CUP_ERR_VALIDATION;
-}
-
-CupError checksum_verify_file(const char *checksum_path,
-                              const char *asset_name,
-                              const char *asset_path,
-                              int *matches) {
-    (void)checksum_path;
-    (void)asset_name;
-    (void)asset_path;
-    if (matches != NULL) {
-        *matches = 0;
+int checksum_digest_is_canonical(const char *value) {
+    size_t i;
+    if (value == NULL || strlen(value) != 64u) return 0;
+    for (i = 0; i < 64u; ++i) {
+        if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) return 0;
     }
-    return CUP_ERR_VALIDATION;
+    return 1;
 }
 
 CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
@@ -113,41 +94,6 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
         hex[0] = '\0';
     }
     return CUP_ERR_VALIDATION;
-}
-
-void checksum_document_init(ChecksumDocument *document) {
-    if (document != NULL) {
-        memset(document, 0, sizeof(*document));
-    }
-}
-
-void checksum_document_free(ChecksumDocument *document) {
-    if (document != NULL) {
-        memset(document, 0, sizeof(*document));
-    }
-}
-
-CupError checksum_document_load(ChecksumDocument *document, const char *path) {
-    (void)path;
-    if (document_load_result == CUP_OK && document != NULL) {
-        document->identity.valid = 1;
-    }
-    return document_load_result;
-}
-
-CupError checksum_document_find_expected(const ChecksumDocument *document,
-                                         const char *asset_name,
-                                         char *hex,
-                                         size_t size) {
-    (void)document;
-    (void)asset_name;
-    if (document_find_result == CUP_OK && hex != NULL && size >= CHECKSUM_SHA256_HEX_LENGTH + 1) {
-        memset(hex, 'a', CHECKSUM_SHA256_HEX_LENGTH);
-        hex[CHECKSUM_SHA256_HEX_LENGTH] = '\0';
-    } else if (hex != NULL && size > 0) {
-        hex[0] = '\0';
-    }
-    return document_find_result;
 }
 
 CupError package_identity_validate(const PackageIdentity *identity, FILE *diagnostics) {
@@ -164,12 +110,10 @@ void verified_artifact_release(VerifiedArtifact *artifact) {
 CupError verified_artifact_open(VerifiedArtifact *artifact,
                                 const char *path,
                                 const PackageArtifactSpec *spec,
-                                const char *expected_digest,
                                 ArtifactVerificationStatus *status) {
     CupError result = CUP_ERR_FILESYSTEM;
     ArtifactVerificationStatus verification = ARTIFACT_VERIFY_NONE;
     (void)spec;
-    (void)expected_digest;
 
     if (artifact_open_index < artifact_open_count) {
         result = artifact_open_results[artifact_open_index];
@@ -182,25 +126,6 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
          verification == ARTIFACT_VERIFY_DIGEST_MISMATCH)) {
         artifact->file = (FILE *)(uintptr_t)1;
         (void)snprintf(artifact->path, sizeof(artifact->path), "%s", path);
-    }
-    if (status != NULL) {
-        *status = verification;
-    }
-    return result;
-}
-
-CupError verified_artifact_verify_expected(VerifiedArtifact *artifact,
-                                           const char *expected_digest,
-                                           ArtifactVerificationStatus *status) {
-    CupError result = CUP_ERR_FILESYSTEM;
-    ArtifactVerificationStatus verification = ARTIFACT_VERIFY_NONE;
-    (void)artifact;
-    (void)expected_digest;
-
-    if (artifact_revalidate_index < artifact_revalidate_count) {
-        result = artifact_revalidate_results[artifact_revalidate_index];
-        verification = artifact_revalidate_statuses[artifact_revalidate_index];
-        artifact_revalidate_index++;
     }
     if (status != NULL) {
         *status = verification;
@@ -242,12 +167,6 @@ void install_policy_init(InstallPolicy *policy) {
     if (policy != NULL) {
         memset(policy, 0, sizeof(*policy));
     }
-}
-
-CupError install_policy_load_path(InstallPolicy *policy, const char *path) {
-    (void)policy;
-    (void)path;
-    return CUP_ERR_VALIDATION;
 }
 
 CupError state_load_path(CupState *state,
@@ -317,12 +236,8 @@ static void reset_mocks(void) {
     mock_max_filesize = 0;
     mock_progress_callback = NULL;
     mock_progress_userdata = NULL;
-    document_load_result = CUP_ERR_VALIDATION;
-    document_find_result = CUP_ERR_VALIDATION;
     artifact_open_count = 0;
     artifact_open_index = 0;
-    artifact_revalidate_count = 0;
-    artifact_revalidate_index = 0;
     artifact_discard_result = CUP_OK;
     artifact_discard_calls = 0;
 }
@@ -428,7 +343,6 @@ CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...) {
 }
 
 CURLcode curl_easy_perform(CURL *curl) {
-    static char checksum_payload[] = "mock checksum metadata\n";
     static char archive_payload[] = "mock package archive\n";
     char *payload = mock_payload;
     size_t length;
@@ -453,9 +367,7 @@ CURLcode curl_easy_perform(CURL *curl) {
     if (mock_too_large) {
         return CURLE_FILESIZE_EXCEEDED;
     }
-    if (strstr(mock_url, "checksum") != NULL) {
-        payload = checksum_payload;
-    } else if (strstr(mock_url, "archive") != NULL) {
+    if (strstr(mock_url, "archive") != NULL) {
         payload = archive_payload;
     }
     length = strlen(payload);
@@ -496,14 +408,6 @@ static void push_artifact(CupError result, ArtifactVerificationStatus status) {
     artifact_open_results[artifact_open_count] = result;
     artifact_open_statuses[artifact_open_count] = status;
     artifact_open_count++;
-}
-
-static void push_artifact_revalidation(CupError result,
-                                       ArtifactVerificationStatus status) {
-    TEST_ASSERT_TRUE(artifact_revalidate_count < MAX_SEQUENCE);
-    artifact_revalidate_results[artifact_revalidate_count] = result;
-    artifact_revalidate_statuses[artifact_revalidate_count] = status;
-    artifact_revalidate_count++;
 }
 
 static void build_path(char *buffer, size_t size, const char *name) {
@@ -557,26 +461,12 @@ static PackageIdentity identity_for(const char *version) {
     return identity;
 }
 
-static void make_cache_files(const PackageIdentity *identity,
-                             char *archive_path,
-                             size_t archive_size) {
-    char checksum_path[1024];
-    char *separator;
-
-    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache_parent(identity));
+static void make_cache_file(const PackageArtifactSpec *spec,
+                            char *archive_path,
+                            size_t archive_size) {
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache());
     TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        layout_build_cache_archive_path(
-            archive_path, archive_size, identity, "tar.gz"));
-    TEST_ASSERT_TRUE(snprintf(
-        checksum_path, sizeof(checksum_path), "%s", archive_path) > 0);
-    separator = strrchr(checksum_path, '/');
-    TEST_ASSERT_NOT_NULL(separator);
-    TEST_ASSERT_TRUE(snprintf(separator + 1,
-                              sizeof(checksum_path) -
-                                  (size_t)(separator + 1 - checksum_path),
-                              "SHA256SUMS") > 0);
-    write_text(checksum_path, "mock checksum metadata\n");
+        CUP_OK, layout_build_cache_path(archive_path, archive_size, spec->artifact_sha256));
     write_text(archive_path, "mock package archive\n");
 }
 
@@ -846,9 +736,10 @@ static PackageArtifactSpec artifact_spec_for(const char *version) {
     TEST_ASSERT_TRUE(snprintf(spec.package_url,
                               sizeof(spec.package_url),
                               "https://example.invalid/archive") > 0);
-    TEST_ASSERT_TRUE(snprintf(spec.checksum_url,
-                              sizeof(spec.checksum_url),
-                              "https://example.invalid/checksum") > 0);
+    TEST_ASSERT_TRUE(snprintf(spec.artifact_sha256,
+                              sizeof(spec.artifact_sha256),
+                              "%s",
+                              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") > 0);
     return spec;
 }
 
@@ -860,138 +751,117 @@ static void test_cache_source_results(void) {
 
     memset(&artifact, 0, sizeof(artifact));
     source = (PackageCacheSource)0x7f;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(NULL, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch_artifact(NULL, &spec, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     source = (PackageCacheSource)0x7f;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(&artifact, NULL, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch_artifact(&artifact, NULL, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
-    source = (PackageCacheSource)0x7f;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_INVALID_INPUT,
-        package_cache_fetch_artifact(&artifact, &spec, (PackageCachePolicy)999, &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          package_cache_fetch_artifact(&artifact, &spec, NULL));
 
     reset_mocks();
     spec = artifact_spec_for("22.1.5-typed-valid");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    make_cache_file(&spec, archive_path, sizeof(archive_path));
     push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
-
-    reset_mocks();
-    memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-stale-metadata");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
-    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
-    push_artifact_revalidation(CUP_OK, ARTIFACT_VERIFY_VALID);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_CACHE, source);
+    TEST_ASSERT_FALSE(artifact.disposable);
     TEST_ASSERT_EQUAL_size_t(1, artifact_open_index);
-    TEST_ASSERT_EQUAL_size_t(1, artifact_revalidate_index);
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-refresh-failure");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    spec = artifact_spec_for("22.1.5-typed-stale");
+    make_cache_file(&spec, archive_path, sizeof(archive_path));
     push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
-    mock_fail_url = "checksum";
-    mock_perform_result = CURLE_COULDNT_CONNECT;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FETCH,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    TEST_ASSERT_TRUE(artifact.disposable);
+    TEST_ASSERT_EQUAL_size_t(2, artifact_open_index);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
-    TEST_ASSERT_FALSE(test_access_exists(archive_path));
+    TEST_ASSERT_TRUE(strstr(mock_url, "archive") != NULL);
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-empty-cache");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(archive_path, 1));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    spec = artifact_spec_for("22.1.5-typed-rejected");
+    make_cache_file(&spec, archive_path, sizeof(archive_path));
     push_artifact(CUP_OK, ARTIFACT_VERIFY_REJECTED);
     mock_fail_url = "archive";
     mock_perform_result = CURLE_COULDNT_CONNECT;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FETCH,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_FETCH,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
     TEST_ASSERT_FALSE(test_access_exists(archive_path));
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-wrong-kind-cache");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
+    spec = artifact_spec_for("22.1.5-typed-wrong-kind");
+    make_cache_file(&spec, archive_path, sizeof(archive_path));
     TEST_ASSERT_EQUAL_INT(0, test_unlink(archive_path));
     TEST_ASSERT_EQUAL_INT(0, test_mkdir(archive_path, 0755));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
     push_artifact(CUP_OK, ARTIFACT_VERIFY_WRONG_TYPE);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    TEST_ASSERT_TRUE(artifact.disposable);
     TEST_ASSERT_EQUAL_size_t(0, artifact_discard_calls);
     TEST_ASSERT_TRUE(test_access_exists(archive_path));
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-network-stale-metadata");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    TEST_ASSERT_EQUAL_INT(0, test_unlink(archive_path));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    spec = artifact_spec_for("22.1.5-typed-network");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_cache());
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          layout_build_cache_path(archive_path,
+                                                  sizeof(archive_path),
+                                                  spec.artifact_sha256));
+    if (test_access_exists(archive_path)) {
+        TEST_ASSERT_EQUAL_INT(0, test_remove_tree(archive_path));
+    }
     push_artifact(CUP_OK, ARTIFACT_VERIFY_MISSING);
-    push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
-    push_artifact_revalidation(CUP_OK, ARTIFACT_VERIFY_VALID);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_OK,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
     TEST_ASSERT_EQUAL_size_t(2, artifact_open_index);
-    TEST_ASSERT_EQUAL_size_t(1, artifact_revalidate_index);
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-network-reject");
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    spec = artifact_spec_for("22.1.5-typed-network-digest-failure");
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_MISSING);
     push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_VALIDATION,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_REFRESH, &source));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
     TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
 
     reset_mocks();
     memset(&artifact, 0, sizeof(artifact));
-    spec = artifact_spec_for("22.1.5-typed-commit-precedence");
-    make_cache_files(&spec.identity, archive_path, sizeof(archive_path));
-    document_load_result = CUP_OK;
-    document_find_result = CUP_OK;
+    spec = artifact_spec_for("22.1.5-typed-open-error");
+    push_artifact(CUP_ERR_FILESYSTEM, ARTIFACT_VERIFY_NONE);
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    TEST_ASSERT_TRUE(artifact.disposable);
+
+    reset_mocks();
+    memset(&artifact, 0, sizeof(artifact));
+    spec = artifact_spec_for("22.1.5-typed-discard-error");
+    make_cache_file(&spec, archive_path, sizeof(archive_path));
     push_artifact(CUP_OK, ARTIFACT_VERIFY_DIGEST_MISMATCH);
-    push_artifact_revalidation(CUP_ERR_COMMIT, ARTIFACT_VERIFY_NONE);
     artifact_discard_result = CUP_ERR_FILESYSTEM;
-    TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_COMMIT,
-        package_cache_fetch_artifact(&artifact, &spec, PACKAGE_CACHE_ALLOW, &source));
-    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NONE, source);
+    push_artifact(CUP_OK, ARTIFACT_VERIFY_VALID);
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          package_cache_fetch_artifact(&artifact, &spec, &source));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_CACHE_SOURCE_NETWORK, source);
+    TEST_ASSERT_TRUE(artifact.disposable);
     TEST_ASSERT_EQUAL_size_t(1, artifact_discard_calls);
 }
 

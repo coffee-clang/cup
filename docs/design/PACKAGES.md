@@ -1,434 +1,274 @@
 # Packages
 
-This page defines the package contract between CUP and `cup-components`. It
-covers package selection, catalog/policy files, archive admission, `info.txt`,
-`manifest.txt`, installed paths and cache behavior.
+CUP consumes immutable prebuilt packages published by `cup-components`. The
+package pipeline and the runtime catalog deliberately expose concrete identities
+rather than asking CUP to reconstruct producer decisions from templates.
 
-Tool-specific build recipes are not part of this repository. CUP consumes the
-published result and validates the parts of the package format it owns.
+## Responsibility split
 
-## Producer and consumer responsibilities
+The compiled registry describes the domain understood by one CUP generation:
+component/tool relationships, platform identifiers and version semantics. The
+compiled policy describes official abbreviated choices, profiles and toolchains.
+The catalog describes what has actually been published. User preferences apply
+only to future abbreviated installs.
 
-`cup-components` owns:
+These roles are independent. Adding a tool to the registry does not make it an
+official default, and a catalog containing one tool for a component does not
+make that tool an implicit policy choice.
 
-```text
-tool build and feature selection
-runtime closure inside the package
-package metadata
-manifest generation
-archive production
-release SHA256SUMS
-native validation of the produced tool
-```
+## Package identity and versions
 
-CUP owns:
+A public package identity is:
 
 ```text
-component/tool/platform domain
-catalog and install policy parsing
-package selection
-archive/checksum download and cache
-archive path/type/resource admission
-staged extraction
-metadata and executable-entry validation
-manifest integrity verification
-canonical installation, state and defaults
+(component, tool, version, host, target)
 ```
 
-The package files are the interface. CUP does not need to understand the Docker,
-MSYS2, Xcode or native build process that produced them.
+Current operational tools use canonical numeric-dotted base versions. Segments
+are compared numerically, with a matching extra segment later in the ordering:
+`1.2 < 1.2.0`.
 
-## Selection inputs
-
-Four inputs participate in installation selection:
-
-| Input | Purpose |
-|---|---|
-| compiled registry | valid components, tools and platforms |
-| `packages.cfg` | available host/target/version/archive tuples |
-| `install.cfg` | official defaults, profiles and toolchains |
-| `preferences.txt` | optional user choices for abbreviated installs |
-
-The compiled registry is a closed domain. A catalog can make a known tool
-available or unavailable for a scope; it cannot add a new component/tool
-relationship.
-
-Installed official copies live below `<cup-root>/config/`. Development builds
-can use the repository `config/` copies when no installed generation exists.
-
-## `install.cfg`
-
-The file starts with:
+Every operational package may add one terminal CUP package revision:
 
 ```text
-format=1
+23.1.0
+23.1.0-rev1
+23.1.0-rev2
 ```
 
-It accepts these record families:
+`-revN` is a package-generation revision, not part of the upstream source
+version. Ordering first compares the complete base version and compares the
+revision only when the base is identical. Consequently:
 
 ```text
-default.<host>.<target>.<component>=<tool>
-profile.<name>=<component>,...
-toolchain.<name>=<tool>,...
+23.1.0 < 23.1.0-rev1 < 23.1.1
+23.1.0-rev9 < 23.1.0-rev10
+1.2-rev99 < 1.2.0
 ```
 
-Official defaults are scoped by host, target and component. A profile contains
-components; each component is resolved through user preference and then the
-official default when the profile is installed. A toolchain contains explicit
-tools and therefore does not consult preferences.
+A corrected redistribution of the same upstream version receives a new
+immutable package identity such as `-rev1`; CUP does not replace published bytes
+behind an existing identity.
 
-Names must resolve through the compiled domain. Duplicate records/items are
-invalid, and a toolchain may contain at most one tool for each component.
-Availability is still checked against `packages.cfg`, so a preset is not assumed
-to exist for every host/target combination.
+`source.primary.version` in `info.txt` always contains the unsuffixed upstream
+base. A revision-bearing package must also contain `package.revision_reason`.
+There is no separate numeric revision field.
 
-`install.cfg` is part of the official CUP generation and is authenticated by the
-release checksum chain.
+Coffee is registry-recognized but remains non-operational until its real version
+and package contract is frozen and shipped by a CUP generation. Older CUP
+versions can retain future Coffee records structurally without guessing their
+ordering.
 
-## `preferences.txt`
+## Catalog snapshot
 
-User preferences are stored as:
+`catalog.cfg` is a concrete consumer snapshot. Its top-level header is:
 
 ```text
 format=1
-preferred.<host>.<target>.<component>=<tool>
+revision=<monotonic integer>
+update_url=<HTTPS catalog URL>
 ```
 
-The file belongs to the user and is not an official checksummed asset. CUP
-validates the complete document and publishes updates atomically.
-
-For an abbreviated component install, the selection order is:
+A package record contains the complete identity, one derived stable bit and one
+or more concrete artifacts. Conceptually:
 
 ```text
-explicit tool in the command, when present
-user preference for the scope
-official default for the scope
-error when no valid selection exists
+package.0.component=compiler
+package.0.tool=clang
+package.0.host=linux-x64
+package.0.target=linux-x64
+package.0.version=23.1.0-rev1
+package.0.revision_reason=<reason>
+package.0.stable=true
+package.0.artifact.0.format=tar.gz
+package.0.artifact.0.url=https://.../clang-23.1.0-rev1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.sha256=<64 lowercase hex>
 ```
 
-Preferences influence future component/profile installs only; they do not change
-current defaults.
+`revision_reason` is present exactly when the package version carries `-revN`.
+There are no URL templates, version lists, catalog-side manifest digest or
+catalog-side default archive format.
 
-## `packages.cfg`
+Within one `(component, tool, host, target)` scope, stable is the semantic
+maximum package version. The producer materializes this bit, while CUP trusts it
+only for a record whose tool/platform/version/archive contract it understands.
+If the persisted stable record is future/non-operational, CUP does not promote a
+lower record on its own.
 
-The catalog is a line-based `key=value` document whose first physical line is:
+The parser distinguishes structural validity from operational support. This
+lets an older CUP retain safe future records without treating the complete
+snapshot as corrupt. Search and install expose only records that the running CUP
+can operate.
+
+## Catalog source and publication
+
+The source catalog belongs to `cup-components`. After one immutable package
+release is published and verified, its serialized catalog step activates that
+publication, writes and commits the canonical source catalog, then publishes the
+same snapshot to the rolling `catalog` GitHub Release. The rolling asset URL is
+stable while catalog revision provides consumer chronology. Revision 0 is
+published manually during initial bootstrap; manual publication otherwise serves
+explicit recovery or administrative cases.
+
+CUP does not track a catalog snapshot. Development may use a local ignored
+`config/catalog.cfg` copied from a published `cup-components` snapshot. Release
+preparation acquires the currently published catalog before native qualification
+and pins those exact bytes as the candidate's bootstrap/recovery seed. A live
+runtime catalog may later advance independently.
+
+## Selectors and resolution
+
+Exact selectors identify one concrete immutable package:
 
 ```text
-format=1
+clang@23.1.0
+clang@23.1.0-rev1
 ```
 
-Blank lines and full-line comments are permitted after the marker. Each package
-tuple uses:
+The first selector never aliases the second. `stable` is symbolic and resolves
+through the current catalog snapshot:
 
 ```text
-<component>.<tool>.<host>.<target>.<field>=<value>
+clang@stable
 ```
 
-Required fields are:
+A component-only install first checks the user preference for that
+`(target, component)` scope, otherwise the compiled official policy, then
+resolves that selected tool's stable package. A user preference that exists but
+cannot be satisfied is an error; CUP does not silently replace it with the
+official choice.
 
-```text
-stable_version
-available_versions
-default_format
-formats
-url_template
-checksum_url_template
-```
+Profiles select component roles and therefore respect preference/policy.
+Toolchains select concrete tools and do not consult preferences.
 
-Example shape:
-
-```text
-compiler.gcc.linux-x64.windows-x64.stable_version=<version>
-compiler.gcc.linux-x64.windows-x64.available_versions=<version>,...
-compiler.gcc.linux-x64.windows-x64.default_format=tar.gz
-compiler.gcc.linux-x64.windows-x64.formats=tar.xz,tar.gz,zip
-compiler.gcc.linux-x64.windows-x64.url_template=https://.../{tool}-{version}-{host_platform}-{target_platform}.{format}
-compiler.gcc.linux-x64.windows-x64.checksum_url_template=https://.../SHA256SUMS
-```
-
-The parser rejects malformed/duplicate/incomplete tuples, unknown domain values,
-duplicate versions or formats, unsupported archive formats, invalid stable/default
-selections, non-HTTPS templates and invalid placeholders.
-
-Supported placeholders are:
-
-```text
-{tool}
-{version}
-{host_platform}
-{target_platform}
-{format}
-```
-
-`{format}` belongs to archive URLs and is not part of the checksum release
-identity. CUP expands templates only after every identity field has been
-validated.
-
-## Releases
-
-`stable_version` must also appear in `available_versions`. `stable` itself is a
-selector and is never stored as a concrete package version.
-
-Version strings are opaque package identifiers. CUP does not infer package
-ordering through semantic-version rules; the catalog decides what exists and
-which release is stable. Producer packaging revisions can therefore be part of a
-version string, for example:
-
-```text
-16.2.0-rev1
-```
-
-The complete string participates in package lookup, filenames, metadata, state
-and paths.
+A group command performs at most one command-scoped refresh, freezes one logical
+catalog snapshot and preflights all requested members and formats before the
+first package mutation.
 
 ## Archive formats
 
-CUP accepts:
+Normal package publication provides `tar.xz`, `tar.gz` and `zip`. CUP chooses a
+transport default as consumer policy: `tar.gz` on POSIX hosts and `zip` on
+Windows. `--format` can request another published format.
+
+Archive format is transport, not package identity. All formats for one package
+identity must unpack to the same package tree. Raw hardlinks are outside the CUP
+archive boundary; the producer materializes required content before publication.
+
+## Package paths
+
+The root already authenticates the host, so the local package path is:
 
 ```text
-tar.xz
-tar.gz
-zip
+<root>/components/<component>/<tool>/<target>/<version>/
 ```
 
-The catalog's `default_format` is used unless the install command chooses another
-published format with `--format`/`-f`.
-
-Archives are decoded with libarchive. CUP does not execute system `tar`, `gzip`,
-`xz` or `unzip` during package installation. The decoder-reported archive/filter
-stack must agree with the selected format; the filename extension is not treated
-as proof of content.
-
-## Package identity and paths
-
-One package identity is:
-
-```text
-component
-tool
-host platform
-target platform
-concrete version
-```
-
-The installed path is:
-
-```text
-<cup-root>/components/<component>/<tool>/<host>/<target>/<version>/
-```
-
-The cache path is:
-
-```text
-<cup-root>/cache/<component>/<tool>/<host>/<target>/<version>/
-  <tool>-<version>-<host>-<target>.<format>
-```
-
-Cache names are constructed from validated identity fields; response headers and
-remote pathnames never select local destinations.
-
-## Archive tree
-
-A package archive contains one top-level directory. That directory name is only
-archive structure: package identity still comes from the selected request and
-validated `info.txt`.
-
-Portable archive paths are relative slash-separated printable-ASCII paths. CUP
-rejects empty, `.` or `..` segments, backslashes, colons, Windows-reserved
-punctuation/device names, trailing-dot aliases, case-fold collisions, file/
-directory aliases, hard links and special filesystem objects.
-
-POSIX packages may contain relative symbolic links. Extraction admits only
-lexically confined targets and never allows a link to become the parent of a
-later archive write. Final manifest validation is stricter: each link must
-resolve physically within the package and end at a regular file. Declared
-commands must resolve to executable regular files. Windows package content does
-not admit symbolic links/reparse objects.
-
-Raw archive hard links are deliberately outside the consumer contract.
-`cup-components` materializes final hard-linked staging files as independent
-regular files before publication.
-
-The package may otherwise choose the internal layout needed by its tool, such as
-`bin/`, `lib/`, `libexec/`, `include/`, `share/` or target-specific directories.
+Host remains explicit in catalog and package metadata because those objects can
+cross roots and repositories.
 
 ## `info.txt`
 
-Every package contains line-based semantic metadata. The identity fields are:
+`info.txt` describes the package. Required information includes:
 
 ```text
-package.component
-package.tool
-package.version
-platform.host
-platform.target
+package.component=<component>
+package.tool=<tool>
+package.version=<complete package version>
+package.revision_reason=<only for -revN>
+platform.host=<host>
+platform.target=<target>
+source.primary.name=<source>
+source.primary.version=<unsuffixed upstream version>
+source.primary.url=<source URL>
+source.primary.sha256=<source digest>
+entry.<metadata-id>=<relative command path>
 ```
 
-The common consumer contract also requires:
+Producer metadata may additionally describe triples, runtime family, build
+information, bundled dependencies or features when that information has real
+inspection value. `info.txt` does not repeat transport formats or a constant
+`self-contained` flag.
+
+The metadata key after `entry.` is an identifier, not necessarily the public
+command spelling. The public wrapper name is derived from the basename of the
+entry path. For example:
 
 ```text
-package.mode=self-contained
-package.formats=<exact set: tar.xz,tar.gz,zip>
-platform.host_triple
-platform.target_triple
-platform.family
-platform.runtime
-platform.thread_model
-build.environment
-build.source_policy
-source.primary.name
-source.primary.version
-source.primary.url
-source.primary.sha256
+entry.clang_tidy=bin/clang-tidy
 ```
 
-The source digest is canonical SHA-256. GCC packages additionally use
-`package.revision`, which must agree with the package version's `-revN` suffix.
-
-Every package declares at least one provided command through `entry.*`.
-Additional producer-owned metadata is grouped as:
-
-```text
-features.*    behavioral capabilities described by the producer
-contents.*    important payload groups
-bundle.*      composed tool/source inputs
-requires.*    platform prerequisites outside the payload
-config.*      build choices useful when inspecting the package
-```
-
-CUP validates the syntax and common package contract and exposes this data through
-`cup inspect`; tool-specific interpretation and native validation remain producer-owned.
-
-Example excerpt:
-
-```text
-package.component=compiler
-package.tool=gcc
-package.version=16.2.0-rev1
-platform.host=linux-x64
-platform.target=linux-x64
-entry.gcc=bin/gcc
-features.c=true
-contents.self_contained=true
-```
-
-Duplicate keys, malformed lines, empty values and values beyond the format limits
-are rejected. Identity must match both the selected package and its canonical
-installed path.
+provides the public command `clang-tidy`.
 
 ## `manifest.txt`
 
-A finalized package contains a complete logical inventory using `format=2`.
-`manifest.txt` itself is not listed; every other descendant is present exactly
-once and records are path-ordered:
+`manifest.txt` is the exact extracted-tree authority. Format 2 records every
+managed directory, file and permitted symlink with its required mode/content
+identity. Package admission validates the tree against this manifest before any
+canonical package commit.
+
+The catalog authenticates the archive SHA-256. Because the authenticated archive
+contains `manifest.txt`, CUP does not duplicate the manifest digest in the
+runtime catalog or state.
+
+## Download and cache
+
+The cache is an optimization keyed only by the catalog artifact digest:
 
 ```text
-d<TAB>0755<TAB>-<TAB><path>
-f<TAB>0644|0755<TAB><sha256><TAB><path>
-l<TAB>-<TAB><sha256-of-target-text><TAB><path>
+<root>/cache/<artifact-sha256>
 ```
 
-Directory/file modes are normalized by the producer. Link records are POSIX-only
-and bind the exact relative target text. Windows manifests therefore contain only
-directories and regular files.
+A cache hit must be a safe regular file and is rehashed before use. A mismatch,
+wrong object type or unusable cache entry is bypassed. Cache write failure does
+not make an otherwise verified package install fail.
 
-`cup-components` generates the manifest from the final package tree and
-regenerates/checks it for every published archive format. Tar.xz, tar.gz and ZIP
-are required to represent the same logical package.
+On a miss, CUP downloads into private temporary storage, verifies the catalog
+digest, may publish those verified bytes into the cache, and continues package
+admission from the verified artifact. The cache never reconstructs catalog
+availability.
 
-During installation CUP validates metadata/entries and then compares the entire
-staged tree with the manifest:
+## Admission and installed integrity
 
-- every declared object must exist with the expected type;
-- regular-file digest and normalized mode must match;
-- directories and POSIX link target text must match;
-- finalized POSIX links must resolve inside the package to regular files;
-- undeclared objects are rejected.
+Before a package is committed, CUP validates archive safety, metadata identity,
+manifest/tree integrity and the prospective wrapper namespace. An exact package
+already recorded in state is not silently overwritten. If its installed tree is
+invalid, repair/remove/reinstall is the explicit path.
 
-This full integrity check is also appropriate for package scanning, `doctor` and
-repair admission. Lightweight metadata queries do not re-hash every package file.
+After installation, `state.txt` owns the logical installed identity while
+`manifest.txt` owns the package tree. Scanning can reconstruct valid package
+identities for repair, but ordinary commands do not adopt untracked package
+directories just because their paths look plausible.
 
-## Provided commands
+## Update semantics
 
-Each `entry.<name>` is a safe package-relative path. Final validation requires it
-to resolve inside the package and reach a non-empty executable regular file.
+Package update first performs a cheap local installed-family precheck. If there
+is something to update, it performs one required catalog refresh and plans from
+the resulting snapshot.
 
-Default packages expose their entries through CUP launchers:
+For each `(component, tool, target)` family, the reference is a same-tool active
+default when one exists, otherwise the maximum installed release of that tool.
+Lower catalog stable never downgrades the reference. Equal stable is verified
+and left unchanged. Newer stable is installed/adopted; the old version remains
+installed. The default advances only when it was an older release of that same
+tool.
 
-```text
-native target  <entry>
-cross target   <target>-<entry>
-```
+A locally installed version that has disappeared from the current catalog is
+not deleted. Current availability and local history are separate authorities.
 
-Launcher planning rejects collisions and the reserved CUP executable name.
-Launchers are derived from defaults; they are not part of package identity.
+## Resource boundaries
 
-## Admission sequence
+Catalog and state documents have explicit byte budgets rather than arbitrary
+small record-count caps. Package/state collections are dynamically represented
+inside those bounds. Defaults and preferences remain naturally bounded by the
+finite `(component, target)` scope set.
 
-A package entering the installed tree passes these boundaries:
-
-```text
-catalog/request validation
-        ↓
-checksum-authenticated archive stream
-        ↓
-archive format/path/type/resource admission
-        ↓
-private staged tree
-        ↓
-info.txt + entry validation
-        ↓
-manifest.txt full-tree integrity validation
-        ↓
-transactional publication + state commit
-```
-
-The separation matters: archive safety is checked while constructing the staged
-tree, while package identity/integrity is checked against the final staged tree.
-
-## Cache behavior
-
-A cached archive is reusable only after its digest matches the published
-`SHA256SUMS` record. The cache returns a `VerifiedArtifact` that owns the already
-opened file; hashing and extraction therefore refer to the same stream.
-
-If checksum metadata is refreshed, CUP revalidates the digest already calculated
-for that open file rather than reopening the cache pathname.
-
-A cached object that fails extraction or package validation is removed only when
-the pathname still identifies that same observed object. CUP performs one fresh
-network download; a second failure is returned instead of retried indefinitely.
-
-## Scanning and repair
-
-`repair` can adopt a valid current-host package that exists at the canonical
-component path but is missing from state. Invalid identifiable package objects
-may be moved intact to recovery/quarantine storage. Unknown or ambiguous paths,
-links and special objects are reported and preserved.
-
-Scans retain both returned entries and the real discovered totals. If a capacity
-limit prevents a complete view, repair stops before reconstructing state from a
-partial scan.
-
-## Resource limits
-
-Archive and package processing is bounded. Important ceilings include:
-
-```text
-262,144 package entries
-256 MiB stored path-table text
-16 GiB one regular file
-64 GiB total extracted bytes
-64 path segments
-```
-
-These are safety limits, not expected package sizes. Exceeding one is an error;
-CUP does not silently truncate a package.
+Archive extraction, transfer sizes, metadata lengths and path segments retain
+separate defensive limits at the boundary where those resources are consumed.
 
 ## Related documents
 
-- [Concepts](../user/CONCEPTS.md)
 - [Architecture](ARCHITECTURE.md)
 - [State](STATE.md)
+- [Transactions](TRANSACTIONS.md)
 - [Security](SECURITY.md)
 - [Commands](../user/COMMANDS.md)

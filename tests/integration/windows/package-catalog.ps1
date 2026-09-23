@@ -1,5 +1,4 @@
-# Exercises Windows development-catalog fallback, checksum-schema and secure-URL validation
-# through the real CLI. Installed-source precedence is covered by the catalog unit suite.
+# Exercises Windows development-catalog fallback and the concrete artifact schema through the real CLI.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -8,42 +7,69 @@ param(
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
 try {
-    Initialize-TestEnvironment -Name "package-catalog" -ExecutablePath $CupExecutablePath
-    $catalog = Join-Path $Script:CupTestDevRoot "config\packages.cfg"
-    $original = Get-Content -LiteralPath $catalog
+    Initialize-TestEnvironment -Name 'package-catalog' -ExecutablePath $CupExecutablePath
+    $catalog = Join-Path $Script:CupTestDevRoot 'config\catalog.cfg'
 
-    $removed = $false
-    $missingChecksum = foreach ($line in $original) {
-        if (-not $removed -and $line.Contains(".checksum_url_template=")) {
-            $removed = $true
-        } else {
-            $line
-        }
-    }
-    if (-not $removed) {
-        Fail-Test "could not remove checksum_url_template"
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $missingChecksum
-    Assert-Contains (Invoke-Cup -CommandArgs @("search") -ExpectFailure) `
-        "is missing one or more required fields"
+    # Source-only discovery uses the local development catalog without creating a runtime root.
+    Invoke-Cup -CommandArgs @('search', 'compiler') | Out-Null
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup')
 
-    $changed = $false
-    $insecure = foreach ($line in $original) {
-        if (-not $changed -and $line.Contains(".checksum_url_template=https:")) {
-            $changed = $true
-            $line.Replace("=https:", "=http:")
-        } else {
-            $line
-        }
-    }
-    if (-not $changed) {
-        Fail-Test "could not alter checksum URL"
-    }
-    Write-Utf8NoBom -Path $catalog -Lines $insecure
-    Assert-Contains (Invoke-Cup -CommandArgs @("search") -ExpectFailure) `
-        "catalog URL templates must use HTTPS"
+    Write-Utf8NoBom -Path $catalog -Lines @(
+        'format=1',
+        'revision=1',
+        'update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg',
+        'package.0.component=compiler',
+        'package.0.tool=clang',
+        'package.0.host=windows-x64',
+        'package.0.target=windows-x64',
+        'package.0.version=98.0.1',
+        'package.0.stable=true',
+        'package.0.artifact.0.format=zip',
+        'package.0.artifact.0.url=https://example.invalid/clang-98.0.1-windows-x64-windows-x64.zip',
+        ('package.0.artifact.0.sha256=' + ('0' * 64)))
+    $output = Invoke-Cup -CommandArgs @('search', 'compiler')
+    Assert-Contains $output '98.0.1'
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup')
 
-    Write-Host "Windows package-catalog tests passed."
+    $missingSha = Get-Content -LiteralPath $catalog | Where-Object {
+        -not $_.StartsWith('package.0.artifact.0.sha256=', [StringComparison]::Ordinal)
+    }
+    Write-Utf8NoBom -Path $catalog -Lines $missingSha
+    Invoke-Cup -CommandArgs @('search', 'compiler') -ExpectFailure | Out-Null
+
+    Write-Utf8NoBom -Path $catalog -Lines @(
+        'format=1',
+        'revision=1',
+        'update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg',
+        'package.0.component=compiler',
+        'package.0.tool=clang',
+        'package.0.host=windows-x64',
+        'package.0.target=windows-x64',
+        'package.0.version=98.0.1',
+        'package.0.stable=true',
+        'package.0.artifact.0.format=zip',
+        'package.0.artifact.0.url=http://example.invalid/clang-98.0.1-windows-x64-windows-x64.zip',
+        ('package.0.artifact.0.sha256=' + ('0' * 64)))
+    Invoke-Cup -CommandArgs @('search', 'compiler') -ExpectFailure | Out-Null
+
+    Write-Utf8NoBom -Path $catalog -Lines @(
+        'format=1',
+        'revision=2',
+        'update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg',
+        'package.0.component=compiler',
+        'package.0.tool=clang',
+        'package.0.host=windows-x64',
+        'package.0.target=windows-x64',
+        'package.0.version=future-1',
+        'package.0.stable=true',
+        'package.0.artifact.0.format=zip',
+        'package.0.artifact.0.url=https://example.invalid/clang-future-1-windows-x64-windows-x64.zip',
+        ('package.0.artifact.0.sha256=' + ('0' * 64)))
+    $future = Invoke-Cup -CommandArgs @('search', 'compiler')
+    Assert-NotContains $future 'future-1'
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup')
+
+    Write-Host 'Windows package-catalog tests passed.'
 } finally {
     Remove-TestEnvironment
 }

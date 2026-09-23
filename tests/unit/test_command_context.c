@@ -3,7 +3,7 @@
  * installed-package requirements through boundary stubs.
  */
 
-#include "assets.h"
+#include "generation.h"
 #include "command_context.h"
 #include "installed_package.h"
 #include "package_selector.h"
@@ -32,11 +32,11 @@ static CupError platform_validation_result;
 static CupError runtime_result;
 static LayoutRuntimeStatus runtime_statuses[4];
 static size_t runtime_calls;
-static CupError assets_result;
-static int assets_fail_call;
-static int assets_calls;
-static int installed_assets_valid;
-static int development_assets_valid;
+static CupError generation_result;
+static int generation_fail_call;
+static int generation_calls;
+static int installed_generation_present;
+static int installed_generation_valid;
 static CupError ensure_root_result;
 static CupError root_snapshot_result;
 static int ensure_root_calls;
@@ -87,11 +87,11 @@ static void reset_scenario(void) {
     runtime_statuses[2] = LAYOUT_RUNTIME_READY;
     runtime_statuses[3] = LAYOUT_RUNTIME_READY;
     runtime_calls = 0;
-    assets_result = CUP_OK;
-    assets_fail_call = 0;
-    assets_calls = 0;
-    installed_assets_valid = 1;
-    development_assets_valid = 0;
+    generation_result = CUP_OK;
+    generation_fail_call = 0;
+    generation_calls = 0;
+    installed_generation_present = 1;
+    installed_generation_valid = 1;
     ensure_root_result = CUP_OK;
     root_snapshot_result = CUP_OK;
     ensure_root_calls = 0;
@@ -179,21 +179,33 @@ CupError layout_get_runtime_status(LayoutRuntimeStatus *status) {
     return CUP_OK;
 }
 
-CupError assets_inspect(AssetsInspection *inspection) {
-    TEST_ASSERT_NOT_NULL(inspection);
+CupError generation_inspect(GenerationInspection *inspection) {
     memset(inspection, 0, sizeof(*inspection));
-    assets_calls++;
-    return assets_fail_call == assets_calls ? CUP_ERR_FILESYSTEM : assets_result;
+    generation_calls++;
+    if (generation_fail_call == generation_calls) return CUP_ERR_FILESYSTEM;
+    if (generation_result != CUP_OK) return generation_result;
+    if (installed_generation_present) {
+        inspection->release = CUP_GENERATION_ASSET_VALID;
+        inspection->license = CUP_GENERATION_ASSET_VALID;
+        inspection->notices = CUP_GENERATION_ASSET_VALID;
+        inspection->binary = installed_generation_valid ? CUP_GENERATION_ASSET_VALID
+                                                      : CUP_GENERATION_ASSET_INVALID;
+    }
+    return CUP_OK;
 }
 
-int assets_installed_is_valid(const AssetsInspection *inspection) {
-    TEST_ASSERT_NOT_NULL(inspection);
-    return installed_assets_valid;
+int generation_has_installed_assets(const GenerationInspection *inspection) {
+    return inspection->release != CUP_GENERATION_ASSET_MISSING ||
+           inspection->license != CUP_GENERATION_ASSET_MISSING ||
+           inspection->notices != CUP_GENERATION_ASSET_MISSING ||
+           inspection->binary != CUP_GENERATION_ASSET_MISSING;
 }
 
-int assets_development_is_valid(const AssetsInspection *inspection) {
-    TEST_ASSERT_NOT_NULL(inspection);
-    return development_assets_valid;
+int generation_installed_is_valid(const GenerationInspection *inspection) {
+    return inspection->release == CUP_GENERATION_ASSET_VALID &&
+           inspection->license == CUP_GENERATION_ASSET_VALID &&
+           inspection->notices == CUP_GENERATION_ASSET_VALID &&
+           inspection->binary == CUP_GENERATION_ASSET_VALID;
 }
 
 CupError layout_ensure_root(void) {
@@ -278,6 +290,16 @@ void package_catalog_free(PackageCatalog *catalog) {
     package_catalog_free_calls++;
 }
 
+void state_init(CupState *state) {
+    if (state != NULL) memset(state, 0, sizeof(*state));
+}
+
+void state_free(CupState *state) {
+    if (state == NULL) return;
+    free(state->installed);
+    memset(state, 0, sizeof(*state));
+}
+
 CupError state_load(CupState *state,
                     StateFileStatus *status,
                     SystemPathIdentity *source_identity,
@@ -318,7 +340,6 @@ CupError package_catalog_load(PackageCatalog *catalog) {
     TEST_ASSERT_NOT_NULL(catalog);
     return package_catalog_load_result;
 }
-
 CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
                                         char *buffer,
                                         size_t size,
@@ -475,40 +496,48 @@ static void test_missing_runtime(void) {
 
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    assets_result = CUP_ERR_FILESYSTEM;
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED,
+                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
+    TEST_ASSERT_EQUAL_INT(0, state_save_calls);
+
+    reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
+    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
+    generation_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    installed_assets_valid = 0;
+    installed_generation_valid = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    installed_assets_valid = 0;
-    development_assets_valid = 1;
+    installed_generation_valid = 0;
+    installed_generation_present = 0;
     ensure_root_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     lock_path_result = CUP_ERR_BUFFER_TOO_SMALL;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
 
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    assets_fail_call = 2;
+    generation_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
-    TEST_ASSERT_EQUAL_INT(2, assets_calls);
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(2, generation_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
     TEST_ASSERT_EQUAL_INT(0, state_save_calls);
 
@@ -517,7 +546,7 @@ static void test_missing_runtime(void) {
     lock_result = CUP_ERR_FILESYSTEM;
     root_kind = SYSTEM_PATH_DIRECTORY;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_acquire_calls);
 
@@ -528,7 +557,7 @@ static void test_missing_runtime(void) {
     lock_retry_result = CUP_OK;
     root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(2, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(2, lock_acquire_calls);
     command_context_end(&context);
@@ -538,7 +567,7 @@ static void test_missing_runtime(void) {
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     interrupt_fail_call = 1;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(0, state_save_calls);
     TEST_ASSERT_EQUAL_INT(0, lock_release_calls);
@@ -548,7 +577,7 @@ static void test_missing_runtime(void) {
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     interrupt_fail_call = 2;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INTERRUPT,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(0, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(0, state_save_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
@@ -557,7 +586,7 @@ static void test_missing_runtime(void) {
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     lock_result = CUP_ERR_LOCK;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, acquired_mode);
 }
 
@@ -573,7 +602,7 @@ static void test_runtime_recheck(void) {
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     runtime_statuses[1] = LAYOUT_RUNTIME_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(2, lock_acquire_calls);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, acquired_mode);
     TEST_ASSERT_EQUAL_INT(1, state_save_calls);
@@ -584,9 +613,18 @@ static void test_runtime_recheck(void) {
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
+    installed_generation_present = 0;
+    TEST_ASSERT_EQUAL_INT(CUP_OK,
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(1, state_save_calls);
+    command_context_end(&context);
+
+    reset_scenario();
+    root_kind = SYSTEM_PATH_MISSING;
+    runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     ensure_runtime_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_FILESYSTEM,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
@@ -594,14 +632,14 @@ static void test_runtime_recheck(void) {
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
     state_save_result = CUP_ERR_COMMIT;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_COMMIT,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+                          command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_INT(1, state_save_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 
     reset_scenario();
     root_kind = SYSTEM_PATH_MISSING;
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin(&context, NULL, SYSTEM_LOCK_SHARED));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_SHARED));
     TEST_ASSERT_EQUAL_STRING("linux-x64", context.host_platform);
     TEST_ASSERT_EQUAL_STRING("linux-x64", context.target_platform);
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, acquired_mode);
@@ -621,7 +659,8 @@ static void test_runtime_recheck(void) {
 
     reset_scenario();
     TEST_ASSERT_EQUAL_INT(CUP_OK,
-                          command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE));
+                          command_context_begin_initialize(
+                              &context, NULL, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_EXCLUSIVE, acquired_mode);
     TEST_ASSERT_EQUAL_INT(1, ensure_root_calls);
     command_context_end(&context);
@@ -629,7 +668,8 @@ static void test_runtime_recheck(void) {
     reset_scenario();
     ensure_root_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(
-        CUP_ERR_FILESYSTEM, command_context_begin(&context, NULL, SYSTEM_LOCK_EXCLUSIVE));
+        CUP_ERR_FILESYSTEM,
+        command_context_begin_initialize(&context, NULL, SYSTEM_LOCK_EXCLUSIVE));
     TEST_ASSERT_EQUAL_INT(1, ensure_root_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
@@ -664,6 +704,13 @@ static void test_read_only_context(void) {
     TEST_ASSERT_EQUAL_INT(SYSTEM_LOCK_SHARED, acquired_mode);
     command_context_end(&context);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+
+    reset_scenario();
+    journal_result = CUP_ERR_TRANSACTION;
+    TEST_ASSERT_EQUAL_INT(CUP_OK, command_context_begin_read_only(&context, NULL));
+    TEST_ASSERT_TRUE(context.runtime_available);
+    TEST_ASSERT_EQUAL_INT(0, (int)journal_calls);
+    command_context_end(&context);
 
     reset_scenario();
     runtime_statuses[0] = LAYOUT_RUNTIME_MISSING;

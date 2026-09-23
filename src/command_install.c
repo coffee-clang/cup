@@ -3,6 +3,7 @@
 
 #include "commands.h"
 
+#include "catalog_refresh.h"
 #include "command_context.h"
 #include "package_selector.h"
 #include "package_request.h"
@@ -68,20 +69,21 @@ static CupError install_plan_add_component(InstallPlan *plan,
     if (!text_is_empty(explicit_entry)) {
         err = text_copy(selector, sizeof(selector), explicit_entry);
     } else {
-        char tool[MAX_IDENTIFIER_LEN];
-        ToolPreferenceSource source;
+        const ToolPreference *preference =
+            tool_preferences_find(preferences, target_platform, component);
+        const InstallDefault *official = NULL;
+        const char *tool;
 
-        err = tool_preferences_resolve(config,
-                                       preferences,
-                                       host_platform,
-                                       target_platform,
-                                       component,
-                                       tool,
-                                       sizeof(tool),
-                                       &source);
-        if (err == CUP_OK) {
-            err = package_selector_format_parts(selector, sizeof(selector), tool, "stable");
+        if (preference != NULL) {
+            tool = preference->tool;
+        } else {
+            official = install_policy_find_default(config, host_platform, target_platform, component);
+            if (official == NULL) {
+                return CUP_ERR_NOT_AVAILABLE;
+            }
+            tool = official->tool;
         }
+        err = package_selector_format_parts(selector, sizeof(selector), tool, "stable");
     }
     return err == CUP_OK ? install_plan_add(plan, component, selector) : err;
 }
@@ -221,13 +223,16 @@ static CupError install_plan_resolve_format(const InstallPlanItem *item,
         return text_copy(format, format_size, format_override);
     }
 
-    return package_catalog_get_default_format(&context->catalog,
-                                              format,
-                                              format_size,
-                                              item->component,
-                                              request->selector.tool,
-                                              context->host_platform,
-                                              context->target_platform);
+    {
+        PackageArchiveFormat default_format;
+        CupError err = package_archive_default_format(context->host_platform, &default_format);
+
+        (void)item;
+        (void)request;
+        return err == CUP_OK
+                   ? text_copy(format, format_size, package_archive_format_name(default_format))
+                   : err;
+    }
 }
 
 static CupError install_plan_check_installed(const InstallPlanItem *item,
@@ -350,7 +355,8 @@ static void install_plan_print_unavailable(const InstallPlan *plan, const Comman
 
 static CupError install_plan_validate(InstallPlan *plan,
                                       CommandContext *context,
-                                      const char *format_override) {
+                                      const char *format_override,
+                                      int report_unavailable) {
     CupError err;
     size_t i;
     size_t unavailable_count = 0;
@@ -366,10 +372,121 @@ static CupError install_plan_validate(InstallPlan *plan,
     }
 
     if (unavailable_count != 0) {
-        install_plan_print_unavailable(plan, context);
+        if (report_unavailable) {
+            install_plan_print_unavailable(plan, context);
+        }
         return CUP_ERR_NOT_AVAILABLE;
     }
     return CUP_OK;
+}
+
+static CupError install_plan_has_symbolic(const InstallPlan *plan, int *has_symbolic) {
+    size_t i;
+
+    if (plan == NULL || has_symbolic == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *has_symbolic = 0;
+    for (i = 0; i < plan->count; ++i) {
+        PackageRequest request;
+        CupError err = package_request_parse(plan->items[i].component,
+                                             plan->items[i].selector,
+                                             &request);
+        if (err != CUP_OK) {
+            return err;
+        }
+        if (package_release_is_stable(request.selector.release)) {
+            *has_symbolic = 1;
+            return CUP_OK;
+        }
+    }
+    return CUP_OK;
+}
+
+/* Exact installed requests are fully local: state + package integrity are enough for a no-op. */
+static CupError install_plan_exact_local_noop(const InstallPlan *plan,
+                                              const CommandContext *context,
+                                              int *handled) {
+    PackageRequest request;
+    PackageIdentity identity;
+    CupError err;
+
+    if (plan == NULL || context == NULL || handled == NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    *handled = 0;
+    if (plan->kind != INSTALL_PLAN_SINGLE || plan->count != 1) {
+        return CUP_OK;
+    }
+    err = package_request_parse(plan->items[0].component, plan->items[0].selector, &request);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (package_release_is_stable(request.selector.release)) {
+        return CUP_OK;
+    }
+    err = package_identity_init(&identity,
+                                plan->items[0].component,
+                                request.selector.tool,
+                                context->host_platform,
+                                context->target_platform,
+                                request.selector.release);
+    if (err != CUP_OK) {
+        return err;
+    }
+    if (state_find_installed(&context->state, &identity) < 0) {
+        return CUP_OK;
+    }
+    err = installed_package_require_valid(&context->state, &identity);
+    if (err != CUP_OK) {
+        return err;
+    }
+    printf("Package '%s:%s@%s' is already installed for host '%s', target '%s'; "
+           "no changes were made.\n",
+           identity.component,
+           identity.tool,
+           identity.version,
+           identity.host_platform,
+           identity.target_platform);
+    *handled = 1;
+    return CUP_ERR_ALREADY_INSTALLED;
+}
+
+static CupError install_plan_open_snapshot(CommandContext *context,
+                                           InstallPolicy *config,
+                                           ToolPreferences *preferences,
+                                           InstallPlan *plan,
+                                           const char *selector,
+                                           const char *value,
+                                           const char *target_override,
+                                           int need_config,
+                                           int need_preferences,
+                                           int load_catalog) {
+    CupError err;
+
+    err = command_context_begin_initialize(context, target_override, SYSTEM_LOCK_SHARED);
+    if (err == CUP_OK) {
+        err = command_context_load_state(context);
+    }
+    if (err == CUP_OK && need_config) {
+        err = install_policy_load(config);
+    }
+    if (err == CUP_OK && need_preferences) {
+        err = tool_preferences_load(preferences, stderr);
+    }
+    if (err == CUP_OK) {
+        err = install_plan_build(plan,
+                                 need_config ? config : NULL,
+                                 need_preferences ? preferences : NULL,
+                                 context->host_platform,
+                                 context->target_platform,
+                                 selector,
+                                 value);
+    }
+    if (err == CUP_OK && load_catalog) {
+        err = command_context_load_catalog(context);
+    }
+    return err;
 }
 
 /* Public request planning delegates catalog-pinned artifacts to package installation. */
@@ -382,8 +499,12 @@ CupError command_install(const char *selector,
     ToolPreferences preferences;
     InstallPlan plan;
     CupError err;
+    CupError refresh_err = CUP_OK;
     int need_config;
     int need_preferences;
+    int has_symbolic = 0;
+    int handled = 0;
+    int refreshed = 0;
     size_t i;
     size_t installed_count = 0;
     size_t skipped_count = 0;
@@ -398,39 +519,80 @@ CupError command_install(const char *selector,
         (registry_is_component(selector) && text_is_empty(value)) ||
         strcmp(selector, "profile") == 0;
 
-    /* Build and fully validate the immutable plan from one shared state/catalog snapshot. */
-    err = command_context_begin(&context, target_override, SYSTEM_LOCK_SHARED);
+    /* Build a local plan first. Exact installed identities need no catalog or network at all. */
+    err = install_plan_open_snapshot(&context,
+                                     &config,
+                                     &preferences,
+                                     &plan,
+                                     selector,
+                                     value,
+                                     target_override,
+                                     need_config,
+                                     need_preferences,
+                                     0);
     if (err == CUP_OK) {
-        err = command_context_load_state(&context);
+        err = install_plan_exact_local_noop(&plan, &context, &handled);
     }
-    if (err == CUP_OK) {
-        err = command_context_load_catalog(&context);
+    if (handled || err != CUP_OK) {
+        command_context_end(&context);
+        return err;
     }
-    if (err == CUP_OK && need_config) {
-        err = install_policy_load(&config);
-    }
-    if (err == CUP_OK && need_preferences) {
-        err = tool_preferences_load(&preferences);
-    }
-    if (err == CUP_OK) {
-        err = install_plan_build(&plan,
-                                 need_config ? &config : NULL,
-                                 need_preferences ? &preferences : NULL,
-                                 context.host_platform,
-                                 context.target_platform,
-                                 selector,
-                                 value);
-    }
-    if (err == CUP_OK) {
-        err = install_plan_validate(&plan, &context, format_override);
-    }
-    /* Release the shared preflight context before package transactions acquire exclusive locks. */
-    command_context_end(&context);
+    err = install_plan_has_symbolic(&plan, &has_symbolic);
     if (err != CUP_OK) {
+        command_context_end(&context);
         return err;
     }
 
-    /* A single selection delegates directly; groups retain completed packages on later failure. */
+    /* A usable local catalog is the refresh authority and may already satisfy an exact request. */
+    err = command_context_load_catalog(&context);
+    if (err != CUP_OK) {
+        command_context_end(&context);
+        return err;
+    }
+
+    if (!has_symbolic) {
+        err = install_plan_validate(&plan, &context, format_override, 0);
+        if (err == CUP_OK) {
+            command_context_end(&context);
+            goto execute_plan;
+        }
+        if (err != CUP_ERR_NOT_AVAILABLE) {
+            command_context_end(&context);
+            return err;
+        }
+    }
+
+    /* Network is never performed while the shared planning snapshot is locked. */
+    command_context_end(&context);
+    refresh_err = catalog_refresh_existing(&refreshed, has_symbolic ? CATALOG_REFRESH_QUIET : CATALOG_REFRESH_REPORT_ERRORS);
+    if (!has_symbolic && refresh_err != CUP_OK) {
+        return refresh_err;
+    }
+
+    /* Rebuild everything after the network window; no state/preference snapshot crosses it. */
+    err = install_plan_open_snapshot(&context,
+                                     &config,
+                                     &preferences,
+                                     &plan,
+                                     selector,
+                                     value,
+                                     target_override,
+                                     need_config,
+                                     need_preferences,
+                                     1);
+    if (err == CUP_OK) {
+        err = install_plan_validate(&plan, &context, format_override, 1);
+    }
+    command_context_end(&context);
+    if (err != CUP_OK) {
+        return refresh_err != CUP_OK ? refresh_err : err;
+    }
+    if (has_symbolic && refresh_err != CUP_OK) {
+        fprintf(stderr,
+                "Warning: catalog refresh failed; installing from the valid local catalog.\n");
+    }
+
+execute_plan:
     if (plan.kind == INSTALL_PLAN_SINGLE) {
         return package_install_artifact(&plan.items[0].artifact_spec);
     }
@@ -443,8 +605,6 @@ CupError command_install(const char *selector,
     for (i = 0; i < plan.count; ++i) {
         InstallPlanItem *item = &plan.items[i];
 
-        /* Revalidate each package under its exclusive context because the preflight state
-         * snapshot may be stale by the time this group reaches the item. */
         err = package_install_artifact(&item->artifact_spec);
         if (err == CUP_ERR_ALREADY_INSTALLED) {
             skipped_count++;

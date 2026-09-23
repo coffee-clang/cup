@@ -3,7 +3,7 @@
  * tests own real filesystem diagnosis.
  */
 
-#include "assets.h"
+#include "generation.h"
 #include "commands.h"
 #include "package_selector.h"
 #include "filesystem.h"
@@ -20,14 +20,15 @@
 #include "unity.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
     CupError root_candidates_result;
     CupError root_snapshot_result;
     size_t root_issue_count;
-    CupError assets_result;
-    AssetsInspection assets;
+    CupError generation_result;
+    GenerationInspection generation;
     CupError package_catalog_result;
     CupError root_path_result;
     CupError root_kind_result;
@@ -48,9 +49,6 @@ typedef struct {
     PackageTransactionStatus transaction_status;
     PackageOperation transaction_operation;
     CupError update_load_result;
-    UpdatePhase update_phase;
-    UpdateFailureRecovery update_recovery;
-    int update_error;
     UpdateJournalStatus update_status;
     CupError uninstall_load_result;
     UninstallJournalStatus uninstall_status;
@@ -77,7 +75,8 @@ typedef struct {
 } DoctorScenario;
 
 static DoctorScenario scenario;
-static int assets_inspect_calls;
+static PackageIdentity scenario_package_items[16];
+static int generation_inspect_calls;
 static int root_snapshot_begin_calls;
 static int root_snapshot_end_calls;
 static int lock_release_calls;
@@ -102,11 +101,13 @@ static void fill_identity(PackageIdentity *package, const char *version) {
 
 static void reset_scenario(void) {
     memset(&scenario, 0, sizeof(scenario));
-    scenario.assets.binary = CUP_ASSET_VALID;
-    scenario.assets.catalog = CUP_ASSET_VALID;
-    scenario.assets.install_policy = CUP_ASSET_VALID;
-    scenario.assets.common_checksums = CUP_ASSET_VALID;
-    scenario.assets.platform_checksums = CUP_ASSET_VALID;
+    memset(scenario_package_items, 0, sizeof(scenario_package_items));
+    scenario.packages.items = scenario_package_items;
+    scenario.packages.capacity = 16;
+    scenario.generation.release = CUP_GENERATION_ASSET_VALID;
+    scenario.generation.license = CUP_GENERATION_ASSET_VALID;
+    scenario.generation.notices = CUP_GENERATION_ASSET_VALID;
+    scenario.generation.binary = CUP_GENERATION_ASSET_VALID;
     scenario.root_kind = SYSTEM_PATH_DIRECTORY;
     scenario.lock_exists = 1;
     scenario.state_status = STATE_FILE_LOADED;
@@ -114,8 +115,6 @@ static void reset_scenario(void) {
     scenario.journal_kind = RUNTIME_JOURNAL_MISSING;
     scenario.transaction_status = PACKAGE_TRANSACTION_MISSING;
     scenario.update_status = CUP_UPDATE_JOURNAL_MISSING;
-    scenario.update_phase = CUP_UPDATE_PHASE_SCHEDULED;
-    scenario.update_recovery = CUP_UPDATE_FAILURE_NONE;
     scenario.uninstall_status = UNINSTALL_JOURNAL_MISSING;
     scenario.uninstall_phase = UNINSTALL_PHASE_SCHEDULED;
     scenario.package_catalog_available = 1;
@@ -125,7 +124,7 @@ static void reset_scenario(void) {
     fill_identity(&scenario.packages.items[0], "22.1.5");
     scenario.packages.count = 1;
     scenario.packages.total_count = 1;
-    assets_inspect_calls = 0;
+    generation_inspect_calls = 0;
     root_snapshot_begin_calls = 0;
     root_snapshot_end_calls = 0;
     lock_release_calls = 0;
@@ -191,24 +190,44 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
     return scenario.package_catalog_check_result;
 }
 
-CupError assets_inspect(AssetsInspection *inspection) {
-    assets_inspect_calls++;
-    if (inspection != NULL) {
-        *inspection = scenario.assets;
+CupError generation_inspect(GenerationInspection *inspection) {
+    generation_inspect_calls++;
+    if (inspection != NULL) *inspection = scenario.generation;
+    return scenario.generation_result;
+}
+
+int generation_has_installed_assets(const GenerationInspection *inspection) {
+    return inspection->release != CUP_GENERATION_ASSET_MISSING ||
+           inspection->license != CUP_GENERATION_ASSET_MISSING ||
+           inspection->notices != CUP_GENERATION_ASSET_MISSING ||
+           inspection->binary != CUP_GENERATION_ASSET_MISSING;
+}
+
+int generation_installed_is_valid(const GenerationInspection *inspection) {
+    return inspection->release == CUP_GENERATION_ASSET_VALID &&
+           inspection->license == CUP_GENERATION_ASSET_VALID &&
+           inspection->notices == CUP_GENERATION_ASSET_VALID &&
+           inspection->binary == CUP_GENERATION_ASSET_VALID;
+}
+
+CupError generation_asset_specs(GenerationAssetSpec specs[CUP_GENERATION_ASSET_COUNT]) {
+    size_t i;
+    static const char *names[CUP_GENERATION_ASSET_COUNT] = {
+        "release.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "cup-linux-x64"
+    };
+    static const char *paths[CUP_GENERATION_ASSET_COUNT] = {
+        "/doctor/release.txt", "/doctor/LICENSE",
+        "/doctor/THIRD_PARTY_NOTICES.txt", "/doctor/bin/cup"
+    };
+    for (i = 0; i < CUP_GENERATION_ASSET_COUNT; ++i) {
+        memset(&specs[i], 0, sizeof(specs[i]));
+        specs[i].id = (GenerationAssetId)i;
+        strcpy(specs[i].release_name, names[i]);
+        strcpy(specs[i].destination, paths[i]);
+        specs[i].read_only = i != CUP_GENERATION_ASSET_BINARY;
+        specs[i].executable = i == CUP_GENERATION_ASSET_BINARY;
     }
-    return scenario.assets_result;
-}
-
-int assets_has_installed_assets(const AssetsInspection *inspection) {
-    return inspection->binary != CUP_ASSET_MISSING || inspection->catalog != CUP_ASSET_MISSING ||
-           inspection->install_policy != CUP_ASSET_MISSING ||
-           inspection->common_checksums != CUP_ASSET_MISSING ||
-           inspection->platform_checksums != CUP_ASSET_MISSING;
-}
-
-int assets_development_is_valid(const AssetsInspection *inspection) {
-    return inspection->development_catalog_valid &&
-           inspection->development_install_policy_valid;
+    return CUP_OK;
 }
 
 static CupError copy_path(char *buffer, size_t size, const char *name, CupError result) {
@@ -222,17 +241,11 @@ CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     return copy_path(buffer, size, "catalog", CUP_OK);
 }
 
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    return copy_path(buffer, size, "install-config", CUP_OK);
-}
 
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    return copy_path(buffer, size, "common", CUP_OK);
-}
 
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    return copy_path(buffer, size, "platform", CUP_OK);
-}
+
+
+
 
 CupError layout_get_root(char *buffer, size_t size) {
     return copy_path(buffer, size, "root", scenario.root_path_result);
@@ -348,18 +361,32 @@ CupError filesystem_count_children(const char *path, const char *excluded, size_
     return scenario.tmp_count_result;
 }
 
+void state_init(CupState *state) {
+    if (state != NULL) memset(state, 0, sizeof(*state));
+}
+
+void state_free(CupState *state) {
+    if (state == NULL) return;
+    free(state->installed);
+    memset(state, 0, sizeof(*state));
+}
+
 CupError state_load(CupState *state,
                     StateFileStatus *status,
                     SystemPathIdentity *source_identity,
                     FILE *diagnostics) {
     TEST_ASSERT_NULL(source_identity);
     TEST_ASSERT_NULL(diagnostics);
-    memset(state, 0, sizeof(*state));
+    state_free(state);
+    state_init(state);
     *status = scenario.state_status;
     if (scenario.state_result != CUP_OK) {
         return scenario.state_result;
     }
     if (scenario.include_state_package) {
+        state->installed = calloc(1, sizeof(*state->installed));
+        TEST_ASSERT_NOT_NULL(state->installed);
+        state->installed_capacity = 1;
         state->installed_count = 1;
         (void)snprintf(
             state->installed[0].component, sizeof(state->installed[0].component), "compiler");
@@ -398,29 +425,10 @@ void update_journal_init(UpdateJournal *journal) {
 CupError update_journal_load(UpdateJournal *journal, UpdateJournalStatus *status) {
     update_journal_init(journal);
     *status = scenario.update_status;
-    journal->phase = scenario.update_phase;
-    journal->recovery = scenario.update_recovery;
-    journal->error_code = scenario.update_error;
-    (void)snprintf(journal->version, sizeof(journal->version), "0.2.2");
+    (void)snprintf(journal->temporary_name, sizeof(journal->temporary_name), "cup-update-abc");
+    (void)snprintf(journal->target_release_sha256, sizeof(journal->target_release_sha256),
+                   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     return scenario.update_load_result;
-}
-
-const char *update_phase_name(UpdatePhase phase) {
-    switch (phase) {
-        case CUP_UPDATE_PHASE_SCHEDULED: return "scheduled";
-        case CUP_UPDATE_PHASE_COMMITTING: return "committing";
-        case CUP_UPDATE_PHASE_FAILED: return "failed";
-        default: return "invalid";
-    }
-}
-
-const char *update_failure_recovery_name(UpdateFailureRecovery recovery) {
-    switch (recovery) {
-        case CUP_UPDATE_FAILURE_NONE: return "none";
-        case CUP_UPDATE_FAILURE_PENDING: return "pending";
-        case CUP_UPDATE_FAILURE_ROLLED_BACK: return "rolled-back";
-        default: return "invalid";
-    }
 }
 
 void uninstall_journal_init(UninstallJournal *journal) {
@@ -503,6 +511,16 @@ CupError package_scan(PackageList *packages, FILE *diagnostics) {
     return scenario.scan_result;
 }
 
+void package_list_init(PackageList *packages) {
+    TEST_ASSERT_NOT_NULL(packages);
+    memset(packages, 0, sizeof(*packages));
+}
+
+void package_list_free(PackageList *packages) {
+    TEST_ASSERT_NOT_NULL(packages);
+    memset(packages, 0, sizeof(*packages));
+}
+
 const char *package_issue_reason_name(PackageIssueReason reason) {
     (void)reason;
     return "invalid content";
@@ -547,34 +565,24 @@ static void test_healthy(void) {
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
 }
 
-static void test_assets_modes(void) {
-    scenario.assets_result = CUP_ERR_FILESYSTEM;
+static void test_generation_modes(void) {
     scenario.root_kind = SYSTEM_PATH_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_INSTALLED, command_doctor());
+    TEST_ASSERT_EQUAL_INT(0, generation_inspect_calls);
 
     reset_scenario();
-    memset(&scenario.assets, 0, sizeof(scenario.assets));
-    scenario.assets.development_catalog_valid = 1;
-    scenario.assets.development_install_policy_valid = 1;
-    scenario.root_kind = SYSTEM_PATH_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_OK, command_doctor());
-
-    reset_scenario();
-    memset(&scenario.assets, 0, sizeof(scenario.assets));
-    scenario.root_kind = SYSTEM_PATH_MISSING;
+    scenario.generation_result = CUP_ERR_FILESYSTEM;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
-static void test_asset_issues(void) {
-    scenario.assets.binary = CUP_ASSET_INVALID;
-    scenario.assets.install_policy = CUP_ASSET_MISSING;
+static void test_generation_issues(void) {
+    scenario.generation.binary = CUP_GENERATION_ASSET_INVALID;
+    scenario.generation.license = CUP_GENERATION_ASSET_MISSING;
     scenario.read_only = 0;
-    scenario.root_kind = SYSTEM_PATH_MISSING;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.package_catalog_result = CUP_ERR_VALIDATION;
-    scenario.root_kind = SYSTEM_PATH_MISSING;
+    scenario.package_catalog_result = CUP_ERR_CATALOG;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
@@ -589,14 +597,14 @@ static void test_runtime_gates(void) {
     reset_scenario();
     scenario.lock_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
-    TEST_ASSERT_EQUAL_INT(0, assets_inspect_calls);
+    TEST_ASSERT_EQUAL_INT(0, generation_inspect_calls);
 
     reset_scenario();
     scenario.root_kind = SYSTEM_PATH_MISSING;
     scenario.root_kind = SYSTEM_PATH_DIRECTORY;
     scenario.lock_exists = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
-    TEST_ASSERT_EQUAL_INT(0, assets_inspect_calls);
+    TEST_ASSERT_EQUAL_INT(0, generation_inspect_calls);
 }
 
 static void test_root_and_uninstall_journal(void) {
@@ -627,7 +635,7 @@ static void test_root_and_uninstall_journal(void) {
 
 static void test_state_issues(void) {
     scenario.state_result = CUP_ERR_VALIDATION;
-    scenario.journal_kind = RUNTIME_JOURNAL_UPDATE;
+    scenario.journal_kind = RUNTIME_JOURNAL_GENERATION;
     scenario.update_status = CUP_UPDATE_JOURNAL_LOADED;
     scenario.packages.complete = 0;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
@@ -658,22 +666,13 @@ static void test_package_issues(void) {
 }
 
 static void test_update_journal(void) {
-    scenario.journal_kind = RUNTIME_JOURNAL_UPDATE;
+    scenario.journal_kind = RUNTIME_JOURNAL_GENERATION;
     scenario.update_status = CUP_UPDATE_JOURNAL_LOADED;
-    scenario.update_phase = CUP_UPDATE_PHASE_FAILED;
-    scenario.update_recovery = CUP_UPDATE_FAILURE_ROLLED_BACK;
-    scenario.update_error = CUP_ERR_TRANSACTION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.journal_kind = RUNTIME_JOURNAL_UPDATE;
+    scenario.journal_kind = RUNTIME_JOURNAL_GENERATION;
     scenario.update_load_result = CUP_ERR_TRANSACTION;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
-
-    reset_scenario();
-    scenario.journal_kind = RUNTIME_JOURNAL_UPDATE;
-    scenario.update_status = CUP_UPDATE_JOURNAL_LOADED;
-    scenario.update_phase = CUP_UPDATE_PHASE_SCHEDULED;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 }
 
@@ -706,8 +705,8 @@ static void test_incomplete_checks(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_healthy);
-    RUN_TEST(test_assets_modes);
-    RUN_TEST(test_asset_issues);
+    RUN_TEST(test_generation_modes);
+    RUN_TEST(test_generation_issues);
     RUN_TEST(test_runtime_gates);
     RUN_TEST(test_root_and_uninstall_journal);
     RUN_TEST(test_state_issues);

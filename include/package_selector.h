@@ -23,8 +23,14 @@ CupError package_selector_parse(PackageSelector *selector, const char *text);
 /* Return whether a release uses the exact symbolic 'stable' name. */
 int package_release_is_stable(const char *release);
 
-/* Validate one canonical concrete release that may be persisted. */
+/* Validate one canonical numeric-dotted package version with optional terminal -revN. */
 CupError package_release_validate_concrete(const char *release);
+
+/* Compare two validated concrete package versions semantically. */
+CupError package_release_compare(const char *left, const char *right, int *result);
+
+/* Copy the upstream/base version without the optional CUP -revN suffix. */
+CupError package_release_base(const char *release, char *base, size_t base_size);
 
 /* Split one exact non-empty '<tool>@<release>' string without trimming or normalization. */
 CupError package_selector_parse_parts(

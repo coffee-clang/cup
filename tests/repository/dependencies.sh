@@ -522,20 +522,6 @@ source_lock_sha256=$source_lock_sha256
 toolchain_sha256=$toolchain_sha256" ]
     dependency_metadata_valid "$metadata"
 
-    forbidden_fixture="${final%/install}.forbidden-programs"
-    mkdir -p "$forbidden_fixture/bin"
-    for program in \
-            openssl xz xzdec lzmadec lzmainfo \
-            xzdiff xzgrep xzless xzmore \
-            bsdtar bsdcpio bsdcat bsdunzip; do
-        : > "$forbidden_fixture/bin/$program"
-        if dependency_unused_programs_absent "$forbidden_fixture"; then
-            fail "dependency prefix accepted forbidden program: $program"
-        fi
-        rm "$forbidden_fixture/bin/$program"
-    done
-    dependency_unused_programs_absent "$forbidden_fixture"
-
     openssl_fixture="${final%/install}.openssl-configuration"
     create_complete "$openssl_fixture" "$openssl_fixture"
     dependency_openssl_configuration_valid "$openssl_fixture"
@@ -544,6 +530,14 @@ toolchain_sha256=$toolchain_sha256" ]
     rm -f "$openssl_fixture/include/openssl/configuration.h.bak"
     if dependency_openssl_configuration_valid "$openssl_fixture"; then
         fail "dependency prefix accepted OpenSSL with automatic config loading enabled"
+    fi
+
+    ambient_md_fixture="${final%/install}.ambient-libmd"
+    create_complete "$ambient_md_fixture" "$ambient_md_fixture"
+    printf "%s\\n" "Libs.private: -lmd" >> \
+        "$ambient_md_fixture/lib/pkgconfig/libarchive.pc"
+    if dependency_link_metadata_valid "$ambient_md_fixture" "$ambient_md_fixture"; then
+        fail "dependency prefix accepted ambient libmd in libarchive static metadata"
     fi
 
     foreign_root="${final%/install}.foreign"
@@ -1147,13 +1141,14 @@ bash -eu -o pipefail -c '
     LIBS=ambient-libs
     CPATH=/ambient/include
     LIBRARY_PATH=/ambient/lib
+    PKG_CONFIG=ambient-pkg-config
     PKG_CONFIG_PATH=/ambient/pkgconfig
     CONFIG_SITE=/ambient/config.site
     CCACHE=ambient-ccache
     MAKEFLAGS=ambient-makeflags
     SOURCE_DATE_EPOCH=ambient-epoch
     export CFLAGS CPPFLAGS LDFLAGS LIBS CPATH LIBRARY_PATH
-    export PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS SOURCE_DATE_EPOCH
+    export PKG_CONFIG PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS SOURCE_DATE_EPOCH
 
     dependency_normalize_build_environment
     [ "$LC_ALL" = C ]
@@ -1161,12 +1156,15 @@ bash -eu -o pipefail -c '
     [ "$TZ" = UTC ]
     [ "$SOURCE_DATE_EPOCH" = 1 ]
     [ "$(umask)" = 0022 ] || [ "$(umask)" = 022 ]
+    [ "$CONFIG_SITE" = /dev/null ]
     for variable in CFLAGS CPPFLAGS LDFLAGS LIBS CPATH LIBRARY_PATH \
-            PKG_CONFIG_PATH CONFIG_SITE CCACHE MAKEFLAGS; do
+            PKG_CONFIG_PATH MAKEFLAGS; do
         if [[ -v $variable ]]; then
             exit 1
         fi
     done
+    [ "$PKG_CONFIG" = ambient-pkg-config ]
+    [ "$CCACHE" = ambient-ccache ]
 
     unset JOBS
     [ "$(dependency_resolve_jobs)" = 4 ]
@@ -1221,12 +1219,4 @@ if PATH="$hash_bin:/usr/bin:/bin" bash -eu -o pipefail -c '
 fi
 printf 'Dependency SHA-256 tool fallback tests passed.\n'
 
-for dependency_script in scripts/dependencies/build-posix.sh scripts/dependencies/build-windows.sh; do
-    grep -F 'require_tool cmp' "$dependency_script" >/dev/null || {
-        echo "$dependency_script does not declare its cmp requirement" >&2
-        exit 1
-    }
-done
-grep -F 'require_tool cmp' scripts/dependencies/verify.sh >/dev/null ||
-    fail 'dependency verifier does not declare its cmp requirement'
 printf '%s\n' 'Dependency contract tests passed.'

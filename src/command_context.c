@@ -5,7 +5,7 @@
 
 #include "command_context.h"
 
-#include "assets.h"
+#include "generation.h"
 #include "package_selector.h"
 #include "layout.h"
 #include "interrupt.h"
@@ -46,22 +46,24 @@ static CupError prepare_context(CommandContext *context, const char *target_over
     }
 
     memset(context, 0, sizeof(*context));
+    state_init(&context->state);
     package_catalog_init(&context->catalog);
     return resolve_platforms(context, target_override);
 }
 
 static CupError validate_assets(void) {
-    AssetsInspection inspection;
-    CupError err = assets_inspect(&inspection);
+    GenerationInspection inspection;
+    CupError err = generation_inspect(&inspection);
 
-    if (err != CUP_OK) {
-        return err;
+    if (err != CUP_OK) return err;
+    if (generation_has_installed_assets(&inspection)) {
+        return generation_installed_is_valid(&inspection) ? CUP_OK : CUP_ERR_VALIDATION;
     }
-    if (assets_installed_is_valid(&inspection) ||
-        assets_development_is_valid(&inspection)) {
-        return CUP_OK;
-    }
+#if CUP_VERSION_OFFICIAL
     return CUP_ERR_VALIDATION;
+#else
+    return CUP_OK;
+#endif
 }
 
 /* Mutable runtime initialization. Directory creation and asset validation happen only after the
@@ -75,8 +77,9 @@ static CupError initialize_runtime(void) {
         return err;
     }
 
-    memset(&state, 0, sizeof(state));
+    state_init(&state);
     err = state_save(&state, NULL, NULL);
+    state_free(&state);
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
                 "Error: initial state.txt may already be published, but its durability could not "
@@ -111,10 +114,10 @@ static CupError acquire_runtime_lock(CommandContext *context, SystemLockMode mod
 }
 
 /* Validate every runtime precondition only after the final requested lock is held. */
-static CupError inspect_locked_runtime(LayoutRuntimeStatus *status) {
+static CupError inspect_locked_runtime(LayoutRuntimeStatus *status, int require_clear_journal) {
     CupError err = layout_root_snapshot_validate();
 
-    if (err == CUP_OK) {
+    if (err == CUP_OK && require_clear_journal) {
         err = runtime_journal_require_none();
     }
     if (err == CUP_OK) {
@@ -190,9 +193,10 @@ static CupError initialize_locked_runtime(LayoutRuntimeStatus runtime_status) {
 
 static CupError selected_root_is_missing(int *missing);
 
-CupError command_context_begin(CommandContext *context,
-                               const char *target_override,
-                               SystemLockMode mode) {
+static CupError command_context_begin_internal(CommandContext *context,
+                                               const char *target_override,
+                                               SystemLockMode mode,
+                                               int allow_initialize) {
     LayoutRuntimeStatus runtime_status = LAYOUT_RUNTIME_MISSING;
     SystemLockMode lock_mode = mode;
     CupError err;
@@ -207,6 +211,9 @@ CupError command_context_begin(CommandContext *context,
 
         err = selected_root_is_missing(&root_missing);
         if (err == CUP_OK && root_missing) {
+            if (!allow_initialize) {
+                return CUP_ERR_NOT_INSTALLED;
+            }
             err = validate_assets();
             if (err != CUP_OK) {
                 fprintf(stderr,
@@ -227,7 +234,7 @@ CupError command_context_begin(CommandContext *context,
         return err;
     }
 
-    err = inspect_locked_runtime(&runtime_status);
+    err = inspect_locked_runtime(&runtime_status, 1);
     if (err != CUP_OK) {
         command_context_end(context);
         return err;
@@ -237,6 +244,9 @@ CupError command_context_begin(CommandContext *context,
      * rebuild the entire locked snapshot when the runtime disappeared concurrently. */
     if (runtime_status == LAYOUT_RUNTIME_MISSING && lock_mode == SYSTEM_LOCK_SHARED) {
         command_context_end(context);
+        if (!allow_initialize) {
+            return CUP_ERR_NOT_INSTALLED;
+        }
         err = prepare_context(context, target_override);
         if (err != CUP_OK) {
             return err;
@@ -253,7 +263,7 @@ CupError command_context_begin(CommandContext *context,
         if (err != CUP_OK) {
             return err;
         }
-        err = inspect_locked_runtime(&runtime_status);
+        err = inspect_locked_runtime(&runtime_status, 1);
         if (err != CUP_OK) {
             command_context_end(context);
             return err;
@@ -261,12 +271,15 @@ CupError command_context_begin(CommandContext *context,
     }
 
     if (lock_mode == SYSTEM_LOCK_EXCLUSIVE) {
-        /* The pre-lock asset check only gates bootstrap creation; assets are revalidated under
-         * the final exclusive snapshot before initialization. */
+        /* Runtime creation is a caller intent, not a consequence of asking for a mutation lock. */
+        if (runtime_status == LAYOUT_RUNTIME_MISSING && !allow_initialize) {
+            command_context_end(context);
+            return CUP_ERR_NOT_INSTALLED;
+        }
         if (runtime_status == LAYOUT_RUNTIME_MISSING) {
             err = validate_assets();
         }
-        if (err == CUP_OK) {
+        if (err == CUP_OK && allow_initialize) {
             err = initialize_locked_runtime(runtime_status);
         }
         if (err != CUP_OK) {
@@ -277,6 +290,18 @@ CupError command_context_begin(CommandContext *context,
 
     context->runtime_available = 1;
     return CUP_OK;
+}
+
+CupError command_context_begin(CommandContext *context,
+                               const char *target_override,
+                               SystemLockMode mode) {
+    return command_context_begin_internal(context, target_override, mode, 0);
+}
+
+CupError command_context_begin_initialize(CommandContext *context,
+                                          const char *target_override,
+                                          SystemLockMode mode) {
+    return command_context_begin_internal(context, target_override, mode, 1);
 }
 
 static CupError selected_root_is_missing(int *missing) {
@@ -329,7 +354,7 @@ CupError command_context_begin_read_only(CommandContext *context, const char *ta
     if (err != CUP_OK) {
         return err;
     }
-    err = inspect_locked_runtime(&runtime_status);
+    err = inspect_locked_runtime(&runtime_status, 0);
     if (err != CUP_OK) {
         command_context_end(context);
         return err;
@@ -353,6 +378,7 @@ void command_context_end(CommandContext *context) {
         return;
     }
 
+    state_free(&context->state);
     package_catalog_free(&context->catalog);
     system_lock_release(&context->lock);
     memset(context, 0, sizeof(*context));

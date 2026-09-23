@@ -13,15 +13,11 @@ SCRIPT_DIR=$ROOT/scripts/release
 SHA=${SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 release_dir=${1:-release}
 
-set -- packages.cfg install.cfg release.txt provenance.txt THIRD_PARTY_NOTICES.txt \
-    install.sh install.ps1 SHA256SUMS.common "SHA256SUMS.$PLATFORM" "cup-$PLATFORM"
+# shellcheck disable=SC2046
+set -- $(release_public_assets)
 validate_exact_directory_files "$release_dir" "$@"
 for asset in "$@"; do require_nonempty_file "$release_dir/$asset"; done
 validate_release_asset_modes "$release_dir" "$@"
-verify_checksum_file_exact "$release_dir" SHA256SUMS.common \
-    packages.cfg install.cfg install.sh install.ps1
-verify_checksum_file_exact "$release_dir" "SHA256SUMS.$PLATFORM" \
-    "cup-$PLATFORM" release.txt SHA256SUMS.common
 validate_release_file "$release_dir/release.txt"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
 
@@ -119,10 +115,11 @@ CUP_INSTALL_BASE_URL="http://127.0.0.1:$port" \
 foreign_cup="$foreign_home/.coffee-cup/bin/cup"
 test -f "$foreign_home/.cup/foreign.txt"
 test -x "$foreign_cup"
-test "$(sed -n '1p' "$foreign_home/.coffee-cup/root.txt")" = 'format=1'
+test "$(sed -n '1p' "$foreign_home/.coffee-cup/root.txt")" = 'format=2'
 test "$(sed -n '2p' "$foreign_home/.coffee-cup/root.txt")" = \
     'product=coffee-clang/cup'
-test "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" = 'layout=1'
+test "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" = 'layout=2'
+test "$(sed -n '4p' "$foreign_home/.coffee-cup/root.txt")" = "host=$PLATFORM"
 HOME="$foreign_home" "$foreign_cup" --version | grep -Fx "cup $VERSION"
 foreign_doctor=$(HOME="$foreign_home" PATH="$foreign_home/.coffee-cup/bin:$PATH" \
     "$foreign_cup" doctor 2>&1)
@@ -226,11 +223,11 @@ HOME="$test_home" "$installed_cup" --version | grep -Fx "cup $VERSION"
 update_root="$server_root/update-fixture"
 next_version=$(sed -n '2s/^version=//p' "$update_root/release.txt")
 [ -n "$next_version" ] || fail 'update fixture did not expose a next version'
-(
-    VERSION=$next_version
-    validate_release_file "$update_root/release.txt"
-)
 version_root="$update_root/$next_version"
+(
+    VERSION=$next_version SHA=$SHA
+    validate_release_file "$version_root/release.txt"
+)
 test "$("$version_root/cup-$PLATFORM" --version)" = "cup $next_version"
 
 update_output=$(
@@ -242,7 +239,7 @@ update_output=$(
 )
 printf '%s\n' "$update_output"
 printf '%s\n' "$update_output" | \
-    grep -F "Verified update from cup $VERSION to $next_version scheduled." \
+    grep -F "Verified CUP update handoff accepted for $next_version. The generation will be committed after this process exits." \
         >/dev/null
 
 attempt=0

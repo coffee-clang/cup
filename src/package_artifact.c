@@ -1,5 +1,4 @@
-/* Pin catalog-derived coordinates and keep one verified cache file open through archive
- * consumption so pathname replacement cannot change the bytes used. */
+/* Pin concrete catalog coordinates and keep verified cache bytes open through extraction. */
 
 #include "package_artifact.h"
 
@@ -31,8 +30,8 @@ CupError package_artifact_spec_resolve_stable(PackageArtifactSpec *spec,
                                               const char *host_platform,
                                               const char *target_platform) {
     PackageIdentity identity;
+    PackageArchiveFormat format;
     char version[MAX_IDENTIFIER_LEN];
-    char format[MAX_IDENTIFIER_LEN];
     CupError err;
 
     if (spec == NULL) {
@@ -55,18 +54,12 @@ CupError package_artifact_spec_resolve_stable(PackageArtifactSpec *spec,
             &identity, component, tool, host_platform, target_platform, version);
     }
     if (err == CUP_OK) {
-        err = package_catalog_get_default_format(catalog,
-                                                 format,
-                                                 sizeof(format),
-                                                 component,
-                                                 tool,
-                                                 host_platform,
-                                                 target_platform);
+        err = package_archive_default_format(host_platform, &format);
     }
-    if (err == CUP_OK) {
-        err = package_artifact_spec_build(spec, catalog, &identity, format);
-    }
-    return err;
+    return err == CUP_OK
+               ? package_artifact_spec_build(
+                     spec, catalog, &identity, package_archive_format_name(format))
+               : err;
 }
 
 CupError package_artifact_spec_build(PackageArtifactSpec *spec,
@@ -74,97 +67,41 @@ CupError package_artifact_spec_build(PackageArtifactSpec *spec,
                                      const PackageIdentity *identity,
                                      const char *format_name) {
     PackageArtifactSpec candidate = {0};
-    PackageArchiveFormat format;
     CupError err;
-    int available;
 
     if (spec == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    memset(spec, 0, sizeof(*spec));
     if (catalog == NULL || identity == NULL ||
         package_identity_validate(identity, stderr) != CUP_OK || text_is_empty(format_name) ||
-        package_archive_parse_format(format_name, &format) != CUP_OK ||
+        package_archive_parse_format(format_name, &candidate.format) != CUP_OK ||
         !catalog->identity.valid || !checksum_digest_is_canonical(catalog->digest)) {
-        memset(spec, 0, sizeof(*spec));
         return CUP_ERR_INVALID_INPUT;
     }
 
-    err = package_catalog_has_version(catalog,
-                                      identity->component,
-                                      identity->tool,
-                                      identity->host_platform,
-                                      identity->target_platform,
-                                      identity->version,
-                                      &available);
-    if (err != CUP_OK || !available) {
-        memset(spec, 0, sizeof(*spec));
-        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
-    }
-    err = package_catalog_has_format(catalog,
-                                     identity->component,
-                                     identity->tool,
-                                     identity->host_platform,
-                                     identity->target_platform,
-                                     format_name,
-                                     &available);
-    if (err != CUP_OK || !available) {
-        memset(spec, 0, sizeof(*spec));
-        return err != CUP_OK ? err : CUP_ERR_NOT_AVAILABLE;
-    }
-
     candidate.identity = *identity;
-    candidate.format = format;
-    err = package_catalog_build_url(catalog,
-                                    candidate.package_url,
-                                    sizeof(candidate.package_url),
-                                    identity->component,
-                                    identity->tool,
-                                    identity->host_platform,
-                                    identity->target_platform,
-                                    identity->version,
-                                    format_name);
-    if (err == CUP_OK) {
-        err = package_catalog_build_checksum_url(catalog,
-                                                 candidate.checksum_url,
-                                                 sizeof(candidate.checksum_url),
-                                                 identity->component,
-                                                 identity->tool,
-                                                 identity->host_platform,
-                                                 identity->target_platform,
-                                                 identity->version);
-    }
+    err = package_catalog_resolve_artifact(catalog,
+                                           identity->component,
+                                           identity->tool,
+                                           identity->host_platform,
+                                           identity->target_platform,
+                                           identity->version,
+                                           format_name,
+                                           candidate.package_url,
+                                           sizeof(candidate.package_url),
+                                           candidate.artifact_sha256,
+                                           sizeof(candidate.artifact_sha256));
     if (err != CUP_OK) {
-        memset(spec, 0, sizeof(*spec));
         return err;
     }
     *spec = candidate;
     return CUP_OK;
 }
 
-CupError verified_artifact_verify_expected(VerifiedArtifact *artifact,
-                                           const char *expected_digest,
-                                           ArtifactVerificationStatus *status) {
-    if (status != NULL) {
-        *status = ARTIFACT_VERIFY_NONE;
-    }
-    if (artifact == NULL || artifact->file == NULL || !artifact->identity.valid ||
-        !checksum_digest_is_canonical(artifact->digest) ||
-        !checksum_digest_is_canonical(expected_digest) || status == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-    if (strcmp(artifact->digest, expected_digest) != 0) {
-        *status = ARTIFACT_VERIFY_DIGEST_MISMATCH;
-        return CUP_OK;
-    }
-
-    *status = ARTIFACT_VERIFY_VALID;
-    return CUP_OK;
-}
-
 CupError verified_artifact_open(VerifiedArtifact *artifact,
                                 const char *path,
                                 const PackageArtifactSpec *spec,
-                                const char *expected_digest,
                                 ArtifactVerificationStatus *status) {
     FILE *file = NULL;
     SystemPathIdentity identity;
@@ -176,7 +113,7 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
         *status = ARTIFACT_VERIFY_NONE;
     }
     if (artifact == NULL || text_is_empty(path) || spec == NULL ||
-        !checksum_digest_is_canonical(expected_digest) || status == NULL) {
+        !checksum_digest_is_canonical(spec->artifact_sha256) || status == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     verified_artifact_release(artifact);
@@ -223,27 +160,25 @@ CupError verified_artifact_open(VerifiedArtifact *artifact,
         verified_artifact_release(artifact);
         return err;
     }
-    err = verified_artifact_verify_expected(artifact, expected_digest, status);
-    if (err != CUP_OK) {
-        verified_artifact_release(artifact);
-    }
-    return err;
+    *status = strcmp(artifact->digest, spec->artifact_sha256) == 0
+                  ? ARTIFACT_VERIFY_VALID
+                  : ARTIFACT_VERIFY_DIGEST_MISMATCH;
+    return CUP_OK;
 }
 
 CupError verified_artifact_discard(VerifiedArtifact *artifact) {
-    char path[MAX_PATH_LEN];
-    SystemPathIdentity identity;
     CupError err;
 
-    if (artifact == NULL || artifact->file == NULL || text_is_empty(artifact->path) ||
-        !artifact->identity.valid) {
+    if (artifact == NULL || artifact->file == NULL || !artifact->identity.valid ||
+        text_is_empty(artifact->path)) {
         return CUP_ERR_INVALID_INPUT;
     }
-    if (text_copy(path, sizeof(path), artifact->path) != CUP_OK) {
-        return CUP_ERR_BUFFER_TOO_SMALL;
+    if (fclose(artifact->file) != 0) {
+        artifact->file = NULL;
+        return CUP_ERR_FILESYSTEM;
     }
-    identity = artifact->identity;
-    verified_artifact_release(artifact);
-    err = system_remove_file_if_identity(path, &identity);
+    artifact->file = NULL;
+    err = system_remove_file_if_identity(artifact->path, &artifact->identity);
+    verified_artifact_init(artifact);
     return err;
 }

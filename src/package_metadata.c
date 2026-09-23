@@ -245,6 +245,40 @@ const PackageMetadataField *package_metadata_next(const PackageMetadata *metadat
     return NULL;
 }
 
+static CupError package_command_name_from_path(char *buffer, size_t size, const char *path) {
+    const char *name = path_last_segment(path);
+    size_t length;
+
+    if (text_is_empty(name)) {
+        return CUP_ERR_VALIDATION;
+    }
+    length = strlen(name);
+
+#if defined(_WIN32)
+    {
+        static const char *const extensions[] = {".exe", ".com", ".bat", ".cmd"};
+        size_t i;
+
+        for (i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
+            size_t extension_length = strlen(extensions[i]);
+
+            if (length > extension_length &&
+                text_equal_ascii_ignore_case(name + length - extension_length, extensions[i])) {
+                length -= extension_length;
+                break;
+            }
+        }
+    }
+#endif
+
+    if (length == 0 || length >= size) {
+        return CUP_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(buffer, name, length);
+    buffer[length] = '\0';
+    return CUP_OK;
+}
+
 int package_metadata_next_command(const PackageMetadata *metadata,
                                   PackageCommand *command,
                                   size_t *cursor) {
@@ -263,9 +297,10 @@ int package_metadata_next_command(const PackageMetadata *metadata,
         return 0;
     }
 
-    if (text_copy(command->name, sizeof(command->name), field->key + sizeof(prefix) - 1) !=
+    if (package_command_name_from_path(command->name, sizeof(command->name), field->value) !=
             CUP_OK ||
         text_copy(command->path, sizeof(command->path), field->value) != CUP_OK) {
+        memset(command, 0, sizeof(*command));
         return 0;
     }
 

@@ -1,5 +1,5 @@
-# Verifies package download through a loopback address, checksum rejection,
-# and decompressed metadata size limits on Windows.
+# Verifies package download through loopback, artifact digest rejection,
+# and decompressed catalog metadata size limits on Windows.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -15,29 +15,40 @@ function Publish-NetworkPackage {
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
-        [string]$ServerRoot
+        [string]$ServerRoot,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Port
     )
 
     New-TestPackage -Component 'compiler' -Tool 'clang' -Version $Version -Entries @('clang')
     $platform = 'windows-x64'
     $packageName = "clang-$Version-$platform-$platform"
-    $cacheDir = Join-Path $Script:CupTestHome (
-        ".cup\cache\compiler\clang\$platform\$platform\$Version")
-    $releaseDir = Join-Path $ServerRoot "$Version-$platform-$platform"
-    New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $cacheDir "$packageName.zip") -Destination $releaseDir
-    Copy-Item -LiteralPath (Join-Path $cacheDir 'SHA256SUMS') -Destination $releaseDir
-    Remove-Item -LiteralPath $cacheDir -Recurse -Force
+    $archive = Join-Path $Script:CupTestRoot "artifacts\$packageName.zip"
+    $sha256 = Get-Sha256Lower -Path $archive
+    $serverArchive = Join-Path $ServerRoot "$packageName.zip"
+    Copy-Item -LiteralPath $archive -Destination $serverArchive -Force
+
+    $cacheObject = Join-Path $Script:CupTestHome ".cup\cache\$sha256"
+    Remove-Item -LiteralPath $cacheObject -Force -ErrorAction SilentlyContinue
+    Set-PackageCatalogArtifact `
+        -Tool 'clang' `
+        -Version $Version `
+        -Format 'zip' `
+        -Url "http://127.0.0.1:$Port/$packageName.zip" `
+        -Sha256 $sha256
+
     return [pscustomobject]@{
         PackageName = $packageName
-        ReleaseDir = $releaseDir
+        Archive = $archive
+        Sha256 = $sha256
+        CacheObject = $cacheObject
     }
 }
 
 try {
     Initialize-TestEnvironment -Name 'network' -ExecutablePath $CupExecutablePath
-    # Initialize the isolated runtime; repair behavior is owned by repair.ps1.
-    Invoke-Cup -CommandArgs @('repair') | Out-Null
+    Ensure-FixtureRuntimeRoot
     $helper = Get-TestHelperPath -Name 'network-helper'
 
     $serverRoot = Join-Path $Script:CupTestRoot 'server'
@@ -46,13 +57,11 @@ try {
     $stderrFile = Join-Path $Script:CupTestRoot 'server.stderr'
     New-Item -ItemType Directory -Force -Path $serverRoot | Out-Null
 
-    $compressedVersion = '97.0.4'
-    $compressedPath =
-        "/compressed-limit/$compressedVersion-windows-x64-windows-x64/SHA256SUMS"
+    $oversizedCatalogPath = '/catalog-too-large'
     $arguments = @(
         'http-server', '--root', $serverRoot, '--port', '0',
         '--ready-file', $readyFile,
-        '--gzip-path', $compressedPath, '--gzip-bytes', '4194305'
+        '--gzip-path', $oversizedCatalogPath, '--gzip-bytes', '4194305'
     )
     $server = Start-TestHelperProcess -FilePath $helper `
         -ArgumentList $arguments `
@@ -86,82 +95,51 @@ try {
         Fail-Test "invalid local HTTP port: $portText"
     }
 
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'url_template' -Mode 'Replace' -Value (
-            "http://127.0.0.1:$port/{version}-{host_platform}-{target_platform}/" +
-            'clang-{version}-{host_platform}-{target_platform}.{format}')
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'checksum_url_template' -Mode 'Replace' -Value (
-            "http://127.0.0.1:$port/{version}-{host_platform}-{target_platform}/SHA256SUMS")
-
     $env:CUP_INSTALL_ALLOW_INSECURE = '1'
     $env:NO_PROXY = '127.0.0.1'
+    $env:no_proxy = '127.0.0.1'
 
     $validVersion = '97.0.1'
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'available_versions' -Value $validVersion -Mode 'Prepend'
-    Publish-NetworkPackage -Version $validVersion -ServerRoot $serverRoot | Out-Null
+    [void](Publish-NetworkPackage -Version $validVersion -ServerRoot $serverRoot -Port $port)
 
-    Write-Host '==> Downloading a package through the loopback address...'
+    Write-Host '==> Downloading a concrete package artifact through loopback...'
     Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$validVersion") | Out-Null
+    Assert-Contains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
+        "compiler:clang@$validVersion"
+    Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
+    Assert-CupHealthy
 
     $badVersion = '97.0.2'
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'available_versions' -Value $badVersion -Mode 'Prepend'
-    $badPackage = Publish-NetworkPackage -Version $badVersion -ServerRoot $serverRoot
-    Write-Utf8NoBom -Path (Join-Path $badPackage.ReleaseDir 'SHA256SUMS') -Lines @(
-        ('0' * 64) + "  $($badPackage.PackageName).zip")
+    $badPackage = Publish-NetworkPackage -Version $badVersion -ServerRoot $serverRoot -Port $port
+    $badExpectedSha = '0' * 64
+    Remove-Item -LiteralPath $badPackage.CacheObject -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $Script:CupTestHome ".cup\cache\$badExpectedSha") `
+        -Force -ErrorAction SilentlyContinue
+    Set-PackageCatalogArtifact `
+        -Tool 'clang' `
+        -Version $badVersion `
+        -Format 'zip' `
+        -Url "http://127.0.0.1:$port/$($badPackage.PackageName).zip" `
+        -Sha256 $badExpectedSha
 
-    Write-Host '==> Rejecting a package whose downloaded checksum does not match...'
+    Write-Host '==> Rejecting an artifact whose bytes do not match the catalog digest...'
     $failure = Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$badVersion") `
         -ExpectFailure
     Assert-Contains $failure 'downloaded package failed SHA-256 verification'
-    $badCache = Join-Path $Script:CupTestHome (
-        ".cup\cache\compiler\clang\windows-x64\windows-x64\$badVersion")
-    Assert-PathMissing (Join-Path $badCache "$($badPackage.PackageName).zip")
+    Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\cache\$badExpectedSha")
     Assert-NotContains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
         "compiler:clang@$badVersion"
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
 
-    $invalidChecksumVersion = '97.0.3'
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'available_versions' -Value $invalidChecksumVersion -Mode 'Prepend'
-    $invalidChecksumPackage = Publish-NetworkPackage `
-        -Version $invalidChecksumVersion -ServerRoot $serverRoot
-    Write-Utf8NoBom -Path (Join-Path $invalidChecksumPackage.ReleaseDir 'SHA256SUMS') -Lines @(
-        ('0' * 64) + " x$($invalidChecksumPackage.PackageName).zip")
-
-    Write-Host '==> Rejecting malformed downloaded checksum metadata with a diagnostic...'
-    $invalidChecksumFailure = Assert-CupStatus `
-        -CommandArgs @('install', 'compiler', "clang@$invalidChecksumVersion") `
-        -ExpectedStatus 4 `
-        -ExpectedText 'Error: downloaded SHA256SUMS metadata is invalid.'
-    Assert-NotContains $invalidChecksumFailure 'Downloaded package archive.'
-    $invalidChecksumCache = Join-Path $Script:CupTestHome (
-        ".cup\cache\compiler\clang\windows-x64\windows-x64\$invalidChecksumVersion")
-    Assert-PathMissing (Join-Path $invalidChecksumCache 'SHA256SUMS')
-    Assert-PathMissing (Join-Path $invalidChecksumCache `
-        "$($invalidChecksumPackage.PackageName).zip")
-    Assert-CupHealthy
-
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'available_versions' -Value $compressedVersion -Mode 'Prepend'
-    Set-PackageCatalogField -Component 'compiler' -Tool 'clang' `
-        -Field 'checksum_url_template' -Mode 'Replace' -Value (
-            "http://127.0.0.1:$port/compressed-limit/" +
-            '{version}-{host_platform}-{target_platform}/SHA256SUMS')
-
-    Write-Host '==> Rejecting checksum metadata whose decompressed body exceeds the limit...'
-    $compressedFailure = Invoke-Cup `
-        -CommandArgs @('install', 'compiler', "clang@$compressedVersion") `
-        -ExpectFailure
-    Assert-Contains $compressedFailure 'download exceeded the configured size limit'
-    $compressedCache = Join-Path $Script:CupTestHome (
-        ".cup\cache\compiler\clang\windows-x64\windows-x64\$compressedVersion")
-    Assert-PathMissing (Join-Path $compressedCache 'SHA256SUMS')
-    Assert-NotContains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
-        "compiler:clang@$compressedVersion"
+    Write-Host '==> Rejecting catalog metadata whose decompressed body exceeds the metadata limit...'
+    Set-PackageCatalogUpdateUrl -Url "http://127.0.0.1:$port$oversizedCatalogPath"
+    $runtimeCatalog = Join-Path $Script:CupTestHome '.cup\config\catalog.cfg'
+    $catalogBefore = Get-Sha256Lower -Path $runtimeCatalog
+    $catalogFailure = Invoke-Cup -CommandArgs @('update', 'catalog') -ExpectFailure
+    Assert-Contains $catalogFailure 'download exceeded the configured size limit'
+    Assert-Equals $catalogBefore (Get-Sha256Lower -Path $runtimeCatalog) `
+        'failed catalog refresh changed the local snapshot'
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
 

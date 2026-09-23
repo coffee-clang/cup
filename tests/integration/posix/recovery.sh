@@ -1,7 +1,6 @@
 #!/bin/sh
 
-# Exercises interrupted install, remove, and cup update recovery at
-# their persistent commit boundaries.
+# Exercises interrupted package and CUP-generation recovery at their durable commit boundaries.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -9,77 +8,46 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin recovery
 prepare_command_environment
-run_cup repair >/dev/null
 
-write_common_checksums() {
-    destination=$1
-    package_catalog=$2
-    install_policy=$3
+prepare_bootstrap_source() {
+    source_directory=$1
+    binary_name="cup-$TEST_PLATFORM"
+    mkdir -m 0700 "$source_directory"
+    cp "$CUP" "$source_directory/$binary_name"
+    cp "$PROJECT_ROOT/LICENSE" "$source_directory/LICENSE"
+    cp "$PROJECT_ROOT/scripts/dependencies/THIRD_PARTY_NOTICES.txt" \
+        "$source_directory/THIRD_PARTY_NOTICES.txt"
+    cp "$PROJECT_ROOT/tests/fixtures/catalog.cfg" "$source_directory/catalog.cfg"
+    chmod 0700 "$source_directory/$binary_name"
+    chmod 0600 "$source_directory/LICENSE" \
+        "$source_directory/THIRD_PARTY_NOTICES.txt" "$source_directory/catalog.cfg"
 
+    version=$(cat "$PROJECT_ROOT/VERSION")
+    commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
     {
-        printf '%s  packages.cfg\n' "$(hash_file "$package_catalog")"
-        printf '%s  install.cfg\n' "$(hash_file "$install_policy")"
-        printf '%s  install.sh\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install.sh")"
-        printf '%s  install.ps1\n' \
-            "$(hash_file "$PROJECT_ROOT/scripts/install/install.ps1")"
-    } > "$destination"
-}
-
-install_assets_fixture() {
-    mkdir -p "$TEST_HOME/.cup/bin" "$TEST_HOME/.cup/config" \
-        "$TEST_HOME/.cup/helpers"
-    cp "$CUP" "$TEST_HOME/.cup/bin/cup"
-    cp "$CUP" "$TEST_HOME/.cup/helpers/update-helper"
-    cp "$DEV_ROOT/config/packages.cfg" "$TEST_HOME/.cup/config/packages.cfg"
-    cp "$DEV_ROOT/config/install.cfg" "$TEST_HOME/.cup/config/install.cfg"
-    chmod 0755 "$TEST_HOME/.cup/bin/cup" \
-        "$TEST_HOME/.cup/helpers/update-helper"
-
-    binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-    base_version=$(sed -n '1p' "$PROJECT_ROOT/VERSION" | tr -d '\r')
-    metadata="format=1
-version=$base_version
-commit=abcdef0123456789abcdef0123456789abcdef01
-"
-    metadata_hash=$(hash_text "$metadata")
-
-    write_common_checksums \
-        "$TEST_HOME/.cup/config/SHA256SUMS.common" \
-        "$TEST_HOME/.cup/config/packages.cfg" \
-        "$TEST_HOME/.cup/config/install.cfg"
-    {
-        printf '%s  cup-%s\n' "$binary_hash" "$TEST_PLATFORM"
-        printf '%s  release.txt\n' "$metadata_hash"
-        printf '%s  SHA256SUMS.common\n' \
-            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.common")"
-    } > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-    chmod 0444 "$TEST_HOME/.cup/config/packages.cfg" \
-        "$TEST_HOME/.cup/config/install.cfg" \
-        "$TEST_HOME/.cup/config/SHA256SUMS.common" \
-        "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-}
-
-install_assets_fixture
-
-write_generation_marker() {
-    staging_path=$1
-    version=$2
-
-    {
-        printf 'format=1\n'
+        printf 'format=2\n'
         printf 'version=%s\n' "$version"
-        printf 'binary_sha256=%s\n' "$(hash_file "$TEST_HOME/.cup/bin/cup")"
-        printf 'platform_checksums_sha256=%s\n' \
-            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")"
-        printf 'packages_sha256=%s\n' \
-            "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")"
-        printf 'install_policy_sha256=%s\n' \
-            "$(hash_file "$TEST_HOME/.cup/config/install.cfg")"
-        printf 'common_checksums_sha256=%s\n' \
-            "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.common")"
-    } > "$staging_path/committed"
+        printf 'commit=%s\n' "$commit"
+        printf 'root_layout=2\n'
+        printf 'catalog_format=1\n'
+        printf 'asset_count=4\n'
+        printf 'asset.0.name=LICENSE\n'
+        printf 'asset.0.sha256=%s\n' "$(hash_file "$source_directory/LICENSE")"
+        printf 'asset.1.name=THIRD_PARTY_NOTICES.txt\n'
+        printf 'asset.1.sha256=%s\n' \
+            "$(hash_file "$source_directory/THIRD_PARTY_NOTICES.txt")"
+        printf 'asset.2.name=catalog.cfg\n'
+        printf 'asset.2.sha256=%s\n' "$(hash_file "$source_directory/catalog.cfg")"
+        printf 'asset.3.name=%s\n' "$binary_name"
+        printf 'asset.3.sha256=%s\n' "$(hash_file "$source_directory/$binary_name")"
+    } > "$source_directory/release.txt"
+    chmod 0600 "$source_directory/release.txt"
 }
+
+bootstrap_source=$TMP_ROOT/bootstrap-source
+prepare_bootstrap_source "$bootstrap_source"
+HOME="$TEST_HOME" "$CUP" --internal-bootstrap "$bootstrap_source" "$TEST_HOME" >/dev/null
+assert_cup_healthy
 
 write_package_journal() {
     operation=$1
@@ -89,23 +57,21 @@ write_package_journal() {
     temporary_name=$5
 
     cat > "$TEST_HOME/.cup/transaction.txt" <<JOURNAL
-format=1
+format=2
 operation=$operation
 component=$component
 tool=$tool
-host_platform=$TEST_PLATFORM
 target_platform=$TEST_PLATFORM
 package_version=$version
 temporary_name=$temporary_name
 JOURNAL
 }
 
-# If state already committed an installation, repair must complete the package
-# move rather than discarding the valid staged directory.
+# If state already committed an installation, repair completes the package move from staging.
 make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang
-run_cup install compiler clang@stable >/dev/null
-install_path=$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
-install_staging_name=install-compiler-clang-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-recovery
+run_cup install compiler clang@23.1.0 >/dev/null
+install_path=$TEST_HOME/.cup/components/compiler/clang/$TEST_PLATFORM/23.1.0
+install_staging_name=install-compiler-clang-$TEST_PLATFORM-23.1.0-recovery
 install_staging=$TEST_HOME/.cup/staging/$install_staging_name
 mv "$install_path" "$install_staging"
 write_package_journal install compiler clang 23.1.0 "$install_staging_name"
@@ -124,12 +90,11 @@ assert_missing "$install_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
-# If removal had only staged the package and state still references it, repair
-# must roll the package back into its installed location.
+# If removal had only staged the package and state still references it, repair rolls it back.
 make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
-run_cup install debugger lldb@stable >/dev/null
-remove_path=$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
-remove_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-recovery
+run_cup install debugger lldb@23.1.0 >/dev/null
+remove_path=$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/23.1.0
+remove_staging_name=remove-debugger-lldb-$TEST_PLATFORM-23.1.0-recovery
 remove_staging=$TEST_HOME/.cup/staging/$remove_staging_name
 mv "$remove_path" "$remove_staging"
 write_package_journal remove debugger lldb 23.1.0 "$remove_staging_name"
@@ -140,10 +105,8 @@ assert_missing "$remove_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
-# If the canonical path is present but corrupted while staging still contains
-# the valid package referenced by state, repair must preserve the bad path and
-# restore the valid copy instead of discarding it.
-conflict_staging_name=remove-debugger-lldb-$TEST_PLATFORM-$TEST_PLATFORM-23.1.0-conflict
+# A conflicting invalid canonical path is preserved before the valid staged package is restored.
+conflict_staging_name=remove-debugger-lldb-$TEST_PLATFORM-23.1.0-conflict
 conflict_staging=$TEST_HOME/.cup/staging/$conflict_staging_name
 mv "$remove_path" "$conflict_staging"
 mkdir -p "$remove_path"
@@ -158,129 +121,155 @@ assert_missing "$conflict_staging"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
+binary_release_name="cup-$TEST_PLATFORM"
+root=$TEST_HOME/.cup
 
-copy_update_backups() {
-    destination=$1
-    cp "$TEST_HOME/.cup/bin/cup" "$destination/binary.old"
-    cp "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
-        "$destination/platform-checksums.old"
-    cp "$TEST_HOME/.cup/config/packages.cfg" "$destination/package-catalog.old"
-    cp "$TEST_HOME/.cup/config/install.cfg" "$destination/install-config.old"
-    cp "$TEST_HOME/.cup/config/SHA256SUMS.common" "$destination/common-checksums.old"
+write_generation_release() {
+    directory=$1
+    license_text=$2
+    notices_text=$3
+    binary_source=$4
+    mkdir -p "$directory"
+    printf '%s\n' "$license_text" > "$directory/LICENSE"
+    printf '%s\n' "$notices_text" > "$directory/THIRD_PARTY_NOTICES.txt"
+    cp "$binary_source" "$directory/$binary_release_name"
+    chmod 0700 "$directory/$binary_release_name"
+    version=$(cat "$PROJECT_ROOT/VERSION")
+    commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
+    {
+        printf 'format=2\n'
+        printf 'version=%s\n' "$version"
+        printf 'commit=%s\n' "$commit"
+        printf 'root_layout=2\n'
+        printf 'catalog_format=1\n'
+        printf 'asset_count=3\n'
+        printf 'asset.0.name=LICENSE\n'
+        printf 'asset.0.sha256=%s\n' "$(hash_file "$directory/LICENSE")"
+        printf 'asset.1.name=THIRD_PARTY_NOTICES.txt\n'
+        printf 'asset.1.sha256=%s\n' \
+            "$(hash_file "$directory/THIRD_PARTY_NOTICES.txt")"
+        printf 'asset.2.name=%s\n' "$binary_release_name"
+        printf 'asset.2.sha256=%s\n' "$(hash_file "$directory/$binary_release_name")"
+    } > "$directory/release.txt"
 }
 
-# A crash after the marker but before binary replacement leaves the old
-# executable with partially installed support assets. Repair may roll those
-# assets back only when the executable already equals its backup.
-staging=$TEST_HOME/.cup/staging/cup-update-safe-rollback-test
-mkdir -p "$staging"
-copy_update_backups "$staging"
-write_generation_marker "$staging" 0.0.0
-expected_binary_hash=$(hash_file "$staging/binary.old")
-expected_catalog_hash=$(hash_file "$staging/package-catalog.old")
-expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
+snapshot_generation() {
+    destination=$1
+    mkdir -p "$destination"
+    cp "$root/release.txt" "$destination/release.txt"
+    cp "$root/LICENSE" "$destination/LICENSE"
+    cp "$root/THIRD_PARTY_NOTICES.txt" "$destination/THIRD_PARTY_NOTICES.txt"
+    cp "$root/bin/cup" "$destination/$binary_release_name"
+}
 
-chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
-    "$TEST_HOME/.cup/config/packages.cfg"
-printf 'broken catalog\n' > "$TEST_HOME/.cup/config/packages.cfg"
-printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
-format=1
-operation=cup-update
-phase=committing
-temporary_name=cup-update-safe-rollback-test
-token=recovery-cup-update-safe-rollback-test
-version=0.0.0
-error=0
-recovery=none
+prepare_generation_transaction() {
+    name=$1
+    license_text=$2
+    notices_text=$3
+    staging=$root/staging/$name
+    new_dir=$staging/new
+    old_dir=$staging/old
+    rm -rf "$staging"
+    mkdir -p "$new_dir"
+    write_generation_release "$new_dir" "$license_text" "$notices_text" "$root/bin/cup"
+    snapshot_generation "$old_dir"
+    target_release_sha=$(hash_file "$new_dir/release.txt")
+    cat > "$root/transaction.txt" <<JOURNAL
+format=2
+operation=cup-generation
+target_release_sha256=$target_release_sha
+temporary_name=$name
 JOURNAL
+}
 
+install_generation_asset() {
+    new_dir=$1
+    name=$2
+    case "$name" in
+        "$binary_release_name")
+            cp "$new_dir/$name" "$root/bin/cup"
+            chmod 0755 "$root/bin/cup"
+            ;;
+        release.txt|LICENSE|THIRD_PARTY_NOTICES.txt)
+            chmod u+w "$root/$name" 2>/dev/null || true
+            cp "$new_dir/$name" "$root/$name"
+            chmod 0444 "$root/$name"
+            ;;
+        *) fail "unknown generation asset: $name" ;;
+    esac
+}
+
+# Before binary-last commit, repair may roll non-binary assets back because the canonical binary
+# still proves the old generation.
+rollback_name=cup-update-recovery-rollback
+prepare_generation_transaction "$rollback_name" 'target-license-a' 'target-notices-a'
+rollback_staging=$root/staging/$rollback_name
+rollback_new=$rollback_staging/new
+old_release_hash=$(hash_file "$rollback_staging/old/release.txt")
+old_license_hash=$(hash_file "$rollback_staging/old/LICENSE")
+old_notices_hash=$(hash_file "$rollback_staging/old/THIRD_PARTY_NOTICES.txt")
+old_binary_hash=$(hash_file "$rollback_staging/old/$binary_release_name")
+install_generation_asset "$rollback_new" LICENSE
+install_generation_asset "$rollback_new" release.txt
 output=$(run_cup repair)
-assert_contains "$output" 'Rolled back interrupted cup update transaction.'
-assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$expected_binary_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")" \
-    "$expected_catalog_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
-    "$expected_checksums_hash"
-assert_missing "$TEST_HOME/.cup/transaction.txt"
-assert_missing "$staging"
+assert_contains "$output" 'Rolled back interrupted CUP generation transaction.'
+assert_equals "$(hash_file "$root/release.txt")" "$old_release_hash"
+assert_equals "$(hash_file "$root/LICENSE")" "$old_license_hash"
+assert_equals "$(hash_file "$root/THIRD_PARTY_NOTICES.txt")" "$old_notices_hash"
+assert_equals "$(hash_file "$root/bin/cup")" "$old_binary_hash"
+assert_missing "$root/transaction.txt"
+assert_missing "$rollback_staging"
 assert_cup_healthy
 
-# If rollback would require replacing cup itself, repair must fail before
-# changing any canonical asset and retain the complete transaction evidence.
-staging=$TEST_HOME/.cup/staging/cup-update-unsafe-rollback-test
-mkdir -p "$staging"
-copy_update_backups "$staging"
-expected_binary_hash=$(hash_file "$staging/binary.old")
-expected_catalog_hash=$(hash_file "$staging/package-catalog.old")
-expected_checksums_hash=$(hash_file "$staging/platform-checksums.old")
+# Once every canonical generation byte equals the frozen target, repair finalizes by clearing the
+# journal/workspace rather than rolling anything back.
+finalize_name=cup-update-recovery-finalize
+prepare_generation_transaction "$finalize_name" 'target-license-b' 'target-notices-b'
+finalize_staging=$root/staging/$finalize_name
+finalize_new=$finalize_staging/new
+for generation_asset in LICENSE THIRD_PARTY_NOTICES.txt release.txt "$binary_release_name"; do
+    install_generation_asset "$finalize_new" "$generation_asset"
+done
+target_release_hash=$(hash_file "$root/release.txt")
+target_license_hash=$(hash_file "$root/LICENSE")
+target_notices_hash=$(hash_file "$root/THIRD_PARTY_NOTICES.txt")
+target_binary_hash=$(hash_file "$root/bin/cup")
+output=$(run_cup repair)
+assert_contains "$output" 'Completed interrupted CUP generation transaction.'
+assert_equals "$(hash_file "$root/release.txt")" "$target_release_hash"
+assert_equals "$(hash_file "$root/LICENSE")" "$target_license_hash"
+assert_equals "$(hash_file "$root/THIRD_PARTY_NOTICES.txt")" "$target_notices_hash"
+assert_equals "$(hash_file "$root/bin/cup")" "$target_binary_hash"
+assert_missing "$root/transaction.txt"
+assert_missing "$finalize_staging"
+assert_cup_healthy
 
-chmod u+w "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM" \
-    "$TEST_HOME/.cup/config/packages.cfg"
-printf 'broken binary\n' > "$TEST_HOME/.cup/bin/cup"
-printf 'broken catalog\n' > "$TEST_HOME/.cup/config/packages.cfg"
-printf 'broken checksums\n' > "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-broken_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-broken_catalog_hash=$(hash_file "$TEST_HOME/.cup/config/packages.cfg")
-broken_checksums_hash=$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")
-cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
-format=1
-operation=cup-update
-phase=committing
-temporary_name=cup-update-unsafe-rollback-test
-token=recovery-cup-update-unsafe-rollback-test
-version=0.0.0
-error=0
-recovery=none
-JOURNAL
-
-run_cup_expect_failure "$TMP_ROOT/unsafe-cup-update-repair.out" repair
-output=$(cat "$TMP_ROOT/unsafe-cup-update-repair.out")
-assert_contains "$output" 'interrupted cup update recovery would replace the running executable'
+# A third binary is ambiguous evidence. Repair must not guess, mutate the generation, or discard
+# the journal/workspace. Restore the exact old snapshot manually only after proving preservation.
+ambiguous_name=cup-update-recovery-ambiguous
+prepare_generation_transaction "$ambiguous_name" 'target-license-c' 'target-notices-c'
+ambiguous_staging=$root/staging/$ambiguous_name
+ambiguous_old=$ambiguous_staging/old
+printf 'third-binary\n' > "$root/bin/cup"
+chmod 0755 "$root/bin/cup"
+third_binary_hash=$(hash_file "$root/bin/cup")
+run_cup_expect_failure "$TMP_ROOT/ambiguous-generation-repair.out" repair
+output=$(cat "$TMP_ROOT/ambiguous-generation-repair.out")
 assert_contains "$output" 'interrupted operation cannot be repaired safely'
-assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$broken_binary_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/config/packages.cfg")" \
-    "$broken_catalog_hash"
-assert_equals "$(hash_file "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM")" \
-    "$broken_checksums_hash"
-assert_file "$TEST_HOME/.cup/transaction.txt"
-assert_file "$staging/binary.old"
-assert_file "$staging/package-catalog.old"
-assert_file "$staging/platform-checksums.old"
+assert_equals "$(hash_file "$root/bin/cup")" "$third_binary_hash"
+assert_file "$root/transaction.txt"
+assert_file "$ambiguous_staging/new/release.txt"
+assert_file "$ambiguous_old/$binary_release_name"
 
-# Reset the isolated fixture after verifying that repair preserved every file.
-cp "$staging/binary.old" "$TEST_HOME/.cup/bin/cup"
-cp "$staging/package-catalog.old" "$TEST_HOME/.cup/config/packages.cfg"
-cp "$staging/platform-checksums.old" \
-    "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-chmod 0755 "$TEST_HOME/.cup/bin/cup"
-chmod 0444 "$TEST_HOME/.cup/config/packages.cfg"
-chmod 0444 "$TEST_HOME/.cup/config/SHA256SUMS.$TEST_PLATFORM"
-rm -f "$TEST_HOME/.cup/transaction.txt"
-rm -rf "$staging"
-assert_cup_healthy
-
-staging=$TEST_HOME/.cup/staging/cup-update-committed-test
-mkdir -p "$staging"
-copy_update_backups "$staging"
-write_generation_marker "$staging" 0.0.0
-committed_binary_hash=$(hash_file "$TEST_HOME/.cup/bin/cup")
-cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
-format=1
-operation=cup-update
-phase=committing
-temporary_name=cup-update-committed-test
-token=recovery-cup-update-committed-test
-version=0.0.0
-error=0
-recovery=none
-JOURNAL
-
-output=$(run_cup repair)
-assert_contains "$output" 'Completed interrupted cup update transaction.'
-assert_equals "$(hash_file "$TEST_HOME/.cup/bin/cup")" "$committed_binary_hash"
-assert_missing "$TEST_HOME/.cup/transaction.txt"
-assert_missing "$staging"
+# Reset the isolated fixture after verifying evidence preservation.
+cp "$ambiguous_old/release.txt" "$root/release.txt"
+cp "$ambiguous_old/LICENSE" "$root/LICENSE"
+cp "$ambiguous_old/THIRD_PARTY_NOTICES.txt" "$root/THIRD_PARTY_NOTICES.txt"
+cp "$ambiguous_old/$binary_release_name" "$root/bin/cup"
+chmod 0444 "$root/release.txt" "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.txt"
+chmod 0755 "$root/bin/cup"
+rm -f "$root/transaction.txt"
+rm -rf "$ambiguous_staging"
 assert_cup_healthy
 
 printf 'Recovery tests passed for %s.\n' "$TEST_PLATFORM"

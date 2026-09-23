@@ -95,23 +95,14 @@ Objects depend on this generated identity. A meaningful compiler, dependency or
 flag change therefore invalidates the affected build without requiring a manual
 cleanup.
 
-The same configuration also generates:
-
-```text
-version.h
-release.txt
-version.rc       # Windows only
-```
-
+The same configuration generates `version.h` and, on Windows, `version.rc`.
 `scripts/version.sh` reads the manually maintained `VERSION` file and Git state.
-Development builds expose Git-derived information. An archive without `.git`
-uses the explicit `dev+archive` identity and the reserved all-zero commit in
-`release.txt`. Official builds require a Git checkout and the exact source
-commit.
+Development builds expose Git-derived information; an archive without `.git`
+uses the `archive` development identity. Official builds require a Git checkout
+and the exact source commit.
 
-Generated file sets are prepared in staging and published only after the
-complete expected set exists. A partially successful generator cannot make
-stale canonical outputs look current.
+The public `release.txt` manifest is not build metadata. Release assembly creates
+it last from the exact final public asset set, as described in `RELEASES.md`.
 
 ## Build directories
 

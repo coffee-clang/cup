@@ -46,9 +46,8 @@ printf '%s\n' '0.2.0' > "$repo/VERSION"
     assert_equals "$(./scripts/version.sh base)" '0.2.0'
     assert_equals "$(./scripts/version.sh current)" '0.2.0-dev+archive'
     ./scripts/version.sh generate generated-archive
-    assert_equals "$(sed -n 's/^commit=//p' generated-archive/release.txt)" \
-        '0000000000000000000000000000000000000000'
-    assert_equals "$(wc -l < generated-archive/release.txt | tr -d '[:space:]')" '3'
+    [ ! -e generated-archive/release.txt ] ||
+        fail 'version generation unexpectedly produced release.txt before final assembly'
     grep -Fx '#define CUP_VERSION_COMMIT "archive"' generated-archive/version.h >/dev/null ||
         fail 'archive development header lost its human-readable identity'
     rm -rf generated-archive
@@ -78,11 +77,8 @@ printf '%s\n' '0.2.0' > "$repo/VERSION"
     assert_equals "$current" '0.2.0'
     assert_equals "$validated" '0.2.0'
     CUP_OFFICIAL_BUILD=1 CUP_BUILD_CONFIGURATION=release ./scripts/version.sh generate generated
-    assert_equals "$(sed -n 's/^format=//p' generated/release.txt)" '1'
-    assert_equals "$(sed -n 's/^version=//p' generated/release.txt)" '0.2.0'
-    assert_equals "$(sed -n 's/^commit=//p' generated/release.txt)" \
-        "$(git rev-parse HEAD)"
-    assert_equals "$(wc -l < generated/release.txt | tr -d '[:space:]')" '3'
+    [ ! -e generated/release.txt ] ||
+        fail 'official version generation unexpectedly produced release.txt before final assembly'
     grep -Fx '#include "version.h"' generated/version.rc >/dev/null ||
         fail 'Windows version resource does not include generated version metadata'
     grep -F '<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>' \

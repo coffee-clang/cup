@@ -9,7 +9,6 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 test_begin concurrency
 prepare_command_environment
-run_cup repair >/dev/null
 make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
 
 configuration=${CUP_TEST_CONFIGURATION:-development}
@@ -49,13 +48,11 @@ trap 'concurrency_signal_handler 143' TERM
 assert_file "$helper"
 
 mkdir -p "$server_root"
-cache_dir=$TEST_HOME/.cup/cache/compiler/clang/$TEST_PLATFORM/$TEST_PLATFORM/23.1.0
 archive_name=clang-23.1.0-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
-mv "$cache_dir/$archive_name" "$server_root/$archive_name"
-checksum_root=$server_root/23.1.0/$TEST_PLATFORM/$TEST_PLATFORM
-mkdir -p "$checksum_root"
-mv "$cache_dir/SHA256SUMS" "$checksum_root/SHA256SUMS"
-rm -rf "$TEST_HOME/.cup/cache/compiler/clang"
+archive=$TMP_ROOT/artifacts/$archive_name
+sha=$(hash_file "$archive")
+cp "$archive" "$server_root/$archive_name"
+rm -f "$TEST_HOME/.cup/cache/$sha"
 
 rm -f "$ready" "$request_ready"
 "$helper" http-server --root "$server_root" --port "$port" \
@@ -80,34 +77,16 @@ port=$(cat "$ready")
 case "$port" in
     ''|*[!0-9]*) fail "concurrency package server reported invalid port: $port" ;;
 esac
-catalog=$DEV_ROOT/config/packages.cfg
-catalog_backup=$TMP_ROOT/packages.cfg.original
+catalog=$DEV_ROOT/config/catalog.cfg
+catalog_backup=$TMP_ROOT/catalog.cfg.original
 cp "$catalog" "$catalog_backup"
-temporary=$catalog.tmp
-awk -v key="compiler.clang.$TEST_PLATFORM.$TEST_PLATFORM" \
-    -v base="http://127.0.0.1:$port" '
-    BEGIN { changed = 0 }
-    index($0, key ".url_template=") == 1 {
-        package = "/clang-{version}-{host_platform}-{target_platform}.{format}"
-        print key ".url_template=" base package
-        changed++
-        next
-    }
-    index($0, key ".checksum_url_template=") == 1 {
-        checksum = "/{version}/{host_platform}/{target_platform}/SHA256SUMS"
-        print key ".checksum_url_template=" base checksum
-        changed++
-        next
-    }
-    { print }
-    END { if (changed != 2) exit 2 }
-' "$catalog" > "$temporary" || fail 'could not configure the concurrency package server'
-mv "$temporary" "$catalog"
+package_catalog_rewrite_artifact clang 23.1.0 tar.gz \
+    "http://127.0.0.1:$port/$archive_name" "$sha"
 
 (
     cd "$DEV_ROOT"
     exec env HOME="$TEST_HOME" CUP_INSTALL_ALLOW_INSECURE=1 \
-        "$CUP" install compiler clang@stable
+        "$CUP" install compiler clang@23.1.0
 ) >"$TMP_ROOT/install-a.out" 2>&1 &
 pid_a=$!
 
@@ -125,18 +104,25 @@ while [ ! -f "$request_ready" ] && [ "$attempt" -lt 200 ]; do
 done
 [ -f "$request_ready" ] || fail 'first install did not reach the synchronized download'
 
-# The installer completion probe must use the same runtime lock boundary as normal
-# commands: it is unavailable while this synchronized mutation owns the lock.
-if HOME="$TEST_HOME" "$CUP" --internal-runtime-ready \
-        >"$TMP_ROOT/runtime-ready-busy.out" 2>&1; then
-    fail 'runtime readiness probe succeeded while a mutation held cup.lock'
+# A public read-only command uses the same runtime lock boundary and cannot observe a
+# half-mutated root while the synchronized install owns the exclusive lock.
+if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" list) \
+        >"$TMP_ROOT/list-busy.out" 2>&1; then
+    fail 'read-only list succeeded while a mutation held cup.lock'
 fi
+assert_contains "$(cat "$TMP_ROOT/list-busy.out")" 'another cup operation is currently running'
+
+if (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" doctor) \
+        >"$TMP_ROOT/doctor-busy.out" 2>&1; then
+    fail 'doctor succeeded while a mutation held cup.lock'
+fi
+assert_contains "$(cat "$TMP_ROOT/doctor-busy.out")" 'another cup operation is currently running'
 
 status_b=0
 (
     cd "$DEV_ROOT"
     HOME="$TEST_HOME" CUP_INSTALL_ALLOW_INSECURE=1 \
-        "$CUP" install compiler clang@stable
+        "$CUP" install compiler clang@23.1.0
 ) >"$TMP_ROOT/install-b.out" 2>&1 || status_b=$?
 
 if [ "$status_b" -eq 0 ]; then
@@ -153,9 +139,13 @@ if [ "$status_a" -ne 0 ]; then
         "$status_a" "$(cat "$TMP_ROOT/install-a.out")" >&2
     fail 'first synchronized install did not complete successfully'
 fi
-HOME="$TEST_HOME" "$CUP" --internal-runtime-ready \
-    >"$TMP_ROOT/runtime-ready-after.out" 2>&1 ||
-    fail 'runtime readiness probe did not recover after the mutation completed'
+cp "$catalog_backup" "$catalog"
+cp "$catalog_backup" "$TEST_HOME/.cup/config/catalog.cfg"
+if ! (cd "$DEV_ROOT" && HOME="$TEST_HOME" "$CUP" list) \
+        >"$TMP_ROOT/list-after.out" 2>&1; then
+    cat "$TMP_ROOT/list-after.out" >&2 || true
+    fail 'read-only list did not recover after the mutation completed'
+fi
 
 first_text=$(cat "$TMP_ROOT/install-a.out")
 second_text=$(cat "$TMP_ROOT/install-b.out")
@@ -169,7 +159,6 @@ case "$second_text" in
 esac
 assert_not_contains "$second_text" 'already installed'
 
-cp "$catalog_backup" "$catalog"
 assert_cup_healthy
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 if find "$TEST_HOME/.cup/staging" -mindepth 1 -print -quit | grep . >/dev/null; then

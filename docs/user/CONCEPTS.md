@@ -103,7 +103,7 @@ cup default compiler gcc@stable
 
 Preferences do not change installed packages or defaults. Installing another
 version also does not silently replace an existing default. The first valid
-package installed in an empty component/host/target scope becomes its default.
+package installed in an empty component/target scope becomes its default.
 
 ## Profiles and toolchains
 
@@ -171,8 +171,9 @@ management in CUP. See [Packages](../design/PACKAGES.md) for the package contrac
 ## Recovery model
 
 Commands that can leave persistent state half changed use a transaction journal.
-The local state file is the deciding commit point for package install/update/remove;
-self-update and uninstall use detached native helpers because the running CUP
+The local state file is the deciding commit point for package install/remove.
+Package update installs a newer immutable package through the same install
+transaction. Self-update and uninstall use detached native helpers because the running CUP
 executable or root cannot always be replaced in place.
 
 Normal mutating commands stop when recovery information is pending. `cup doctor`

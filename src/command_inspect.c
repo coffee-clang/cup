@@ -62,9 +62,7 @@ static void print_package_info(const PackageMetadata *metadata) {
     print_metadata_field(metadata, "package.component", "component");
     print_metadata_field(metadata, "package.tool", "tool");
     print_metadata_field(metadata, "package.version", "version");
-    print_metadata_field(metadata, "package.revision", "revision");
-    print_metadata_field(metadata, "package.mode", "mode");
-    print_metadata_field(metadata, "package.formats", "formats");
+    print_metadata_field(metadata, "package.revision_reason", "revision reason");
 
     printf("\nPlatform:\n");
     print_metadata_field(metadata, "platform.host", "host");

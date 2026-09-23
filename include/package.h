@@ -15,7 +15,6 @@
 #include "package_metadata.h"
 #include "system.h"
 
-#define MAX_SCANNED_PACKAGES 256
 #define MAX_PACKAGE_SCAN_ISSUES 256
 
 /* Component, host and target scope used by package operations. */
@@ -40,7 +39,6 @@ typedef enum {
     PACKAGE_ISSUE_INVALID_PATH_TYPE,
     PACKAGE_ISSUE_INVALID_COMPONENT,
     PACKAGE_ISSUE_INVALID_TOOL,
-    PACKAGE_ISSUE_INVALID_HOST,
     PACKAGE_ISSUE_INVALID_TARGET,
     PACKAGE_ISSUE_INVALID_VERSION,
     PACKAGE_ISSUE_INVALID_CONTENT
@@ -60,17 +58,20 @@ typedef struct {
  * complete is false when a bounded array could not retain every item.
  */
 typedef struct {
-    PackageIdentity items[MAX_SCANNED_PACKAGES];
+    PackageIdentity *items;
     size_t count;
+    size_t capacity;
     size_t total_count;
 
     PackageIssue issues[MAX_PACKAGE_SCAN_ISSUES];
     size_t issue_count;
     size_t total_issue_count;
 
-    size_t foreign_host_count;
     int complete;
 } PackageList;
+
+void package_list_init(PackageList *packages);
+void package_list_free(PackageList *packages);
 
 /* Validate and initialize one component/host/target scope. Output is cleared on failure. */
 CupError package_scope_init(PackageScope *scope,
@@ -140,7 +141,7 @@ CupError package_validate_integrity(const char *base_path,
 /* Check whether the canonical package path exists, regardless of path type. */
 CupError package_path_exists(const PackageIdentity *identity, int *exists);
 
-/* Scan and validate all paths below components; diagnostics may be NULL for aggregation. */
+/* Scan and validate all paths below components; the list must be initialized first. */
 CupError package_scan(PackageList *packages, FILE *diagnostics);
 int package_list_contains(const PackageList *packages, const PackageIdentity *package);
 const char *package_issue_reason_name(PackageIssueReason reason);

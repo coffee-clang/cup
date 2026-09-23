@@ -2,61 +2,60 @@
 #define CUP_PACKAGE_CATALOG_H
 
 /*
- * Strict package-catalog validation, stable-version resolution, archive-format selection, and
- * URL-template expansion.
+ * Concrete package availability loaded from catalog.cfg. Structurally valid future records may
+ * be retained but are ignored by runtime queries until this CUP generation owns their contract.
  */
 
 #include <stddef.h>
+#include <stdint.h>
 
-#include "constants.h"
 #include "checksum.h"
+#include "constants.h"
 #include "error.h"
 #include "system.h"
 
-/* One complete component/tool/host/target package configuration. */
+typedef struct {
+    char format[MAX_IDENTIFIER_LEN];
+    char url[MAX_CATALOG_URL_LEN];
+    char sha256[CHECKSUM_SHA256_HEX_LENGTH + 1];
+    unsigned field_mask;
+} PackageCatalogArtifact;
+
 typedef struct {
     char component[MAX_IDENTIFIER_LEN];
     char tool[MAX_IDENTIFIER_LEN];
     char host_platform[MAX_PLATFORM_LEN];
     char target_platform[MAX_PLATFORM_LEN];
-    char stable_version[MAX_IDENTIFIER_LEN];
-    char available_versions[MAX_CATALOG_VALUE_LEN];
-    char default_format[MAX_IDENTIFIER_LEN];
-    char formats[MAX_CATALOG_VALUE_LEN];
-    char url_template[MAX_CATALOG_URL_LEN];
-    char checksum_url_template[MAX_CATALOG_URL_LEN];
+    char version[MAX_IDENTIFIER_LEN];
+    char revision_reason[MAX_CATALOG_VALUE_LEN];
+    int stable;
+    int operational;
     unsigned field_mask;
+    PackageCatalogArtifact *artifacts;
+    size_t artifact_count;
+    size_t artifact_capacity;
 } PackageCatalogEntry;
 
-/*
- * Dynamically sized catalog owned by the caller. Initialize it before the first
- * load/free operation and keep that ownership for its complete lifetime.
- */
 typedef struct {
     PackageCatalogEntry *packages;
     size_t count;
     size_t capacity;
+    uint64_t revision;
+    char update_url[MAX_CATALOG_URL_LEN];
     SystemPathIdentity identity;
     char digest[CHECKSUM_SHA256_HEX_LENGTH + 1];
 } PackageCatalog;
 
-/* Initialize or release all storage owned by a PackageCatalog. */
 void package_catalog_init(PackageCatalog *catalog);
 void package_catalog_free(PackageCatalog *catalog);
 
-/* Load the installed catalog, falling back to the repository copy only when it is absent.
- * Success replaces the model; failure leaves it empty. */
 CupError package_catalog_load(PackageCatalog *catalog);
-
-/* Load one explicitly selected source and validate the complete document. */
 CupError package_catalog_load_installed(PackageCatalog *catalog);
 CupError package_catalog_load_development(PackageCatalog *catalog);
+/* Copy the local development catalog into a missing runtime catalog. */
+CupError package_catalog_seed_runtime(void);
 CupError package_catalog_load_path(PackageCatalog *catalog, const char *path);
 
-/*
- * Resolve stable or query one concrete version in an exact canonical package
- * tuple. String outputs are empty on failure when a writable buffer is supplied.
- */
 CupError package_catalog_resolve_stable(const PackageCatalog *catalog,
                                         char *buffer,
                                         size_t size,
@@ -85,42 +84,16 @@ CupError package_catalog_has_version(const PackageCatalog *catalog,
                                      const char *version,
                                      int *is_available);
 
-/* Resolve the default format or query one supported format in a canonical tuple. */
-CupError package_catalog_get_default_format(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform);
-CupError package_catalog_has_format(const PackageCatalog *catalog,
-                                    const char *component,
-                                    const char *tool,
-                                    const char *host_platform,
-                                    const char *target_platform,
-                                    const char *format,
-                                    int *is_supported);
-
-/*
- * Expand validated HTTPS templates for one already-validated concrete package
- * identity. String outputs are empty on failure when a writable buffer is supplied.
- */
-CupError package_catalog_build_url(const PackageCatalog *catalog,
-                                   char *buffer,
-                                   size_t size,
-                                   const char *component,
-                                   const char *tool,
-                                   const char *host_platform,
-                                   const char *target_platform,
-                                   const char *version,
-                                   const char *format);
-CupError package_catalog_build_checksum_url(const PackageCatalog *catalog,
-                                            char *buffer,
-                                            size_t size,
-                                            const char *component,
-                                            const char *tool,
-                                            const char *host_platform,
-                                            const char *target_platform,
-                                            const char *version);
+CupError package_catalog_resolve_artifact(const PackageCatalog *catalog,
+                                          const char *component,
+                                          const char *tool,
+                                          const char *host_platform,
+                                          const char *target_platform,
+                                          const char *version,
+                                          const char *format,
+                                          char *url,
+                                          size_t url_size,
+                                          char *artifact_sha256,
+                                          size_t artifact_sha256_size);
 
 #endif /* CUP_PACKAGE_CATALOG_H */

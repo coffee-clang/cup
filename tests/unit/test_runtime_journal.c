@@ -181,7 +181,7 @@ static CupError write_test_journal(FILE *file, const void *value) {
     const char *operation = value;
 
     return operation != NULL &&
-                   fprintf(file, "format=1\noperation=%s\ntemporary_name=x\n", operation) > 0
+                   fprintf(file, "format=2\noperation=%s\ntemporary_name=x\n", operation) > 0
                ? CUP_OK
                : CUP_ERR_TRANSACTION;
 }
@@ -203,12 +203,11 @@ static void test_detects_owners(void) {
     TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_PACKAGE, kind);
 
     write_journal("format=1\noperation=update\ntemporary_name=x\n");
-    TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_PACKAGE, kind);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_detect(&kind));
 
-    write_journal("format=1\noperation=cup-update\ntemporary_name=x\n");
+    write_journal("format=2\noperation=cup-generation\ntarget_release_sha256=5555555555555555555555555555555555555555555555555555555555555555\ntemporary_name=x\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_GENERATION, kind);
     TEST_ASSERT_EQUAL_INT(CUP_ERR_TRANSACTION, runtime_journal_require_none());
 
     write_journal("format=1\noperation=uninstall\ntemporary_name=x\n");
@@ -368,11 +367,11 @@ static void test_publishes_and_replaces_by_identity(void) {
                                 "transaction",
                                 &identity,
                                 write_test_journal,
-                                "cup-update",
+                                CUP_UPDATE_JOURNAL_OPERATION,
                                 &replacement));
     TEST_ASSERT_TRUE(replacement.valid);
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_GENERATION, kind);
 
     TEST_ASSERT_EQUAL_INT(
         CUP_ERR_TRANSACTION,
@@ -439,7 +438,7 @@ static void test_first_publish_preserves_existing_journal(void) {
     SystemPathIdentity identity;
     RuntimeJournalKind kind;
 
-    write_journal("format=1\noperation=cup-update\ntemporary_name=x\n");
+    write_journal("format=2\noperation=cup-generation\ntarget_release_sha256=5555555555555555555555555555555555555555555555555555555555555555\ntemporary_name=x\n");
     memset(&identity, 0xff, sizeof(identity));
 
     TEST_ASSERT_EQUAL_INT(
@@ -452,7 +451,7 @@ static void test_first_publish_preserves_existing_journal(void) {
                                 &identity));
     TEST_ASSERT_FALSE(identity.valid);
     TEST_ASSERT_EQUAL_INT(CUP_OK, runtime_journal_detect(&kind));
-    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_UPDATE, kind);
+    TEST_ASSERT_EQUAL_INT(RUNTIME_JOURNAL_GENERATION, kind);
 }
 
 

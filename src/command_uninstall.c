@@ -8,6 +8,7 @@
 #include "layout.h"
 #include "path.h"
 #include "runtime_journal.h"
+#include "runtime_recovery.h"
 #include "system.h"
 #include "text.h"
 #include "uninstall_helper.h"
@@ -161,11 +162,10 @@ CupError command_uninstall(int assume_yes) {
         goto done;
     }
 
-    err = runtime_journal_detect(&journal_kind);
-    if (err != CUP_OK || journal_kind != RUNTIME_JOURNAL_MISSING) {
+    err = runtime_recover_pending(&lock, &journal_kind);
+    if (err != CUP_OK) {
         fprintf(stderr,
-                "Error: an interrupted operation must be repaired before uninstalling cup.\n");
-        err = CUP_ERR_TRANSACTION;
+                "Error: an interrupted operation must be recovered before uninstalling cup.\n");
         goto done;
     }
 

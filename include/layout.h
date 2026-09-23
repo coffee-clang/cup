@@ -26,6 +26,8 @@ CupError layout_root_snapshot_begin(void);
 /* Freeze one explicit canonical root. A missing root is permitted so bootstrap can create it
  * exclusively; an existing root must already be an authenticated CUP root. */
 CupError layout_root_snapshot_begin_at(const char *root);
+/* Bind installer-owned pre-publication sibling created under the selected base. */
+CupError layout_root_snapshot_begin_private_at(const char *root);
 /* Select .cup/.coffee-cup below one caller-selected base, without creating either root. */
 CupError layout_select_root_for_base(const char *base, char *buffer, size_t size);
 CupError layout_root_snapshot_validate(void);
@@ -39,10 +41,7 @@ CupError layout_get_staging_dir(char *buffer, size_t size);
 CupError layout_get_config_dir(char *buffer, size_t size);
 CupError layout_get_state_path(char *buffer, size_t size);
 CupError layout_get_package_catalog_path(char *buffer, size_t size);
-CupError layout_get_install_policy_path(char *buffer, size_t size);
 CupError layout_get_preferences_path(char *buffer, size_t size);
-CupError layout_get_common_checksums_path(char *buffer, size_t size);
-CupError layout_get_platform_checksums_path(char *buffer, size_t size);
 CupError layout_get_lock_path(char *buffer, size_t size);
 CupError layout_build_lock_path(char *buffer, size_t size, const char *root);
 CupError layout_build_transaction_path(char *buffer, size_t size, const char *root);
@@ -55,10 +54,7 @@ CupError layout_get_binary_path(char *buffer, size_t size);
 
 /* Canonical paths derived from one already validated package identity. */
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity);
-CupError layout_build_cache_archive_path(char *buffer,
-                                         size_t size,
-                                         const PackageIdentity *identity,
-                                         const char *format);
+CupError layout_build_cache_path(char *buffer, size_t size, const char *artifact_sha256);
 
 /* Inspect the runtime tree without creating or modifying it. */
 CupError layout_check_root_candidates(size_t *issue_count);
@@ -70,8 +66,9 @@ CupError layout_ensure_root(void);
 CupError layout_ensure_runtime(void);
 CupError layout_ensure_config(void);
 CupError layout_ensure_assets(void);
+CupError layout_ensure_helpers(void);
 CupError layout_ensure_package_parent(const PackageIdentity *identity);
-CupError layout_ensure_cache_parent(const PackageIdentity *identity);
+CupError layout_ensure_cache(void);
 
 /* Build or create unique staging and recovery locations below the selected root. */
 CupError layout_create_staging_dir(char *buffer,

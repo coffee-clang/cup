@@ -67,10 +67,13 @@ dependency_normalize_build_environment() {
         CFLAGS CPPFLAGS LDFLAGS LIBS \
         CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH \
         LIBRARY_PATH PKG_CONFIG_PATH PKG_CONFIG_LIBDIR \
-        PKG_CONFIG_SYSROOT_DIR CONFIG_SITE CCACHE CCACHE_DIR \
+        PKG_CONFIG_SYSROOT_DIR \
         MAKEFLAGS MFLAGS MAKEOVERRIDES GNUMAKEFLAGS; do
         unset "$variable" 2>/dev/null || true
     done
+    # Autoconf loads prefix-local config.site files when CONFIG_SITE is unset.
+    # Disable that implicit host input so an older local prefix cannot alter feature probes.
+    export CONFIG_SITE=/dev/null
 }
 
 # Prints every relevant spelling of a path. MSYS2 tools may preserve the POSIX

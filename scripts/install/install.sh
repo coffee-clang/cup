@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 
-# Downloads and verifies one immutable release generation, then delegates installation
-# to the verified cup executable. The installer owns transport; cup owns state and recovery.
+# Downloads one immutable CUP release generation, authenticates the native bootstrap
+# inputs with release.txt, then delegates all managed-root mutation to that binary.
 set -eu
 
 LC_ALL=C
@@ -22,7 +22,6 @@ else
     BASE_URL=$DEFAULT_BASE_URL
     BASE_URL_OVERRIDDEN=0
 fi
-WAIT_ATTEMPTS=${CUP_INSTALL_WAIT_ATTEMPTS:-120}
 MAX_BINARY_BYTES=268435456
 MAX_TEXT_BYTES=16777216
 WORK=
@@ -55,28 +54,18 @@ validate_identity() {
     for component in "$@"; do
         case "$component" in
             0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|\
-                [1-9][0-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9][0-9])
-                ;;
-            *)
-                fail 'installer has an invalid release version'
-                ;;
+                [1-9][0-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9][0-9]) ;;
+            *) fail 'installer has an invalid release version' ;;
         esac
     done
     [ "$CUP_RELEASE_TAG" = "v$CUP_RELEASE_VERSION" ] ||
         fail 'installer release tag does not match its version'
     [ "${#CUP_RELEASE_COMMIT}" -eq 40 ] || fail 'installer has an invalid release commit'
-    case "$CUP_RELEASE_COMMIT" in
-        *[!0-9a-f]*)
-            fail 'installer has an invalid release commit'
-            ;;
-    esac
+    case "$CUP_RELEASE_COMMIT" in *[!0-9a-f]*) fail 'installer has an invalid release commit' ;; esac
 }
 
 validate_base_url() {
-    while [ "${BASE_URL%/}" != "$BASE_URL" ]; do
-        BASE_URL=${BASE_URL%/}
-    done
-
+    while [ "${BASE_URL%/}" != "$BASE_URL" ]; do BASE_URL=${BASE_URL%/}; done
     if [ "$BASE_URL_OVERRIDDEN" -eq 0 ]; then
         [ "$BASE_URL" = "$DEFAULT_BASE_URL" ] || fail 'installer official release base URL is invalid'
         TRANSPORT_PROTOCOL=https
@@ -84,18 +73,14 @@ validate_base_url() {
         export BASE_URL TRANSPORT_PROTOCOL MAX_REDIRECTS
         return 0
     fi
-
     [ "${CUP_INSTALL_ALLOW_INSECURE:-0}" = 1 ] ||
         fail 'release base URL override is test-only and requires CUP_INSTALL_ALLOW_INSECURE=1'
-
     case "$BASE_URL" in
         *[![:print:]]*|*[[:space:]]*|*'@'*|*'?'*|*'#'*|*'\'*)
-            fail 'installer test release base URL is invalid'
-            ;;
+            fail 'installer test release base URL is invalid' ;;
         http://*) ;;
         *) fail 'installer release base URL override must use loopback HTTP' ;;
     esac
-
     remainder=${BASE_URL#http://}
     authority=${remainder%%/*}
     case "$authority" in
@@ -104,24 +89,12 @@ validate_base_url() {
         \[::1\]:*) port=${authority#\[::1\]:} ;;
         *) fail 'installer release base URL override must use an allowed loopback host and explicit port' ;;
     esac
-    case "$port" in
-        ''|*[!0-9]*) fail 'installer release base URL override has an invalid port' ;;
-    esac
+    case "$port" in ''|*[!0-9]*) fail 'installer release base URL override has an invalid port' ;; esac
     [ "$port" -ge 1 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null ||
         fail 'installer release base URL override has an invalid port'
-
     TRANSPORT_PROTOCOL=http
     MAX_REDIRECTS=0
     export BASE_URL TRANSPORT_PROTOCOL MAX_REDIRECTS
-}
-
-validate_wait_attempts() {
-    case "$WAIT_ATTEMPTS" in
-        ''|*[!0-9]*|0)
-            fail 'CUP_INSTALL_WAIT_ATTEMPTS is invalid'
-            ;;
-    esac
-    [ "$WAIT_ATTEMPTS" -le 3600 ] || fail 'CUP_INSTALL_WAIT_ATTEMPTS is too large'
 }
 
 detect_platform() {
@@ -130,9 +103,7 @@ detect_platform() {
     case "$os" in
         Linux) os=linux ;;
         Darwin) os=macos ;;
-        MSYS*|MINGW*|CYGWIN*)
-            run_windows_installer
-            ;;
+        MSYS*|MINGW*|CYGWIN*) run_windows_installer ;;
         *) fail "unsupported operating system: $os" ;;
     esac
     case "$arch" in
@@ -141,218 +112,156 @@ detect_platform() {
         *) fail "unsupported architecture: $arch" ;;
     esac
     PLATFORM=$os-$arch
-    case "$PLATFORM" in
-        linux-x64|linux-arm64|macos-x64|macos-arm64) ;;
-        *) fail "unsupported platform: $PLATFORM" ;;
-    esac
+    case "$PLATFORM" in linux-x64|linux-arm64|macos-x64|macos-arm64) ;; *) fail "unsupported platform: $PLATFORM" ;; esac
     BINARY_ASSET=cup-$PLATFORM
-    PLATFORM_SUMS=SHA256SUMS.$PLATFORM
-    export PLATFORM BINARY_ASSET PLATFORM_SUMS
+    export PLATFORM BINARY_ASSET
 }
 
 select_hash_command() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        HASH_COMMAND=sha256sum
-    elif command -v shasum >/dev/null 2>&1; then
-        HASH_COMMAND='shasum -a 256'
-    else
-        fail 'sha256sum or shasum is required'
+    if command -v sha256sum >/dev/null 2>&1; then HASH_COMMAND=sha256sum
+    elif command -v shasum >/dev/null 2>&1; then HASH_COMMAND='shasum -a 256'
+    else fail 'sha256sum or shasum is required'
     fi
     export HASH_COMMAND
 }
 
 require_commands() {
-    for command_name in basename chmod cmp curl dirname mkdir mktemp readlink rm sleep uname wc; do
+    for command_name in basename chmod cp curl dirname grep mkdir mktemp mv readlink rm uname wc; do
         command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
     done
     select_hash_command
 }
 
 create_work_directory() {
-    WORK=$(mktemp -d "${TMPDIR:-/tmp}/cup-install.XXXXXX") ||
-        fail 'could not create the private transport directory'
+    WORK=$(mktemp -d "${TMPDIR:-/tmp}/cup-install.XXXXXX") || fail 'could not create the private transport directory'
     chmod 0700 "$WORK" || fail 'could not protect the transport directory'
-    WORK=$(CDPATH= cd -- "$WORK" && pwd -P) ||
-        fail 'could not resolve the private transport directory'
-    case "$WORK" in
-        /*)
-            ;;
-        *)
-            fail 'transport directory is not absolute'
-            ;;
-    esac
+    WORK=$(CDPATH= cd -- "$WORK" && pwd -P) || fail 'could not resolve the private transport directory'
+    case "$WORK" in /*) ;; *) fail 'transport directory is not absolute' ;; esac
 }
 
 download_asset() {
     asset=$1
-    case "$asset" in
-        ''|*/*|*\*|.|..)
-            fail "unsafe release asset name: $asset"
-            ;;
-    esac
-
-    case "$asset" in
-        cup-*) maximum=$MAX_BINARY_BYTES ;;
-        *) maximum=$MAX_TEXT_BYTES ;;
-    esac
-
+    case "$asset" in ''|*/*|*\*|.|..) fail "unsafe release asset name: $asset" ;; esac
+    case "$asset" in cup-*) maximum=$MAX_BINARY_BYTES ;; *) maximum=$MAX_TEXT_BYTES ;; esac
     destination=$WORK/$asset
     url=$BASE_URL/$asset
-    curl --fail --location --silent --show-error \
+    curl -q --fail --location --silent --show-error \
         --proto "=$TRANSPORT_PROTOCOL" --proto-redir "=$TRANSPORT_PROTOCOL" \
         --max-redirs "$MAX_REDIRECTS" \
         --connect-timeout 15 --max-time 180 --speed-time 30 --speed-limit 1024 \
-        --max-filesize "$maximum" --output "$destination" "$url" ||
-        fail "could not download $asset"
-
+        --max-filesize "$maximum" --output "$destination" "$url" || fail "could not download $asset"
     [ -f "$destination" ] && [ ! -L "$destination" ] && [ -s "$destination" ] ||
         fail "downloaded asset is not a non-empty regular file: $asset"
     size=$(wc -c < "$destination") || fail "could not measure $asset"
-    # wc may pad a single count (for example on BSD/macOS). Accept only that
-    # formatting whitespace around one numeric value.
     # shellcheck disable=SC2086
     set -- $size
     [ "$#" -eq 1 ] || fail "could not measure $asset"
     size=$1
-    case "$size" in
-        ''|*[!0-9]*) fail "could not measure $asset" ;;
-    esac
+    case "$size" in ''|*[!0-9]*) fail "could not measure $asset" ;; esac
     [ "$size" -le "$maximum" ] || fail "downloaded asset is too large: $asset"
 }
 
-run_windows_installer() {
-    for command_name in chmod cmp curl cygpath grep mktemp powershell.exe rm wc; do
-        command -v "$command_name" >/dev/null 2>&1 ||
-            fail "required Windows handoff command is unavailable: $command_name"
-    done
-    select_hash_command
-    create_work_directory
-    for asset in install.ps1 release.txt SHA256SUMS.windows-x64 \
-            SHA256SUMS.common packages.cfg install.cfg install.sh; do
-        download_asset "$asset"
-    done
-    verify_windows_handoff_generation
-    validate_release_metadata
-    verify_checksum_document "$WORK/SHA256SUMS.common" \
-        packages.cfg install.cfg install.sh install.ps1
-    grep -F "\$ReleaseVersion = \"$CUP_RELEASE_VERSION\"" "$WORK/install.ps1" >/dev/null ||
-        fail 'Windows installer release version does not match the shell installer'
-    grep -F "\$ReleaseTag = \"$CUP_RELEASE_TAG\"" "$WORK/install.ps1" >/dev/null ||
-        fail 'Windows installer release tag does not match the shell installer'
-    grep -F "\$ReleaseCommit = \"$CUP_RELEASE_COMMIT\"" "$WORK/install.ps1" >/dev/null ||
-        fail 'Windows installer release commit does not match the shell installer'
-    windows_installer=$(cygpath -w "$WORK/install.ps1") ||
-        fail 'could not translate the Windows installer path'
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_installer" ||
-        fail 'Windows installer failed'
-    exit 0
-}
-
 hash_file() {
-    file=$1
-    if [ "$HASH_COMMAND" = sha256sum ]; then
-        result=$(sha256sum "$file") || return 1
-    else
-        result=$(shasum -a 256 "$file") || return 1
+    if [ "$HASH_COMMAND" = sha256sum ]; then result=$(sha256sum "$1") || return 1
+    else result=$(shasum -a 256 "$1") || return 1
     fi
     printf '%s\n' "${result%% *}"
 }
 
 validate_hash() {
     [ "${#1}" -eq 64 ] || return 1
-    case "$1" in
-        *[!0-9a-f]*)
-            return 1
-            ;;
+    case "$1" in *[!0-9a-f]*) return 1 ;; esac
+}
+
+manifest_record_required_hash() {
+    name=$1
+    hash=$2
+    case "$name" in
+        "$BINARY_ASSET") [ -z "${BINARY_SHA:-}" ] || fail "release manifest duplicates $name"; BINARY_SHA=$hash ;;
+        LICENSE) [ -z "${LICENSE_SHA:-}" ] || fail 'release manifest duplicates LICENSE'; LICENSE_SHA=$hash ;;
+        THIRD_PARTY_NOTICES.txt) [ -z "${NOTICES_SHA:-}" ] || fail 'release manifest duplicates THIRD_PARTY_NOTICES.txt'; NOTICES_SHA=$hash ;;
+        catalog.cfg) [ -z "${CATALOG_SHA:-}" ] || fail 'release manifest duplicates catalog.cfg'; CATALOG_SHA=$hash ;;
+        install.ps1) [ -z "${INSTALL_PS1_SHA:-}" ] || fail 'release manifest duplicates install.ps1'; INSTALL_PS1_SHA=$hash ;;
     esac
 }
 
-verify_checksum_document() {
-    document=$1
-    shift
-    exec 3< "$document" || fail "could not read ${document##*/}"
-    for expected_name in "$@"; do
-        IFS= read -r line <&3 || fail "checksum entry is missing: $expected_name"
-        expected_hash=${line%%  *}
-        actual_name=${line#*  }
-        [ "$line" = "$expected_hash  $actual_name" ] ||
-            fail "checksum entry is not canonical: $expected_name"
-        validate_hash "$expected_hash" || fail "checksum is invalid: $expected_name"
-        [ "$actual_name" = "$expected_name" ] ||
-            fail "checksum document has an unexpected asset: $actual_name"
-        actual_hash=$(hash_file "$WORK/$actual_name") || fail "could not hash $actual_name"
-        [ "$actual_hash" = "$expected_hash" ] || fail "checksum mismatch for $actual_name"
-    done
-    extra=
-    if IFS= read -r extra <&3 || [ -n "$extra" ]; then
-        fail "checksum document has unexpected entries: ${document##*/}"
-    fi
-    exec 3<&-
-}
-
-verify_windows_handoff_generation() {
-    document=$WORK/SHA256SUMS.windows-x64
-    exec 3< "$document" || fail 'could not read SHA256SUMS.windows-x64'
-    for expected_name in cup-windows-x64.exe release.txt SHA256SUMS.common; do
-        IFS= read -r line <&3 || fail "checksum entry is missing: $expected_name"
-        expected_hash=${line%%  *}
-        actual_name=${line#*  }
-        [ "$line" = "$expected_hash  $actual_name" ] ||
-            fail "checksum entry is not canonical: $expected_name"
-        validate_hash "$expected_hash" || fail "checksum is invalid: $expected_name"
-        [ "$actual_name" = "$expected_name" ] ||
-            fail "checksum document has an unexpected asset: $actual_name"
-        case "$actual_name" in
-            release.txt|SHA256SUMS.common)
-                actual_hash=$(hash_file "$WORK/$actual_name") || fail "could not hash $actual_name"
-                [ "$actual_hash" = "$expected_hash" ] || fail "checksum mismatch for $actual_name"
-                ;;
-        esac
-    done
-    extra=
-    if IFS= read -r extra <&3 || [ -n "$extra" ]; then
-        fail 'checksum document has unexpected entries: SHA256SUMS.windows-x64'
-    fi
-    exec 3<&-
-}
-
-validate_release_metadata() {
+validate_release_manifest() {
     metadata=$WORK/release.txt
+    BINARY_SHA= LICENSE_SHA= NOTICES_SHA= CATALOG_SHA= INSTALL_PS1_SHA=
     exec 3< "$metadata" || fail 'could not read release metadata'
-    IFS= read -r line1 <&3 || fail 'release metadata is incomplete'
-    IFS= read -r line2 <&3 || fail 'release metadata is incomplete'
-    IFS= read -r line3 <&3 || fail 'release metadata is incomplete'
-    if IFS= read -r extra <&3; then
-        fail 'release metadata has unexpected records'
-    fi
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'; [ "$line" = format=2 ] || fail 'release metadata has an unsupported format'
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'; [ "$line" = "version=$CUP_RELEASE_VERSION" ] || fail 'release metadata version does not match the installer'
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'; [ "$line" = "commit=$CUP_RELEASE_COMMIT" ] || fail 'release metadata commit does not match the installer'
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'; [ "$line" = root_layout=2 ] || fail 'release metadata root layout is incompatible'
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'; [ "$line" = catalog_format=1 ] || fail 'release metadata catalog format is incompatible'
+    IFS= read -r line <&3 || fail 'release metadata is incomplete'
+    case "$line" in asset_count=*) asset_count=${line#asset_count=} ;; *) fail 'release metadata asset count is missing' ;; esac
+    case "$asset_count" in ''|*[!0-9]*) fail 'release metadata asset count is invalid' ;; esac
+    [ "$asset_count" -gt 0 ] && [ "$asset_count" -le 256 ] || fail 'release metadata asset count is invalid'
+    seen='|'
+    index=0
+    while [ "$index" -lt "$asset_count" ]; do
+        IFS= read -r name_line <&3 || fail 'release metadata asset record is incomplete'
+        IFS= read -r sha_line <&3 || fail 'release metadata asset record is incomplete'
+        name_prefix=asset.$index.name=
+        sha_prefix=asset.$index.sha256=
+        case "$name_line" in "$name_prefix"*) name=${name_line#"$name_prefix"} ;; *) fail 'release metadata asset record is not contiguous' ;; esac
+        case "$sha_line" in "$sha_prefix"*) sha=${sha_line#"$sha_prefix"} ;; *) fail 'release metadata asset record is not contiguous' ;; esac
+        case "$name" in ''|*[!A-Za-z0-9._-]*) fail 'release metadata contains an unsafe asset name' ;; esac
+        validate_hash "$sha" || fail "release metadata has an invalid digest for $name"
+        case "$seen" in *"|$name|"*) fail "release metadata duplicates asset $name" ;; esac
+        seen=$seen$name'|'
+        manifest_record_required_hash "$name" "$sha"
+        index=$((index + 1))
+    done
+    extra=
+    if IFS= read -r extra <&3 || [ -n "$extra" ]; then fail 'release metadata has unexpected records'; fi
     exec 3<&-
-    printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3" | cmp -s - "$metadata" ||
-        fail 'release metadata contains non-canonical bytes or incomplete records'
-    [ "$line1" = format=1 ] || fail 'release metadata has an unsupported format'
-    [ "$line2" = "version=$CUP_RELEASE_VERSION" ] ||
-        fail 'release metadata version does not match the installer'
-    [ "$line3" = "commit=$CUP_RELEASE_COMMIT" ] ||
-        fail 'release metadata commit does not match the installer'
+}
+
+verify_asset() {
+    asset=$1
+    expected=$2
+    [ -n "$expected" ] || fail "release manifest does not authenticate $asset"
+    actual=$(hash_file "$WORK/$asset") || fail "could not hash $asset"
+    [ "$actual" = "$expected" ] || fail "release manifest digest mismatch for $asset"
+}
+
+run_windows_installer() {
+    PLATFORM=windows-x64
+    BINARY_ASSET=cup-windows-x64.exe
+    export PLATFORM BINARY_ASSET
+    for command_name in chmod curl cygpath mktemp powershell.exe rm wc; do
+        command -v "$command_name" >/dev/null 2>&1 || fail "required Windows handoff command is unavailable: $command_name"
+    done
+    select_hash_command
+    create_work_directory
+    download_asset release.txt
+    validate_release_manifest
+    download_asset install.ps1
+    verify_asset install.ps1 "$INSTALL_PS1_SHA"
+    grep -F "\$ReleaseVersion = \"$CUP_RELEASE_VERSION\"" "$WORK/install.ps1" >/dev/null || fail 'Windows installer release version does not match the shell installer'
+    grep -F "\$ReleaseTag = \"$CUP_RELEASE_TAG\"" "$WORK/install.ps1" >/dev/null || fail 'Windows installer release tag does not match the shell installer'
+    grep -F "\$ReleaseCommit = \"$CUP_RELEASE_COMMIT\"" "$WORK/install.ps1" >/dev/null || fail 'Windows installer release commit does not match the shell installer'
+    windows_installer=$(cygpath -w "$WORK/install.ps1") || fail 'could not translate the Windows installer path'
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_installer" || fail 'Windows installer failed'
+    exit 0
 }
 
 canonical_directory() {
-    directory=$1
-    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
-    (CDPATH= cd -- "$directory" && pwd -P)
+    [ -d "$1" ] && [ ! -L "$1" ] || return 1
+    (CDPATH= cd -- "$1" && pwd -P)
 }
 
 path_entry_normalize() {
     value=$1
-    while [ "$value" != / ] && [ "${value%/}" != "$value" ]; do
-        value=${value%/}
-    done
+    while [ "$value" != / ] && [ "${value%/}" != "$value" ]; do value=${value%/}; done
     printf '%s\n' "$value"
 }
 
 path_contains_directory() {
     wanted=$(path_entry_normalize "$1")
-    old_ifs=$IFS
-    IFS=:
+    old_ifs=$IFS; IFS=:
     for entry in ${PATH:-}; do
         [ -n "$entry" ] || entry=.
         entry=$(path_entry_normalize "$entry")
@@ -364,18 +273,12 @@ path_contains_directory() {
 
 resolve_command_path() {
     path=$1
-    case "$path" in
-        /*) ;;
-        *) return 1 ;;
-    esac
+    case "$path" in /*) ;; *) return 1 ;; esac
     hops=0
     while [ -L "$path" ]; do
         [ "$hops" -lt 32 ] || return 1
         target=$(readlink "$path") || return 1
-        case "$target" in
-            /*) path=$target ;;
-            *) path=$(dirname -- "$path")/$target ;;
-        esac
+        case "$target" in /*) path=$target ;; *) path=$(dirname -- "$path")/$target ;; esac
         hops=$((hops + 1))
     done
     [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || return 1
@@ -383,29 +286,15 @@ resolve_command_path() {
     printf '%s/%s\n' "$directory" "$(basename -- "$path")"
 }
 
-native_root_probe() {
-    "$WORK/$BINARY_ASSET" --internal-root-probe "$1" >/dev/null 2>&1
-}
+native_root_probe() { "$WORK/$BINARY_ASSET" --internal-root-probe "$1" >/dev/null 2>&1; }
 
 installed_version() {
     output=$("$1" --version 2>/dev/null) || return 1
-    case "$output" in
-        'cup '*) printf '%s\n' "${output#cup }" ;;
-        *) return 1 ;;
-    esac
+    case "$output" in 'cup '*) printf '%s\n' "${output#cup }" ;; *) return 1 ;; esac
 }
 
 version_compare() {
-    # Prints -1, 0 or 1 for semantic X.Y.Z versions already validated by CUP release policy.
-    left=$1
-    right=$2
-    old_ifs=$IFS
-    IFS=.
-    set -- $left
-    l1=$1 l2=$2 l3=$3
-    set -- $right
-    r1=$1 r2=$2 r3=$3
-    IFS=$old_ifs
+    left=$1; right=$2; old_ifs=$IFS; IFS=.; set -- $left; l1=$1 l2=$2 l3=$3; set -- $right; r1=$1 r2=$2 r3=$3; IFS=$old_ifs
     for pair in "$l1:$r1" "$l2:$r2" "$l3:$r3"; do
         l=${pair%%:*}; r=${pair#*:}
         if [ "$l" -lt "$r" ]; then printf '%s\n' -1; return 0; fi
@@ -415,10 +304,8 @@ version_compare() {
 }
 
 find_path_installation() {
-    PATH_ROOT=
-    PATH_BINARY=
-    command_path=$(command -v cup 2>/dev/null || true)
-    [ -n "$command_path" ] || return 1
+    PATH_ROOT= PATH_BINARY=
+    command_path=$(command -v cup 2>/dev/null || true); [ -n "$command_path" ] || return 1
     command_path=$(resolve_command_path "$command_path") || return 1
     [ "$(basename -- "$command_path")" = cup ] || return 1
     bin_dir=$(canonical_directory "$(dirname -- "$command_path")") || return 1
@@ -426,179 +313,198 @@ find_path_installation() {
     root=$(canonical_directory "$(dirname -- "$bin_dir")") || return 1
     case "$(basename -- "$root")" in .cup|.coffee-cup) ;; *) return 1 ;; esac
     native_root_probe "$root" || return 1
-    PATH_ROOT=$root
-    PATH_BINARY=$command_path
-    export PATH_ROOT PATH_BINARY
-    return 0
+    PATH_ROOT=$root; PATH_BINARY=$command_path; export PATH_ROOT PATH_BINARY
 }
 
 select_root_for_base() {
     base=$1
-    selected=$($WORK/$BINARY_ASSET --internal-select-root "$base") ||
-        fail "could not select a canonical CUP root below $base"
-    case "$selected" in
-        "$base/.cup"|"$base/.coffee-cup") ;;
-        *) fail 'native root selection returned an unexpected path' ;;
-    esac
-    SELECTED_ROOT=$selected
-    SELECTED_BASE=$base
-    export SELECTED_ROOT SELECTED_BASE
+    selected=$("$WORK/$BINARY_ASSET" --internal-select-root "$base") || fail "could not select a canonical CUP root below $base"
+    case "$selected" in "$base/.cup"|"$base/.coffee-cup") ;; *) fail 'native root selection returned an unexpected path' ;; esac
+    SELECTED_ROOT=$selected; SELECTED_BASE=$base; export SELECTED_ROOT SELECTED_BASE
 }
 
 choose_installation() {
-    selected_from_path=0
     if [ -n "${CUP_INSTALL_BASE_DIR:-}" ]; then
-        base=$(canonical_directory "$CUP_INSTALL_BASE_DIR") ||
-            fail 'CUP_INSTALL_BASE_DIR must name an existing real directory'
-        select_root_for_base "$base"
-        return 0
+        base=$(canonical_directory "$CUP_INSTALL_BASE_DIR") || fail 'CUP_INSTALL_BASE_DIR must name an existing real directory'
+        select_root_for_base "$base"; return 0
     fi
-
-    if find_path_installation; then
-        use_path=0
-        if [ -t 0 ]; then
-            current_version=$(installed_version "$PATH_BINARY") ||
-                fail 'authenticated PATH installation has an invalid version response'
-            printf 'Found CUP %s at %s. Use this installation? [Y/n] ' "$current_version" "$PATH_ROOT"
-            IFS= read -r answer || answer=
-            case "$answer" in ''|y|Y|yes|YES|Yes) use_path=1 ;; esac
-        fi
-        if [ "$use_path" -eq 1 ]; then
+    if find_path_installation && [ -t 0 ]; then
+        current_version=$(installed_version "$PATH_BINARY") || fail 'authenticated PATH installation has an invalid version response'
+        printf 'Found CUP %s at %s. Use this installation? [Y/n] ' "$current_version" "$PATH_ROOT"
+        IFS= read -r answer || answer=
+        case "$answer" in ''|y|Y|yes|YES|Yes)
             SELECTED_ROOT=$PATH_ROOT
-            SELECTED_BASE=$(canonical_directory "$(dirname -- "$PATH_ROOT")") ||
-                fail 'could not resolve the PATH installation base'
-            export SELECTED_ROOT SELECTED_BASE
-            return 0
-        fi
+            SELECTED_BASE=$(canonical_directory "$(dirname -- "$PATH_ROOT")") || fail 'could not resolve the PATH installation base'
+            export SELECTED_ROOT SELECTED_BASE; return 0 ;;
+        esac
     fi
-
     base=$HOME
     if [ -t 0 ]; then
         printf 'Choose the parent/base directory for CUP [%s]: ' "$HOME"
-        IFS= read -r answer || answer=
-        [ -z "$answer" ] || base=$answer
+        IFS= read -r answer || answer=; [ -z "$answer" ] || base=$answer
     fi
     base=$(canonical_directory "$base") || fail 'selected CUP base must be an existing real directory'
     select_root_for_base "$base"
 }
 
 check_target_version() {
-    candidate=$SELECTED_ROOT/bin/cup
-    if native_root_probe "$SELECTED_ROOT"; then
-        [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ] ||
-            fail 'authenticated CUP root has no executable cup binary'
-        existing=$(installed_version "$candidate") || fail 'existing CUP version is invalid'
-        relation=$(version_compare "$existing" "$CUP_RELEASE_VERSION")
-        if [ "$relation" -gt 0 ]; then
-            fail "refusing to replace newer CUP $existing at $SELECTED_ROOT with older $CUP_RELEASE_VERSION; choose another base directory"
-        fi
-    fi
-}
-
-root_marker_is_valid() {
-    root=$1
-    marker=$root/root.txt
-    [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
-    printf 'format=1\nproduct=coffee-clang/cup\nlayout=1\n' | cmp -s - "$marker"
-}
-
-installed_version_is_expected() {
-    binary=$1
-    output=$("$binary" --version 2>/dev/null) || return 1
-    [ "$output" = "cup $CUP_RELEASE_VERSION" ]
-}
-
-installed_runtime_is_ready() {
-    "$1" --internal-runtime-ready >/dev/null 2>&1
-}
-
-directory_is_empty() {
-    directory=$1
-    for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        return 1
-    done
-    return 0
+    FRESH_INSTALL=1
+    if native_root_probe "$SELECTED_ROOT"; then FRESH_INSTALL=0; fi
+    # The verified native bootstrap owns healthy-downgrade refusal and can repair a missing or
+    # corrupt canonical binary from the authenticated target generation.
+    export FRESH_INSTALL
 }
 
 parse_bootstrap_root() {
-    output=$1
-    bootstrap_root=
-    root_records=0
-
+    bootstrap_root=; root_records=0
     while IFS= read -r line; do
-        case "$line" in
-            CUP_BOOTSTRAP_ROOT=*)
-                bootstrap_root=${line#CUP_BOOTSTRAP_ROOT=}
-                root_records=$((root_records + 1))
-                ;;
-            *) printf '%s\n' "$line" ;;
-        esac
+        case "$line" in CUP_BOOTSTRAP_ROOT=*) bootstrap_root=${line#CUP_BOOTSTRAP_ROOT=}; root_records=$((root_records + 1)) ;; *) printf '%s\n' "$line" ;; esac
     done <<EOF_BOOTSTRAP
-$output
+$1
 EOF_BOOTSTRAP
-
     [ "$root_records" -eq 1 ] || fail 'bootstrap did not report one canonical root'
-    [ "$bootstrap_root" = "$SELECTED_ROOT" ] ||
-        fail 'bootstrap changed the selected canonical root'
-    BOOTSTRAP_ROOT=$bootstrap_root
-    export BOOTSTRAP_ROOT
+    [ "$bootstrap_root" = "$SELECTED_ROOT" ] || fail 'bootstrap changed the selected canonical root'
+    BOOTSTRAP_ROOT=$bootstrap_root; export BOOTSTRAP_ROOT
 }
 
-wait_for_commit() {
-    candidate=$1
-    binary=$candidate/bin/cup
-    attempts=0
+validate_committed_root() {
+    INSTALLED_BINARY=$BOOTSTRAP_ROOT/bin/cup
+    native_root_probe "$BOOTSTRAP_ROOT" || fail 'installed CUP root did not validate after bootstrap'
+    [ -f "$INSTALLED_BINARY" ] && [ ! -L "$INSTALLED_BINARY" ] && [ -x "$INSTALLED_BINARY" ] || fail 'installed CUP binary is unavailable after bootstrap'
+    [ "$(installed_version "$INSTALLED_BINARY")" = "$CUP_RELEASE_VERSION" ] || fail 'installed CUP version does not match the verified release'
+    export INSTALLED_BINARY
+}
 
-    while [ "$attempts" -lt "$WAIT_ATTEMPTS" ]; do
-        if root_marker_is_valid "$candidate" &&
-                [ -f "$binary" ] && [ ! -L "$binary" ] && [ -x "$binary" ] &&
-                [ ! -e "$candidate/transaction.txt" ] && [ ! -L "$candidate/transaction.txt" ] &&
-                [ -d "$candidate/staging" ] && [ ! -L "$candidate/staging" ] &&
-                directory_is_empty "$candidate/staging" &&
-                installed_version_is_expected "$binary" &&
-                installed_runtime_is_ready "$binary"; then
-            INSTALLED_BINARY=$binary
-            export INSTALLED_BINARY
+attempt_fresh_coffee() {
+    [ "$FRESH_INSTALL" -eq 1 ] || return 0
+    if "$INSTALLED_BINARY" install coffee; then
+        printf 'Coffee installed successfully.\n'
+        return 0
+    fi
+    if [ -e "$SELECTED_ROOT/transaction.txt" ] || [ -L "$SELECTED_ROOT/transaction.txt" ]; then
+        fail 'optional Coffee installation left an unresolved CUP transaction; run cup repair'
+    fi
+    coffee_state=$("$INSTALLED_BINARY" list package-manager 2>/dev/null || true)
+    case "$coffee_state" in
+        *'package-manager:coffee@'*)
+            printf 'Warning: Coffee was installed, but derived commands need repair; run cup repair.\n' >&2
+            return 0
+            ;;
+    esac
+    printf 'Warning: Coffee was not installed; the CUP core installation is ready.\n' >&2
+}
+
+path_block_start='# >>> CUP PATH >>>'
+path_block_end='# <<< CUP PATH <<<'
+
+write_path_block() {
+    profile=$1
+    shell_kind=$2
+    bin=$SELECTED_ROOT/bin
+    directory=$(dirname -- "$profile")
+
+    if [ -e "$profile" ] || [ -L "$profile" ]; then
+        if [ ! -f "$profile" ] || [ -L "$profile" ]; then
+            printf 'Warning: CUP PATH target %s is not a regular file; preserved unchanged.
+' "$profile" >&2
+            return 1
+        fi
+    fi
+    mkdir -p -- "$directory" || return 1
+    start_count=0
+    end_count=0
+    if [ -f "$profile" ]; then
+        start_count=$(grep -Fxc -- "$path_block_start" "$profile" 2>/dev/null || true)
+        end_count=$(grep -Fxc -- "$path_block_end" "$profile" 2>/dev/null || true)
+        if [ "$start_count" -ne "$end_count" ] || [ "$start_count" -gt 1 ]; then
+            printf 'Warning: CUP PATH markers in %s are malformed; preserved for manual repair.\n' "$profile" >&2
+            return 1
+        fi
+        if [ "$start_count" -eq 1 ] && grep -F -- "$bin" "$profile" >/dev/null 2>&1; then
             return 0
         fi
-        attempts=$((attempts + 1))
-        sleep 1
-    done
-    fail 'timed out while waiting for the installed cup to become ready'
-}
+    fi
 
-profile_contains_cup_bin() {
-    profile=$1
-    [ -f "$profile" ] || return 1
-    grep -F -- "$SELECTED_ROOT/bin" "$profile" >/dev/null 2>&1
+    temporary=$(mktemp "$directory/.cup-path.XXXXXX") || return 1
+    if [ -f "$profile" ]; then
+        cp -p -- "$profile" "$temporary" || { rm -f -- "$temporary"; return 1; }
+        : > "$temporary" || { rm -f -- "$temporary"; return 1; }
+        skipping=0
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ "$line" = "$path_block_start" ]; then skipping=1; continue; fi
+            if [ "$line" = "$path_block_end" ]; then skipping=0; continue; fi
+            [ "$skipping" -eq 1 ] || printf '%s\n' "$line" >> "$temporary" || {
+                rm -f -- "$temporary"; return 1;
+            }
+        done < "$profile"
+        [ "$skipping" -eq 0 ] || { rm -f -- "$temporary"; return 1; }
+    else
+        chmod 0644 "$temporary" || { rm -f -- "$temporary"; return 1; }
+    fi
+
+    {
+        printf '\n%s\n' "$path_block_start"
+        if [ "$shell_kind" = fish ]; then
+            printf 'if not contains -- %s $PATH\n' "'$bin'"
+            printf '    set -gx PATH %s $PATH\n' "'$bin'"
+            printf 'end\n'
+        else
+            printf 'case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac\n' "'$bin'" "'$bin'"
+        fi
+        printf '%s\n' "$path_block_end"
+    } >> "$temporary" || { rm -f -- "$temporary"; return 1; }
+
+    mv -f -- "$temporary" "$profile" || { rm -f -- "$temporary"; return 1; }
+    return 0
 }
 
 add_posix_path() {
     bin=$SELECTED_ROOT/bin
-    if path_contains_directory "$bin"; then
-        return 0
-    fi
+    path_contains_directory "$bin" && return 0
     case "$bin" in
-        *"'"*|*"\n"*|*"\r"*)
-            printf 'PATH integration skipped because the CUP path requires manual shell quoting.\n' >&2
+        *"'"*|*[[:cntrl:]]*)
+            printf 'PATH integration skipped because the CUP path contains shell-unsafe quoting/control content.\n' >&2
             return 0
             ;;
     esac
+
     shell_name=${SHELL##*/}
-    if [ "$shell_name" = fish ]; then
-        profile=$HOME/.config/fish/conf.d/cup.fish
-        mkdir -p -- "$HOME/.config/fish/conf.d" || fail 'could not create fish configuration directory'
-        profile_contains_cup_bin "$profile" ||
-            printf 'fish_add_path --path %s\n' "'$bin'" >> "$profile" || fail 'could not update fish PATH configuration'
-    else
-        case "$shell_name" in zsh) profile=$HOME/.zprofile ;; *) profile=$HOME/.profile ;; esac
-        profile_contains_cup_bin "$profile" || {
-            printf '\n# Added by CUP installer\n' >> "$profile" || fail 'could not update shell profile'
-            printf 'case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac\n' "'$bin'" "'$bin'" >> "$profile" ||
-                fail 'could not update shell profile'
-        }
-    fi
+    case "$shell_name" in
+        bash)
+            bashrc=$HOME/.bashrc
+            login=
+            for candidate in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+                if [ -r "$candidate" ]; then login=$candidate; break; fi
+            done
+            [ -n "$login" ] || login=$HOME/.bash_profile
+            first_ok=1
+            second_ok=1
+            write_path_block "$bashrc" sh || first_ok=0
+            write_path_block "$login" sh || second_ok=0
+            if [ "$first_ok" -ne 1 ] || [ "$second_ok" -ne 1 ]; then
+                printf 'Warning: CUP could not update every Bash startup file; configure %s manually where needed.\n' "$bin" >&2
+                return 0
+            fi
+            ;;
+        zsh)
+            zdot=${ZDOTDIR:-$HOME}
+            write_path_block "$zdot/.zshrc" sh || {
+                printf 'Warning: CUP could not update the Zsh PATH configuration; add %s manually.\n' "$bin" >&2
+                return 0
+            }
+            ;;
+        fish)
+            fish_config=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/cup.fish
+            write_path_block "$fish_config" fish || {
+                printf 'Warning: CUP could not update the Fish PATH configuration; add %s manually.\n' "$bin" >&2
+                return 0
+            }
+            ;;
+        *)
+            printf 'Automatic PATH integration is not defined for shell %s; add %s manually.\n' "${shell_name:-unknown}" "$bin" >&2
+            return 0
+            ;;
+    esac
     printf 'Added %s to your user shell PATH configuration. Open a new shell to use it.\n' "$bin"
 }
 
@@ -610,43 +516,42 @@ offer_path_integration() {
             return 0
             ;;
     esac
-    if path_contains_directory "$bin"; then
+    path_contains_directory "$bin" && return 0
+    if [ "${CUP_INSTALL_NO_PATH_PROMPT:-0}" = 1 ]; then
+        printf 'CUP was not added to PATH. Add %s manually if desired.\n' "$bin"
         return 0
     fi
-    [ "${CUP_INSTALL_NO_PATH_PROMPT:-0}" != 1 ] || return 0
-    [ -t 0 ] || return 0
-    printf 'Add %s to your user PATH? [Y/n] ' "$bin"
-    IFS= read -r answer || answer=
-    case "$answer" in ''|y|Y|yes|YES|Yes) add_posix_path ;; esac
+    if { [ ! -t 1 ] && [ ! -t 2 ]; } || ! (: </dev/tty) 2>/dev/null; then
+        printf 'No interactive terminal is available; CUP was not added to PATH. Add %s manually if desired.\n' "$bin"
+        return 0
+    fi
+    printf 'Add %s to your user PATH? [y/N] ' "$bin" >/dev/tty
+    IFS= read -r answer </dev/tty || answer=
+    case "$answer" in y|Y|yes|YES|Yes) add_posix_path ;; esac
 }
 
 validate_identity
 validate_base_url
-validate_wait_attempts
 detect_platform
 require_commands
 create_work_directory
 
-for asset in "$BINARY_ASSET" release.txt "$PLATFORM_SUMS" \
-        SHA256SUMS.common packages.cfg install.cfg install.sh install.ps1; do
-    download_asset "$asset"
-done
-
-verify_checksum_document "$WORK/SHA256SUMS.common" \
-    packages.cfg install.cfg install.sh install.ps1
-verify_checksum_document "$WORK/$PLATFORM_SUMS" \
-    "$BINARY_ASSET" release.txt SHA256SUMS.common
-validate_release_metadata
+download_asset release.txt
+validate_release_manifest
+for asset in "$BINARY_ASSET" LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg; do download_asset "$asset"; done
+verify_asset "$BINARY_ASSET" "$BINARY_SHA"
+verify_asset LICENSE "$LICENSE_SHA"
+verify_asset THIRD_PARTY_NOTICES.txt "$NOTICES_SHA"
+verify_asset catalog.cfg "$CATALOG_SHA"
 chmod 0700 "$WORK/$BINARY_ASSET" || fail 'could not make the verified bootstrap executable'
 
 choose_installation
 check_target_version
 printf 'CUP will be installed in %s\n' "$SELECTED_ROOT"
-bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK" "$SELECTED_BASE") ||
-    fail 'the verified cup bootstrap transaction was rejected'
+bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK" "$SELECTED_BASE") || fail 'the verified cup bootstrap transaction was rejected'
 parse_bootstrap_root "$bootstrap_output"
-wait_for_commit "$BOOTSTRAP_ROOT"
-
+validate_committed_root
+attempt_fresh_coffee
 printf 'cup %s installed successfully.\n' "$CUP_RELEASE_VERSION"
 printf 'Binary: %s\n' "$INSTALLED_BINARY"
 offer_path_integration

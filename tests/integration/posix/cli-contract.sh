@@ -99,7 +99,8 @@ test_invalid_syntax() {
 test_syntax_precedes_runtime_preflight() {
     syntax_home=$TMP_ROOT/syntax-before-journal-home
     mkdir -p "$syntax_home"
-    run_fresh_status 0 "$syntax_home" "$TMP_ROOT/syntax-before-journal-setup.out" repair
+    run_fresh_status 0 "$syntax_home" "$TMP_ROOT/syntax-before-journal-setup.out" \
+        config set compiler clang
     printf 'invalid journal\n' > "$syntax_home/.cup/transaction.txt"
 
     for case_name in \
@@ -133,7 +134,6 @@ test_syntax_precedes_runtime_preflight() {
 test_config_action_normalization() {
     config_home=$TMP_ROOT/config-action-home
     mkdir -p "$config_home"
-    run_fresh_status 0 "$config_home" "$TMP_ROOT/config-action-setup.out" repair
     run_fresh_status 0 "$config_home" "$TMP_ROOT/config-set-uppercase.out" \
         config SET COMPILER CLANG
     assert_contains "$(cat "$TMP_ROOT/config-set-uppercase.out")" "set to 'clang'"
@@ -200,8 +200,8 @@ test_read_only_no_init() {
     assert_missing "$fresh_home/.cup"
     run_fresh_status 0 "$fresh_home" "$TMP_ROOT/fresh-config.out" config
     assert_missing "$fresh_home/.cup"
-    run_fresh_status 0 "$fresh_home" "$TMP_ROOT/fresh-doctor.out" doctor
-    assert_contains "$(cat "$TMP_ROOT/fresh-doctor.out")" 'runtime is not initialized'
+    run_fresh_status 3 "$fresh_home" "$TMP_ROOT/fresh-doctor.out" doctor
+    assert_contains "$(cat "$TMP_ROOT/fresh-doctor.out")" 'cup runtime is not installed'
     assert_missing "$fresh_home/.cup"
     run_fresh_status 3 "$fresh_home" "$TMP_ROOT/fresh-inspect.out" \
         inspect compiler clang@1.0.0
@@ -211,7 +211,7 @@ test_read_only_no_init() {
 test_state_status() {
     state_home=$TMP_ROOT/state-home
     mkdir -p "$state_home"
-    (cd "$DEV_ROOT" && HOME="$state_home" "$CUP" repair) >/dev/null
+    (cd "$DEV_ROOT" && HOME="$state_home" "$CUP" config set compiler clang) >/dev/null
     printf 'not-a-state-record\n' > "$state_home/.cup/state.txt"
     run_fresh_status 4 "$state_home" "$TMP_ROOT/invalid-state.out" list
 }
@@ -220,24 +220,43 @@ test_root_selection() {
     foreign_home=$TMP_ROOT/foreign-root-home
     mkdir -p "$foreign_home/.cup"
     printf 'unrelated\n' > "$foreign_home/.cup/foreign.txt"
-    run_fresh_status 0 "$foreign_home" "$TMP_ROOT/foreign-root.out" repair
+    run_fresh_status 0 "$foreign_home" "$TMP_ROOT/foreign-root.out" \
+        config set compiler clang
     assert_file "$foreign_home/.cup/foreign.txt"
     assert_file "$foreign_home/.coffee-cup/root.txt"
     assert_file "$foreign_home/.coffee-cup/state.txt"
-    assert_equals "$(sed -n '1p' "$foreign_home/.coffee-cup/root.txt")" 'format=1'
+    assert_equals "$(sed -n '1p' "$foreign_home/.coffee-cup/root.txt")" 'format=2'
     assert_equals "$(sed -n '2p' "$foreign_home/.coffee-cup/root.txt")" \
         'product=coffee-clang/cup'
-    assert_equals "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" 'layout=1'
+    assert_equals "$(sed -n '3p' "$foreign_home/.coffee-cup/root.txt")" 'layout=2'
+    assert_equals "$(sed -n '4p' "$foreign_home/.coffee-cup/root.txt")" \
+        "host=$TEST_PLATFORM"
 
     legacy_home=$TMP_ROOT/legacy-root-home
     mkdir -p "$legacy_home/.cup/components" "$legacy_home/.cup/staging" \
         "$legacy_home/.cup/cache"
     printf 'format=1\n' > "$legacy_home/.cup/state.txt"
     state_hash=$(hash_file "$legacy_home/.cup/state.txt")
-    run_fresh_status 0 "$legacy_home" "$TMP_ROOT/legacy-root.out" repair
+    run_fresh_status 0 "$legacy_home" "$TMP_ROOT/legacy-root.out" \
+        config set compiler clang
     assert_equals "$(hash_file "$legacy_home/.cup/state.txt")" "$state_hash"
     assert_missing "$legacy_home/.cup/root.txt"
     assert_file "$legacy_home/.coffee-cup/root.txt"
+
+    legacy_marked_home=$TMP_ROOT/legacy-marked-root-home
+    mkdir -p "$legacy_marked_home/.cup"
+    cat > "$legacy_marked_home/.cup/root.txt" <<'EOF_LEGACY_ROOT'
+format=1
+product=coffee-clang/cup
+layout=1
+EOF_LEGACY_ROOT
+    run_fresh_status 4 "$legacy_marked_home" "$TMP_ROOT/legacy-marked-root.out" \
+        config set compiler clang
+    legacy_marked_output=$(cat "$TMP_ROOT/legacy-marked-root.out")
+    assert_contains "$legacy_marked_output" 'recognized CUP 0.3.5/layout-1 root'
+    assert_contains "$legacy_marked_output" 'cannot be upgraded in place'
+    assert_contains "$legacy_marked_output" 'fresh CUP 0.4 installer'
+    assert_missing "$legacy_marked_home/.coffee-cup"
 
     unmarked_home=$TMP_ROOT/unmarked-cup-root-home
     mkdir -p "$unmarked_home/.cup/bin"
@@ -259,14 +278,16 @@ test_root_selection() {
         "$lookalike_home/.cup/cache"
     printf 'not-a-cup-state\n' > "$lookalike_home/.cup/state.txt"
     state_hash=$(hash_file "$lookalike_home/.cup/state.txt")
-    run_fresh_status 0 "$lookalike_home" "$TMP_ROOT/lookalike-root.out" repair
+    run_fresh_status 0 "$lookalike_home" "$TMP_ROOT/lookalike-root.out" \
+        config set compiler clang
     assert_equals "$(hash_file "$lookalike_home/.cup/state.txt")" "$state_hash"
     assert_missing "$lookalike_home/.cup/root.txt"
     assert_file "$lookalike_home/.coffee-cup/root.txt"
 
     corrupt_home=$TMP_ROOT/corrupt-root-home
     mkdir -p "$corrupt_home"
-    run_fresh_status 0 "$corrupt_home" "$TMP_ROOT/corrupt-root-setup.out" repair
+    run_fresh_status 0 "$corrupt_home" "$TMP_ROOT/corrupt-root-setup.out" \
+        config set compiler clang
     state_hash=$(hash_file "$corrupt_home/.cup/state.txt")
     printf 'corrupt\n' > "$corrupt_home/.cup/root.txt"
     marker_hash=$(hash_file "$corrupt_home/.cup/root.txt")

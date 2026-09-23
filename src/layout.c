@@ -3,6 +3,7 @@
 
 #include "layout.h"
 
+#include "checksum.h"
 #include "filesystem.h"
 #include "path.h"
 #include "platform.h"
@@ -28,9 +29,9 @@ static const char TRANSACTION_FILENAME[] = "transaction.txt";
 
 /* Runtime directories that must exist after initialization. */
 static const char *const RUNTIME_DIRS[] = {
-    COMPONENTS_DIRECTORY, STAGING_DIRECTORY, CACHE_DIRECTORY};
+    COMPONENTS_DIRECTORY, STAGING_DIRECTORY};
 
-static const char *const BOOTSTRAP_DIRS[] = {BIN_DIRECTORY, CONFIG_DIRECTORY, HELPERS_DIRECTORY};
+static const char *const BOOTSTRAP_DIRS[] = {BIN_DIRECTORY, CONFIG_DIRECTORY};
 
 typedef struct {
     char path[MAX_PATH_LEN];
@@ -51,6 +52,7 @@ typedef enum {
     ROOT_CANDIDATE_MISSING,
     ROOT_CANDIDATE_OWNED,
     ROOT_CANDIDATE_UNMARKED_CUP,
+    ROOT_CANDIDATE_LEGACY_035,
     ROOT_CANDIDATE_INVALID_MARKER,
     ROOT_CANDIDATE_FOREIGN
 } RootCandidateStatus;
@@ -58,6 +60,7 @@ typedef enum {
 typedef enum {
     ROOT_MARKER_MISSING,
     ROOT_MARKER_VALID,
+    ROOT_MARKER_LEGACY_035,
     ROOT_MARKER_INVALID
 } RootMarkerStatus;
 
@@ -82,7 +85,10 @@ static CupError inspect_root_marker(const char *root, RootMarkerStatus *status) 
     SystemPathKind kind;
     char path[MAX_PATH_LEN];
     char expected[128];
+    char legacy_expected[128];
+    char host[MAX_PLATFORM_LEN];
     int written;
+    int legacy_written;
     CupError err;
     int missing;
 
@@ -90,13 +96,23 @@ static CupError inspect_root_marker(const char *root, RootMarkerStatus *status) 
         return CUP_ERR_INVALID_INPUT;
     }
     *status = ROOT_MARKER_MISSING;
+    err = platform_get_host(host, sizeof(host));
+    if (err != CUP_OK) {
+        return err;
+    }
     written = snprintf(expected,
                        sizeof(expected),
-                       "format=%d\nproduct=%s\nlayout=%d\n",
+                       "format=%d\nproduct=%s\nlayout=%d\nhost=%s\n",
                        CUP_ROOT_MARKER_FORMAT,
                        CUP_ROOT_MARKER_PRODUCT,
-                       CUP_ROOT_LAYOUT_FORMAT);
-    if (written < 0 || (size_t)written >= sizeof(expected)) {
+                       CUP_ROOT_LAYOUT_FORMAT,
+                       host);
+    legacy_written = snprintf(legacy_expected,
+                              sizeof(legacy_expected),
+                              "format=1\nproduct=%s\nlayout=1\n",
+                              CUP_ROOT_MARKER_PRODUCT);
+    if (written < 0 || (size_t)written >= sizeof(expected) || legacy_written < 0 ||
+        (size_t)legacy_written >= sizeof(legacy_expected)) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -124,10 +140,15 @@ static CupError inspect_root_marker(const char *root, RootMarkerStatus *status) 
     if (missing) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
-    *status = snapshot.size == (size_t)written &&
-                      memcmp(snapshot.data, expected, (size_t)written) == 0
-                  ? ROOT_MARKER_VALID
-                  : ROOT_MARKER_INVALID;
+    if (snapshot.size == (size_t)written &&
+        memcmp(snapshot.data, expected, (size_t)written) == 0) {
+        *status = ROOT_MARKER_VALID;
+    } else if (snapshot.size == (size_t)legacy_written &&
+               memcmp(snapshot.data, legacy_expected, (size_t)legacy_written) == 0) {
+        *status = ROOT_MARKER_LEGACY_035;
+    } else {
+        *status = ROOT_MARKER_INVALID;
+    }
     filesystem_snapshot_release(&snapshot);
     return CUP_OK;
 }
@@ -202,6 +223,8 @@ static CupError classify_root_candidate(const char *root,
     }
     if (marker_status == ROOT_MARKER_VALID) {
         *status = ROOT_CANDIDATE_OWNED;
+    } else if (marker_status == ROOT_MARKER_LEGACY_035) {
+        *status = ROOT_CANDIDATE_LEGACY_035;
     } else if (marker_status == ROOT_MARKER_INVALID) {
         *status = ROOT_CANDIDATE_INVALID_MARKER;
     } else {
@@ -425,6 +448,19 @@ static CupError select_root_for_base(const char *base, char *buffer, size_t size
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
+    if (primary_status == ROOT_CANDIDATE_LEGACY_035 ||
+        fallback_status == ROOT_CANDIDATE_LEGACY_035) {
+        const char *legacy = primary_status == ROOT_CANDIDATE_LEGACY_035 ? primary : fallback;
+
+        fprintf(stderr,
+                "Error: recognized CUP 0.3.5/layout-1 root at '%s' cannot be upgraded in "
+                "place. Back up any data you need, uninstall or remove the old managed root, "
+                "then run a fresh CUP 0.4 installer. The other root candidate was preserved "
+                "and was not selected.\n",
+                legacy);
+        return CUP_ERR_INCONSISTENT_STATE;
+    }
+
     if (primary_status == ROOT_CANDIDATE_INVALID_MARKER ||
         fallback_status == ROOT_CANDIDATE_INVALID_MARKER) {
         const char *invalid = primary_status == ROOT_CANDIDATE_INVALID_MARKER ? primary
@@ -550,6 +586,52 @@ CupError layout_root_snapshot_begin_at(const char *root) {
     if (status != ROOT_CANDIDATE_MISSING && status != ROOT_CANDIDATE_OWNED) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
+    err = text_copy(root_snapshot.path, sizeof(root_snapshot.path), root);
+    if (err != CUP_OK) {
+        return err;
+    }
+    root_snapshot.identity = identity;
+    root_snapshot.active = 1;
+    return CUP_OK;
+}
+
+
+CupError layout_root_snapshot_begin_private_at(const char *root) {
+    const char *leaf;
+    SystemPathIdentity identity;
+    SystemPathKind kind;
+    int is_private = 0;
+    CupError err;
+
+    if (text_is_empty(root) || root_snapshot.active) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    leaf = path_last_segment(root);
+    if (text_is_empty(leaf) || strncmp(leaf, CUP_INSTALL_TEMP_PREFIX "-",
+                                       strlen(CUP_INSTALL_TEMP_PREFIX) + 1u) != 0) {
+        return CUP_ERR_INVALID_INPUT;
+    }
+    err = system_get_path_kind(root, &kind);
+    if (err == CUP_OK && kind != SYSTEM_PATH_DIRECTORY) {
+        err = CUP_ERR_FILESYSTEM;
+    }
+    if (err == CUP_OK) {
+        err = system_directory_is_private(root, &is_private);
+    }
+    if (err == CUP_OK && !is_private) {
+        err = CUP_ERR_VALIDATION;
+    }
+    memset(&identity, 0, sizeof(identity));
+    if (err == CUP_OK) {
+        err = system_get_path_identity(root, &identity);
+    }
+    if (err == CUP_OK && (!identity.valid || identity.kind != SYSTEM_PATH_DIRECTORY)) {
+        err = CUP_ERR_INCONSISTENT_STATE;
+    }
+    if (err != CUP_OK) {
+        return err;
+    }
+    memset(&root_snapshot, 0, sizeof(root_snapshot));
     err = text_copy(root_snapshot.path, sizeof(root_snapshot.path), root);
     if (err != CUP_OK) {
         return err;
@@ -696,6 +778,16 @@ CupError layout_check_root_candidates(size_t *issue_count) {
         printf("Issue: unmarked cup-like root '%s' cannot be adopted automatically.\n", fallback);
         (*issue_count)++;
     }
+    if (primary_status == ROOT_CANDIDATE_LEGACY_035) {
+        printf("Issue: recognized CUP 0.3.5/layout-1 root requires backup/uninstall and a "
+               "fresh CUP 0.4 install: '%s'.\n", primary);
+        (*issue_count)++;
+    }
+    if (fallback_status == ROOT_CANDIDATE_LEGACY_035) {
+        printf("Issue: recognized CUP 0.3.5/layout-1 root requires backup/uninstall and a "
+               "fresh CUP 0.4 install: '%s'.\n", fallback);
+        (*issue_count)++;
+    }
     if (primary_status == ROOT_CANDIDATE_INVALID_MARKER) {
         printf("Issue: cup root marker is invalid for recognized root '%s'.\n", primary);
         (*issue_count)++;
@@ -794,18 +886,7 @@ CupError layout_get_package_catalog_path(char *buffer, size_t size) {
     if (err != CUP_OK) {
         return err;
     }
-    return path_join(buffer, size, directory, CUP_PACKAGES_FILENAME);
-}
-
-CupError layout_get_install_policy_path(char *buffer, size_t size) {
-    CupError err;
-    char directory[MAX_PATH_LEN];
-
-    err = layout_get_config_dir(directory, sizeof(directory));
-    if (err != CUP_OK) {
-        return err;
-    }
-    return path_join(buffer, size, directory, CUP_INSTALL_POLICY_FILENAME);
+    return path_join(buffer, size, directory, CUP_CATALOG_FILENAME);
 }
 
 CupError layout_get_preferences_path(char *buffer, size_t size) {
@@ -817,40 +898,6 @@ CupError layout_get_preferences_path(char *buffer, size_t size) {
         return err;
     }
     return path_join(buffer, size, directory, CUP_PREFERENCES_FILENAME);
-}
-
-CupError layout_get_common_checksums_path(char *buffer, size_t size) {
-    CupError err;
-    char directory[MAX_PATH_LEN];
-
-    err = layout_get_config_dir(directory, sizeof(directory));
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return path_join(buffer, size, directory, CUP_COMMON_CHECKSUMS_FILENAME);
-}
-
-CupError layout_get_platform_checksums_path(char *buffer, size_t size) {
-    CupError err;
-    char directory[MAX_PATH_LEN];
-    char host[MAX_PLATFORM_LEN];
-    char filename[MAX_PATH_LEN];
-
-    err = layout_get_config_dir(directory, sizeof(directory));
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = platform_get_host(host, sizeof(host));
-    if (err != CUP_OK) {
-        return err;
-    }
-    err = text_format(filename, sizeof(filename), CUP_PLATFORM_CHECKSUMS_FILENAME_TEMPLATE, host);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return path_join(buffer, size, directory, filename);
 }
 
 CupError layout_get_transaction_path(char *buffer, size_t size) {
@@ -884,7 +931,7 @@ CupError layout_get_binary_path(char *buffer, size_t size) {
 CupError layout_build_install_path(char *buffer, size_t size, const PackageIdentity *identity) {
     CupError err;
     char root[MAX_PATH_LEN];
-    const char *parts[5];
+    const char *parts[4];
 
     if (identity == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -897,64 +944,20 @@ CupError layout_build_install_path(char *buffer, size_t size, const PackageIdent
 
     parts[0] = identity->component;
     parts[1] = identity->tool;
-    parts[2] = identity->host_platform;
-    parts[3] = identity->target_platform;
-    parts[4] = identity->version;
-    return build_path_chain(buffer, size, root, parts, 5, PATH_CHAIN_ONLY);
+    parts[2] = identity->target_platform;
+    parts[3] = identity->version;
+    return build_path_chain(buffer, size, root, parts, 4, PATH_CHAIN_ONLY);
 }
 
-static CupError build_cache_dir(char *buffer, size_t size, const PackageIdentity *identity) {
-    CupError err;
+CupError layout_build_cache_path(char *buffer, size_t size, const char *artifact_sha256) {
     char root[MAX_PATH_LEN];
-    const char *parts[5];
-
-    if (identity == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    parts[0] = identity->component;
-    parts[1] = identity->tool;
-    parts[2] = identity->host_platform;
-    parts[3] = identity->target_platform;
-    parts[4] = identity->version;
-    return build_path_chain(buffer, size, root, parts, 5, PATH_CHAIN_ONLY);
-}
-
-CupError layout_build_cache_archive_path(char *buffer,
-                                         size_t size,
-                                         const PackageIdentity *identity,
-                                         const char *format) {
     CupError err;
-    char directory[MAX_PATH_LEN];
-    char filename[MAX_PATH_LEN];
 
-    if (identity == NULL || !path_is_safe_identifier(format)) {
+    if (buffer == NULL || size == 0 || !checksum_digest_is_canonical(artifact_sha256)) {
         return CUP_ERR_INVALID_INPUT;
     }
-
-    err = build_cache_dir(directory, sizeof(directory), identity);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    err = text_format(filename,
-                      sizeof(filename),
-                      "%s-%s-%s-%s.%s",
-                      identity->tool,
-                      identity->version,
-                      identity->host_platform,
-                      identity->target_platform,
-                      format);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return path_join(buffer, size, directory, filename);
+    err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
+    return err == CUP_OK ? path_join(buffer, size, root, artifact_sha256) : err;
 }
 
 /* Runtime structure validation and private-directory creation. */
@@ -1111,16 +1114,24 @@ CupError layout_check_runtime(size_t *missing_count) {
 }
 
 static CupError write_root_marker(FILE *file, const void *value) {
+    char host[MAX_PLATFORM_LEN];
+    CupError err;
+
     (void)value;
 
     if (file == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
+    err = platform_get_host(host, sizeof(host));
+    if (err != CUP_OK) {
+        return err;
+    }
     return fprintf(file,
-                   "format=%d\nproduct=%s\nlayout=%d\n",
+                   "format=%d\nproduct=%s\nlayout=%d\nhost=%s\n",
                    CUP_ROOT_MARKER_FORMAT,
                    CUP_ROOT_MARKER_PRODUCT,
-                   CUP_ROOT_LAYOUT_FORMAT) < 0
+                   CUP_ROOT_LAYOUT_FORMAT,
+                   host) < 0
                ? CUP_ERR_FILESYSTEM
                : CUP_OK;
 }
@@ -1287,11 +1298,17 @@ CupError layout_ensure_assets(void) {
     return ensure_directories(BOOTSTRAP_DIRS, sizeof(BOOTSTRAP_DIRS) / sizeof(BOOTSTRAP_DIRS[0]));
 }
 
+CupError layout_ensure_helpers(void) {
+    const char *const directory[] = {HELPERS_DIRECTORY};
+
+    return ensure_directories(directory, 1);
+}
+
 CupError layout_ensure_package_parent(const PackageIdentity *identity) {
     CupError err;
     char root[MAX_PATH_LEN];
     char path[MAX_PATH_LEN];
-    const char *parts[4];
+    const char *parts[3];
 
     if (identity == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -1303,31 +1320,14 @@ CupError layout_ensure_package_parent(const PackageIdentity *identity) {
     }
     parts[0] = identity->component;
     parts[1] = identity->tool;
-    parts[2] = identity->host_platform;
-    parts[3] = identity->target_platform;
-    return build_path_chain(path, sizeof(path), root, parts, 4, PATH_CHAIN_CREATE_DIRECTORIES);
+    parts[2] = identity->target_platform;
+    return build_path_chain(path, sizeof(path), root, parts, 3, PATH_CHAIN_CREATE_DIRECTORIES);
 }
 
-CupError layout_ensure_cache_parent(const PackageIdentity *identity) {
-    CupError err;
+CupError layout_ensure_cache(void) {
     char root[MAX_PATH_LEN];
-    char path[MAX_PATH_LEN];
-    const char *parts[5];
-
-    if (identity == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
-    if (err != CUP_OK) {
-        return err;
-    }
-    parts[0] = identity->component;
-    parts[1] = identity->tool;
-    parts[2] = identity->host_platform;
-    parts[3] = identity->target_platform;
-    parts[4] = identity->version;
-    return build_path_chain(path, sizeof(path), root, parts, 5, PATH_CHAIN_CREATE_DIRECTORIES);
+    CupError err = build_root_path(root, sizeof(root), CACHE_DIRECTORY);
+    return err == CUP_OK ? filesystem_ensure_directory(root) : err;
 }
 
 CupError layout_build_staging_prefix(char *buffer,
@@ -1336,7 +1336,6 @@ CupError layout_build_staging_prefix(char *buffer,
                                      const PackageIdentity *identity) {
     if (buffer == NULL || size == 0 || identity == NULL || !path_is_safe_identifier(operation) ||
         !path_is_safe_segment(identity->component) || !path_is_safe_segment(identity->tool) ||
-        !path_is_safe_segment(identity->host_platform) ||
         !path_is_safe_segment(identity->target_platform) ||
         !path_is_safe_segment(identity->version)) {
         return CUP_ERR_INVALID_INPUT;
@@ -1344,11 +1343,10 @@ CupError layout_build_staging_prefix(char *buffer,
 
     return text_format(buffer,
                        size,
-                       "%s-%s-%s-%s-%s-%s",
+                       "%s-%s-%s-%s-%s",
                        operation,
                        identity->component,
                        identity->tool,
-                       identity->host_platform,
                        identity->target_platform,
                        identity->version);
 }

@@ -30,14 +30,9 @@ BUILD_ROOT=${CUP_BUILD_ROOT:-$PROJECT_ROOT/build}
 
 require_real_directory "$COMMON"
 require_real_directory "$FINALIZED"
-validate_release_file "$COMMON/release.txt"
-require_nonempty_file "$COMMON/SHA256SUMS.common"
 require_nonempty_file "$FINALIZED/build-config.txt"
-require_nonempty_file "$FINALIZED/release.txt"
 require_nonempty_file "$FINALIZED/binary-inspection.txt"
 require_nonempty_file "$FINALIZED/finalization.txt"
-cmp -s "$COMMON/release.txt" "$FINALIZED/release.txt" ||
-    fail 'finalized build metadata differs from common release metadata'
 
 if [ "$PLATFORM" = windows-x64 ]; then
     source_binary=$FINALIZED/bin/cup.exe
@@ -74,40 +69,14 @@ public_mode=$(release_platform_binary_mode "$PLATFORM") ||
 cup_path_copy_file "$source_binary" "$PUBLIC/$public_binary" "$public_mode" replace ||
     fail "could not copy public release binary"
 
-platform_checksum=$(release_platform_checksum_name "$PLATFORM") ||
-    fail "could not derive platform checksum name: $PLATFORM"
-{
-    for asset in $(release_platform_checksum_assets "$PLATFORM"); do
-        case "$asset" in
-            "$public_binary") asset_path=$PUBLIC/$asset ;;
-            release.txt|SHA256SUMS.common) asset_path=$COMMON/$asset ;;
-            *) fail "unexpected platform checksum member: $asset" ;;
-        esac
-        printf '%s  %s\n' "$(hash_file "$asset_path")" "$asset"
-    done
-} | cup_path_write_file "$PUBLIC/$platform_checksum" 0644 replace
-
 cup_path_copy_tree "$FINALIZED/symbols" "$SYMBOLS" ||
     fail "could not copy finalized symbols"
-for metadata in build-config.txt release.txt binary-inspection.txt finalization.txt; do
+for metadata in build-config.txt binary-inspection.txt finalization.txt; do
     cup_path_copy_file "$FINALIZED/$metadata" "$SYMBOLS/$metadata" 0644 replace ||
         fail "could not copy finalized metadata: $metadata"
 done
 
-# Verify the checksum against an exact temporary assembled view containing the
-# common files referenced by the platform checksum.
-VERIFY=$OUTPUT_STAGING/.verify
-cup_path_prepare_child_directory "$BUILD_ROOT" "$VERIFY" "checksum verification directory"
-cup_path_copy_file "$PUBLIC/$public_binary" "$VERIFY/$public_binary" "$public_mode" replace
-cup_path_copy_file "$PUBLIC/$platform_checksum" "$VERIFY/$platform_checksum" 0644 replace
-cup_path_copy_file "$COMMON/release.txt" "$VERIFY/release.txt" 0644 replace
-cup_path_copy_file "$COMMON/SHA256SUMS.common" "$VERIFY/SHA256SUMS.common" 0644 replace
-# shellcheck disable=SC2086
-verify_checksum_file_exact "$VERIFY" "$platform_checksum" \
-    $(release_platform_checksum_assets "$PLATFORM")
-cup_path_remove_child_tree "$BUILD_ROOT" "$VERIFY" 'checksum verification directory'
-
-validate_exact_directory_files "$PUBLIC" "$public_binary" "$platform_checksum"
+validate_exact_directory_files "$PUBLIC" "$public_binary"
 commit_output_staging "$OUTPUT"
 trap - EXIT HUP INT TERM
 printf '%s\n' "$OUTPUT"

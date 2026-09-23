@@ -203,12 +203,12 @@ static void test_query_iteration(void) {
 
     package_metadata_init(&info);
     build_path(path, sizeof(path), "query.txt");
-    write_text(path, "entry.clang=bin/clang\npackage.tool=clang\n");
+    write_text(path, "entry.clang_tidy=bin/clang-tidy\npackage.tool=clang\n");
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_metadata_load(&info, path, stderr));
 
     TEST_ASSERT_TRUE(package_metadata_next_command(&info, &command, &cursor));
-    TEST_ASSERT_EQUAL_STRING("clang", command.name);
-    TEST_ASSERT_EQUAL_STRING("bin/clang", command.path);
+    TEST_ASSERT_EQUAL_STRING("clang-tidy", command.name);
+    TEST_ASSERT_EQUAL_STRING("bin/clang-tidy", command.path);
     TEST_ASSERT_FALSE(package_metadata_next_command(&info, &command, &cursor));
     TEST_ASSERT_EQUAL_STRING("", command.name);
     TEST_ASSERT_EQUAL_STRING("", command.path);

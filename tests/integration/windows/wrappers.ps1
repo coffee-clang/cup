@@ -8,7 +8,6 @@ param(
 
 try {
     Initialize-TestEnvironment -Name "wrappers" -ExecutablePath $CupExecutablePath
-    Invoke-Cup -CommandArgs @("repair") | Out-Null
     New-TestPackage `
         -Component "compiler" `
         -Tool "clang" `

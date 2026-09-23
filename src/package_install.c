@@ -6,6 +6,8 @@
 #include "package_cache.h"
 
 #include "command_context.h"
+#include "path.h"
+#include "checksum.h"
 #include "package_extract.h"
 #include "runtime_journal.h"
 #include "wrappers.h"
@@ -16,6 +18,7 @@
 #include "state.h"
 #include "system.h"
 #include "package_transaction.h"
+#include "package_selector.h"
 #include "text.h"
 
 #include <stdio.h>
@@ -40,45 +43,33 @@ typedef struct {
     int made_default;
     int package_already_installed;
     int default_moved;
+    int scope_was_empty;
     InstallRequestKind kind;
+    PackageIdentity expected_reference;
+    int has_expected_reference;
     PackageIdentity expected_default;
     int has_expected_default;
     WrapperPlan wrappers;
 } InstallOperation;
 
-static CupError update_scope_is_installed(const InstallOperation *operation,
-                                          const char *component,
-                                          const char *tool,
-                                          int *is_installed) {
+static int install_scope_is_empty(const InstallOperation *operation) {
     size_t i;
 
-    if (operation == NULL || text_is_empty(component) || text_is_empty(tool) ||
-        is_installed == NULL) {
-        return CUP_ERR_INVALID_INPUT;
-    }
-
-    *is_installed = 0;
     for (i = 0; i < operation->context.state.installed_count; ++i) {
         const PackageIdentity *identity = &operation->context.state.installed[i];
-
-        if (strcmp(identity->component, component) != 0 ||
-            strcmp(identity->host_platform, operation->context.host_platform) != 0 ||
-            strcmp(identity->target_platform, operation->context.target_platform) != 0) {
-            continue;
-        }
-
-        if (strcmp(identity->tool, tool) == 0) {
-            *is_installed = 1;
-            return CUP_OK;
+        if (strcmp(identity->component, operation->artifact_spec.identity.component) == 0 &&
+            strcmp(identity->host_platform, operation->context.host_platform) == 0 &&
+            strcmp(identity->target_platform, operation->artifact_spec.identity.target_platform) == 0) {
+            return 0;
         }
     }
-
-    return CUP_OK;
+    return 1;
 }
 
 static CupError prepare_install_operation(InstallOperation *operation,
                                           const PackageArtifactSpec *spec,
                                           InstallRequestKind kind,
+                                          const PackageIdentity *expected_reference,
                                           const PackageIdentity *expected_default) {
     if (operation == NULL || spec == NULL) {
         return CUP_ERR_INVALID_INPUT;
@@ -86,6 +77,17 @@ static CupError prepare_install_operation(InstallOperation *operation,
 
     operation->kind = kind;
     operation->artifact_spec = *spec;
+
+    if (kind == INSTALL_REQUEST_UPDATE) {
+        if (expected_reference == NULL ||
+            package_identity_validate(expected_reference, NULL) != CUP_OK) {
+            return CUP_ERR_INVALID_INPUT;
+        }
+        operation->expected_reference = *expected_reference;
+        operation->has_expected_reference = 1;
+    } else if (expected_reference != NULL) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
     if (expected_default != NULL) {
         if (package_identity_validate(expected_default, NULL) != CUP_OK) {
@@ -100,9 +102,13 @@ static CupError prepare_install_operation(InstallOperation *operation,
 static CupError load_install_context(InstallOperation *operation) {
     CupError err;
 
-    err = command_context_begin(&operation->context,
-                                operation->artifact_spec.identity.target_platform,
-                                SYSTEM_LOCK_EXCLUSIVE);
+    err = operation->kind == INSTALL_REQUEST_USER
+              ? command_context_begin_initialize(&operation->context,
+                                                 operation->artifact_spec.identity.target_platform,
+                                                 SYSTEM_LOCK_EXCLUSIVE)
+              : command_context_begin(&operation->context,
+                                      operation->artifact_spec.identity.target_platform,
+                                      SYSTEM_LOCK_EXCLUSIVE);
     if (err == CUP_OK) {
         err = command_context_load_state(&operation->context);
     }
@@ -119,32 +125,60 @@ static CupError load_install_context(InstallOperation *operation) {
     return CUP_OK;
 }
 
-static CupError validate_update_scope(InstallOperation *operation) {
+static CupError validate_update_reference(InstallOperation *operation) {
+    PackageIdentity current_reference;
+    PackageIdentity current_same_tool_default;
+    int has_current_same_tool_default;
     CupError err;
-    int scope_installed;
 
     if (operation->kind != INSTALL_REQUEST_UPDATE) {
         return CUP_OK;
     }
+    if (!operation->has_expected_reference) {
+        return CUP_ERR_INVALID_INPUT;
+    }
 
-    err = update_scope_is_installed(operation,
-                                    operation->artifact_spec.identity.component,
-                                    operation->artifact_spec.identity.tool,
-                                    &scope_installed);
+    {
+        PackageScope scope;
+
+        err = package_identity_get_scope(&operation->artifact_spec.identity, &scope);
+        if (err == CUP_OK) {
+            err = state_get_tool_reference(&operation->context.state,
+                                           &scope,
+                                           operation->artifact_spec.identity.tool,
+                                           &current_reference,
+                                           &has_current_same_tool_default);
+        }
+        if (err == CUP_OK && has_current_same_tool_default) {
+            current_same_tool_default = current_reference;
+        }
+    }
+    if (err == CUP_ERR_NOT_INSTALLED) {
+        fprintf(stderr,
+                "Warning: installed package family '%s:%s' for target '%s' is no longer "
+                "installed; skipping it.\n",
+                operation->artifact_spec.identity.component,
+                operation->artifact_spec.identity.tool,
+                operation->artifact_spec.identity.target_platform);
+        return CUP_ERR_NOT_INSTALLED;
+    }
     if (err != CUP_OK) {
         return err;
     }
-    if (scope_installed) {
-        return CUP_OK;
-    }
 
-    fprintf(stderr,
-            "Warning: installed package '%s:%s' for target '%s' is no "
-            "longer installed; skipping it.\n",
-            operation->artifact_spec.identity.component,
-            operation->artifact_spec.identity.tool,
-            operation->context.target_platform);
-    return CUP_ERR_NOT_INSTALLED;
+    if (!package_identity_equals(&current_reference, &operation->expected_reference) ||
+        has_current_same_tool_default != operation->has_expected_default ||
+        (has_current_same_tool_default &&
+         !package_identity_equals(&current_same_tool_default, &operation->expected_default))) {
+        fprintf(stderr,
+                "Warning: installed reference for '%s:%s' on target '%s' changed while the "
+                "update was being planned; skipping this family.\n",
+                operation->artifact_spec.identity.component,
+                operation->artifact_spec.identity.tool,
+                operation->artifact_spec.identity.target_platform);
+        return CUP_ERR_NOT_INSTALLED;
+    }
+    return CUP_OK;
 }
 
 static CupError check_existing_install(InstallOperation *operation) {
@@ -187,7 +221,7 @@ static CupError prepare_install_staging(InstallOperation *operation) {
     err = layout_create_staging_dir(
         operation->staging_path,
         sizeof(operation->staging_path),
-        operation->kind == INSTALL_REQUEST_UPDATE ? "update" : "install",
+        "install",
         &operation->artifact_spec.identity);
     if (err != CUP_OK) {
         return err;
@@ -209,8 +243,7 @@ static CupError begin_install_commit(InstallOperation *operation) {
         return err;
     }
     err = package_transaction_begin(
-        operation->kind == INSTALL_REQUEST_UPDATE ? PACKAGE_OPERATION_UPDATE
-                                                  : PACKAGE_OPERATION_INSTALL,
+        PACKAGE_OPERATION_INSTALL,
         &operation->artifact_spec.identity,
         operation->staging_path,
         &journal);
@@ -231,14 +264,16 @@ static CupError begin_install_commit(InstallOperation *operation) {
 static CupError prepare_install(InstallOperation *operation,
                                 const PackageArtifactSpec *spec,
                                 InstallRequestKind kind,
+                                const PackageIdentity *expected_reference,
                                 const PackageIdentity *expected_default) {
     CupError err;
-    err = prepare_install_operation(operation, spec, kind, expected_default);
+    err = prepare_install_operation(operation, spec, kind, expected_reference, expected_default);
     if (err == CUP_OK) {
         err = load_install_context(operation);
     }
     if (err == CUP_OK) {
-        err = validate_update_scope(operation);
+        operation->scope_was_empty = install_scope_is_empty(operation);
+        err = validate_update_reference(operation);
     }
     if (err != CUP_OK) {
         return err;
@@ -253,22 +288,8 @@ static CupError prepare_install(InstallOperation *operation,
 }
 
 
-/* Archive extraction, cache refresh and package validation. */
-static int package_failure_allows_refresh(CupError err) {
-    return err == CUP_ERR_ARCHIVE || err == CUP_ERR_ARCHIVE_UNSAFE || err == CUP_ERR_VALIDATION;
-}
-
-static CupError reset_install_staging(InstallOperation *operation) {
-    CupError err;
-
-    err = filesystem_remove_tree(operation->staging_path);
-    if (err != CUP_OK) {
-        return err;
-    }
-
-    return filesystem_ensure_directory(operation->staging_path);
-}
-
+/* Archive extraction is authenticated by the catalog artifact digest; manifest.txt then owns
+ * exact extracted-tree integrity. */
 static CupError extract_and_validate_package(InstallOperation *operation) {
     CupError err;
 
@@ -277,7 +298,6 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
     if (err != CUP_OK) {
         return err;
     }
-
     if (interrupt_requested()) {
         return CUP_ERR_INTERRUPT;
     }
@@ -287,11 +307,15 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
         operation->staging_path, &operation->artifact_spec.identity, stderr);
 }
 
-static CupError discard_invalid_cache(InstallOperation *operation, CupError original_error) {
-    CupError discard_error;
-
-    discard_error = verified_artifact_discard(&operation->artifact);
-    return discard_error == CUP_OK ? original_error : discard_error;
+static CupError release_install_artifact(VerifiedArtifact *artifact) {
+    if (artifact == NULL || artifact->file == NULL) {
+        return CUP_OK;
+    }
+    if (artifact->disposable) {
+        return verified_artifact_discard(artifact);
+    }
+    verified_artifact_release(artifact);
+    return CUP_OK;
 }
 
 static CupError extract_install_package(InstallOperation *operation) {
@@ -302,59 +326,27 @@ static CupError extract_install_package(InstallOperation *operation) {
            operation->artifact_spec.identity.tool,
            operation->artifact_spec.identity.version);
 
-    err = package_cache_fetch_artifact(&operation->artifact,
-                                       &operation->artifact_spec,
-                                       PACKAGE_CACHE_ALLOW,
-                                       &cache_source);
+    err = package_cache_fetch_artifact(
+        &operation->artifact, &operation->artifact_spec, &cache_source);
     if (err != CUP_OK) {
         return err;
     }
-
     if (interrupt_requested()) {
-        return CUP_ERR_INTERRUPT;
+        CupError cleanup_err = release_install_artifact(&operation->artifact);
+        return cleanup_err == CUP_OK ? CUP_ERR_INTERRUPT : cleanup_err;
     }
-
-    if (cache_source == PACKAGE_CACHE_SOURCE_CACHE) {
-        printf("==> Using cached package archive.\n");
-    } else {
-        printf("==> Downloaded package archive.\n");
-    }
+    printf(cache_source == PACKAGE_CACHE_SOURCE_CACHE
+               ? "==> Using cached package archive.\n"
+               : "==> Downloaded package archive.\n");
 
     err = extract_and_validate_package(operation);
-    if (err != CUP_OK && cache_source == PACKAGE_CACHE_SOURCE_CACHE &&
-        package_failure_allows_refresh(err)) {
-        printf("==> Cached package is invalid; downloading it again...\n");
-
-        err = verified_artifact_discard(&operation->artifact);
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = reset_install_staging(operation);
-        if (err != CUP_OK) {
-            return err;
-        }
-        err = package_cache_fetch_artifact(&operation->artifact,
-                                           &operation->artifact_spec,
-                                           PACKAGE_CACHE_REFRESH,
-                                           &cache_source);
-        if (err != CUP_OK) {
-            return err;
-        }
-
-        printf("==> Downloaded replacement package archive.\n");
-        err = extract_and_validate_package(operation);
-    }
-
     if (err != CUP_OK) {
-        if (cache_source == PACKAGE_CACHE_SOURCE_NETWORK &&
-            package_failure_allows_refresh(err)) {
-            return discard_invalid_cache(operation, err);
-        }
-        return err;
+        CupError cleanup_err = release_install_artifact(&operation->artifact);
+        return cleanup_err == CUP_OK ? err : cleanup_err;
     }
 
-    verified_artifact_release(&operation->artifact);
-    return layout_ensure_package_parent(&operation->artifact_spec.identity);
+    err = release_install_artifact(&operation->artifact);
+    return err == CUP_OK ? layout_ensure_package_parent(&operation->artifact_spec.identity) : err;
 }
 
 /* Build the candidate state and its complete managed-wrapper plan before commit. */
@@ -372,7 +364,7 @@ static CupError prepare_default_change(InstallOperation *operation,
     }
     current_default = state_get_default(candidate, &scope);
 
-    if (current_default == NULL && package_is_new) {
+    if (current_default == NULL && package_is_new && operation->scope_was_empty) {
         should_set_default = 1;
         operation->made_default = 1;
     } else if (operation->kind == INSTALL_REQUEST_UPDATE &&
@@ -559,10 +551,11 @@ static void print_install_result(const InstallOperation *operation) {
 static CupError execute_install(InstallOperation *operation,
                                 const PackageArtifactSpec *spec,
                                 InstallRequestKind kind,
+                                const PackageIdentity *expected_reference,
                                 const PackageIdentity *expected_default) {
     CupError err;
 
-    err = prepare_install(operation, spec, kind, expected_default);
+    err = prepare_install(operation, spec, kind, expected_reference, expected_default);
     if (err != CUP_OK) {
         if (operation->staging_created && rollback_install(operation) != CUP_OK) {
             fprintf(stderr,
@@ -610,7 +603,7 @@ CupError package_install_artifact(const PackageArtifactSpec *spec) {
     wrapper_plan_init(&operation.wrappers);
     verified_artifact_init(&operation.artifact);
     err = execute_install(
-        &operation, spec, INSTALL_REQUEST_USER, NULL);
+        &operation, spec, INSTALL_REQUEST_USER, NULL, NULL);
     if (err == CUP_OK) {
         print_install_result(&operation);
     }
@@ -619,13 +612,14 @@ CupError package_install_artifact(const PackageArtifactSpec *spec) {
 }
 
 CupError package_install_update_artifact(const PackageArtifactSpec *spec,
+                                         const PackageIdentity *expected_reference,
                                          const PackageIdentity *expected_default,
                                          int *installed,
                                          int *default_moved) {
     InstallOperation operation = {0};
     CupError err;
 
-    if (spec == NULL || installed == NULL || default_moved == NULL) {
+    if (spec == NULL || expected_reference == NULL || installed == NULL || default_moved == NULL) {
         return CUP_ERR_INVALID_INPUT;
     }
     *installed = 0;
@@ -634,7 +628,7 @@ CupError package_install_update_artifact(const PackageArtifactSpec *spec,
     wrapper_plan_init(&operation.wrappers);
     verified_artifact_init(&operation.artifact);
     err = execute_install(
-        &operation, spec, INSTALL_REQUEST_UPDATE, expected_default);
+        &operation, spec, INSTALL_REQUEST_UPDATE, expected_reference, expected_default);
     if (err == CUP_OK) {
         *installed = !operation.package_already_installed;
         *default_moved = operation.default_moved || operation.made_default;

@@ -109,6 +109,10 @@ int registry_is_tool(const char *component, const char *tool) {
     return 0;
 }
 
+int registry_tool_is_operational(const char *component, const char *tool) {
+    return registry_is_tool(component, tool) && strcmp(tool, "coffee") != 0;
+}
+
 size_t registry_component_count(void) {
     return CUP_COMPONENT_COUNT;
 }
