@@ -1,4 +1,4 @@
-/* Minimal CUP-generation transaction: complete new/old evidence plus binary-last commit. */
+/* Minimal cup-generation transaction: complete new/old evidence plus binary-last commit. */
 
 #include "update_journal.h"
 
@@ -428,7 +428,7 @@ static CupError finish_transaction(const UpdateJournal *journal,
     CupError err = runtime_journal_clear_if_identity(&journal->file_identity);
     if (err != CUP_OK) return err;
     if (filesystem_remove_tree(staging) != CUP_OK) {
-        fprintf(stderr, "Warning: CUP generation transaction completed, but stale staging remains.\n");
+        fprintf(stderr, "Warning: cup generation transaction completed, but stale staging remains.\n");
     }
     if (message != NULL) printf("%s\n", message);
     return CUP_OK;
@@ -453,7 +453,7 @@ CupError update_generation_commit(const UpdateJournal *journal) {
     if (err == CUP_OK) err = workspace_child(new_dir, sizeof(new_dir), staging, CUP_UPDATE_NEW_DIRECTORY);
     if (err == CUP_OK) err = workspace_child(old_dir, sizeof(old_dir), staging, CUP_UPDATE_OLD_DIRECTORY);
     if (err == CUP_OK) err = target_matches_installed(new_dir, journal->target_release_sha256, &target_matches);
-    if (err == CUP_OK && target_matches) return finish_transaction(journal, staging, "Completed CUP generation transaction.");
+    if (err == CUP_OK && target_matches) return finish_transaction(journal, staging, "Completed cup generation transaction.");
     if (err == CUP_OK) err = canonical_matches_snapshot(old_dir, &old_matches);
     if (err != CUP_OK || !old_matches) return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
 
@@ -463,7 +463,7 @@ CupError update_generation_commit(const UpdateJournal *journal) {
     }
     err = target_matches_installed(new_dir, journal->target_release_sha256, &target_matches);
     if (err != CUP_OK || !target_matches) return err != CUP_OK ? err : CUP_ERR_COMMIT;
-    return finish_transaction(journal, staging, "Completed CUP generation transaction.");
+    return finish_transaction(journal, staging, "Completed cup generation transaction.");
 }
 
 CupError update_journal_recover(const UpdateJournal *journal, int *finalized) {
@@ -484,7 +484,7 @@ CupError update_journal_recover(const UpdateJournal *journal, int *finalized) {
     if (err == CUP_OK) err = target_matches_installed(new_dir, journal->target_release_sha256, &target_matches);
     if (err != CUP_OK) return err;
     if (target_matches) {
-        err = finish_transaction(journal, staging, "Completed interrupted CUP generation transaction.");
+        err = finish_transaction(journal, staging, "Completed interrupted cup generation transaction.");
         if (err == CUP_OK && finalized != NULL) *finalized = 1;
         return err;
     }
@@ -497,5 +497,5 @@ CupError update_journal_recover(const UpdateJournal *journal, int *finalized) {
     }
     err = canonical_matches_snapshot(old_dir, &old_matches);
     if (err != CUP_OK || !old_matches) return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
-    return finish_transaction(journal, staging, "Rolled back interrupted CUP generation transaction.");
+    return finish_transaction(journal, staging, "Rolled back interrupted cup generation transaction.");
 }

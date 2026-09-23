@@ -1,4 +1,4 @@
-/* Official scoped defaults, profiles and curated toolchains compiled into this CUP generation. */
+/* Official scoped defaults, profiles and curated toolchains compiled into this cup generation. */
 
 #include "install_policy.h"
 

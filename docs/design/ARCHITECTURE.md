@@ -1,8 +1,8 @@
 # Architecture
 
-CUP is a userspace manager for prebuilt C development tools. Its runtime owns
+`cup` is a userspace manager for prebuilt C development tools. Its runtime owns
 package selection, verified admission, local state, command wrappers, recovery
-and the CUP generation installed in one managed root. Package compilation and
+and the `cup` generation installed in one managed root. Package compilation and
 publication belong to `cup-components`.
 
 The architecture is intentionally split by authority. A file or module may
@@ -11,14 +11,14 @@ independent sources of truth.
 
 ## Product boundary
 
-CUP is not a compiler build system, a system package manager or a global
+`cup` is not a compiler build system, a system package manager or a global
 sysroot manager. It does not decide how GCC, LLVM, GDB, LLDB or Valgrind are
 built. It consumes self-contained packages that have already crossed the
 producer qualification boundary.
 
 The runtime operates entirely below a user-selected base. The default managed
 root is `<home>/.cup`; `.coffee-cup` is only the fallback when `.cup` is a clear
-foreign-directory collision. CUP does not require administrator privileges and
+foreign-directory collision. `cup` does not require administrator privileges and
 does not write into system toolchain directories.
 
 ## Authority graph
@@ -34,7 +34,7 @@ The main authorities are deliberately separate:
 | `state.txt` | installed package identities and active defaults |
 | package `info.txt` | descriptive package identity and producer metadata |
 | package `manifest.txt` | exact extracted package tree and content |
-| `release.txt` | exact public CUP release manifest and installed-generation trust metadata |
+| `release.txt` | exact public `cup` release manifest and installed-generation trust metadata |
 | wrapper files | derived executable view of current defaults |
 | cache objects | optional verified transport reuse; never package or state authority |
 | transaction journal | minimum evidence required to recover one interrupted mutation |
@@ -110,7 +110,7 @@ first package commit; group members then commit sequentially and are not
 presented as one atomic transaction.
 
 A package archive is authenticated by the SHA-256 stored in the catalog. The
-archive contains `manifest.txt`, which authenticates the extracted tree. CUP
+archive contains `manifest.txt`, which authenticates the extracted tree. `cup`
 does not persist another catalog-side copy of the manifest digest.
 
 The high-level admission path is:
@@ -138,7 +138,7 @@ See [Packages](PACKAGES.md) and [Transactions](TRANSACTIONS.md).
 
 The local catalog is a versioned snapshot with a monotonic revision and a
 stable update URL. Package records contain concrete artifact URLs and SHA-256
-digests; CUP never interprets producer URL templates.
+digests; `cup` never interprets producer URL templates.
 
 A refresh uses a lifecycle-specific compare-and-swap:
 
@@ -172,9 +172,9 @@ The planner freezes the target catalog record, then `package_install` revalidate
 the mutable local reference under exclusive authority immediately before a
 mutation. Stable is not silently re-resolved mid-command.
 
-## CUP generation
+## `cup` generation
 
-The installed CUP generation has four managed objects:
+The installed `cup` generation has four managed objects:
 
 ```text
 bin/cup[.exe]
@@ -221,7 +221,7 @@ A well-formed catalog from a future unsupported format is preserved/refused,
 not mislabeled as corruption and replaced with an older seed.
 
 Generation recovery uses the minimal journal plus `new/` and `old/` byte
-evidence. The CUP binary is committed last. Before that binary commit, recovery
+evidence. The `cup` binary is committed last. Before that binary commit, recovery
 can roll back non-binary generation assets when the old binary is still proven.
 After a complete target generation is present, recovery finalizes. A third or
 ambiguous binary preserves the workspace and stops.
@@ -243,7 +243,7 @@ x64. Divergence is kept where the operating system requires it:
 - installer PATH integration uses shell startup files on POSIX/macOS and User
   PATH on Windows.
 
-CUP does not mirror the changing `cup-components` host/target build matrix in
+`cup` does not mirror the changing `cup-components` host/target build matrix in
 its registry. A concrete known-platform catalog record can become explicitly
 installable without adding another runtime support table.
 
@@ -262,16 +262,16 @@ The source layout follows the lifecycle split rather than one generic manager:
 | package admission | `package.c`, `package_manifest.c`, `package_extract.c`, `package_install.c` |
 | state/wrappers | `state.c`, `installed_package.c`, `wrappers.c` |
 | package recovery | `package_transaction.c`, `runtime_journal.c` |
-| CUP generation | `release_metadata.c`, `generation.c`, `bootstrap.c` |
+| `cup` generation | `release_metadata.c`, `generation.c`, `bootstrap.c` |
 | self-update | `self_update.c`, `update_journal.c`, `update_helper.c` |
 | uninstall | `command_uninstall.c`, `uninstall_journal.c`, `uninstall_helper.c` |
 | platform implementation | `system_posix.c`, `system_windows.c`, `platform.c` |
 
 ## Design rules visible in the code
 
-CUP prefers small lifecycle-specific owners over universal transaction, asset or
+`cup` prefers small lifecycle-specific owners over universal transaction, asset or
 configuration frameworks. Persistent files use strict schemas; the package
-catalog is more forward-tolerant because older CUP versions must be able to
+catalog is more forward-tolerant because older `cup` versions must be able to
 ignore structurally safe future records they cannot operate.
 
 Filesystem replacement uses identity-aware/no-follow primitives at destructive

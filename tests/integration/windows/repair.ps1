@@ -98,7 +98,7 @@ try {
     $invalidStateHash = Get-Sha256Lower -Path $stateFile
     $invalidGenerationHash = Get-Sha256Lower -Path $transactionFile
     $malformedGeneration = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
-    Assert-Contains $malformedGeneration 'CUP generation transaction journal is invalid'
+    Assert-Contains $malformedGeneration 'cup generation transaction journal is invalid'
     Assert-Equals (Get-Sha256Lower -Path $stateFile) $invalidStateHash
     Assert-Equals (Get-Sha256Lower -Path $transactionFile) $invalidGenerationHash
     Assert-PathMissing "$stateFile.invalid"

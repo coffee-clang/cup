@@ -17,7 +17,7 @@ assert_contains "$(cat "$TMP_ROOT/doctor-uninitialized.out")" 'cup runtime is no
 ensure_fixture_runtime_root
 run_cup doctor > "$TMP_ROOT/doctor-path.out"
 assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
-    'current CUP command directory is not in PATH'
+    'current cup command directory is not in PATH'
 assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
     "export PATH='$TEST_HOME/.cup/bin':\"\$PATH\""
 
@@ -28,7 +28,7 @@ assert_contains "$(cat "$TMP_ROOT/doctor-path.out")" \
     mkdir -p "$TEST_HOME"
     ensure_fixture_runtime_root
     separator_output=$(run_cup doctor)
-    assert_contains "$separator_output" 'current CUP command directory is not in PATH'
+    assert_contains "$separator_output" 'current cup command directory is not in PATH'
     assert_contains "$separator_output" \
         "contains ':' and cannot be represented as one PATH entry"
     assert_not_contains "$separator_output" 'export PATH='
@@ -121,7 +121,7 @@ JOURNAL
 generation_journal_hash=$(hash_file "$TEST_HOME/.cup/transaction.txt")
 run_cup_expect_failure "$TMP_ROOT/doctor-generation-pending.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-generation-pending.out")" \
-    "interrupted CUP generation transaction detected in workspace 'cup-update-test'"
+    "interrupted cup generation transaction detected in workspace 'cup-update-test'"
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
 
 # Help, version, typos, parse errors and read-only views never rewrite durable evidence.
@@ -145,7 +145,7 @@ temporary_name=cup-update-test
 JOURNAL
 run_cup_expect_failure "$TMP_ROOT/doctor-generation-invalid.out" doctor
 assert_contains "$(cat "$TMP_ROOT/doctor-generation-invalid.out")" \
-    'CUP generation transaction journal is invalid'
+    'cup generation transaction journal is invalid'
 rm -f "$TEST_HOME/.cup/transaction.txt"
 
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'

@@ -256,7 +256,7 @@ printf 'format=2\nproduct=coffee-clang/cup\nlayout=2\nhost=linux-x64\n' > "$root
 "$CUP_TEST_CP" "$source_directory/catalog.cfg" "$root/config/catalog.cfg"
 printf 'format=2\n' > "$root/state.txt"
 printf 'CUP_BOOTSTRAP_ROOT=%s\n' "$root"
-printf 'Verified CUP %s generation installed.\n' "${CUP_TEST_RELEASE_VERSION:?}"
+printf 'Verified cup %s generation installed.\n' "${CUP_TEST_RELEASE_VERSION:?}"
 FAKE_CUP
     chmod 0755 "$fixture/cup-linux-x64"
     printf 'license fixture\n' > "$fixture/LICENSE"
@@ -322,7 +322,7 @@ output=$(HOME="$home" PATH="$WORK/mock-bin:$PATH" CUP_FIXTURE="$fixture" \
     CUP_INSTALL_BASE_URL=http://127.0.0.1:18080 CUP_INSTALL_ALLOW_INSECURE=1 sh "$WORK/install.sh" 2>&1); status=$?
 set -e
 [ "$status" -ne 0 ] || fail 'unresolved Coffee transaction was reported as a clean installation'
-printf '%s\n' "$output" | grep -F 'optional Coffee installation left an unresolved CUP transaction' >/dev/null ||
+printf '%s\n' "$output" | grep -F 'optional Coffee installation left an unresolved cup transaction' >/dev/null ||
     fail 'unresolved Coffee transaction did not receive its specific diagnosis'
 [ -f "$home/.cup/transaction.txt" ] || fail 'Coffee transaction evidence was not preserved'
 

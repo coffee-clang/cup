@@ -1,7 +1,7 @@
 #ifndef CUP_UPDATE_JOURNAL_H
 #define CUP_UPDATE_JOURNAL_H
 
-/* Minimal format-2 CUP-generation transaction journal and byte-evidence recovery. */
+/* Minimal format-2 cup-generation transaction journal and byte-evidence recovery. */
 
 #include <stddef.h>
 

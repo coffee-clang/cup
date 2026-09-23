@@ -1,6 +1,6 @@
 # Installation
 
-CUP installs entirely for the current user. It does not require `sudo`, UAC or
+`cup` installs entirely for the current user. It does not require `sudo`, UAC or
 administrator rights and does not write tools into system compiler directories.
 
 ## Supported hosts
@@ -13,7 +13,7 @@ macos-arm64
 windows-x64
 ```
 
-Package availability is a separate question: a supported CUP host may have only
+Package availability is a separate question: a supported `cup` host may have only
 some component/target combinations in the current catalog. Use `cup search` to
 see what can be installed from the current release.
 
@@ -30,7 +30,7 @@ The default executable path is:
 ```
 
 The installer downloads the official release over HTTPS, verifies its release
-metadata and SHA-256 checksum chain, and then runs the verified CUP executable to
+metadata and SHA-256 checksum chain, and then runs the verified `cup` executable to
 finish bootstrap. Installation is reported successful only after the installed
 version can be validated.
 
@@ -61,31 +61,31 @@ Linux/macOS  $HOME
 Windows      %USERPROFILE%
 ```
 
-CUP normally creates `<base>/.cup`. If that leaf already exists but is not a CUP
-root, it is preserved and CUP uses `<base>/.coffee-cup` instead. The managed leaf
+`cup` normally creates `<base>/.cup`. If that leaf already exists but is not a `cup`
+root, it is preserved and `cup` uses `<base>/.coffee-cup` instead. The managed leaf
 is fixed; choosing another base does not create an arbitrary root name.
 
 Interactive installers can select another existing user-writable base.
 Non-interactive installation can provide the same installer-only choice through
-`CUP_INSTALL_BASE_DIR`. CUP does not persist or consult a `CUP_HOME` override.
+`CUP_INSTALL_BASE_DIR`. `cup` does not persist or consult a `CUP_HOME` override.
 
 After installation, the running executable derives the active root from its own
-real location and verifies the root marker. This lets a complete CUP root be
+real location and verifies the root marker. This lets a complete `cup` root be
 moved to another user-manageable base while retaining the `.cup` or
 `.coffee-cup` leaf.
 
 ## PATH
 
-PATH is optional for CUP's correctness. The installer may offer to add
+PATH is optional for `cup`'s correctness. The installer may offer to add
 `<cup-root>/bin` to the **current user's** PATH configuration; it never changes a
 system-wide/Machine PATH.
 
-If the root is not on PATH, CUP remains usable through its full executable path.
+If the root is not on PATH, `cup` remains usable through its full executable path.
 `cup doctor` reports the missing PATH entry and, when it can be represented
 safely, prints a command that updates only the current shell session. `doctor`
 does not apply the change itself.
 
-Relocating a CUP root does not rewrite PATH. `cup uninstall` also leaves existing
+Relocating a `cup` root does not rewrite PATH. `cup uninstall` also leaves existing
 PATH configuration unchanged.
 
 A root whose `bin` pathname contains the platform PATH separator (`:` on POSIX,
@@ -101,7 +101,7 @@ cup doctor
 ```
 
 `cup --version` proves that the installed executable starts. `cup doctor` checks
-the managed root, installed CUP assets, state, packages, defaults and launchers
+the managed root, installed `cup` assets, state, packages, defaults and launchers
 without modifying them.
 
 For the first package workflow, continue with [Getting started](GETTING_STARTED.md).
@@ -109,23 +109,23 @@ For the first package workflow, continue with [Getting started](GETTING_STARTED.
 ## Reinstall
 
 Running the official installer again verifies a complete release before
-replacing CUP's managed program-generation assets. Installed component packages,
+replacing `cup`'s managed program-generation assets. Installed component packages,
 preferences, state and a valid live catalog remain in the selected root.
 
-The installer can update an older CUP or reinstall the same release. It does not
-silently replace a newer installed CUP with an older release. Reinstallation is
+The installer can update an older `cup` or reinstall the same release. It does not
+silently replace a newer installed `cup` with an older release. Reinstallation is
 also the supported recovery path when the main `cup`/`cup.exe` executable is
 missing or damaged; `cup repair` does not recreate the executable that is
 currently running it.
 
-## Update CUP
+## Update `cup`
 
 ```sh
 cup update cup
 ```
 
 This operation checks the official release metadata and installs only a newer
-official CUP release. Development builds do not update themselves as official
+official `cup` release. Development builds do not update themselves as official
 releases. Equal versions are left unchanged and downgrades are rejected.
 
 Updating installed tools is separate:
@@ -145,7 +145,7 @@ whole `.cup` or `.coffee-cup` directory, including `bin`, `components`, `config`
 and the root marker. Do not copy individual state files into a new directory or
 create `root.txt` manually.
 
-After a move, invoke CUP from the relocated `bin` directory and run:
+After a move, invoke `cup` from the relocated `bin` directory and run:
 
 ```sh
 cup doctor
@@ -156,18 +156,18 @@ not change shell configuration automatically.
 
 ## Existing or unrecognized directories
 
-CUP never takes ownership of a directory merely because it is named `.cup` or
-contains familiar filenames. If an unrecognized CUP-like directory blocks
+`cup` never takes ownership of a directory merely because it is named `.cup` or
+contains familiar filenames. If an unrecognized `cup`-like directory blocks
 installation, move that directory to a backup location outside the managed
 `.cup`/`.coffee-cup` names and run the current installer again.
 
-Only restore data that the current CUP formats accept. Do not manufacture an
+Only restore data that the current `cup` formats accept. Do not manufacture an
 ownership marker to force adoption of an unknown tree.
 
-A recognized CUP 0.3.5 layout-1 root is not upgraded in place and is not bypassed
+A recognized `cup` 0.3.5 layout-1 root is not upgraded in place and is not bypassed
 by silently switching to `.coffee-cup`. Back up anything you need, uninstall or
 move the old managed root out of the way, then run the current installer for a
-fresh CUP 0.4 root.
+fresh `cup` 0.4 root.
 
 ## Uninstall
 
@@ -176,12 +176,12 @@ cup uninstall
 cup uninstall --yes
 ```
 
-Without `--yes`, CUP asks for confirmation. Uninstall removes the selected CUP
+Without `--yes`, `cup` asks for confirmation. Uninstall removes the selected `cup`
 root and the packages stored inside it, but does not edit PATH.
 
-The cleanup must continue after the initiating executable exits, so CUP hands the
+The cleanup must continue after the initiating executable exits, so `cup` hands the
 operation to a native helper. A successful command means that handoff has been
-accepted; final removal may finish shortly afterwards. CUP prints the detached
+accepted; final removal may finish shortly afterwards. `cup` prints the detached
 recovery path used if cleanup cannot complete.
 
 If such a detached recovery directory remains, preserve it until the failure is

@@ -33,7 +33,7 @@ For the terminology behind these arguments, see [Concepts](CONCEPTS.md).
 
 ## Command overview
 
-| Command | Purpose | Changes the CUP root? |
+| Command | Purpose | Changes the `cup` root? |
 |---|---|---|
 | `help` / `--version` | CLI help and build identity | no |
 | `search` | show catalog packages | catalog refresh only |
@@ -44,10 +44,10 @@ For the terminology behind these arguments, see [Concepts](CONCEPTS.md).
 | `install` | install a package, profile or toolchain | yes |
 | `remove` | remove one installed package version | yes |
 | `default` | choose the installed default for one scope | yes |
-| `update` | update installed tools or CUP itself | yes |
+| `update` | update installed tools or `cup` itself | yes |
 | `doctor` | diagnose the installation | no |
 | `repair` | recover or rebuild safely derivable state | yes |
-| `uninstall` | remove the selected CUP root | yes |
+| `uninstall` | remove the selected `cup` root | yes |
 
 ## Help and version
 
@@ -69,12 +69,12 @@ cup search <component>
 cup search <component> --target <platform>
 ```
 
-Shows packages available from the current catalog. On an existing runtime CUP
+Shows packages available from the current catalog. On an existing runtime `cup`
 performs one best-effort catalog refresh first; if refresh fails but the local
 snapshot is valid, it warns and shows that snapshot. From a source checkout
 with no runtime root, search may read a developer-provided
 `./config/catalog.cfg` snapshot without creating a root. That file is local input
-from `cup-components` and is not tracked by CUP.
+from `cup-components` and is not tracked by `cup`.
 
 Examples:
 
@@ -136,7 +136,7 @@ The view form shows the effective tool used by abbreviated component installs.
 `config set` stores a preference for one component/target scope. The root supplies
 host implicitly. It affects future `cup install <component>` and profile installs;
 it does not change the current default or existing packages. If no preference
-exists, install planning uses the official default compiled into that CUP
+exists, install planning uses the official default compiled into that `cup`
 generation.
 
 `config reset <component>` removes one scoped preference. `config reset` without
@@ -156,7 +156,7 @@ cup install profile <name> [--target <platform>] [-f|--format <format>]
 cup install toolchain <name> [--target <platform>] [-f|--format <format>]
 ```
 
-When a tool is supplied without its component, CUP infers the unique component
+When a tool is supplied without its component, `cup` infers the unique component
 from the built-in registry. When only a component is supplied, selection is:
 
 ```text
@@ -166,7 +166,7 @@ user preference -> official default -> error if neither exists
 An omitted release means `stable`.
 
 Profiles select several components through the same preference/default rule.
-Toolchains contain explicit curated tools and ignore preferences. CUP resolves
+Toolchains contain explicit curated tools and ignore preferences. `cup` resolves
 and validates a complete group before the first package is installed, so an
 unavailable member does not cause a knowingly partial plan. Package commits are
 still sequential: if a later package fails, earlier completed packages remain
@@ -203,7 +203,7 @@ cup install gcc --target windows-x64 --format tar.gz
 cup remove [<component>] <tool>[@<release>] [--target <platform>]
 ```
 
-Removes one installed package version. If the release is omitted, CUP proceeds
+Removes one installed package version. If the release is omitted, `cup` proceeds
 only when exactly one installed version matches the selected tool/target.
 With multiple matches it prints the candidates and requires an explicit release.
 
@@ -238,8 +238,8 @@ cup update catalog
 cup update cup
 ```
 
-Without a selector, CUP updates installed tool families and does **not** update
-CUP itself. If at least one family matches, package update performs one required
+Without a selector, `cup` updates installed tool families and does **not** update
+`cup` itself. If at least one family matches, package update performs one required
 catalog refresh before planning; no matching installed scope avoids network. A
 tool or component limits the plan to matching installed families.
 
@@ -250,13 +250,13 @@ equal stable is integrity-checked and left alone, and a newer stable is installe
 or adopted as another immutable identity.
 
 `cup update catalog` refreshes only the live catalog snapshot. It does not update
-packages or CUP itself.
+packages or `cup` itself.
 
 Old package versions are retained. A default advances only when it already
 selects the same tool at an older release; updating does not switch a default
 from one tool to another.
 
-`cup update cup` is separate. Official builds check the CUP release metadata and
+`cup update cup` is separate. Official builds check the `cup` release metadata and
 install only a newer verified official version. Equal versions are ignored and
 downgrades are rejected. Development builds cannot self-update as official
 releases.
@@ -267,7 +267,7 @@ releases.
 cup doctor
 ```
 
-Checks the installed CUP generation, live catalog, local state, preferences,
+Checks the installed `cup` generation, live catalog, local state, preferences,
 packages, defaults, pending transactions and derived wrappers. It is strictly read-only. A nonzero exit
 status means at least one problem was found or an inspection could not complete.
 
@@ -285,7 +285,7 @@ official live catalog from its authenticated release snapshot, and rebuild
 wrappers from valid defaults. Development repair does not manufacture a catalog snapshot.
 
 Ambiguous data is left untouched and reported. `repair` does not replace its own
-main executable; reinstall CUP when `cup`/`cup.exe` itself is missing or damaged.
+main executable; reinstall `cup` when `cup`/`cup.exe` itself is missing or damaged.
 
 ## Uninstall: `uninstall`
 
@@ -294,12 +294,12 @@ cup uninstall
 cup uninstall --yes
 ```
 
-Removes the selected CUP root and its installed packages. The command asks for
+Removes the selected `cup` root and its installed packages. The command asks for
 confirmation unless `--yes` is present. Cleanup continues through a detached
 native helper after the initiating process exits, so successful return means the
 handoff was accepted, not necessarily that every pathname has already vanished.
 
-CUP prints the detached recovery path used if cleanup later fails. PATH is not
+`cup` prints the detached recovery path used if cleanup later fails. PATH is not
 changed.
 
 ## Concurrency and recovery

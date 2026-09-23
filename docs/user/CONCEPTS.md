@@ -1,11 +1,11 @@
 # Concepts
 
-CUP manages prebuilt C development tools through a small set of concepts. The
+`cup` manages prebuilt C development tools through a small set of concepts. The
 same terms appear in the CLI, package catalog, local state and documentation.
 
 ## Component and tool
 
-A **component** is a role in a C development environment. CUP currently knows:
+A **component** is a role in a C development environment. `cup` currently knows:
 
 ```text
 compiler
@@ -45,7 +45,7 @@ For example, a compiler package may be Clang running on `linux-x64`, targeting
 `linux-x64`, at one concrete release. A Linux-hosted Windows cross compiler is a
 different package because its target is different.
 
-CUP can keep more than one concrete version of the same tool and scope at the
+`cup` can keep more than one concrete version of the same tool and scope at the
 same time.
 
 ## Host and target
@@ -63,7 +63,7 @@ packages exist only where the installed catalog publishes them.
 
 ## `stable` and concrete versions
 
-`stable` is a catalog selector, not an installed version. CUP resolves it to the
+`stable` is a catalog selector, not an installed version. `cup` resolves it to the
 catalog's current stable release before creating package paths or state records.
 
 ```sh
@@ -73,7 +73,7 @@ cup install clang@stable
 After installation, the package keeps the concrete version that was resolved at
 that time even if the catalog later changes its stable release.
 
-CUP does not use semantic-version ordering to guess package releases. The
+`cup` does not use semantic-version ordering to guess package releases. The
 catalog is responsible for the available versions and the stable selection.
 
 ## Preferences and defaults
@@ -107,7 +107,7 @@ package installed in an empty component/target scope becomes its default.
 
 ## Profiles and toolchains
 
-A **profile** is a list of components. CUP resolves each component using the
+A **profile** is a list of components. `cup` resolves each component using the
 same preference → official-default rule as `cup install <component>`.
 
 Built-in profiles are:
@@ -126,13 +126,13 @@ llvm  clang, lldb, lld, clang-format, clang-tidy, clangd
 gnu   gcc, gdb, ld
 ```
 
-Availability is still checked against the selected host/target catalog. CUP
+Availability is still checked against the selected host/target catalog. `cup`
 preflights a group before installing its first package; it does not silently
 remove unavailable members from a preset.
 
 ## Defaults and provided commands
 
-Packages declare the commands they provide. CUP derives launchers in its own
+Packages declare the commands they provide. `cup` derives launchers in its own
 `bin` directory from the current defaults.
 
 For a native target, the launcher uses the package entry name. For a cross target,
@@ -147,33 +147,33 @@ windows-x64-gcc
 These launchers are derived data. `cup doctor` checks them and `cup repair` can
 rebuild them from valid defaults.
 
-## The CUP root
+## The `cup` root
 
-CUP keeps application state, packages, cache data and launchers below one
+`cup` keeps application state, packages, cache data and launchers below one
 user-managed root. The normal location is `.cup` below the user's home/profile;
 `.coffee-cup` is the deterministic fallback when `.cup` already belongs to
 something else.
 
-The root is authenticated by CUP's ownership marker. Once installed, CUP derives
+The root is authenticated by `cup`'s ownership marker. Once installed, `cup` derives
 the active root from its own executable rather than from a persistent `CUP_HOME`
 environment variable. The complete root can therefore be relocated to another
 user-manageable base as long as its managed leaf remains valid.
 
 ## Package producer and package manager
 
-CUP does not build GCC, LLVM or the other tools during `cup install`.
+`cup` does not build GCC, LLVM or the other tools during `cup install`.
 `cup-components` produces complete packages and publishes their checksums and
-metadata. CUP selects, downloads, verifies, extracts and commits those packages.
+metadata. `cup` selects, downloads, verifies, extracts and commits those packages.
 
 This split keeps tool-specific build knowledge in the producer and package/state
-management in CUP. See [Packages](../design/PACKAGES.md) for the package contract.
+management in `cup`. See [Packages](../design/PACKAGES.md) for the package contract.
 
 ## Recovery model
 
 Commands that can leave persistent state half changed use a transaction journal.
 The local state file is the deciding commit point for package install/remove.
 Package update installs a newer immutable package through the same install
-transaction. Self-update and uninstall use detached native helpers because the running CUP
+transaction. Self-update and uninstall use detached native helpers because the running `cup`
 executable or root cannot always be replaced in place.
 
 Normal mutating commands stop when recovery information is pending. `cup doctor`

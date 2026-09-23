@@ -1,7 +1,7 @@
 # State
 
-CUP keeps installed identities, user preferences, the live catalog and the
-installed CUP generation below one authenticated userspace root. Persistent
+`cup` keeps installed identities, user preferences, the live catalog and the
+installed `cup` generation below one authenticated userspace root. Persistent
 objects are deliberately split by authority: package state is not inferred from
 wrappers, preferences are not defaults, and the catalog is not product policy.
 
@@ -16,9 +16,9 @@ POSIX    $HOME/.cup
 Windows  %USERPROFILE%\.cup
 ```
 
-If `.cup` is a clear foreign-directory collision, CUP preserves it and may use
+If `.cup` is a clear foreign-directory collision, `cup` preserves it and may use
 `.coffee-cup`. The fallback is not a second installation slot and is never used
-to bypass a damaged recognized CUP root.
+to bypass a damaged recognized `cup` root.
 
 A managed root authenticates itself with:
 
@@ -34,7 +34,7 @@ journals therefore do not persist a second host dimension. Package/catalog
 objects that can cross roots still carry host explicitly.
 
 An installed executable binds itself to the root containing its real
-`bin/cup[.exe]` and authenticates that root. Markerless CUP-like roots are
+`bin/cup[.exe]` and authenticates that root. Markerless `cup`-like roots are
 preserved and reported rather than adopted heuristically.
 
 ## Filesystem layout
@@ -82,7 +82,7 @@ cache/<artifact-sha256>
 ```
 
 There is no package identity sidecar, archive extension, TTL or LRU database.
-Every cache hit is rehashed before use. Cache failure is non-fatal when CUP can
+Every cache hit is rehashed before use. Cache failure is non-fatal when `cup` can
 continue from a verified temporary artifact.
 
 ## `state.txt`
@@ -107,7 +107,7 @@ default.compiler.linux-x64=clang@23.1.0-rev1
 Only concrete package versions are stored. `stable` is a catalog selector and
 never becomes persistent state.
 
-When a state file is loaded, CUP obtains the host from the authenticated root and
+When a state file is loaded, `cup` obtains the host from the authenticated root and
 reconstructs complete in-memory package identities. The parser first builds a
 private candidate, validates all global relationships and only then publishes
 that candidate to the caller.
@@ -151,7 +151,7 @@ default until the user chooses one. Installing another version does not invent a
 replacement default.
 
 `cup default` changes only the default and never installs. Removing the active
-package clears the default; CUP does not choose another installed version
+package clears the default; `cup` does not choose another installed version
 implicitly. Package update advances a default only when it already selected the
 same tool at an older semantic version.
 
@@ -175,7 +175,7 @@ contain fallback policy, installed state or defaults, and it is removed when the
 last preference is reset.
 
 Official selections, profiles and toolchains are compiled policy belonging to
-the CUP binary generation. Install planning combines a user preference with
+the `cup` binary generation. Install planning combines a user preference with
 compiled policy explicitly; persistence does not perform that fallback itself.
 
 ## Live catalog
@@ -186,8 +186,8 @@ The live package snapshot is:
 config/catalog.cfg
 ```
 
-It is managed runtime state and can advance independently from the installed CUP
-generation. CUP source does not track a seed; an official CUP release contains
+It is managed runtime state and can advance independently from the installed `cup`
+generation. `cup` source does not track a seed; an official `cup` release contains
 the published catalog snapshot acquired before that candidate's qualification.
 Once a valid runtime catalog exists, reinstall and self-update preserve it.
 
@@ -197,7 +197,7 @@ corruption and replaced with an older seed.
 
 ## Managed wrappers
 
-`bin/` contains the CUP executable plus wrappers derived from recorded defaults.
+`bin/` contains the `cup` executable plus wrappers derived from recorded defaults.
 Wrapper naming is:
 
 ```text
@@ -209,12 +209,12 @@ The metadata key after `entry.` is not the public alias; the basename of the
 entry path supplies the public command name. Windows adds the `.cmd` wrapper
 convention.
 
-Before a default-changing commit, CUP builds the prospective full wrapper
+Before a default-changing commit, `cup` builds the prospective full wrapper
 namespace and rejects reserved-name or case-semantic collisions. After state
 commit, wrapper reconciliation may replace stale derived files. Wrappers never
 become authority for state or defaults.
 
-## Installed CUP generation
+## Installed `cup` generation
 
 The immutable installed generation consists of:
 
@@ -236,7 +236,7 @@ asset or health requirement.
 ## Persistent-file snapshots
 
 Persistent text used for a decision is read as one bounded regular-file
-snapshot: CUP records native identity/size, reads the bounded bytes once and
+snapshot: `cup` records native identity/size, reads the bounded bytes once and
 parses/hashes that same snapshot. A later pathname replacement is not silently
 accepted as the validated object.
 
@@ -269,7 +269,7 @@ a managed wrapper
   <=> one command provided by a valid default package
 
 release.txt + legal files + canonical binary
-  => one valid CUP generation
+  => one valid `cup` generation
 ```
 
 Transactions may temporarily break these relationships. State plus the relevant

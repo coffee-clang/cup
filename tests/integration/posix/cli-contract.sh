@@ -253,9 +253,9 @@ EOF_LEGACY_ROOT
     run_fresh_status 4 "$legacy_marked_home" "$TMP_ROOT/legacy-marked-root.out" \
         config set compiler clang
     legacy_marked_output=$(cat "$TMP_ROOT/legacy-marked-root.out")
-    assert_contains "$legacy_marked_output" 'recognized CUP 0.3.5/layout-1 root'
+    assert_contains "$legacy_marked_output" 'recognized cup 0.3.5/layout-1 root'
     assert_contains "$legacy_marked_output" 'cannot be upgraded in place'
-    assert_contains "$legacy_marked_output" 'fresh CUP 0.4 installer'
+    assert_contains "$legacy_marked_output" 'fresh cup 0.4 installer'
     assert_missing "$legacy_marked_home/.coffee-cup"
 
     unmarked_home=$TMP_ROOT/unmarked-cup-root-home

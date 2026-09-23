@@ -23,8 +23,8 @@ prepare_command_environment() {
 
     TEST_HOME=$TMP_ROOT/home
     DEV_ROOT=$TMP_ROOT/development-root
-    CUP=$TEST_BINARY
-    export TEST_HOME DEV_ROOT CUP
+    cup=$TEST_BINARY
+    export TEST_HOME DEV_ROOT cup
 
     assert_file "$CUP"
     mkdir -p "$TEST_HOME" "$DEV_ROOT/config"

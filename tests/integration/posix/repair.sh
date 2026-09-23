@@ -97,7 +97,7 @@ invalid_state_hash=$(hash_file "$state_file")
 invalid_generation_hash=$(hash_file "$transaction_file")
 run_cup_expect_failure "$TMP_ROOT/malformed-generation-invalid-state.out" repair
 output=$(cat "$TMP_ROOT/malformed-generation-invalid-state.out")
-assert_contains "$output" 'CUP generation transaction journal is invalid'
+assert_contains "$output" 'cup generation transaction journal is invalid'
 assert_equals "$(hash_file "$state_file")" "$invalid_state_hash"
 assert_equals "$(hash_file "$transaction_file")" "$invalid_generation_hash"
 assert_missing "$state_file.invalid"

@@ -13,7 +13,7 @@
 /* Normalize a path to the internal representation used by the current host. */
 CupError path_normalize(char *path);
 
-/* Compare path spellings using CUP lexical rules: Windows normalizes separators and ignores
+/* Compare path spellings using cup lexical rules: Windows normalizes separators and ignores
  * ASCII case; POSIX compares bytes exactly. This is not a filesystem-identity check. */
 int path_equal(const char *left, const char *right);
 

@@ -1,4 +1,4 @@
-/* Discovers, authenticates and stages one complete CUP generation before detached handoff. */
+/* Discovers, authenticates and stages one complete cup generation before detached handoff. */
 
 #include "self_update.h"
 
@@ -96,11 +96,11 @@ static CupError require_trusted_current_generation(void) {
     if (err != CUP_OK) {
         if (binary_mismatch) {
             fprintf(stderr,
-                    "Error: the installed CUP binary does not match its release manifest. "
-                    "Use the official installer to repair the CUP generation before 'cup update cup'.\n");
+                    "Error: the installed cup binary does not match its release manifest. "
+                    "Use the official installer to repair the cup generation before 'cup update cup'.\n");
         } else {
             fprintf(stderr,
-                    "Error: the installed CUP generation metadata is not trustworthy. "
+                    "Error: the installed cup generation metadata is not trustworthy. "
                     "Run 'cup repair'; if the binary itself is damaged, use the official installer.\n");
         }
         return CUP_ERR_VALIDATION;
@@ -152,7 +152,7 @@ static CupError discover_target(const UpdateFiles *files,
     *update_available = 0;
     err = build_latest_asset_url(url, sizeof(url), CUP_RELEASE_METADATA_FILENAME);
     if (err == CUP_OK) {
-        printf("==> Checking for a CUP update...\n");
+        printf("==> Checking for a cup update...\n");
         err = download_file(url, files->discovery, DOWNLOAD_VALIDATE_METADATA);
     }
     if (err == CUP_OK) err = release_metadata_load(files->discovery, latest);
@@ -160,16 +160,16 @@ static CupError discover_target(const UpdateFiles *files,
     if (err == CUP_OK) err = release_version_parse(CUP_VERSION_BASE, &current_version);
     if (err == CUP_OK) err = release_version_parse(latest->version, &remote_version);
     if (err != CUP_OK) {
-        fprintf(stderr, "Error: latest CUP release metadata is invalid or unavailable.\n");
+        fprintf(stderr, "Error: latest cup release metadata is invalid or unavailable.\n");
         return err;
     }
     comparison = compare_versions(&remote_version, &current_version);
     if (comparison == 0) {
-        printf("CUP is already up to date at %s.\n", CUP_VERSION_BASE);
+        printf("cup is already up to date at %s.\n", CUP_VERSION_BASE);
         return CUP_OK;
     }
     if (comparison < 0) {
-        printf("Installed CUP version %s is newer than published release %s; no downgrade was applied.\n",
+        printf("Installed cup version %s is newer than published release %s; no downgrade was applied.\n",
                CUP_VERSION_BASE, latest->version);
         return CUP_OK;
     }
@@ -244,7 +244,7 @@ CupError self_update_start(void) {
     if (err == CUP_OK) err = prepare_update_files(&files);
     if (err == CUP_OK) err = discover_target(&files, &latest, &update_available);
     if (err == CUP_OK && update_available) {
-        printf("==> Downloading CUP %s (installed: %s)...\n", latest.version, CUP_VERSION_BASE);
+        printf("==> Downloading cup %s (installed: %s)...\n", latest.version, CUP_VERSION_BASE);
         err = fetch_versioned_target(&files, &latest, &target);
     }
     if (err == CUP_OK && update_available) {
@@ -268,7 +268,7 @@ CupError self_update_start(void) {
     if (err == CUP_OK && update_available) err = interrupt_safe_point();
     if (err == CUP_OK && update_available) err = update_helper_start(root, helper_token, &context.lock);
     if (err == CUP_OK && update_available) {
-        printf("Verified CUP update handoff accepted for %s. The generation will be committed after this process exits.\n",
+        printf("Verified cup update handoff accepted for %s. The generation will be committed after this process exits.\n",
                target.version);
     }
 

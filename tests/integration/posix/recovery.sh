@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Exercises interrupted package and CUP-generation recovery at their durable commit boundaries.
+# Exercises interrupted package and cup-generation recovery at their durable commit boundaries.
 set -eu
 
 TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -212,7 +212,7 @@ old_binary_hash=$(hash_file "$rollback_staging/old/$binary_release_name")
 install_generation_asset "$rollback_new" LICENSE
 install_generation_asset "$rollback_new" release.txt
 output=$(run_cup repair)
-assert_contains "$output" 'Rolled back interrupted CUP generation transaction.'
+assert_contains "$output" 'Rolled back interrupted cup generation transaction.'
 assert_equals "$(hash_file "$root/release.txt")" "$old_release_hash"
 assert_equals "$(hash_file "$root/LICENSE")" "$old_license_hash"
 assert_equals "$(hash_file "$root/THIRD_PARTY_NOTICES.txt")" "$old_notices_hash"
@@ -235,7 +235,7 @@ target_license_hash=$(hash_file "$root/LICENSE")
 target_notices_hash=$(hash_file "$root/THIRD_PARTY_NOTICES.txt")
 target_binary_hash=$(hash_file "$root/bin/cup")
 output=$(run_cup repair)
-assert_contains "$output" 'Completed interrupted CUP generation transaction.'
+assert_contains "$output" 'Completed interrupted cup generation transaction.'
 assert_equals "$(hash_file "$root/release.txt")" "$target_release_hash"
 assert_equals "$(hash_file "$root/LICENSE")" "$target_license_hash"
 assert_equals "$(hash_file "$root/THIRD_PARTY_NOTICES.txt")" "$target_notices_hash"

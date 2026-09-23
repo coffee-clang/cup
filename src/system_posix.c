@@ -34,11 +34,11 @@
 #endif
 
 #ifndef O_CLOEXEC
-#error "CUP requires O_CLOEXEC on supported POSIX platforms"
+#error "cup requires O_CLOEXEC on supported POSIX platforms"
 #endif
 
 #ifndef O_NOFOLLOW
-#error "CUP requires O_NOFOLLOW on supported POSIX platforms"
+#error "cup requires O_NOFOLLOW on supported POSIX platforms"
 #endif
 
 #ifdef CUP_SYSTEM_TESTING

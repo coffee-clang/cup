@@ -1,6 +1,6 @@
 # Testing
 
-CUP tests are split by the boundary they exercise. The goal is to make a failure
+`cup` tests are split by the boundary they exercise. The goal is to make a failure
 say something useful: local decisions belong in unit tests, public workflows in
 integration tests, repository/build contracts in repository tests, and packaged
 bytes in release tests.
@@ -14,7 +14,7 @@ one particular helper, shell line or internal call sequence.
 | Layer | Purpose |
 |---|---|
 | Unit | C modules, parsers, policy decisions, state/journal logic and isolated command behavior |
-| Integration | Public CLI workflows and filesystem effects through a real CUP executable |
+| Integration | Public CLI workflows and filesystem effects through a real `cup` executable |
 | Repository | Make/scripts/workflows/installers/dependency/release contracts |
 | Coverage | Measure exercised production code and enforce project thresholds |
 | Sanitizers | Execute native tests under ASan/UBSan |
@@ -74,7 +74,7 @@ suite to compile and every test to finish without failures or ignored cases.
 
 ## Integration tests
 
-Integration tests execute the built CUP binary and observe public behavior and
+Integration tests execute the built `cup` binary and observe public behavior and
 managed filesystem state. They cover workflows such as:
 
 - bootstrap and root selection;
@@ -110,7 +110,7 @@ or:
 ./tests/runners/repository.sh
 ```
 
-Repository tests validate properties that do not belong to CUP's runtime CLI.
+Repository tests validate properties that do not belong to `cup`'s runtime CLI.
 The current groups cover:
 
 - repository structure and environment assumptions;
@@ -231,7 +231,7 @@ child/process-tree cleanup so an interrupted runner does not leave servers or
 helpers running after the test has ended.
 
 The test suite must not depend on developer-specific HOME contents, an existing
-CUP installation or ambient package state.
+`cup` installation or ambient package state.
 
 ## CI test matrix
 

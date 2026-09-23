@@ -2,7 +2,7 @@
 #define CUP_INSTALL_POLICY_H
 
 /*
- * Official scoped defaults, profiles and curated toolchains compiled into this CUP generation.
+ * Official scoped defaults, profiles and curated toolchains compiled into this cup generation.
  */
 
 #include <stddef.h>

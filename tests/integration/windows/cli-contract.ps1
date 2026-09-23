@@ -178,9 +178,9 @@ function Test-ForeignAndLegacyRootSelection {
         $env:USERPROFILE = $legacyMarkedHome
         $legacyMarkedFailure = Assert-CupStatus `
             -CommandArgs @("config", "set", "compiler", "clang") -ExpectedStatus 4
-        Assert-Contains $legacyMarkedFailure "recognized CUP 0.3.5/layout-1 root"
+        Assert-Contains $legacyMarkedFailure "recognized cup 0.3.5/layout-1 root"
         Assert-Contains $legacyMarkedFailure "cannot be upgraded in place"
-        Assert-Contains $legacyMarkedFailure "fresh CUP 0.4 installer"
+        Assert-Contains $legacyMarkedFailure "fresh cup 0.4 installer"
         Assert-PathMissing (Join-Path $legacyMarkedHome ".coffee-cup")
 
         Test-UnmarkedCupRootPreservation

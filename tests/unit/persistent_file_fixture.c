@@ -95,7 +95,7 @@ CupError system_open_regular_file(const char *path,
     *file_size = 0;
     *missing = 0;
     memset(identity, 0, sizeof(*identity));
-    /* Preserve the CUP path bound before host CRT path handling can reinterpret it. */
+    /* Preserve the cup path bound before host CRT path handling can reinterpret it. */
     if (strlen(path) >= MAX_PATH_LEN) {
         return CUP_ERR_BUFFER_TOO_SMALL;
     }

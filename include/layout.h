@@ -24,7 +24,7 @@ typedef enum {
  * missing root may only be created under exclusive authority and is then pinned. */
 CupError layout_root_snapshot_begin(void);
 /* Freeze one explicit canonical root. A missing root is permitted so bootstrap can create it
- * exclusively; an existing root must already be an authenticated CUP root. */
+ * exclusively; an existing root must already be an authenticated cup root. */
 CupError layout_root_snapshot_begin_at(const char *root);
 /* Bind installer-owned pre-publication sibling created under the selected base. */
 CupError layout_root_snapshot_begin_private_at(const char *root);
@@ -33,7 +33,7 @@ CupError layout_select_root_for_base(const char *base, char *buffer, size_t size
 CupError layout_root_snapshot_validate(void);
 void layout_root_snapshot_end(void);
 
-/* Canonical paths inside the selected CUP root. */
+/* Canonical paths inside the selected cup root. */
 CupError layout_get_root(char *buffer, size_t size);
 CupError layout_get_bin_dir(char *buffer, size_t size);
 CupError layout_get_components_dir(char *buffer, size_t size);

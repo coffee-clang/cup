@@ -295,7 +295,7 @@ static void test_unsafe_paths(void) {
         {TEST_FILE, "C:/pkg/tool", "x", NULL, 0},
     };
 #ifndef _WIN32
-    /* The native Windows libarchive writer normalizes backslashes before CUP can observe them.
+    /* The native Windows libarchive writer normalizes backslashes before cup can observe them.
      * Windows exercises this boundary with an exact ZIP fixture in archive-safety.ps1. */
     const TestEntry backslash[] = {
         {TEST_FILE, "pkg\\tool", "x", NULL, 0},

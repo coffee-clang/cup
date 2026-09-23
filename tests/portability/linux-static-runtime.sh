@@ -370,7 +370,7 @@ make -C "$SOURCE" PLATFORM="$PLATFORM" BUILD_DIR="$SOURCE_BUILD_ROOT" \
 make -C "$SOURCE" PLATFORM="$PLATFORM" BUILD_DIR="$SOURCE_BUILD_ROOT" \
     DEPS_PREFIX="$DEPS_PREFIX" CUP_INTERNAL_DEPS_TARGET=deps-check \
     CUP_TEST_CONFIGURATION=release test-helpers >/dev/null
-CUP="$SOURCE_BUILD_ROOT/$PLATFORM/release/bin/cup"
+cup="$SOURCE_BUILD_ROOT/$PLATFORM/release/bin/cup"
 [ -x "$CUP" ] || fail "release executable was not produced: $CUP"
 
 printf '==> Rejecting a server outside the embedded trust bundle...\n'

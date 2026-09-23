@@ -29,7 +29,7 @@ CupError package_release_validate_concrete(const char *release);
 /* Compare two validated concrete package versions semantically. */
 CupError package_release_compare(const char *left, const char *right, int *result);
 
-/* Copy the upstream/base version without the optional CUP -revN suffix. */
+/* Copy the upstream/base version without the optional cup -revN suffix. */
 CupError package_release_base(const char *release, char *base, size_t base_size);
 
 /* Split one exact non-empty '<tool>@<release>' string without trimming or normalization. */

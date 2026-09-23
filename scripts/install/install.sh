@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-# Downloads one immutable CUP release generation, authenticates the native bootstrap
+# Downloads one immutable cup release generation, authenticates the native bootstrap
 # inputs with release.txt, then delegates all managed-root mutation to that binary.
 set -eu
 
@@ -318,7 +318,7 @@ find_path_installation() {
 
 select_root_for_base() {
     base=$1
-    selected=$("$WORK/$BINARY_ASSET" --internal-select-root "$base") || fail "could not select a canonical CUP root below $base"
+    selected=$("$WORK/$BINARY_ASSET" --internal-select-root "$base") || fail "could not select a canonical cup root below $base"
     case "$selected" in "$base/.cup"|"$base/.coffee-cup") ;; *) fail 'native root selection returned an unexpected path' ;; esac
     SELECTED_ROOT=$selected; SELECTED_BASE=$base; export SELECTED_ROOT SELECTED_BASE
 }
@@ -330,7 +330,7 @@ choose_installation() {
     fi
     if find_path_installation && [ -t 0 ]; then
         current_version=$(installed_version "$PATH_BINARY") || fail 'authenticated PATH installation has an invalid version response'
-        printf 'Found CUP %s at %s. Use this installation? [Y/n] ' "$current_version" "$PATH_ROOT"
+        printf 'Found cup %s at %s. Use this installation? [Y/n] ' "$current_version" "$PATH_ROOT"
         IFS= read -r answer || answer=
         case "$answer" in ''|y|Y|yes|YES|Yes)
             SELECTED_ROOT=$PATH_ROOT
@@ -340,10 +340,10 @@ choose_installation() {
     fi
     base=$HOME
     if [ -t 0 ]; then
-        printf 'Choose the parent/base directory for CUP [%s]: ' "$HOME"
+        printf 'Choose the parent/base directory for cup [%s]: ' "$HOME"
         IFS= read -r answer || answer=; [ -z "$answer" ] || base=$answer
     fi
-    base=$(canonical_directory "$base") || fail 'selected CUP base must be an existing real directory'
+    base=$(canonical_directory "$base") || fail 'selected cup base must be an existing real directory'
     select_root_for_base "$base"
 }
 
@@ -369,9 +369,9 @@ EOF_BOOTSTRAP
 
 validate_committed_root() {
     INSTALLED_BINARY=$BOOTSTRAP_ROOT/bin/cup
-    native_root_probe "$BOOTSTRAP_ROOT" || fail 'installed CUP root did not validate after bootstrap'
-    [ -f "$INSTALLED_BINARY" ] && [ ! -L "$INSTALLED_BINARY" ] && [ -x "$INSTALLED_BINARY" ] || fail 'installed CUP binary is unavailable after bootstrap'
-    [ "$(installed_version "$INSTALLED_BINARY")" = "$CUP_RELEASE_VERSION" ] || fail 'installed CUP version does not match the verified release'
+    native_root_probe "$BOOTSTRAP_ROOT" || fail 'installed cup root did not validate after bootstrap'
+    [ -f "$INSTALLED_BINARY" ] && [ ! -L "$INSTALLED_BINARY" ] && [ -x "$INSTALLED_BINARY" ] || fail 'installed cup binary is unavailable after bootstrap'
+    [ "$(installed_version "$INSTALLED_BINARY")" = "$CUP_RELEASE_VERSION" ] || fail 'installed cup version does not match the verified release'
     export INSTALLED_BINARY
 }
 
@@ -382,7 +382,7 @@ attempt_fresh_coffee() {
         return 0
     fi
     if [ -e "$SELECTED_ROOT/transaction.txt" ] || [ -L "$SELECTED_ROOT/transaction.txt" ]; then
-        fail 'optional Coffee installation left an unresolved CUP transaction; run cup repair'
+        fail 'optional Coffee installation left an unresolved cup transaction; run cup repair'
     fi
     coffee_state=$("$INSTALLED_BINARY" list package-manager 2>/dev/null || true)
     case "$coffee_state" in
@@ -391,11 +391,11 @@ attempt_fresh_coffee() {
             return 0
             ;;
     esac
-    printf 'Warning: Coffee was not installed; the CUP core installation is ready.\n' >&2
+    printf 'Warning: Coffee was not installed; the cup core installation is ready.\n' >&2
 }
 
-path_block_start='# >>> CUP PATH >>>'
-path_block_end='# <<< CUP PATH <<<'
+path_block_start='# >>> cup PATH >>>'
+path_block_end='# <<< cup PATH <<<'
 
 write_path_block() {
     profile=$1
@@ -405,7 +405,7 @@ write_path_block() {
 
     if [ -e "$profile" ] || [ -L "$profile" ]; then
         if [ ! -f "$profile" ] || [ -L "$profile" ]; then
-            printf 'Warning: CUP PATH target %s is not a regular file; preserved unchanged.
+            printf 'Warning: cup PATH target %s is not a regular file; preserved unchanged.
 ' "$profile" >&2
             return 1
         fi
@@ -417,7 +417,7 @@ write_path_block() {
         start_count=$(grep -Fxc -- "$path_block_start" "$profile" 2>/dev/null || true)
         end_count=$(grep -Fxc -- "$path_block_end" "$profile" 2>/dev/null || true)
         if [ "$start_count" -ne "$end_count" ] || [ "$start_count" -gt 1 ]; then
-            printf 'Warning: CUP PATH markers in %s are malformed; preserved for manual repair.\n' "$profile" >&2
+            printf 'Warning: cup PATH markers in %s are malformed; preserved for manual repair.\n' "$profile" >&2
             return 1
         fi
         if [ "$start_count" -eq 1 ] && grep -F -- "$bin" "$profile" >/dev/null 2>&1; then
@@ -463,7 +463,7 @@ add_posix_path() {
     path_contains_directory "$bin" && return 0
     case "$bin" in
         *"'"*|*[[:cntrl:]]*)
-            printf 'PATH integration skipped because the CUP path contains shell-unsafe quoting/control content.\n' >&2
+            printf 'PATH integration skipped because the cup path contains shell-unsafe quoting/control content.\n' >&2
             return 0
             ;;
     esac
@@ -482,21 +482,21 @@ add_posix_path() {
             write_path_block "$bashrc" sh || first_ok=0
             write_path_block "$login" sh || second_ok=0
             if [ "$first_ok" -ne 1 ] || [ "$second_ok" -ne 1 ]; then
-                printf 'Warning: CUP could not update every Bash startup file; configure %s manually where needed.\n' "$bin" >&2
+                printf 'Warning: cup could not update every Bash startup file; configure %s manually where needed.\n' "$bin" >&2
                 return 0
             fi
             ;;
         zsh)
             zdot=${ZDOTDIR:-$HOME}
             write_path_block "$zdot/.zshrc" sh || {
-                printf 'Warning: CUP could not update the Zsh PATH configuration; add %s manually.\n' "$bin" >&2
+                printf 'Warning: cup could not update the Zsh PATH configuration; add %s manually.\n' "$bin" >&2
                 return 0
             }
             ;;
         fish)
             fish_config=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/cup.fish
             write_path_block "$fish_config" fish || {
-                printf 'Warning: CUP could not update the Fish PATH configuration; add %s manually.\n' "$bin" >&2
+                printf 'Warning: cup could not update the Fish PATH configuration; add %s manually.\n' "$bin" >&2
                 return 0
             }
             ;;
@@ -518,11 +518,11 @@ offer_path_integration() {
     esac
     path_contains_directory "$bin" && return 0
     if [ "${CUP_INSTALL_NO_PATH_PROMPT:-0}" = 1 ]; then
-        printf 'CUP was not added to PATH. Add %s manually if desired.\n' "$bin"
+        printf 'cup was not added to PATH. Add %s manually if desired.\n' "$bin"
         return 0
     fi
     if { [ ! -t 1 ] && [ ! -t 2 ]; } || ! (: </dev/tty) 2>/dev/null; then
-        printf 'No interactive terminal is available; CUP was not added to PATH. Add %s manually if desired.\n' "$bin"
+        printf 'No interactive terminal is available; cup was not added to PATH. Add %s manually if desired.\n' "$bin"
         return 0
     fi
     printf 'Add %s to your user PATH? [y/N] ' "$bin" >/dev/tty
@@ -547,7 +547,7 @@ chmod 0700 "$WORK/$BINARY_ASSET" || fail 'could not make the verified bootstrap 
 
 choose_installation
 check_target_version
-printf 'CUP will be installed in %s\n' "$SELECTED_ROOT"
+printf 'cup will be installed in %s\n' "$SELECTED_ROOT"
 bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK" "$SELECTED_BASE") || fail 'the verified cup bootstrap transaction was rejected'
 parse_bootstrap_root "$bootstrap_output"
 validate_committed_root

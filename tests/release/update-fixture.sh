@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Builds a genuine next-version CUP binary and a minimal authenticated server tree for self-update.
+# Builds a genuine next-version cup binary and a minimal authenticated server tree for self-update.
 set -eu
 
 next_test_version() {

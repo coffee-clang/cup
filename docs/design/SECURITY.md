@@ -1,22 +1,22 @@
 # Security model
 
-CUP downloads executable packages and mutates a user-managed toolchain root. Its
+`cup` downloads executable packages and mutates a user-managed toolchain root. Its
 security model therefore concentrates on remote transport, package admission,
 filesystem identity, release provenance and crash recovery. It does not claim to
 defend against an attacker that already has arbitrary control of the same user
-account and can rewrite CUP memory while it runs.
+account and can rewrite `cup` memory while it runs.
 
 ## Trust boundaries
 
 The runtime separates several authorities rather than treating one metadata file
 as a global source of truth:
 
-- compiled registry and policy define what the running CUP understands and which
+- compiled registry and policy define what the running `cup` understands and which
   abbreviated choices it makes;
 - `catalog.cfg` defines concrete package availability and artifact digests;
 - package `manifest.txt` defines the exact extracted tree;
 - `state.txt` defines installed logical identities/defaults;
-- installed `release.txt` authenticates the CUP generation;
+- installed `release.txt` authenticates the `cup` generation;
 - native filesystem identity binds later mutation to the object that was
   actually inspected.
 
@@ -31,14 +31,14 @@ restricted loopback test mode; that path is not usable as a normal remote
 endpoint.
 
 The public installer is the first bootstrap code executed before an installed
-CUP generation exists. Its initial trust comes from HTTPS transport. It resolves
+`cup` generation exists. Its initial trust comes from HTTPS transport. It resolves
 one concrete release identity and then uses that versioned release consistently;
 it never combines metadata from one moving `latest` lookup with assets from a
 later one.
 
 `release.txt` authenticates subsequently downloaded release assets, but it cannot
 retroactively authenticate installer code that has already been obtained and
-executed. CUP therefore does not claim that a self-hash removes the initial HTTPS
+executed. `cup` therefore does not claim that a self-hash removes the initial HTTPS
 bootstrap boundary.
 
 ## CA bundle and TLS backends
@@ -59,9 +59,9 @@ authentication.
 Where possible hashing operates on the already opened regular-file stream used by
 later consumers, avoiding a validate-then-reopen pathname gap.
 
-## CUP release manifest
+## `cup` release manifest
 
-Public CUP releases contain one `release.txt` format 2 manifest. It records:
+Public `cup` releases contain one `release.txt` format 2 manifest. It records:
 
 ```text
 format=2
@@ -97,7 +97,7 @@ The live catalog is independent runtime state and can advance after installation
 ## Self-update trust precondition
 
 Before `cup update cup` creates a helper or generation journal, the current
-installed `release.txt` must be valid and the canonical running CUP binary must
+installed `release.txt` must be valid and the canonical running `cup` binary must
 hash-match its platform entry. A missing/corrupt manifest or binary mismatch
 stops before mutation; repair/reinstall owns recovery of that condition.
 
@@ -107,7 +107,7 @@ downgrades are rejected.
 
 ## Package catalog and transport
 
-Catalog records contain concrete artifact URLs and SHA-256 digests. CUP does not
+Catalog records contain concrete artifact URLs and SHA-256 digests. `cup` does not
 expand producer URL templates at runtime and does not persist another
 catalog-side copy of the package manifest digest.
 
@@ -118,7 +118,7 @@ cache/<artifact-sha256>
 ```
 
 Every cache hit must be a safe regular file and is rehashed before use. Invalid
-or unusable cache content is bypassed; cache write failure is non-fatal when CUP
+or unusable cache content is bypassed; cache write failure is non-fatal when `cup`
 can continue from verified temporary bytes.
 
 On a miss, download occurs into private temporary storage, the catalog digest is
@@ -128,7 +128,7 @@ cache and consumed by extraction.
 ## Archive admission
 
 Digest-valid archives are still untrusted structured input. Libarchive consumes
-the verified stream into fresh private staging while CUP enforces path/resource
+the verified stream into fresh private staging while `cup` enforces path/resource
 rules, including:
 
 - one safe top-level package root;
@@ -142,7 +142,7 @@ used as the parent of a later write and final manifest validation proves that it
 resolves within the package to an allowed target. Windows package content rejects
 reparse/symlink traversal rather than emulating POSIX links.
 
-After extraction CUP validates `info.txt`, entry executables and the complete tree
+After extraction `cup` validates `info.txt`, entry executables and the complete tree
 against `manifest.txt` before any canonical package commit.
 
 ## Package metadata and manifest
@@ -152,7 +152,7 @@ component/tool/host/target/version. A revision-bearing package requires a
 revision reason and its `source.primary.version` must be the unsuffixed upstream
 base version.
 
-`manifest.txt` format 2 is the exact package-tree authority. CUP verifies every
+`manifest.txt` format 2 is the exact package-tree authority. `cup` verifies every
 managed regular-file digest/mode, directory and permitted link and rejects
 undeclared objects. Full manifest verification is used at admission, package
 scanning and integrity diagnosis; lightweight descriptive queries do not rehash
@@ -161,7 +161,7 @@ an entire toolchain unnecessarily.
 ## Filesystem identity and mutation
 
 When a destructive or replacing operation depends on an earlier observation,
-CUP retains native identity and revalidates the object at the mutation boundary.
+`cup` retains native identity and revalidates the object at the mutation boundary.
 A different object that appears under the same pathname is not accepted merely
 because its text path matches.
 
@@ -185,7 +185,7 @@ host=<platform>
 ```
 
 A directory is not adopted merely because it is named `.cup` or contains
-recognizable state. Markerless CUP-like roots are preserved for explicit
+recognizable state. Markerless `cup`-like roots are preserved for explicit
 recovery/reinstallation. A clear foreign `.cup` collision may select
 `.coffee-cup`; a corrupt recognized root does not.
 
@@ -199,12 +199,12 @@ Persistent state/journal/catalog/config text is read from bounded regular-file
 snapshots. Atomic writers publish through sibling temporaries and tie
 replacement/deletion to expected native identities where required.
 
-Package journals contain only install/remove identity and staging ownership. CUP
+Package journals contain only install/remove identity and staging ownership. `cup`
 generation journals contain only target `release.txt` digest and workspace name.
 The generation binary is committed last; recovery reasons from `new/old` bytes
 and the actual canonical binary rather than trusting a stored progress phase.
 
-Ambiguous transaction evidence is preserved. CUP does not clear it merely to let
+Ambiguous transaction evidence is preserved. `cup` does not clear it merely to let
 normal commands continue.
 
 ## Self-update and uninstall handoff
@@ -234,7 +234,7 @@ CI separates source qualification from publication:
 7. publication compares the immutable local snapshot with remote state before a
    draft becomes public.
 
-Only the publication job receives release write permission. A published CUP
+Only the publication job receives release write permission. A published `cup`
 release is immutable by project policy; same-version success is idempotent only
 when the complete bytes already match.
 
@@ -255,7 +255,7 @@ safe result.
 
 ## Limits of the model
 
-CUP relies on HTTPS plus SHA-256 authenticated manifests/artifacts. It does not
+`cup` relies on HTTPS plus SHA-256 authenticated manifests/artifacts. It does not
 currently introduce an independent package-signing key infrastructure or
 transparency log. Local integrity metadata is not a signature against a malicious
 administrator who can rewrite both managed data and the running process.

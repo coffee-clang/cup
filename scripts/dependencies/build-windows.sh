@@ -192,7 +192,7 @@ build_libarchive() {
     echo "==> Building libarchive ${LIBARCHIVE_VERSION} for ${HOST_TRIPLE}"
     cd "$source"
 
-    # libarchive probes ambient libmd unconditionally after its other crypto backends. CUP does
+    # libarchive probes ambient libmd unconditionally after its other crypto backends. cup does
     # not use that optional digest backend, so force the probe off rather than leaking an
     # unpinned host library into the private static link metadata.
 

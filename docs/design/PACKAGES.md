@@ -1,12 +1,12 @@
 # Packages
 
-CUP consumes immutable prebuilt packages published by `cup-components`. The
+`cup` consumes immutable prebuilt packages published by `cup-components`. The
 package pipeline and the runtime catalog deliberately expose concrete identities
-rather than asking CUP to reconstruct producer decisions from templates.
+rather than asking `cup` to reconstruct producer decisions from templates.
 
 ## Responsibility split
 
-The compiled registry describes the domain understood by one CUP generation:
+The compiled registry describes the domain understood by one `cup` generation:
 component/tool relationships, platform identifiers and version semantics. The
 compiled policy describes official abbreviated choices, profiles and toolchains.
 The catalog describes what has actually been published. User preferences apply
@@ -28,7 +28,7 @@ Current operational tools use canonical numeric-dotted base versions. Segments
 are compared numerically, with a matching extra segment later in the ordering:
 `1.2 < 1.2.0`.
 
-Every operational package may add one terminal CUP package revision:
+Every operational package may add one terminal `cup` package revision:
 
 ```text
 23.1.0
@@ -47,7 +47,7 @@ revision only when the base is identical. Consequently:
 ```
 
 A corrected redistribution of the same upstream version receives a new
-immutable package identity such as `-rev1`; CUP does not replace published bytes
+immutable package identity such as `-rev1`; `cup` does not replace published bytes
 behind an existing identity.
 
 `source.primary.version` in `info.txt` always contains the unsuffixed upstream
@@ -55,7 +55,7 @@ base. A revision-bearing package must also contain `package.revision_reason`.
 There is no separate numeric revision field.
 
 Coffee is registry-recognized but remains non-operational until its real version
-and package contract is frozen and shipped by a CUP generation. Older CUP
+and package contract is frozen and shipped by a `cup` generation. Older `cup`
 versions can retain future Coffee records structurally without guessing their
 ordering.
 
@@ -90,14 +90,14 @@ There are no URL templates, version lists, catalog-side manifest digest or
 catalog-side default archive format.
 
 Within one `(component, tool, host, target)` scope, stable is the semantic
-maximum package version. The producer materializes this bit, while CUP trusts it
+maximum package version. The producer materializes this bit, while `cup` trusts it
 only for a record whose tool/platform/version/archive contract it understands.
-If the persisted stable record is future/non-operational, CUP does not promote a
+If the persisted stable record is future/non-operational, `cup` does not promote a
 lower record on its own.
 
 The parser distinguishes structural validity from operational support. This
-lets an older CUP retain safe future records without treating the complete
-snapshot as corrupt. Search and install expose only records that the running CUP
+lets an older `cup` retain safe future records without treating the complete
+snapshot as corrupt. Search and install expose only records that the running `cup`
 can operate.
 
 ## Catalog source and publication
@@ -110,7 +110,7 @@ stable while catalog revision provides consumer chronology. Revision 0 is
 published manually during initial bootstrap; manual publication otherwise serves
 explicit recovery or administrative cases.
 
-CUP does not track a catalog snapshot. Development may use a local ignored
+`cup` does not track a catalog snapshot. Development may use a local ignored
 `config/catalog.cfg` copied from a published `cup-components` snapshot. Release
 preparation acquires the currently published catalog before native qualification
 and pins those exact bytes as the candidate's bootstrap/recovery seed. A live
@@ -135,7 +135,7 @@ clang@stable
 A component-only install first checks the user preference for that
 `(target, component)` scope, otherwise the compiled official policy, then
 resolves that selected tool's stable package. A user preference that exists but
-cannot be satisfied is an error; CUP does not silently replace it with the
+cannot be satisfied is an error; `cup` does not silently replace it with the
 official choice.
 
 Profiles select component roles and therefore respect preference/policy.
@@ -147,12 +147,12 @@ first package mutation.
 
 ## Archive formats
 
-Normal package publication provides `tar.xz`, `tar.gz` and `zip`. CUP chooses a
+Normal package publication provides `tar.xz`, `tar.gz` and `zip`. `cup` chooses a
 transport default as consumer policy: `tar.gz` on POSIX hosts and `zip` on
 Windows. `--format` can request another published format.
 
 Archive format is transport, not package identity. All formats for one package
-identity must unpack to the same package tree. Raw hardlinks are outside the CUP
+identity must unpack to the same package tree. Raw hardlinks are outside the `cup`
 archive boundary; the producer materializes required content before publication.
 
 ## Package paths
@@ -207,7 +207,7 @@ identity. Package admission validates the tree against this manifest before any
 canonical package commit.
 
 The catalog authenticates the archive SHA-256. Because the authenticated archive
-contains `manifest.txt`, CUP does not duplicate the manifest digest in the
+contains `manifest.txt`, `cup` does not duplicate the manifest digest in the
 runtime catalog or state.
 
 ## Download and cache
@@ -222,14 +222,14 @@ A cache hit must be a safe regular file and is rehashed before use. A mismatch,
 wrong object type or unusable cache entry is bypassed. Cache write failure does
 not make an otherwise verified package install fail.
 
-On a miss, CUP downloads into private temporary storage, verifies the catalog
+On a miss, `cup` downloads into private temporary storage, verifies the catalog
 digest, may publish those verified bytes into the cache, and continues package
 admission from the verified artifact. The cache never reconstructs catalog
 availability.
 
 ## Admission and installed integrity
 
-Before a package is committed, CUP validates archive safety, metadata identity,
+Before a package is committed, `cup` validates archive safety, metadata identity,
 manifest/tree integrity and the prospective wrapper namespace. An exact package
 already recorded in state is not silently overwritten. If its installed tree is
 invalid, repair/remove/reinstall is the explicit path.

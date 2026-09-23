@@ -437,7 +437,7 @@ static CupError validate_catalog(PackageCatalog *catalog, int have_revision, int
         }
     }
 
-    /* A stable record understood by this CUP must be the maximum understood version. A future
+    /* A stable record understood by this cup must be the maximum understood version. A future
      * non-operational stable remains the materialized stable and deliberately suppresses fallback. */
     for (i = 0; i < catalog->count; ++i) {
         PackageCatalogEntry *stable = &catalog->packages[i];

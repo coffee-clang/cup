@@ -1,5 +1,5 @@
 
-# Owns CUP's canonical MAJOR.MINOR.PATCH semantic-version domain.
+# Owns cup's canonical MAJOR.MINOR.PATCH semantic-version domain.
 # Sourced by version and release tooling.
 
 cup_semver_valid() (

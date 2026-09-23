@@ -1,4 +1,4 @@
-# Exercises interrupted package and CUP-generation recovery on Windows.
+# Exercises interrupted package and cup-generation recovery on Windows.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -275,7 +275,7 @@ try {
     Install-GenerationAsset -CupRoot $cupRoot -NewDirectory $rollback.New -Name 'LICENSE'
     Install-GenerationAsset -CupRoot $cupRoot -NewDirectory $rollback.New -Name 'release.txt'
     $rollbackOutput = Invoke-Cup -CommandArgs @('repair')
-    Assert-Contains $rollbackOutput 'Rolled back interrupted CUP generation transaction.'
+    Assert-Contains $rollbackOutput 'Rolled back interrupted cup generation transaction.'
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'release.txt')) $oldReleaseHash
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'LICENSE')) $oldLicenseHash
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'THIRD_PARTY_NOTICES.txt')) $oldNoticesHash
@@ -296,7 +296,7 @@ try {
     $targetNoticesHash = Get-Sha256Lower -Path (Join-Path $cupRoot 'THIRD_PARTY_NOTICES.txt')
     $targetBinaryHash = Get-Sha256Lower -Path (Join-Path $cupRoot 'bin\cup.exe')
     $finalizeOutput = Invoke-Cup -CommandArgs @('repair')
-    Assert-Contains $finalizeOutput 'Completed interrupted CUP generation transaction.'
+    Assert-Contains $finalizeOutput 'Completed interrupted cup generation transaction.'
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'release.txt')) $targetReleaseHash
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'LICENSE')) $targetLicenseHash
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'THIRD_PARTY_NOTICES.txt')) $targetNoticesHash

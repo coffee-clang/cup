@@ -16,7 +16,7 @@ try {
     Ensure-FixtureRuntimeRoot
     $cupRoot = Join-Path $Script:CupTestHome '.cup'
     $pathWarning = Invoke-Cup -CommandArgs @('doctor')
-    Assert-Contains $pathWarning 'current CUP command directory is not in PATH'
+    Assert-Contains $pathWarning 'current cup command directory is not in PATH'
     $binPath = Join-Path $cupRoot 'bin'
     Assert-ContainsPathText $pathWarning (
         "PowerShell:     `$env:Path = '$binPath' + ';' + `$env:Path")
@@ -30,7 +30,7 @@ try {
         New-Item -ItemType Directory -Force -Path $Script:CupTestHome | Out-Null
         Ensure-FixtureRuntimeRoot
         $separatorWarning = Invoke-Cup -CommandArgs @('doctor')
-        Assert-Contains $separatorWarning 'current CUP command directory is not in PATH'
+        Assert-Contains $separatorWarning 'current cup command directory is not in PATH'
         Assert-Contains $separatorWarning "contains ';' and cannot be represented as one PATH entry"
         Assert-NotContains $separatorWarning 'PowerShell:'
         Assert-NotContains $separatorWarning 'Command Prompt:'
@@ -131,7 +131,7 @@ try {
     $generationJournalHash = Get-Sha256Lower -Path $transactionPath
     $generationPending = Invoke-Cup -CommandArgs @('doctor') -ExpectFailure
     Assert-Contains $generationPending `
-        "interrupted CUP generation transaction detected in workspace 'cup-update-test'"
+        "interrupted cup generation transaction detected in workspace 'cup-update-test'"
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
 
     # Help, version, typos, parse errors and read-only views never rewrite durable evidence.
@@ -154,7 +154,7 @@ try {
         'temporary_name=cup-update-test'
     )
     $invalidGeneration = Invoke-Cup -CommandArgs @('doctor') -ExpectFailure
-    Assert-Contains $invalidGeneration 'CUP generation transaction journal is invalid'
+    Assert-Contains $invalidGeneration 'cup generation transaction journal is invalid'
     Remove-Item -LiteralPath $transactionPath -Force
 
     Write-Utf8NoBom -Path $transactionPath -Lines @(

@@ -459,7 +459,7 @@ function Start-TestHelperProcess {
 }
 
 # Isolated runtime setup and teardown.
-# CUP persistent fixture text is canonical LF regardless of the Windows host newline.
+# cup persistent fixture text is canonical LF regardless of the Windows host newline.
 function Write-Utf8NoBom {
     param(
         [Parameter(Mandatory = $true)]

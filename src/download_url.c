@@ -1,5 +1,5 @@
 /*
- * Owns release-test URL syntax delegation and the deliberately narrow CUP trust policy.
+ * Owns release-test URL syntax delegation and the deliberately narrow cup trust policy.
  */
 
 #include "download.h"

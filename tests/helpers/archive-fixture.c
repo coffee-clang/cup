@@ -493,7 +493,7 @@ static int add_mode_entries(struct archive *archive, const FixtureOptions *optio
 
 /* libarchive's native Windows ZIP writer rewrites '\\' pathname separators to '/'.
  * Restore the deliberately hostile spelling in the ZIP filename fields, then verify it
- * again through libarchive before CUP consumes the archive. */
+ * again through libarchive before cup consumes the archive. */
 static int zip_name_field(const unsigned char *data,
                           size_t data_size,
                           size_t name_offset,

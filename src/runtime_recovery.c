@@ -38,9 +38,14 @@ CupError runtime_recover_pending(const SystemLock *lock, RuntimeJournalKind *rec
         state_init(&state);
         err = package_transaction_load(&transaction, &status);
         if (err == CUP_OK && status != PACKAGE_TRANSACTION_LOADED) err = CUP_ERR_TRANSACTION;
-        if (err == CUP_OK) err = state_load(&state, &state_status, NULL, NULL);
-        if (err == CUP_OK && state_status != STATE_FILE_LOADED) err = CUP_ERR_TRANSACTION;
-        if (err == CUP_OK) err = state_validate(&state, NULL);
+        if (err == CUP_OK) {
+            err = state_load(&state, &state_status, NULL, NULL);
+            if (err != CUP_OK || state_status != STATE_FILE_LOADED) err = CUP_ERR_TRANSACTION;
+        }
+        if (err == CUP_OK) {
+            err = state_validate(&state, NULL);
+            if (err != CUP_OK) err = CUP_ERR_TRANSACTION;
+        }
         if (err == CUP_OK) err = package_transaction_recover(&transaction, &state);
         state_free(&state);
     } else if (kind == RUNTIME_JOURNAL_GENERATION) {

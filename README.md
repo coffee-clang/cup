@@ -1,18 +1,18 @@
-# CUP
+# `cup`
 
-CUP is a userspace C toolchain manager. It installs and manages prebuilt C
+`cup` is a userspace C toolchain manager. It installs and manages prebuilt C
 development tools without requiring administrator privileges or writing into
 system toolchain directories.
 
-A CUP installation can keep multiple tool versions side by side, select one
+A `cup` installation can keep multiple tool versions side by side, select one
 default per component and target, and expose the commands provided by those
 defaults through its own `bin` directory. Package production is intentionally
 separate: [`cup-components`](https://github.com/coffee-clang/cup-components)
-builds and publishes the tool packages that CUP verifies and consumes.
+builds and publishes the tool packages that `cup` verifies and consumes.
 
-## What CUP manages
+## What `cup` manages
 
-CUP currently has first-class component categories for compilers, debuggers,
+`cup` currently has first-class component categories for compilers, debuggers,
 linkers, formatters, linters, language servers and analyzers. The built-in domain
 contains GCC, Clang, GDB, LLDB, GNU `ld`, LLD, `clang-format`, `clang-tidy`,
 `clangd` and Valgrind; actual package availability depends on the host, target
@@ -20,7 +20,7 @@ and current catalog.
 
 The core model is deliberately small:
 
-- packages are prebuilt and installed below one user-managed CUP root;
+- packages are prebuilt and installed below one user-managed `cup` root;
 - multiple concrete versions can coexist;
 - `stable` is resolved from the catalog before a package is installed;
 - defaults decide which installed package provides a component's commands;
@@ -29,7 +29,7 @@ The core model is deliberately small:
 - package bytes, metadata and release assets are verified before they are committed;
 - interrupted mutations leave recovery information for `cup doctor` and `cup repair`.
 
-Supported CUP hosts are Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
+Supported `cup` hosts are Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
 Cross-target packages are supported when they are present in the catalog.
 
 ## Install
@@ -48,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/c
 
 The default root is `~/.cup` on Linux/macOS and `%USERPROFILE%\.cup` on
 Windows. The installer may offer to add its `bin` directory to the current
-user's PATH; CUP itself does not require or modify a system-wide PATH.
+user's PATH; `cup` itself does not require or modify a system-wide PATH.
 
 ## Quick start
 
@@ -70,7 +70,7 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 
 - [Getting started](docs/user/GETTING_STARTED.md) walks through a first installation;
 - [Concepts](docs/user/CONCEPTS.md) explains components, packages, defaults,
-  profiles, toolchains, host/target scopes and the CUP root;
+  profiles, toolchains, host/target scopes and the `cup` root;
 - [Installation](docs/user/INSTALLATION.md) covers installers, PATH, relocation,
   updates and uninstall;
 - [Commands](docs/user/COMMANDS.md) is the CLI reference;
@@ -80,8 +80,8 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 
 ## Project boundary
 
-CUP installs complete packages; it is not a source build system, system package
+`cup` installs complete packages; it is not a source build system, system package
 manager or global sysroot manager. Tool-specific build choices and native
-native validation belong to `cup-components`. CUP owns package selection, download
+native validation belong to `cup-components`. `cup` owns package selection, download
 and admission, local state, defaults, command wrappers, recovery and its own
 release lifecycle.

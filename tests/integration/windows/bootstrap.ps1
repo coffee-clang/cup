@@ -106,7 +106,7 @@ try {
     $source = Join-Path $Script:CupTestRoot "source"
     New-BootstrapSource -Path $source
     $result = Invoke-Bootstrap -Source $source -Base $Script:CupTestHome
-    Assert-Contains $result.Output "Verified CUP"
+    Assert-Contains $result.Output "Verified cup"
     Assert-Contains $result.Output "CUP_BOOTSTRAP_ROOT="
 
     $root = Join-Path $Script:CupTestHome ".cup"
@@ -152,7 +152,7 @@ try {
     $secondSource = Join-Path $Script:CupTestRoot "second-source"
     New-BootstrapSource -Path $secondSource
     $second = Invoke-Bootstrap -Source $secondSource -Base $Script:CupTestHome
-    Assert-Contains $second.Output "Verified CUP"
+    Assert-Contains $second.Output "Verified cup"
     Assert-PathMissing (Join-Path $root "transaction.txt")
     if (-not (Test-StagingEmpty -Path (Join-Path $root "staging"))) {
         Fail-Test "successful existing-root reinstall left staging residue"

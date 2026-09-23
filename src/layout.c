@@ -1,4 +1,4 @@
-/* Select and authenticate the CUP root, then construct all managed paths below its canonical
+/* Select and authenticate the cup root, then construct all managed paths below its canonical
  * leaf. Installed executables bind operations to their own root. */
 
 #include "layout.h"
@@ -453,9 +453,9 @@ static CupError select_root_for_base(const char *base, char *buffer, size_t size
         const char *legacy = primary_status == ROOT_CANDIDATE_LEGACY_035 ? primary : fallback;
 
         fprintf(stderr,
-                "Error: recognized CUP 0.3.5/layout-1 root at '%s' cannot be upgraded in "
+                "Error: recognized cup 0.3.5/layout-1 root at '%s' cannot be upgraded in "
                 "place. Back up any data you need, uninstall or remove the old managed root, "
-                "then run a fresh CUP 0.4 installer. The other root candidate was preserved "
+                "then run a fresh cup 0.4 installer. The other root candidate was preserved "
                 "and was not selected.\n",
                 legacy);
         return CUP_ERR_INCONSISTENT_STATE;
@@ -779,13 +779,13 @@ CupError layout_check_root_candidates(size_t *issue_count) {
         (*issue_count)++;
     }
     if (primary_status == ROOT_CANDIDATE_LEGACY_035) {
-        printf("Issue: recognized CUP 0.3.5/layout-1 root requires backup/uninstall and a "
-               "fresh CUP 0.4 install: '%s'.\n", primary);
+        printf("Issue: recognized cup 0.3.5/layout-1 root requires backup/uninstall and a "
+               "fresh cup 0.4 install: '%s'.\n", primary);
         (*issue_count)++;
     }
     if (fallback_status == ROOT_CANDIDATE_LEGACY_035) {
-        printf("Issue: recognized CUP 0.3.5/layout-1 root requires backup/uninstall and a "
-               "fresh CUP 0.4 install: '%s'.\n", fallback);
+        printf("Issue: recognized cup 0.3.5/layout-1 root requires backup/uninstall and a "
+               "fresh cup 0.4 install: '%s'.\n", fallback);
         (*issue_count)++;
     }
     if (primary_status == ROOT_CANDIDATE_INVALID_MARKER) {

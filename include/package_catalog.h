@@ -3,7 +3,7 @@
 
 /*
  * Concrete package availability loaded from catalog.cfg. Structurally valid future records may
- * be retained but are ignored by runtime queries until this CUP generation owns their contract.
+ * be retained but are ignored by runtime queries until this cup generation owns their contract.
  */
 
 #include <stddef.h>

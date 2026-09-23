@@ -1,4 +1,4 @@
-/* Exercises the CUP-generation trust, pinning and detached-handoff boundaries. */
+/* Exercises the cup-generation trust, pinning and detached-handoff boundaries. */
 
 #include "checksum.h"
 #include "command_context.h"

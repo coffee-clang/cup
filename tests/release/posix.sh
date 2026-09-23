@@ -239,7 +239,7 @@ update_output=$(
 )
 printf '%s\n' "$update_output"
 printf '%s\n' "$update_output" | \
-    grep -F "Verified CUP update handoff accepted for $next_version. The generation will be committed after this process exits." \
+    grep -F "Verified cup update handoff accepted for $next_version. The generation will be committed after this process exits." \
         >/dev/null
 
 attempt=0

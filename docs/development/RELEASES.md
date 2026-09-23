@@ -1,6 +1,6 @@
 # Releases
 
-A CUP release turns one qualified source commit into five native binaries and one
+A `cup` release turns one qualified source commit into five native binaries and one
 immutable flat public asset set. Release never rebuilds or edits a candidate
 after native candidate qualification; the tested bytes are the bytes considered
 for publication.
@@ -70,11 +70,11 @@ provenance.txt
 
 `catalog.cfg` is acquired from the already-published `cup-components` rolling
 release before native candidate qualification. The common release artifact pins
-those exact bytes for every platform candidate and for final assembly. CUP source
+those exact bytes for every platform candidate and for final assembly. `cup` source
 does not track a catalog copy, so a later rolling-catalog update cannot silently
 change a candidate already under qualification.
 
-Official install policy is compiled into CUP.
+Official install policy is compiled into `cup`.
 
 The installers are stamped with the exact release version/tag/commit. The common
 asset stage deliberately does **not** generate `release.txt`; at that point the
@@ -139,7 +139,7 @@ Release run that produced the candidate. It is authenticated by `release.txt`.
 ## Installed generation vs public release
 
 A public release contains installers, catalog seed, provenance and binaries for
-all platforms. One installed CUP generation retains only:
+all platforms. One installed `cup` generation retains only:
 
 ```text
 bin/cup[.exe]

@@ -1,6 +1,6 @@
 # Build
 
-This chapter describes the build contract for CUP: the supported native
+This chapter describes the build contract for `cup`: the supported native
 platforms, build configurations, pinned dependencies, generated identity and
 binary inspection rules. The repository `Makefile` is the normal entry point.
 
@@ -12,7 +12,7 @@ make help
 
 ## Native platforms
 
-CUP is built natively for five public platform identifiers:
+`cup` is built natively for five public platform identifiers:
 
 ```text
 linux-x64
@@ -36,7 +36,7 @@ run under MSYS2 on Windows.
 
 ## Build configurations
 
-CUP keeps each configuration in a separate build directory:
+`cup` keeps each configuration in a separate build directory:
 
 ```text
 build/<platform>/development/
@@ -112,14 +112,14 @@ using or deleting it and marks managed roots with `.cup-build-root`.
 The practical contract is:
 
 - the effective path must be an acceptable absolute managed path;
-- CUP's repository root and the user's home directory cannot become build
+- `cup`'s repository root and the user's home directory cannot become build
   cleanup targets;
 - existing managed roots must carry the expected marker;
 - destructive cleanup operates only on an owned build root.
 
 These rules prevent ordinary build/cleanup mistakes. They are repository tooling
 rules, not a duplicate of the stronger runtime filesystem-identity model used by
-CUP itself.
+`cup` itself.
 
 ## Local compiler additions
 
@@ -160,7 +160,7 @@ The application uses:
 - c-ares in the POSIX curl build;
 - OpenSSL as the POSIX TLS backend.
 
-Windows uses Schannel instead of OpenSSL for TLS. SHA-256 used by CUP is the
+Windows uses Schannel instead of OpenSSL for TLS. SHA-256 used by `cup` is the
 repository implementation in `src/third_party/sha256.c`, not OpenSSL.
 
 Unity and libevent are test dependencies: Unity is linked into unit tests and
@@ -204,7 +204,7 @@ directory. The normal builder still verifies their SHA-256 values.
 
 ### Prefix product contract
 
-The prefix verifier checks what CUP actually consumes rather than merely
+The prefix verifier checks what `cup` actually consumes rather than merely
 checking that upstream build commands returned success. Among the current
 contract properties:
 
@@ -369,7 +369,7 @@ make update-ca-bundle
 ```
 
 `docs-assets` refreshes the optional remote mdBook theme asset. Documentation
-publication is independent of the CUP release workflow.
+publication is independent of the `cup` release workflow.
 
 ## CI relationship
 

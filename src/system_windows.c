@@ -456,7 +456,7 @@ static CupError build_handoff_name(const char *root, wchar_t *name, size_t capac
     }
     written = _snwprintf(name,
                          capacity,
-                         L"Global\\CoffeeClang.CUP.Handoff.%016llx.%016llx.%016llx.%u",
+                         L"Global\\CoffeeClang.cup.Handoff.%016llx.%016llx.%016llx.%u",
                          (unsigned long long)identity.volume,
                          (unsigned long long)identity.object_high,
                          (unsigned long long)identity.object,
@@ -801,7 +801,7 @@ static CupError start_uninstall_cleanup_carrier(HANDLE helper_process,
 
     wait_handles[0] = ready_event;
     wait_handles[1] = carrier.hProcess;
-    /* PowerShell startup is external to CUP and can be delayed by host load. Keep the pre-handoff
+    /* PowerShell startup is external to cup and can be delayed by host load. Keep the pre-handoff
      * readiness wait bounded while allowing a cold carrier process to initialize. */
     wait_result = WaitForMultipleObjects((DWORD)(sizeof(wait_handles) / sizeof(wait_handles[0])),
                                          wait_handles,
@@ -896,7 +896,7 @@ static CupError start_handoff_helper(const char *helper,
         err = windows_utf8_to_wide(mode, wide_mode, sizeof(wide_mode) / sizeof(wide_mode[0]));
     }
     if (err == CUP_OK) {
-        /* Root arguments are CUP protocol data, not paths consumed by CreateProcessW. Preserve
+        /* Root arguments are cup protocol data, not paths consumed by CreateProcessW. Preserve
          * their normalized internal spelling so the helper can compare them to layout output. */
         err = windows_utf8_to_wide(root, wide_root, MAX_PATH_LEN);
     }

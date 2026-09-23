@@ -47,7 +47,7 @@ source_directory=$TMP_ROOT/source
 prepare_source "$source_directory"
 HOME="$TEST_HOME" "$CUP" --internal-bootstrap "$source_directory" "$TEST_HOME" \
     > "$TMP_ROOT/bootstrap.out"
-assert_contains "$(cat "$TMP_ROOT/bootstrap.out")" 'Verified CUP'
+assert_contains "$(cat "$TMP_ROOT/bootstrap.out")" 'Verified cup'
 assert_contains "$(cat "$TMP_ROOT/bootstrap.out")" 'CUP_BOOTSTRAP_ROOT='
 
 root=$TEST_HOME/.cup
@@ -84,7 +84,7 @@ second_source=$TMP_ROOT/second-source
 prepare_source "$second_source"
 HOME="$TEST_HOME" "$CUP" --internal-bootstrap "$second_source" "$TEST_HOME" \
     > "$TMP_ROOT/reinstall.out"
-assert_contains "$(cat "$TMP_ROOT/reinstall.out")" 'Verified CUP'
+assert_contains "$(cat "$TMP_ROOT/reinstall.out")" 'Verified cup'
 assert_missing "$root/transaction.txt"
 [ "$(find "$root/staging" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')" -eq 0 ] ||
     fail 'successful existing-root reinstall left staging residue'

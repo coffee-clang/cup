@@ -345,25 +345,25 @@ function Assert-ManifestAsset([string]$Name) {
 }
 
 function Get-CupCanonicalBase([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($Path)) { Fail 'CUP base directory is not available' }
+    if ([string]::IsNullOrWhiteSpace($Path)) { Fail 'cup base directory is not available' }
     $windowsPath = $Path.Replace('/', '\')
     if ($windowsPath.StartsWith('\\.\', [StringComparison]::Ordinal)) {
-        Fail 'CUP base contains an unsupported Windows device path'
+        Fail 'cup base contains an unsupported Windows device path'
     }
     $driveAbsolute = $windowsPath -match '^[A-Za-z]:\\'
     $uncAbsolute = $windowsPath.StartsWith('\\', [StringComparison]::Ordinal)
-    if (-not $driveAbsolute -and -not $uncAbsolute) { Fail 'CUP base must contain an absolute path' }
+    if (-not $driveAbsolute -and -not $uncAbsolute) { Fail 'cup base must contain an absolute path' }
     try {
         $absolute = [IO.Path]::GetFullPath($windowsPath)
         $item = Get-Item -LiteralPath $absolute -Force
-    } catch { Fail 'CUP base must name an existing directory' }
+    } catch { Fail 'cup base must name an existing directory' }
     if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        Fail 'CUP base must name an existing real directory'
+        Fail 'cup base must name an existing real directory'
     }
     $trimmed = $absolute.TrimEnd([char[]]'\/')
     $volume = [IO.Path]::GetPathRoot($absolute).TrimEnd([char[]]'\/')
     if ($trimmed.Equals($volume, [StringComparison]::OrdinalIgnoreCase)) {
-        Fail 'CUP base must be a directory below the volume root'
+        Fail 'cup base must be a directory below the volume root'
     }
     if ($trimmed.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
         $trimmed = '//' + $trimmed.Substring(8)
@@ -377,7 +377,7 @@ function Get-CupCanonicalBase([string]$Path) {
 
 function Invoke-NativeRootSelect([string]$Bootstrap, [string]$Base) {
     $output = @(& $Bootstrap --internal-select-root $Base 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { Fail "could not select a canonical CUP root below $Base" }
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { Fail "could not select a canonical cup root below $Base" }
     $root = $output[0]
     if (-not ($root.Equals("$Base/.cup", [StringComparison]::OrdinalIgnoreCase) -or
               $root.Equals("$Base/.coffee-cup", [StringComparison]::OrdinalIgnoreCase))) {
@@ -394,7 +394,7 @@ function Get-InstalledVersion([string]$Binary) {
     $output = @(& $Binary --version 2>$null)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1 -or
         -not $output[0].StartsWith('cup ', [StringComparison]::Ordinal)) {
-        Fail 'existing CUP version response is invalid'
+        Fail 'existing cup version response is invalid'
     }
     return $output[0].Substring(4)
 }
@@ -433,7 +433,7 @@ function Select-Installation([string]$Bootstrap) {
     $pathInstallation = Find-PathInstallation $Bootstrap
     if ($null -ne $pathInstallation -and [Environment]::UserInteractive) {
         $version = Get-InstalledVersion $pathInstallation.Binary
-        $answer = Read-Host "Found CUP $version at $($pathInstallation.Root). Use this installation? [Y/n]"
+        $answer = Read-Host "Found cup $version at $($pathInstallation.Root). Use this installation? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($answer) -or $answer -match '^(?i:y|yes)$') {
             $base = Get-CupCanonicalBase ([IO.Path]::GetDirectoryName($pathInstallation.Root.Replace('/', '\')))
             return [PSCustomObject]@{ Base = $base; Root = $pathInstallation.Root }
@@ -441,7 +441,7 @@ function Select-Installation([string]$Bootstrap) {
     }
     $baseInput = $env:USERPROFILE
     if ([Environment]::UserInteractive) {
-        $answer = Read-Host "Choose the parent/base directory for CUP [$baseInput]"
+        $answer = Read-Host "Choose the parent/base directory for cup [$baseInput]"
         if (-not [string]::IsNullOrWhiteSpace($answer)) { $baseInput = $answer }
     }
     $base = Get-CupCanonicalBase $baseInput
@@ -453,7 +453,7 @@ function Assert-NoImplicitDowngrade([string]$Bootstrap, [string]$Root) {
     $binary = Join-Path ($Root.Replace('/', '\')) 'bin\cup.exe'
     $existing = Get-InstalledVersion $binary
     if ((Compare-CupVersion $existing $ReleaseVersion) -gt 0) {
-        Fail "refusing to replace newer CUP $existing at $Root with older $ReleaseVersion; choose another base directory"
+        Fail "refusing to replace newer cup $existing at $Root with older $ReleaseVersion; choose another base directory"
     }
 }
 
@@ -498,7 +498,7 @@ function Offer-PathIntegration([string]$Root) {
     if (Test-PathContains $env:Path $bin) { return }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (Test-PathContains $userPath $bin) {
-        Write-Host "CUP is already in your User PATH. Open a new shell to use $bin."
+        Write-Host "cup is already in your User PATH. Open a new shell to use $bin."
         return
     }
     if ($env:CUP_INSTALL_NO_PATH_PROMPT -ceq '1' -or -not [Environment]::UserInteractive) { return }
@@ -509,7 +509,7 @@ function Offer-PathIntegration([string]$Root) {
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
     } catch {
         Write-Warning (
-            "Could not update your User PATH automatically. CUP remains installed at $bin. " +
+            "Could not update your User PATH automatically. cup remains installed at $bin. " +
             "Configure PATH manually to use cup from a new shell.")
         return
     }
@@ -533,14 +533,14 @@ try {
     $bootstrap = Join-Path $Work $binaryAsset
     $selection = Select-Installation $bootstrap
     $freshInstall = -not (Test-NativeRootProbe $bootstrap $selection.Root)
-    Write-Host "CUP will be installed in $($selection.Root)"
+    Write-Host "cup will be installed in $($selection.Root)"
     $bootstrapOutput = @(& $bootstrap --internal-bootstrap $Work $selection.Base)
     if ($LASTEXITCODE -ne 0) { Fail 'the verified cup bootstrap transaction was rejected' }
     $bootstrapRoot = Get-BootstrapRoot $bootstrapOutput $selection.Root
     $installed = Join-Path $bootstrapRoot 'bin\cup.exe'
     if (-not (Test-NativeRootProbe $bootstrap $selection.Root) -or
         -not [IO.File]::Exists($installed) -or (Get-InstalledVersion $installed) -cne $ReleaseVersion) {
-        Fail 'installed CUP generation did not validate after bootstrap'
+        Fail 'installed cup generation did not validate after bootstrap'
     }
 
     if ($freshInstall) {
@@ -550,13 +550,13 @@ try {
         } else {
             $transaction = Join-Path $bootstrapRoot 'transaction.txt'
             if ([IO.File]::Exists($transaction) -or [IO.Directory]::Exists($transaction)) {
-                Fail 'optional Coffee installation left an unresolved CUP transaction; run cup repair'
+                Fail 'optional Coffee installation left an unresolved cup transaction; run cup repair'
             }
             $coffeeState = @(& $installed list package-manager 2>$null)
             if ($LASTEXITCODE -eq 0 -and ($coffeeState -join "`n") -match 'package-manager:coffee@') {
                 Write-Warning 'Coffee was installed, but derived commands need repair; run cup repair.'
             } else {
-                Write-Warning 'Coffee was not installed; the CUP core installation is ready.'
+                Write-Warning 'Coffee was not installed; the cup core installation is ready.'
             }
         }
     }

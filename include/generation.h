@@ -1,7 +1,7 @@
 #ifndef CUP_GENERATION_H
 #define CUP_GENERATION_H
 
-/* One canonical installed CUP generation: manifest, legal assets and executable. */
+/* One canonical installed cup generation: manifest, legal assets and executable. */
 
 #include <stddef.h>
 

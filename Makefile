@@ -767,7 +767,7 @@ $(VERSION_STAMP): FORCE VERSION scripts/version.sh scripts/lib/path-safety.sh \
 			'$(BUILD_ROOT)/.version-generate.XXXXXX' 'version generation directory') || exit 1; \
 		cleanup() { cup_path_remove_child_tree '$(BUILD_ROOT)' "$$staging" \
 			'version generation directory' >/dev/null 2>&1 || true; }; \
-		trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		trap cleanup 0; trap 'exit 129' 1; trap 'exit 130' 2; trap 'exit 143' 15; \
 		CUP_BUILD_ROOT='$(BUILD_ROOT)' CUP_OFFICIAL_BUILD='$(VERSION_OFFICIAL_BUILD)' \
 		CUP_BUILD_CONFIGURATION='$(CONFIGURATION)' \
 		CUP_RELEASE_VERSION='$(CUP_RELEASE_VERSION)' \
@@ -779,7 +779,7 @@ $(VERSION_STAMP): FORCE VERSION scripts/version.sh scripts/lib/path-safety.sh \
 		done; \
 		cup_path_copy_file "$$staging/version.h" '$(abspath $(VERSION_HEADER))' 0644 if-different || exit 1; \
 		cup_path_copy_file "$$staging/version.rc" '$(abspath $(VERSION_RESOURCE))' 0644 if-different || exit 1; \
-		cleanup; trap - EXIT HUP INT TERM
+		cleanup; trap - 0 1 2 15
 	@. '$(PATH_SAFETY)'; : | cup_path_write_file '$(abspath $@)' 0644 replace
 
 $(VERSION_HEADER) $(VERSION_RESOURCE): $(VERSION_STAMP)
@@ -799,7 +799,7 @@ $(CA_BUNDLE_STAMP): certs/cacert.pem certs/cacert.meta \
 			'$(BUILD_ROOT)/.ca-generate.XXXXXX' 'CA generation directory') || exit 1; \
 		cleanup() { cup_path_remove_child_tree '$(BUILD_ROOT)' "$$staging" \
 			'CA generation directory' >/dev/null 2>&1 || true; }; \
-		trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		trap cleanup 0; trap 'exit 129' 1; trap 'exit 130' 2; trap 'exit 143' 15; \
 		CUP_BUILD_ROOT='$(BUILD_ROOT)' \
 			./scripts/certs/generate-ca-bundle.sh certs/cacert.pem "$$staging" || exit 1; \
 		for file in ca_bundle.h ca_bundle.c; do \
@@ -807,7 +807,7 @@ $(CA_BUNDLE_STAMP): certs/cacert.pem certs/cacert.meta \
 		done; \
 		cup_path_copy_file "$$staging/ca_bundle.h" '$(abspath $(CA_BUNDLE_HEADER))' 0644 if-different || exit 1; \
 		cup_path_copy_file "$$staging/ca_bundle.c" '$(abspath $(CA_BUNDLE_SOURCE))' 0644 if-different || exit 1; \
-		cleanup; trap - EXIT HUP INT TERM
+		cleanup; trap - 0 1 2 15
 	@. '$(PATH_SAFETY)'; : | cup_path_write_file '$(abspath $@)' 0644 replace
 
 $(CA_BUNDLE_HEADER) $(CA_BUNDLE_SOURCE): $(CA_BUNDLE_STAMP)

@@ -43,7 +43,7 @@ static inline CupError windows_utf8_to_wide(const char *input,
     return written == 0 ? windows_text_conversion_error() : CUP_OK;
 }
 
-/* Normalize one CUP filesystem path and resolve it to an ordinary absolute Windows name. */
+/* Normalize one cup filesystem path and resolve it to an ordinary absolute Windows name. */
 static inline CupError windows_utf8_to_wide_absolute_path(const char *input,
                                                            wchar_t *output,
                                                            size_t output_count) {
@@ -129,7 +129,7 @@ static inline CupError windows_utf8_to_wide_path(const char *input,
 }
 
 /* Convert a filesystem operand to an ordinary absolute Windows path. Protocol arguments must
- * keep CUP's normalized spelling across argv and must not use this conversion. */
+ * keep cup's normalized spelling across argv and must not use this conversion. */
 static inline CupError windows_utf8_to_wide_process_path(const char *input,
                                                           wchar_t *output,
                                                           size_t output_count) {

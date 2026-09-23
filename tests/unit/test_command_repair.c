@@ -166,7 +166,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     *kind=SYSTEM_PATH_REGULAR_FILE; return CUP_OK;
 }
 CupError system_get_path_identity(const char *path,SystemPathIdentity *id){ (void)path; memset(id,0,sizeof(*id)); id->valid=1; id->kind=SYSTEM_PATH_REGULAR_FILE; return CUP_OK; }
-CupError system_lock_acquire(SystemLock *lock,const char *path,SystemLockMode mode){ (void)path;(void)mode; event('L'); if(lock_acquire_result==CUP_OK) lock->active=1; return lock_acquire_result; }
+CupError system_lock_acquire(SystemLock *lock,const char *path,SystemLockMode mode){ (void)path; event('L'); if(lock_acquire_result==CUP_OK){ lock->mode=mode; lock->active=1; } return lock_acquire_result; }
 void system_lock_release(SystemLock *lock){ event('l'); lock->active=0; lock_release_calls++; }
 CupError filesystem_backup_invalid(const char *p,char *out,size_t s){ (void)p; event('B'); backup_calls++; snprintf(out,s,"/recovery/invalid"); return CUP_OK; }
 CupError filesystem_backup_invalid_if_identity(const char *p,const SystemPathIdentity *id,char *out,size_t s){ (void)p;(void)id; return filesystem_backup_invalid(p,out,s); }

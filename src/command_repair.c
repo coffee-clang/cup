@@ -1,6 +1,6 @@
 /*
  * Reconciles interrupted operations, packages, state and derived runtime views before
- * repairing the installed CUP generation and live catalog.
+ * repairing the installed cup generation and live catalog.
  */
 
 #include "commands.h"
@@ -234,7 +234,7 @@ static CupError repair_generation(ReleaseMetadata *trusted, int *trusted_valid) 
     if (!generation_has_installed_assets(&inspection)) {
 #if CUP_VERSION_OFFICIAL
         fprintf(stderr,
-                "Error: the installed CUP generation is missing. Run the official installer.\n");
+                "Error: the installed cup generation is missing. Run the official installer.\n");
         return CUP_ERR_NOT_INSTALLED;
 #else
         return CUP_OK;
@@ -371,7 +371,7 @@ static CupError repair_catalog(const ReleaseMetadata *trusted, int trusted_valid
         }
         if (err == CUP_OK) err = commit_asset(staged, path, "catalog");
         if (err != CUP_OK && staged[0] != '\0') system_remove_file(staged);
-        if (err == CUP_OK) printf("Restored package catalog from the same CUP release.\n");
+        if (err == CUP_OK) printf("Restored package catalog from the same cup release.\n");
         return err;
     }
 #endif

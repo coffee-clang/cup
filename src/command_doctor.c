@@ -105,10 +105,10 @@ static void check_generation_and_catalog(PackageCatalog *catalog,
         }
     } else {
 #if CUP_VERSION_OFFICIAL
-        printf("Issue: installed CUP generation is missing.\n");
+        printf("Issue: installed cup generation is missing.\n");
         report->issue_count++;
 #else
-        printf("OK: development runtime has no managed official CUP generation.\n");
+        printf("OK: development runtime has no managed official cup generation.\n");
 #endif
     }
 
@@ -283,10 +283,10 @@ static void print_path_hint(const DoctorReport *report) {
     if (path_hint_has_entry_separator(directory)) {
 #if defined(_WIN32)
         printf("This cup command directory contains ';' and cannot be represented as one "
-               "PATH entry. Use the full path to cup.exe or relocate the CUP root.\n");
+               "PATH entry. Use the full path to cup.exe or relocate the cup root.\n");
 #else
         printf("This cup command directory contains ':' and cannot be represented as one "
-               "PATH entry. Use the full path to cup or relocate the CUP root.\n");
+               "PATH entry. Use the full path to cup or relocate the cup root.\n");
 #endif
         return;
     }
@@ -501,9 +501,9 @@ static void check_transaction_journal(DoctorReport *report) {
     } else if (journal_kind == RUNTIME_JOURNAL_GENERATION) {
         err = update_journal_load(&update_journal, &update_status);
         if (err != CUP_OK || update_status != CUP_UPDATE_JOURNAL_LOADED) {
-            printf("Issue: CUP generation transaction journal is invalid.\n");
+            printf("Issue: cup generation transaction journal is invalid.\n");
         } else {
-            printf("Issue: interrupted CUP generation transaction detected in workspace '%s'.\n",
+            printf("Issue: interrupted cup generation transaction detected in workspace '%s'.\n",
                    update_journal.temporary_name);
         }
         report->issue_count++;
@@ -626,7 +626,7 @@ static void check_path_integration(DoctorReport *report) {
     }
     path_value = getenv("PATH");
     if (!path_contains_directory(path_value, bin_dir)) {
-        printf("Warning: current CUP command directory is not in PATH: '%s'.\n", bin_dir);
+        printf("Warning: current cup command directory is not in PATH: '%s'.\n", bin_dir);
         report->warning_count++;
         if (text_copy(report->path_directory, sizeof(report->path_directory), bin_dir) == CUP_OK) {
             report->path_hint = 1;

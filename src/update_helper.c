@@ -1,4 +1,4 @@
-/* Runs the verified native helper used to complete a CUP generation update after parent exit. */
+/* Runs the verified native helper used to complete a cup generation update after parent exit. */
 
 #include "update_helper.h"
 

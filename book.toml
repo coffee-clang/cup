@@ -1,5 +1,5 @@
 [book]
-title = "CUP"
+title = "cup"
 description = "The userspace C toolchain manager"
 authors = ["Gianluca Della Vedova"]
 language = "en"

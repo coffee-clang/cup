@@ -1,6 +1,6 @@
 # Transactions and recovery
 
-CUP journals only persistent mutations whose commit evidence must survive a
+`cup` journals only persistent mutations whose commit evidence must survive a
 process exit. A journal is not an event log and does not record cosmetic phases
 unless the lifecycle genuinely needs them.
 
@@ -115,8 +115,8 @@ a complete private sibling under the selected base, for example:
 ```
 
 That private root receives an authenticated root marker, runtime directories,
-empty state, the release-pinned catalog snapshot and the complete CUP generation.
-Immediately before publication CUP rechecks root selection. The same originally selected
+empty state, the release-pinned catalog snapshot and the complete `cup` generation.
+Immediately before publication `cup` rechecks root selection. The same originally selected
 final path must still be absent.
 
 Publication is one no-clobber directory move into `.cup` or the selected
@@ -126,7 +126,7 @@ state; there is no half-published managed root to recover.
 ## Existing-root generation replacement
 
 Reinstall and self-update preserve packages, state, preferences, cache and a
-valid live catalog. Only the CUP generation changes.
+valid live catalog. Only the `cup` generation changes.
 
 The minimal generation journal is:
 
@@ -177,7 +177,7 @@ whose claims could disagree with the filesystem.
 ## `cup update cup`
 
 Self-update is available only to an official managed generation. Before creating
-helper or journal state, the running canonical CUP binary must hash-match the
+helper or journal state, the running canonical `cup` binary must hash-match the
 entry in the current valid installed `release.txt`. A missing/corrupt manifest or
 binary mismatch stops before generation mutation.
 
@@ -276,7 +276,7 @@ commit into a false pre-commit error and blindly restore old state.
 | `runtime_journal.c` | shared `transaction.txt` transport/detection |
 | `package_transaction.c` | install/remove journal and package recovery |
 | `catalog_refresh.c` | lock-free-network catalog CAS lifecycle |
-| `update_journal.c` | CUP-generation workspace, commit and recovery |
+| `update_journal.c` | `cup`-generation workspace, commit and recovery |
 | `update_helper.c` | detached self-update handoff/commit |
 | `uninstall_journal.c` | uninstall phase journal |
 | `uninstall_helper.c` | root detach and cleanup |

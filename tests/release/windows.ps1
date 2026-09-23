@@ -139,7 +139,7 @@ function Get-ExpectedPublicAssets {
     )
 }
 
-# Verify that the candidate directory contains exactly the published CUP 0.4 asset set.
+# Verify that the candidate directory contains exactly the published cup 0.4 asset set.
 function Assert-ExactCandidateFiles {
     $expected = @(Get-ExpectedPublicAssets)
     $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
@@ -535,10 +535,10 @@ try {
     $relocatedCup = Join-Path $relocatedRoot 'bin\cup.exe'
     $relocatedVersion = & $relocatedCup --version
     if ($LASTEXITCODE -ne 0 -or $relocatedVersion -cne "cup $Version") {
-        throw 'Relocated Windows CUP did not derive its moved root from the executable'
+        throw 'Relocated Windows cup did not derive its moved root from the executable'
     }
     if (Test-Path -LiteralPath $customRoot) {
-        throw 'Relocation left the old custom CUP root behind'
+        throw 'Relocation left the old custom cup root behind'
     }
     $env:CUP_INSTALL_BASE_DIR = $relocatedBase
     $customReinstall = Invoke-PowerShellScript `
@@ -548,7 +548,7 @@ try {
         throw "Relocated Windows reinstall failed`n$($customReinstall.Output -join [Environment]::NewLine)"
     }
     if (Test-Path -LiteralPath $customRoot) {
-        throw 'Relocated reinstall recreated the old custom CUP root'
+        throw 'Relocated reinstall recreated the old custom cup root'
     }
     $savedRelocatedPath = $env:Path
     try {
@@ -833,7 +833,7 @@ try {
     }
     $updateText = $updateOutput -join "`n"
     if ($updateText -notlike (
-            "*Verified CUP update handoff accepted for $nextVersion. " +
+            "*Verified cup update handoff accepted for $nextVersion. " +
             "The generation will be committed after this process exits.*")) {
         throw "cup update cup did not report the accepted update handoff`n$updateText"
     }

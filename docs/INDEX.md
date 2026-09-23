@@ -1,16 +1,16 @@
-# CUP documentation
+# `cup` documentation
 
-CUP is a userspace manager for prebuilt C development tools. This manual is
+`cup` is a userspace manager for prebuilt C development tools. This manual is
 organized around what a reader needs to understand rather than around the order
 of files in the repository.
 
-If you are new to CUP, read **Getting started** and **Concepts** first. The design
+If you are new to `cup`, read **Getting started** and **Concepts** first. The design
 pages document the persistent formats and internal contracts; the development
 pages describe how this repository is built, tested and released.
 
-## Use CUP
+## Use `cup`
 
-- [Getting started](user/GETTING_STARTED.md) — install CUP and complete the first
+- [Getting started](user/GETTING_STARTED.md) — install `cup` and complete the first
   package/default workflow.
 - [Concepts](user/CONCEPTS.md) — components, tools, packages, host/target scopes,
   versions, preferences, defaults, profiles, toolchains and wrappers.
@@ -40,7 +40,7 @@ The design pages describe contracts that matter across modules. Function-level
 implementation details stay in the source unless they are required to explain a
 persistent format, platform boundary or recovery rule.
 
-## Develop CUP
+## Develop `cup`
 
 - [Build](development/BUILD.md) — configurations, native toolchains, pinned
   dependencies, linking policy and public Make targets.
@@ -51,7 +51,7 @@ persistent format, platform boundary or recovery rule.
 
 ## Scope
 
-CUP intentionally does not require privilege elevation, build component tools
+`cup` intentionally does not require privilege elevation, build component tools
 from source during `cup install`, maintain a system-wide package database, manage
 a global sysroot or rewrite the system PATH. Package availability is limited to
 the built-in component/tool domain and the installed catalog. `stable` is the

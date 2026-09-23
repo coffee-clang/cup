@@ -322,7 +322,7 @@ static CupError reject_healthy_downgrade(const BootstrapSource *source) {
     if (err == CUP_OK) err = release_version_parse(source->metadata.version, &target_version);
     if (err == CUP_OK && release_version_compare(&current_version, &target_version) > 0) {
         fprintf(stderr,
-                "Error: installed CUP %s is newer than installer target %s; downgrade refused.\n",
+                "Error: installed cup %s is newer than installer target %s; downgrade refused.\n",
                 current.version,
                 source->metadata.version);
         err = CUP_ERR_VALIDATION;
@@ -421,7 +421,7 @@ static CupError replace_existing_generation(const BootstrapSource *source,
         err = runtime_recover_pending(&lock, NULL);
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Error: existing CUP root has an interrupted operation that could not be recovered safely.\n");
+                    "Error: existing cup root has an interrupted operation that could not be recovered safely.\n");
         }
     }
     if (err == CUP_OK) err = reject_healthy_downgrade(source);
@@ -493,9 +493,9 @@ CupError bootstrap_start(const char *source_directory,
 
     if (err == CUP_OK) {
         printf("CUP_BOOTSTRAP_ROOT=%s\n", published_root);
-        printf("Verified CUP %s generation installed.\n", source.metadata.version);
+        printf("Verified cup %s generation installed.\n", source.metadata.version);
     } else {
-        fprintf(stderr, "Error: verified CUP generation could not be installed safely.\n");
+        fprintf(stderr, "Error: verified cup generation could not be installed safely.\n");
     }
     bootstrap_source_free(&source);
     return err;

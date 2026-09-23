@@ -1,6 +1,6 @@
 # Platforms
 
-CUP exposes one product model across Linux, macOS and Windows. Platform-specific
+`cup` exposes one product model across Linux, macOS and Windows. Platform-specific
 code exists only where filesystem, process, executable or toolchain semantics
 actually differ.
 
@@ -14,7 +14,7 @@ macos-arm64
 windows-x64
 ```
 
-The identifier is a closed `<os>-<arch>` value from the compiled registry. CUP
+The identifier is a closed `<os>-<arch>` value from the compiled registry. `cup`
 does not derive support by freely combining known operating systems and
 architectures; for example, `windows-arm64` is not currently supported.
 
@@ -36,7 +36,7 @@ linux-x64 -> windows-x64    Windows cross-target tool running on Linux
 
 Target defaults to host. The root marker authenticates the host once; package paths,
 state, preferences and defaults persist the target without duplicating that host field.
-In-memory package identities recover the host from the selected root, and one running CUP
+In-memory package identities recover the host from the selected root, and one running `cup`
 instance manages only packages for that authenticated host.
 
 ## User root and executable names
@@ -49,7 +49,7 @@ Windows  %USERPROFILE%\.cup
 ```
 
 A custom installer base still uses `.cup`, or `.coffee-cup` when the primary leaf
-is foreign. Once installed, CUP derives the active root from its real executable
+is foreign. Once installed, `cup` derives the active root from its real executable
 and validates `root.txt`.
 
 Native executable/helper names are:
@@ -90,7 +90,7 @@ separate lifetime process on POSIX.
 ### Windows
 
 The Windows backend uses wide-character native APIs and long-path forms where
-required. CUP keeps normalized internal path spelling at its protocol boundary;
+required. `cup` keeps normalized internal path spelling at its protocol boundary;
 paths are converted to ordinary native forms only for Windows APIs/process launch
 operands that require them.
 
@@ -104,10 +104,10 @@ That compile value is not, by itself, a promise about the oldest qualified
 Windows feature release.
 
 A mapped Windows `.exe` cannot be treated like a POSIX executable pathname during
-uninstall. CUP therefore binds `DELETE_ON_CLOSE` to the exact temporary helper
+uninstall. `cup` therefore binds `DELETE_ON_CLOSE` to the exact temporary helper
 before handoff. A built-in Windows PowerShell process, resolved from the system
 directory, acts only as the lifetime carrier for that cleanup handle until the
-helper process terminates. It receives no CUP root, token, journal or mutation
+helper process terminates. It receives no `cup` root, token, journal or mutation
 authority.
 
 ## Path and object rules
@@ -128,7 +128,7 @@ Package payload path rules are documented in [Packages](PACKAGES.md).
 
 ### POSIX permissions
 
-CUP creates private runtime/staging data below the user root. Installed package
+`cup` creates private runtime/staging data below the user root. Installed package
 directories are normalized to `0755`; regular payload files use `0755` when
 executable and `0644` otherwise. Declared package entries must pass the executable
 check before admission.
@@ -138,7 +138,7 @@ check before admission.
 Windows security is not modeled through POSIX mode bits. Managed private
 directories use a protected DACL owned by the current user; access is limited to
 the current user, Local System and the local Administrators group and is inherited
-by managed descendants. CUP verifies that privacy contract together with object
+by managed descendants. `cup` verifies that privacy contract together with object
 type, reparse state and native identity. Repository/MSYS test fixtures may still
 use mode-like expectations where Git/shell transport needs them.
 
@@ -164,7 +164,7 @@ The transaction-level behavior is documented in
 ## Atomic publication and durability
 
 Both native backends expose create-without-replace, identity-bound replacement
-and identity-bound removal where CUP needs them. The runtime does not implement
+and identity-bound removal where `cup` needs them. The runtime does not implement
 no-replace as an unsafe “check then rename” sequence.
 
 Mutation results distinguish:
@@ -176,12 +176,12 @@ durable
 ```
 
 POSIX can use file/directory `fsync` at the required boundaries. Some Windows
-filesystems reject directory `FlushFileBuffers`; CUP reports the strongest state
+filesystems reject directory `FlushFileBuffers`; `cup` reports the strongest state
 it can prove instead of pretending to have POSIX-equivalent durability.
 
 ## Native detached helpers
 
-Both `cup update cup` and `cup uninstall` continue through a copied native CUP
+Both `cup update cup` and `cup uninstall` continue through a copied native `cup`
 executable after the initiating process exits. Parent lifetime is observed
 through inherited OS objects, not PID polling. Detached helpers do not retain the
 caller's standard streams.
@@ -211,7 +211,7 @@ evidence; a compile flag alone is not compatibility proof.
 
 ## Linux static runtime
 
-Official Linux releases contain no ELF interpreter or `DT_NEEDED` entries. CUP's
+Official Linux releases contain no ELF interpreter or `DT_NEEDED` entries. `cup`'s
 third-party graph and glibc runtime are linked into the executable. glibc
 resolver/NSS behavior can still rely on compatible host facilities, so the
 portability suite tests DNS, TLS, direct HTTPS and CONNECT proxy behavior rather
@@ -220,7 +220,7 @@ than claiming libc independence.
 ## Public installer portability
 
 The POSIX installer targets `/bin/sh` and a deliberately small command set. It
-must work before CUP or a compiler is available. The Windows installer uses
+must work before `cup` or a compiler is available. The Windows installer uses
 Windows PowerShell-compatible syntax.
 
 Build/test/release scripts have a broader contract because CI prepares their
@@ -245,7 +245,7 @@ metadata and Linux static-runtime behavior.
 ## Current platform limits
 
 - Windows ARM64 is not supported.
-- CUP does not install tool/runtime files outside its managed root.
+- `cup` does not install tool/runtime files outside its managed root.
 - PATH integration is optional and user-level only.
 - Windows directory durability can be weaker to prove on filesystems that reject
   directory flushes.

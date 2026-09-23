@@ -1,4 +1,4 @@
-/* Exercises the minimal CUP-generation journal and byte-evidence recovery protocol. */
+/* Exercises the minimal cup-generation journal and byte-evidence recovery protocol. */
 
 #include "checksum.h"
 #include "constants.h"
