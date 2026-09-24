@@ -350,11 +350,14 @@ static CupError preserve_invalid_install(const PackageIdentity *package,
         return err != CUP_OK ? err : CUP_ERR_TRANSACTION;
     }
     err = layout_create_recovery_dir(recovery_dir, sizeof(recovery_dir), package);
-    if (err == CUP_OK) err = path_join(recovery_path, sizeof(recovery_path), recovery_dir, "package");
-    if (err == CUP_OK) {
-        err = system_move_path_if_identity(
-            install_path, recovery_path, &identity, &commit_state);
+    if (err != CUP_OK) return err;
+
+    err = path_join(recovery_path, sizeof(recovery_path), recovery_dir, "package");
+    if (err != CUP_OK) {
+        return filesystem_remove_tree(recovery_dir) == CUP_OK ? err : CUP_ERR_ROLLBACK;
     }
+
+    err = system_move_path_if_identity(install_path, recovery_path, &identity, &commit_state);
     if (err != CUP_OK) {
         if (commit_state == SYSTEM_COMMIT_NOT_APPLIED) {
             CupError cleanup = filesystem_remove_tree(recovery_dir);

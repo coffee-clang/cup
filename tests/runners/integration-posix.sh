@@ -39,7 +39,12 @@ found=0
 for script in "$ROOT"/tests/integration/posix/*.sh; do
     [ -f "$script" ] || continue
     found=1
-    run_suite "$script"
+    if run_suite "$script"; then
+        :
+    else
+        status=$?
+        exit "$status"
+    fi
 done
 [ "$found" -eq 1 ] || {
     printf 'No POSIX integration suites were found.\n' >&2

@@ -33,6 +33,7 @@ static CupError package_validation_result;
 static int clear_calls;
 static int backup_calls;
 static int remove_tree_calls;
+static PackageIdentity installed_entry;
 
 static CupError clear_runtime_journal(void) {
     char journal[MAX_PATH_LEN];
@@ -432,19 +433,15 @@ static void write_journal(const char *content) {
 }
 
 static void set_installed(CupState *state) {
-    PackageIdentity *entry;
-
-    state->installed = calloc(1, sizeof(*state->installed));
-    TEST_ASSERT_NOT_NULL(state->installed);
+    memset(&installed_entry, 0, sizeof(installed_entry));
+    state->installed = &installed_entry;
     state->installed_capacity = 1;
     state->installed_count = 1;
-    entry = &state->installed[0];
-    memset(entry, 0, sizeof(*entry));
-    strcpy(entry->component, "compiler");
-    strcpy(entry->tool, "clang");
-    strcpy(entry->host_platform, "linux-x64");
-    strcpy(entry->target_platform, "linux-x64");
-    strcpy(entry->version, "22.1.5");
+    strcpy(installed_entry.component, "compiler");
+    strcpy(installed_entry.tool, "clang");
+    strcpy(installed_entry.host_platform, "linux-x64");
+    strcpy(installed_entry.target_platform, "linux-x64");
+    strcpy(installed_entry.version, "22.1.5");
 }
 
 static void test_init_and_names(void) {

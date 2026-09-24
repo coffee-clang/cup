@@ -6,6 +6,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#define TEST_HOST_PLATFORM "test-host"
+#if defined(_WIN32)
+#define TEST_BINARY_ASSET "cup-test-host.exe"
+#define TEST_BINARY_PATH "/root/bin/cup.exe"
+#else
+#define TEST_BINARY_ASSET "cup-test-host"
+#define TEST_BINARY_PATH "/root/bin/cup"
+#endif
+
 static ReleaseAsset assets[3];
 static SystemPathKind release_kind;
 static SystemPathKind license_kind;
@@ -26,7 +35,7 @@ static void fill_asset(size_t i, const char *name, char digit) {
 void setUp(void) {
     fill_asset(0, "LICENSE", 'a');
     fill_asset(1, "THIRD_PARTY_NOTICES.txt", 'b');
-    fill_asset(2, "cup-linux-x64", 'c');
+    fill_asset(2, TEST_BINARY_ASSET, 'c');
     release_kind = SYSTEM_PATH_REGULAR_FILE;
     license_kind = SYSTEM_PATH_REGULAR_FILE;
     notices_kind = SYSTEM_PATH_REGULAR_FILE;
@@ -39,15 +48,15 @@ void setUp(void) {
 void tearDown(void) {}
 
 CupError platform_get_host(char *buffer, size_t size) {
-    if (size < sizeof("linux-x64")) return CUP_ERR_BUFFER_TOO_SMALL;
-    strcpy(buffer, "linux-x64");
+    if (size < sizeof(TEST_HOST_PLATFORM)) return CUP_ERR_BUFFER_TOO_SMALL;
+    strcpy(buffer, TEST_HOST_PLATFORM);
     return CUP_OK;
 }
 CupError layout_get_root(char *buffer, size_t size) {
     return snprintf(buffer, size, "/root") < (int)size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
 }
 CupError layout_get_binary_path(char *buffer, size_t size) {
-    return snprintf(buffer, size, "/root/bin/cup") < (int)size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
+    return snprintf(buffer, size, "%s", TEST_BINARY_PATH) < (int)size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
 }
 const ReleaseAsset *release_metadata_find_asset(const ReleaseMetadata *metadata, const char *name) {
     size_t i;
@@ -76,7 +85,7 @@ CupError system_get_path_kind(const char *path, SystemPathKind *kind) {
     if (strcmp(path, "/root/release.txt") == 0) *kind = release_kind;
     else if (strcmp(path, "/root/LICENSE") == 0) *kind = license_kind;
     else if (strcmp(path, "/root/THIRD_PARTY_NOTICES.txt") == 0) *kind = notices_kind;
-    else if (strcmp(path, "/root/bin/cup") == 0) *kind = binary_kind;
+    else if (strcmp(path, TEST_BINARY_PATH) == 0) *kind = binary_kind;
     else return CUP_ERR_FILESYSTEM;
     return CUP_OK;
 }
@@ -85,7 +94,7 @@ CupError checksum_sha256_file(const char *path, char *digest, size_t size) {
     if (size < 65) return CUP_ERR_BUFFER_TOO_SMALL;
     if (strcmp(path, "/root/LICENSE") == 0) digit = 'a';
     else if (strcmp(path, "/root/THIRD_PARTY_NOTICES.txt") == 0) digit = 'b';
-    else if (strcmp(path, "/root/bin/cup") == 0) digit = 'c';
+    else if (strcmp(path, TEST_BINARY_PATH) == 0) digit = 'c';
     else return CUP_ERR_FILESYSTEM;
     if (digest_mismatch_path != NULL && strcmp(path, digest_mismatch_path) == 0) digit = 'f';
     memset(digest, digit, 64);
@@ -106,8 +115,8 @@ static void test_asset_specs(void) {
     TEST_ASSERT_EQUAL_STRING("LICENSE", specs[1].release_name);
     TEST_ASSERT_EQUAL_STRING("/root/LICENSE", specs[1].destination);
     TEST_ASSERT_EQUAL_STRING("THIRD_PARTY_NOTICES.txt", specs[2].release_name);
-    TEST_ASSERT_EQUAL_STRING("cup-linux-x64", specs[3].release_name);
-    TEST_ASSERT_EQUAL_STRING("/root/bin/cup", specs[3].destination);
+    TEST_ASSERT_EQUAL_STRING(TEST_BINARY_ASSET, specs[3].release_name);
+    TEST_ASSERT_EQUAL_STRING(TEST_BINARY_PATH, specs[3].destination);
     TEST_ASSERT_TRUE(specs[3].executable);
 }
 
