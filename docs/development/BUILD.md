@@ -379,7 +379,8 @@ The GitHub workflows use the same Make targets and dependency-prefix contract:
 - `tests.yml` owns repository quality, native source tests, coverage and
   sanitizers;
 - `debug.yml` packages native debug builds and symbols;
-- `release.yml` builds and tests official release candidates;
+- `release.yml` builds native release contributions and tests the complete
+  assembled candidate on every supported platform;
 - `static.yml` builds the documentation site.
 
 The release workflow does not redefine the build model. It supplies official

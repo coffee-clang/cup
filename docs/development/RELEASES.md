@@ -247,9 +247,10 @@ version into different bytes.
 - **Dependencies** builds/validates pinned native dependency prefixes.
 - **Tests** owns repository quality, native source tests, coverage, sanitizers and
   source-tested build identity.
-- **Release** selects one Tests attempt, builds common assets and five official
-  candidates, runs native candidate tests, assembles the final manifest and
-  publishes only after the complete matrix succeeds.
+- **Release** selects one Tests attempt, builds common assets and five native
+  platform contributions, then assembles the complete candidate from those exact
+  inputs on each native runner. Publication starts only after the complete
+  candidate passes all five native release-test jobs.
 - **Docs** publishes documentation independently and does not authorize an
   application release.
 
@@ -264,9 +265,10 @@ others, while publication still requires the complete successful generation.
 2. review and commit/push source on main
 3. obtain a successful Tests attempt for that exact commit
 4. dispatch Release for that commit
-5. build and natively test all five official candidates
-6. assemble the exact public set and release.txt
-7. publish the verified immutable generation
+5. build all five native platform contributions
+6. assemble the exact public set and release.txt on each native test runner
+7. natively test that complete candidate on all five platforms
+8. publish the same verified contribution set as the immutable generation
 ```
 
 Any release-relevant source change requires new source qualification. Candidate

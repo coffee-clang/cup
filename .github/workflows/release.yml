@@ -120,7 +120,7 @@ jobs:
           overwrite: true
 
   candidate:
-    name: Build and test candidate (${{ matrix.platform }})
+    name: Build candidate contribution (${{ matrix.platform }})
     needs:
       - metadata
       - common
@@ -249,7 +249,7 @@ jobs:
           name: cup-release-common
           path: ${{ runner.temp }}/cup-release-inputs/common
 
-      - name: Verify and build POSIX candidate
+      - name: Verify and build POSIX contribution
         if: matrix.family != 'windows'
         env:
           CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
@@ -268,7 +268,7 @@ jobs:
             build/finalized/${{ matrix.platform }}/release/build-config.txt \
             '${{ matrix.platform }}'
 
-      - name: Verify and build Windows candidate
+      - name: Verify and build Windows contribution
         if: matrix.family == 'windows'
         shell: msys2 {0}
         env:
@@ -287,45 +287,6 @@ jobs:
             "$inputs/source/windows-x64/build-config.txt" \
             build/finalized/windows-x64/release/build-config.txt windows-x64
 
-      - name: Assemble and test POSIX candidate
-        if: matrix.family != 'windows'
-        env:
-          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
-          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          TAG: ${{ needs.metadata.outputs.tag }}
-          SHA: ${{ needs.metadata.outputs.sha }}
-        run: |
-          set -euo pipefail
-          inputs="$RUNNER_TEMP/cup-release-inputs"
-          candidate="$RUNNER_TEMP/cup-release-${{ matrix.platform }}"
-          scripts/release/assemble-candidate.sh "$candidate" \
-            "$inputs/common" \
-            "$PWD/build/release/platforms/${{ matrix.platform }}/public"
-          make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
-            DEPS_PREFIX="$DEPS_PREFIX" \
-            CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
-
-      - name: Assemble and test Windows candidate
-        if: matrix.family == 'windows'
-        shell: msys2 {0}
-        env:
-          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
-          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          TAG: ${{ needs.metadata.outputs.tag }}
-          SHA: ${{ needs.metadata.outputs.sha }}
-        run: |
-          set -euo pipefail
-          inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
-          candidate=$(cygpath -u "$RUNNER_TEMP")/cup-release-windows-x64
-          scripts/release/assemble-candidate.sh "$candidate" \
-            "$inputs/common" \
-            "$PWD/build/release/platforms/windows-x64/public"
-          make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
-            DEPS_PREFIX="$DEPS_PREFIX" \
-            CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
-
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: cup-release-${{ matrix.platform }}
@@ -342,13 +303,204 @@ jobs:
           retention-days: 30
           overwrite: true
 
+  candidate_test:
+    name: Test complete candidate (${{ matrix.platform }})
+    needs:
+      - metadata
+      - common
+      - candidate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 140
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            family: linux
+            profile: gcc
+            compiler: gcc
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: linux
+            profile: gcc
+            compiler: gcc
+          - platform: macos-x64
+            runner: macos-15-intel
+            family: macos
+            profile: apple-clang
+            compiler: clang
+          - platform: macos-arm64
+            runner: macos-15
+            family: macos
+            profile: apple-clang
+            compiler: clang
+          - platform: windows-x64
+            runner: windows-2025
+            family: windows
+            profile: ucrt64-gcc
+            compiler: gcc
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2.32.0
+        if: matrix.family == 'windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            ca-certificates
+            diffutils
+            curl
+            file
+            git
+            gcc
+            make
+            openssl
+            perl
+            tar
+            xz
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+
+      - name: Prepare POSIX release test toolchain
+        if: matrix.family != 'windows'
+        env:
+          FAMILY: ${{ matrix.family }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/ci/prepare-posix.sh release
+
+      - id: cache-posix
+        if: matrix.family != 'windows'
+        env:
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          root="$(pwd -P)/deps/${{ matrix.platform }}"
+          key=$(scripts/dependencies/verify.sh '${{ matrix.platform }}' --print-cache-key)
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - id: cache-windows
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        env:
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          root="$(pwd -P)/deps/windows-x64"
+          key=$(scripts/dependencies/verify.sh windows-x64 --print-cache-key)
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "prefix=$root/install" >> "$GITHUB_OUTPUT"
+          echo "cache_root=$(cygpath -m "$root")" >> "$GITHUB_OUTPUT"
+          echo "cache_prefix=$(cygpath -m "$root/install")" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5.0.5
+        if: matrix.family != 'windows'
+        with:
+          path: |
+            ${{ steps.cache-posix.outputs.root }}/.cup-dependencies-root
+            ${{ steps.cache-posix.outputs.prefix }}
+          key: ${{ steps.cache-posix.outputs.key }}
+          fail-on-cache-miss: true
+
+      - uses: actions/cache@v5.0.5
+        if: matrix.family == 'windows'
+        with:
+          path: |
+            ${{ steps.cache-windows.outputs.cache_root }}/.cup-dependencies-root
+            ${{ steps.cache-windows.outputs.cache_prefix }}
+          key: ${{ steps.cache-windows.outputs.key }}
+          fail-on-cache-miss: true
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-common
+          path: ${{ runner.temp }}/cup-release-inputs/common
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-linux-x64
+          path: ${{ runner.temp }}/cup-release-inputs/linux-x64
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-linux-arm64
+          path: ${{ runner.temp }}/cup-release-inputs/linux-arm64
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-macos-x64
+          path: ${{ runner.temp }}/cup-release-inputs/macos-x64
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-macos-arm64
+          path: ${{ runner.temp }}/cup-release-inputs/macos-arm64
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: cup-release-windows-x64
+          path: ${{ runner.temp }}/cup-release-inputs/windows-x64
+
+      - name: Assemble and test complete POSIX candidate
+        if: matrix.family != 'windows'
+        env:
+          DEPS_PREFIX: ${{ steps.cache-posix.outputs.prefix }}
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+        run: |
+          set -euo pipefail
+          inputs="$RUNNER_TEMP/cup-release-inputs"
+          candidate="$RUNNER_TEMP/cup-release-candidate"
+          scripts/release/assemble-candidate.sh "$candidate" \
+            "$inputs/common" \
+            "$inputs/linux-x64" \
+            "$inputs/linux-arm64" \
+            "$inputs/macos-x64" \
+            "$inputs/macos-arm64" \
+            "$inputs/windows-x64"
+          make PLATFORM='${{ matrix.platform }}' CC='${{ matrix.compiler }}' \
+            DEPS_PREFIX="$DEPS_PREFIX" \
+            CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
+
+      - name: Assemble and test complete Windows candidate
+        if: matrix.family == 'windows'
+        shell: msys2 {0}
+        env:
+          DEPS_PREFIX: ${{ steps.cache-windows.outputs.prefix }}
+          CUP_DEPENDENCY_PROFILE: ${{ matrix.profile }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          SHA: ${{ needs.metadata.outputs.sha }}
+        run: |
+          set -euo pipefail
+          inputs=$(cygpath -u "$RUNNER_TEMP")/cup-release-inputs
+          candidate=$(cygpath -u "$RUNNER_TEMP")/cup-release-candidate
+          scripts/release/assemble-candidate.sh "$candidate" \
+            "$inputs/common" \
+            "$inputs/linux-x64" \
+            "$inputs/linux-arm64" \
+            "$inputs/macos-x64" \
+            "$inputs/macos-arm64" \
+            "$inputs/windows-x64"
+          make PLATFORM=windows-x64 CC=gcc WINDRES=windres \
+            DEPS_PREFIX="$DEPS_PREFIX" \
+            CUP_TEST_CONFIGURATION=release RELEASE_DIR="$candidate" test-release
+
   publish:
     name: Publish exact candidate
     needs:
       - metadata
       - common
       - candidate
-    if: ${{ needs.candidate.result == 'success' }}
+      - candidate_test
+    if: ${{ needs.candidate_test.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
