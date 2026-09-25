@@ -141,7 +141,99 @@ static void test_manifest_is_required_and_format_is_strict(void) {
     join_path(manifest, sizeof(manifest), root, "manifest.txt");
     write_text(manifest, "format=1\n");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
-                          package_manifest_verify(root, TEST_MANIFEST_HOST, NULL));
+                          package_manifest_verify(root, TEST_MANIFEST_HOST, stderr));
+
+    write_text(manifest, "format=2\n");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION,
+                          package_manifest_verify(root, TEST_MANIFEST_HOST, stderr));
+}
+
+static void test_manifest_syntax_contract(void) {
+    char tool[1024];
+    char manifest[1024];
+    static const char *const invalid[] = {
+        "format=2",
+        "format=2\n\n",
+        "format=2\ngarbage\n",
+        "format=2\nf\t0644\n",
+        "format=2\nf\t0644\tdeadbeef\n",
+        "format=2\nf\t0644\tdeadbeef\tinfo.txt\textra\n",
+        "format=2\n\t0644\tdeadbeef\tinfo.txt\n",
+        "format=2\nf\t\tdeadbeef\tinfo.txt\n",
+        "format=2\nf\t0644\t\tinfo.txt\n",
+        "format=2\nf\t0644\tdeadbeef\t\n",
+        "format=2\nf\t0644\tdeadbeef\t../info.txt\n"
+    };
+    size_t i;
+
+    create_basic_tree(tool, sizeof(tool));
+    join_path(manifest, sizeof(manifest), root, "manifest.txt");
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        write_text(manifest, invalid[i]);
+        TEST_ASSERT_EQUAL_INT(
+            CUP_ERR_VALIDATION, package_manifest_verify(root, TEST_MANIFEST_HOST, NULL));
+    }
+
+    {
+        static const unsigned char invalid_bytes[][64] = {
+            "format=2\nf\t0644\tdeadbeef\tinfo" "\x01" ".txt\n",
+            "format=2\nf\t0644\tdeadbeef\tinfo" "\x7f" ".txt\n"
+        };
+
+        for (i = 0; i < sizeof(invalid_bytes) / sizeof(invalid_bytes[0]); ++i) {
+            FILE *file = fopen(manifest, "wb");
+            size_t length = strlen((const char *)invalid_bytes[i]);
+
+            TEST_ASSERT_NOT_NULL(file);
+            TEST_ASSERT_EQUAL_size_t(length, fwrite(invalid_bytes[i], 1, length, file));
+            TEST_ASSERT_EQUAL_INT(0, fclose(file));
+            TEST_ASSERT_EQUAL_INT(
+                CUP_ERR_VALIDATION, package_manifest_verify(root, TEST_MANIFEST_HOST, NULL));
+        }
+    }
+}
+
+static void test_manifest_entry_schema_contract(void) {
+    char tool[1024];
+    char info[1024];
+    char manifest[1024];
+    char digest[65];
+    char body[2048];
+    int written;
+
+    create_basic_tree(tool, sizeof(tool));
+    join_path(info, sizeof(info), root, "info.txt");
+    join_path(manifest, sizeof(manifest), root, "manifest.txt");
+    file_digest(info, digest);
+
+#define ASSERT_ENTRY_REJECTED(entry_format, ...)                                      \
+    do {                                                                              \
+        written = snprintf(body, sizeof(body), "format=2\n" entry_format, __VA_ARGS__); \
+        TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(body));              \
+        write_text(manifest, body);                                                    \
+        TEST_ASSERT_EQUAL_INT(                                                        \
+            CUP_ERR_VALIDATION, package_manifest_verify(root, TEST_MANIFEST_HOST, NULL)); \
+    } while (0)
+
+    ASSERT_ENTRY_REJECTED("x\t0644\t%s\tinfo.txt\n", digest);
+    ASSERT_ENTRY_REJECTED("f\t0600\t%s\tinfo.txt\n", digest);
+    ASSERT_ENTRY_REJECTED("f\t0755\t%s\tinfo.txt\n", digest);
+    ASSERT_ENTRY_REJECTED("f\t0644\t%s\tinfo.txt\n", "xyz");
+    ASSERT_ENTRY_REJECTED("d\t0755\t%s\tbin\n", digest);
+    ASSERT_ENTRY_REJECTED("d\t0644\t%s\tbin\n", "-");
+    ASSERT_ENTRY_REJECTED("f\t0644\t%s\tmanifest.txt\n", digest);
+    ASSERT_ENTRY_REJECTED("f\t0644\t%s\t.manifest.paths\n", digest);
+    ASSERT_ENTRY_REJECTED("f\t0644\t%s\tbin\n", digest);
+    ASSERT_ENTRY_REJECTED("d\t0755\t%s\tinfo.txt\n", "-");
+    ASSERT_ENTRY_REJECTED("l\t-\t%s\tinfo.txt\n", digest);
+
+    written = snprintf(body, sizeof(body), "format=2\nl\t-\t%s\tinfo.txt\n", digest);
+    TEST_ASSERT_TRUE(written >= 0 && (size_t)written < sizeof(body));
+    write_text(manifest, body);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_VALIDATION, package_manifest_verify(root, "windows-x64", NULL));
+
+#undef ASSERT_ENTRY_REJECTED
 }
 
 static void test_payload_changes_are_detected(void) {
@@ -309,6 +401,8 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_valid_manifest);
     RUN_TEST(test_manifest_is_required_and_format_is_strict);
+    RUN_TEST(test_manifest_syntax_contract);
+    RUN_TEST(test_manifest_entry_schema_contract);
     RUN_TEST(test_payload_changes_are_detected);
     RUN_TEST(test_missing_declared_object_is_detected);
     RUN_TEST(test_case_fold_path_collisions_are_rejected);

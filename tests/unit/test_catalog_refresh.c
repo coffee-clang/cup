@@ -32,6 +32,8 @@ static int remove_calls;
 static CupError download_result;
 static CupError replace_result;
 static DownloadDiagnostics download_diagnostics;
+static int runtime_available;
+static int snapshot_missing;
 
 static void copy_step(PackageCatalog *catalog, const CatalogStep *step) {
     memset(catalog, 0, sizeof(*catalog));
@@ -68,6 +70,8 @@ void setUp(void) {
     download_result = CUP_OK;
     replace_result = CUP_OK;
     download_diagnostics = DOWNLOAD_DIAGNOSTICS_REPORT;
+    runtime_available = 1;
+    snapshot_missing = 0;
 }
 
 void tearDown(void) {
@@ -80,7 +84,7 @@ void package_catalog_free(PackageCatalog *catalog) { memset(catalog, 0, sizeof(*
 CupError command_context_begin_read_only(CommandContext *context, const char *target_override) {
     (void)target_override;
     memset(context, 0, sizeof(*context));
-    context->runtime_available = 1;
+    context->runtime_available = runtime_available;
     context->lock.active = 1;
     context->lock.mode = SYSTEM_LOCK_SHARED;
     lock_depth++;
@@ -171,7 +175,7 @@ CupError filesystem_snapshot_read(const char *path,
     TEST_ASSERT_NOT_NULL(snapshot->data);
     memcpy(snapshot->data, bytes, sizeof(bytes) - 1u);
     snapshot->size = sizeof(bytes) - 1u;
-    *missing = 0;
+    *missing = snapshot_missing;
     return CUP_OK;
 }
 
@@ -189,13 +193,21 @@ CupError filesystem_replace_file_if_identity(const char *directory,
                                              int executable,
                                              FilesystemFileWriter writer,
                                              const void *value) {
-    (void)writer;
-    (void)value;
+    FILE *file;
+    CupError write_result;
+
+    TEST_ASSERT_NOT_NULL(writer);
+    TEST_ASSERT_NOT_NULL(value);
     TEST_ASSERT_EQUAL_STRING("/config", directory);
     TEST_ASSERT_EQUAL_STRING("catalog", temporary_prefix);
     TEST_ASSERT_EQUAL_STRING("/config/catalog.cfg", destination);
     TEST_ASSERT_TRUE(expected_identity->valid);
     TEST_ASSERT_EQUAL_INT(0, executable);
+    file = tmpfile();
+    TEST_ASSERT_NOT_NULL(file);
+    write_result = writer(file, value);
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, write_result);
     replace_calls++;
     return replace_result;
 }
@@ -277,6 +289,59 @@ static void test_lost_cas_retries_from_new_snapshot(void) {
     TEST_ASSERT_EQUAL_INT(1, replace_calls);
 }
 
+static void test_refresh_boundary_failures(void) {
+    int updated = 7;
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, catalog_refresh_existing(NULL, CATALOG_REFRESH_REPORT_ERRORS));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, catalog_refresh_existing(&updated, (CatalogRefreshDiagnostics)99));
+
+    updated = 7;
+    runtime_available = 0;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_NOT_INSTALLED, catalog_refresh_existing(&updated, CATALOG_REFRESH_REPORT_ERRORS));
+    TEST_ASSERT_EQUAL_INT(0, updated);
+    TEST_ASSERT_EQUAL_INT(0, download_calls);
+}
+
+static void test_download_failure_cleanup(void) {
+    int updated = 0;
+
+    push_local(1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+    download_result = CUP_ERR_FETCH;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FETCH, catalog_refresh_existing(&updated, CATALOG_REFRESH_REPORT_ERRORS));
+    TEST_ASSERT_EQUAL_INT(1, download_calls);
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, replace_calls);
+}
+
+static void test_missing_snapshot_cleanup(void) {
+    int updated = 0;
+
+    push_local(1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+    push_remote(2, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    snapshot_missing = 1;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_FILESYSTEM, catalog_refresh_existing(&updated, CATALOG_REFRESH_REPORT_ERRORS));
+    TEST_ASSERT_EQUAL_INT(1, remove_calls);
+    TEST_ASSERT_EQUAL_INT(0, replace_calls);
+}
+
+static void test_replace_failure_is_reported(void) {
+    int updated = 0;
+
+    push_local(1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+    push_local(1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+    push_remote(2, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    replace_result = CUP_ERR_COMMIT;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_COMMIT, catalog_refresh_existing(&updated, CATALOG_REFRESH_REPORT_ERRORS));
+    TEST_ASSERT_EQUAL_INT(1, replace_calls);
+    TEST_ASSERT_EQUAL_INT(0, updated);
+}
+
 static void test_repeated_cas_loss_is_bounded(void) {
     int updated = 0;
     unsigned i;
@@ -305,6 +370,10 @@ int main(void) {
     RUN_TEST(test_same_revision_different_bytes_is_error);
     RUN_TEST(test_lower_revision_is_rejected);
     RUN_TEST(test_lost_cas_retries_from_new_snapshot);
+    RUN_TEST(test_refresh_boundary_failures);
+    RUN_TEST(test_download_failure_cleanup);
+    RUN_TEST(test_missing_snapshot_cleanup);
+    RUN_TEST(test_replace_failure_is_reported);
     RUN_TEST(test_repeated_cas_loss_is_bounded);
     return UNITY_END();
 }

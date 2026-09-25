@@ -45,7 +45,15 @@ static void test_release_base_override_policy(void) {
                           download_copy_release_base_override(base, sizeof(base)));
     TEST_ASSERT_EQUAL_STRING("", base);
 
+    set_test_environment("CUP_INSTALL_BASE_URL", "");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_NOT_AVAILABLE,
+                          download_copy_release_base_override(base, sizeof(base)));
+    TEST_ASSERT_EQUAL_STRING("", base);
+
     set_test_environment("CUP_INSTALL_BASE_URL", "http://127.0.0.1:18080/path/");
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
+                          download_copy_release_base_override(base, sizeof(base)));
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", "0");
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT,
                           download_copy_release_base_override(base, sizeof(base)));
     set_test_environment("CUP_INSTALL_ALLOW_INSECURE", "1");
@@ -73,6 +81,9 @@ static void test_loopback_transport_policy(void) {
     TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://localhost:18080/resource"));
     TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("https://127.0.0.1:18080/resource"));
 
+    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed(NULL));
+    set_test_environment("CUP_INSTALL_ALLOW_INSECURE", "0");
+    TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
     set_test_environment("CUP_INSTALL_ALLOW_INSECURE", NULL);
     TEST_ASSERT_FALSE(download_insecure_loopback_is_allowed("http://127.0.0.1:18080/resource"));
 }

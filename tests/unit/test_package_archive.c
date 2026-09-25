@@ -124,6 +124,36 @@ static void test_format_parser(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_parse_format("zip", NULL));
 }
 
+static void test_format_names_and_defaults(void) {
+    PackageArchiveFormat format = PACKAGE_ARCHIVE_FORMAT_ANY;
+
+    TEST_ASSERT_EQUAL_STRING("tar.xz", package_archive_format_name(PACKAGE_ARCHIVE_FORMAT_TAR_XZ));
+    TEST_ASSERT_EQUAL_STRING("tar.gz", package_archive_format_name(PACKAGE_ARCHIVE_FORMAT_TAR_GZ));
+    TEST_ASSERT_EQUAL_STRING("zip", package_archive_format_name(PACKAGE_ARCHIVE_FORMAT_ZIP));
+    TEST_ASSERT_NULL(package_archive_format_name(PACKAGE_ARCHIVE_FORMAT_ANY));
+    TEST_ASSERT_NULL(package_archive_format_name((PackageArchiveFormat)99));
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK, package_archive_default_format("windows-x64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_ZIP, format);
+
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_default_format("linux-x64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_TAR_GZ, format);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_default_format("linux-arm64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_TAR_GZ, format);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_default_format("macos-x64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_TAR_GZ, format);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_default_format("macos-arm64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_TAR_GZ, format);
+
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, package_archive_default_format("freebsd-x64", &format));
+    TEST_ASSERT_EQUAL_INT(PACKAGE_ARCHIVE_FORMAT_ANY, format);
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_archive_default_format(NULL, &format));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_ERR_INVALID_INPUT, package_archive_default_format("linux-x64", NULL));
+}
+
 static void test_reader_contract(void) {
     struct archive *reader = (struct archive *)1;
     char valid[512];
@@ -149,6 +179,27 @@ static void test_reader_contract(void) {
     TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_free(reader));
     TEST_ASSERT_EQUAL_INT(0, fclose(valid_file));
     TEST_ASSERT_EQUAL_INT(0, fclose(invalid_file));
+}
+
+static void test_reader_rejects_unknown_format(void) {
+    char archive_path[512];
+    FILE *file;
+    struct archive *reader = NULL;
+    struct archive_entry *entry = NULL;
+
+    TEST_ASSERT_FALSE(
+        package_archive_reader_matches_format(NULL, PACKAGE_ARCHIVE_FORMAT_ANY));
+
+    build_path(archive_path, sizeof(archive_path), "unknown-format.tar.gz");
+    create_archive(archive_path, "tar.gz", 1);
+    file = open_fixture(archive_path);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_archive_open_stream(&reader, file));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_next_header(reader, &entry));
+    TEST_ASSERT_FALSE(
+        package_archive_reader_matches_format(reader, (PackageArchiveFormat)99));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_close(reader));
+    TEST_ASSERT_EQUAL_INT(ARCHIVE_OK, archive_read_free(reader));
+    TEST_ASSERT_EQUAL_INT(0, fclose(file));
 }
 
 static void test_real_formats(void) {
@@ -198,7 +249,9 @@ int main(void) {
         temp_dir, sizeof(temp_dir), "cup-package-archive-test"));
     UNITY_BEGIN();
     RUN_TEST(test_format_parser);
+    RUN_TEST(test_format_names_and_defaults);
     RUN_TEST(test_reader_contract);
+    RUN_TEST(test_reader_rejects_unknown_format);
     RUN_TEST(test_real_formats);
     RUN_TEST(test_format_mismatch);
     TEST_ASSERT_EQUAL_INT(0, test_remove_tree(temp_dir));

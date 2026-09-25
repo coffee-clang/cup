@@ -1055,11 +1055,16 @@ static void test_registry_platform(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_get_host(NULL, sizeof(buffer)));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_get_host(buffer, 0));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, platform_get_host(buffer, 2));
+    TEST_ASSERT_FALSE(platform_is_supported(NULL));
+    TEST_ASSERT_FALSE(platform_is_supported(""));
+    TEST_ASSERT_FALSE(platform_is_supported(long_platform));
+    TEST_ASSERT_TRUE(platform_is_supported("windows-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_validate(NULL));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_validate(""));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, platform_validate("linux"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_ARCH, platform_validate("linux-riscv64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_ARCH, platform_validate("windows-arm64"));
+    TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_OS, platform_validate("plan9-x64"));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_BUFFER_TOO_SMALL, platform_validate(long_platform));
     TEST_ASSERT_EQUAL_UINT(5, CUP_PLATFORM_COUNT);
     TEST_ASSERT_EQUAL_UINT(8, registry_component_count());
