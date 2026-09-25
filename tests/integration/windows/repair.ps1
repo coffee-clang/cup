@@ -204,7 +204,13 @@ try {
     $uninstallFailed = Invoke-Cup -CommandArgs @('repair')
     Assert-Contains $uninstallFailed 'Acknowledged failed cup uninstall (error 6).'
     Assert-PathMissing $transactionFile
-    $doctor = Invoke-Cup -CommandArgs @('doctor')
+    $savedPath = $env:Path
+    try {
+        $env:Path = "$(Join-Path $Script:CupTestHome '.cup\bin');$savedPath"
+        $doctor = Invoke-Cup -CommandArgs @('doctor')
+    } finally {
+        $env:Path = $savedPath
+    }
     Assert-Contains $doctor "Warning: installed package 'compiler:clang@23.1.0' is not listed by the current catalog."
     Assert-Contains $doctor 'Doctor found 1 warning(s), but no blocking issues.'
     Assert-NotContains $doctor 'Error:'
