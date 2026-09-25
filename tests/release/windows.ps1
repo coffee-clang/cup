@@ -402,8 +402,8 @@ try {
     $coffeeOutcomeCount = 0
     foreach ($coffeeOutcome in @(
         'Coffee installed successfully.',
-        'Warning: Coffee was installed, but derived commands need repair; run cup repair.',
-        'Warning: Coffee was not installed; the cup core installation is ready.'
+        'Coffee was installed, but derived commands need repair; run cup repair.',
+        'Coffee was not installed; the cup core installation is ready.'
     )) {
         if ($shellInstallText.Contains($coffeeOutcome)) {
             $coffeeOutcomeCount++
