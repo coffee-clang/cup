@@ -128,9 +128,9 @@ assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_jour
 run_cup help >/dev/null
 run_cup --version >/dev/null
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
-run_cup_expect_failure "$TMP_ROOT/doctor-typo.out" not-a-command
+run_cup_expect_status "$TMP_ROOT/doctor-typo.out" 2 not-a-command
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
-run_cup_expect_failure "$TMP_ROOT/doctor-parse.out" install
+run_cup_expect_status "$TMP_ROOT/doctor-parse.out" 2 install
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
 run_cup search >/dev/null
 run_cup list >/dev/null

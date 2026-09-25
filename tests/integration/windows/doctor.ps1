@@ -138,9 +138,9 @@ try {
     Invoke-Cup -CommandArgs @('help') | Out-Null
     Invoke-Cup -CommandArgs @('--version') | Out-Null
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
-    Invoke-Cup -CommandArgs @('not-a-command') -ExpectFailure | Out-Null
+    Assert-CupStatus -CommandArgs @('not-a-command') -ExpectedStatus 2 | Out-Null
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
-    Invoke-Cup -CommandArgs @('install') -ExpectFailure | Out-Null
+    Assert-CupStatus -CommandArgs @('install') -ExpectedStatus 2 | Out-Null
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
     Invoke-Cup -CommandArgs @('search') | Out-Null
     Invoke-Cup -CommandArgs @('list') | Out-Null

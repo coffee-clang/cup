@@ -186,7 +186,7 @@ try {
     Invoke-Cup -CommandArgs @('help') | Out-Null
     Invoke-Cup -CommandArgs @('--version') | Out-Null
     $pendingPackageJournalHash = Get-Sha256Lower -Path $transactionPath
-    $blocked = Invoke-Cup -CommandArgs @('list') -ExpectFailure
+    $blocked = Assert-CupStatus -CommandArgs @('list') -ExpectedStatus 4
     Assert-Contains $blocked '(missing on disk)'
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $pendingPackageJournalHash
     $diagnosis = Invoke-Cup -CommandArgs @('doctor') -ExpectFailure

@@ -112,7 +112,7 @@ fi
 assert_contains "$(cat "$TMP_ROOT/digest-mismatch.out")" \
     'downloaded package failed SHA-256 verification'
 assert_missing "$TEST_HOME/.cup/cache/$bad_expected_sha"
-assert_not_contains "$(run_cup list compiler 2>/dev/null || true)" \
+assert_not_contains "$(run_cup list compiler 2>/dev/null)" \
     "compiler:clang@$bad_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy

@@ -1,5 +1,5 @@
-# Validates one completed Windows release candidate, native
-# executable, and generated installer.
+# Exercises one prevalidated Windows release candidate, native
+# executable, installer, and runtime lifecycle.
 
 param(
     [Parameter(Mandatory = $true)]
@@ -118,72 +118,6 @@ function Invoke-PowerShellScript {
         }
         Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-# Verify that the candidate directory contains only the exact public asset set.
-function Get-ExpectedPublicAssets {
-    return @(
-        'LICENSE',
-        'THIRD_PARTY_NOTICES.txt',
-        'catalog.cfg',
-        'cup-linux-arm64',
-        'cup-linux-x64',
-        'cup-macos-arm64',
-        'cup-macos-x64',
-        'cup-windows-x64.exe',
-        'install.ps1',
-        'install.sh',
-        'provenance.txt',
-        'release.txt'
-    )
-}
-
-# Verify that the candidate directory contains exactly the published cup 0.4 asset set.
-function Assert-ExactCandidateFiles {
-    $expected = @(Get-ExpectedPublicAssets)
-    $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
-    if ($entries.Count -ne $expected.Count) {
-        throw 'Windows release candidate does not contain the exact public asset set'
-    }
-    foreach ($entry in $entries) {
-        if (($expected -cnotcontains $entry.Name) -or $entry.PSIsContainer -or
-            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-            $entry.Length -le 0) {
-            throw "Invalid Windows release candidate entry: $($entry.Name)"
-        }
-    }
-}
-
-function Assert-ReleaseManifest {
-    $lines = @(Get-CanonicalAsciiLines -Path (Join-Path $ReleaseDir 'release.txt'))
-    if ($lines.Count -lt 6) { throw 'release.txt is incomplete' }
-    if ($lines[0] -cne 'format=2') { throw 'release.txt format is invalid' }
-    if ($lines[1] -cne "version=$Version") { throw 'release.txt version is invalid' }
-    if ($lines[2] -cne "commit=$SourceSha") { throw 'release.txt commit is invalid' }
-    if ($lines[3] -cne 'root_layout=2') { throw 'release.txt root layout is invalid' }
-    if ($lines[4] -cne 'catalog_format=1') { throw 'release.txt catalog format is invalid' }
-    if ($lines[5] -cnotmatch '^asset_count=([0-9]+)$') { throw 'release.txt asset count is invalid' }
-    $count = [int]$Matches[1]
-
-    $expectedAssets = @(Get-ExpectedPublicAssets | Where-Object { $_ -cne 'release.txt' })
-    [Array]::Sort($expectedAssets, [StringComparer]::Ordinal)
-    if ($count -ne $expectedAssets.Count -or $lines.Count -ne 6 + 2 * $count) {
-        throw 'release.txt asset set is incomplete'
-    }
-    for ($i = 0; $i -lt $count; $i++) {
-        $nameLine = $lines[6 + 2 * $i]
-        $shaLine = $lines[7 + 2 * $i]
-        if ($nameLine -cne "asset.$i.name=$($expectedAssets[$i])") {
-            throw "release.txt asset name/order mismatch at index $i"
-        }
-        if ($shaLine -cnotmatch "^asset\.$i\.sha256=([0-9a-f]{64})$") {
-            throw "release.txt digest record is invalid at index $i"
-        }
-        $actual = Get-Sha256Lower -Path (Join-Path $ReleaseDir $expectedAssets[$i])
-        if ($Matches[1] -cne $actual) {
-            throw "release.txt digest mismatch for $($expectedAssets[$i])"
-        }
     }
 }
 
@@ -328,9 +262,7 @@ function Test-InstallerFinalLowSpeedWindow {
     }
 }
 
-# Validate the exact public candidate, authenticated manifest and native executable.
-Assert-ExactCandidateFiles
-Assert-ReleaseManifest
+# Exercise the native release executable after shared candidate prevalidation.
 
 $binary = (Resolve-Path (Join-Path $ReleaseDir "cup-windows-x64.exe")).Path
 $actual = & $binary --version

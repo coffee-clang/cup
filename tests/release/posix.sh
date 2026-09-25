@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-# Validates one completed POSIX release candidate, native binary and generated installer.
+# Exercises one prevalidated POSIX release candidate, native binary, installer and runtime lifecycle.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -13,12 +13,6 @@ SCRIPT_DIR=$ROOT/scripts/release
 SHA=${SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 release_dir=${1:-release}
 
-# shellcheck disable=SC2046
-set -- $(release_public_assets)
-validate_exact_directory_files "$release_dir" "$@"
-for asset in "$@"; do require_nonempty_file "$release_dir/$asset"; done
-validate_release_asset_modes "$release_dir" "$@"
-validate_release_file "$release_dir/release.txt"
 test "$("$release_dir/cup-$PLATFORM" --version)" = "cup $VERSION"
 
 port=0

@@ -78,7 +78,7 @@ write_package_journal install compiler clang 23.1.0 "$install_staging_name"
 run_cup help >/dev/null
 run_cup --version >/dev/null
 pending_package_journal_hash=$(hash_file "$TEST_HOME/.cup/transaction.txt")
-run_cup_expect_failure "$TMP_ROOT/pending-package-list.out" list
+run_cup_expect_status "$TMP_ROOT/pending-package-list.out" 4 list
 assert_contains "$(cat "$TMP_ROOT/pending-package-list.out")" '(missing on disk)'
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$pending_package_journal_hash"
 run_cup_expect_failure "$TMP_ROOT/pending-package-doctor.out" doctor

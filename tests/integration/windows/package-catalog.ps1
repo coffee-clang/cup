@@ -35,7 +35,7 @@ try {
         -not $_.StartsWith('package.0.artifact.0.sha256=', [StringComparison]::Ordinal)
     }
     Write-Utf8NoBom -Path $catalog -Lines $missingSha
-    Invoke-Cup -CommandArgs @('search', 'compiler') -ExpectFailure | Out-Null
+    Assert-CupStatus -CommandArgs @('search', 'compiler') -ExpectedStatus 4 | Out-Null
 
     Write-Utf8NoBom -Path $catalog -Lines @(
         'format=1',
@@ -50,7 +50,7 @@ try {
         'package.0.artifact.0.format=zip',
         'package.0.artifact.0.url=http://example.invalid/clang-98.0.1-windows-x64-windows-x64.zip',
         ('package.0.artifact.0.sha256=' + ('0' * 64)))
-    Invoke-Cup -CommandArgs @('search', 'compiler') -ExpectFailure | Out-Null
+    Assert-CupStatus -CommandArgs @('search', 'compiler') -ExpectedStatus 4 | Out-Null
 
     Write-Utf8NoBom -Path $catalog -Lines @(
         'format=1',

@@ -35,7 +35,7 @@ assert_missing "$TEST_HOME/.cup"
 # A current-schema artifact without its digest is malformed, not merely unavailable.
 awk '!/\.artifact\.0\.sha256=/' "$catalog" > "$TMP_ROOT/missing-sha.cfg"
 cp "$TMP_ROOT/missing-sha.cfg" "$catalog"
-run_cup_expect_failure "$TMP_ROOT/missing-sha.out" search compiler
+run_cup_expect_status "$TMP_ROOT/missing-sha.out" 4 search compiler
 
 # Production catalog artifact URLs require HTTPS; loopback HTTP is reserved for explicit tests.
 cat > "$catalog" <<CATALOG
@@ -52,7 +52,7 @@ package.0.artifact.0.format=tar.gz
 package.0.artifact.0.url=http://example.invalid/clang-98.0.1-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
 package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
 CATALOG
-run_cup_expect_failure "$TMP_ROOT/insecure-artifact.out" search compiler
+run_cup_expect_status "$TMP_ROOT/insecure-artifact.out" 4 search compiler
 
 # A structurally safe future version is tolerated but is not made operational by guessing.
 cat > "$catalog" <<CATALOG
