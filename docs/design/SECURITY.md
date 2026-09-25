@@ -247,7 +247,7 @@ hash-back into the evidence it describes.
 Help/version never need the managed root. `list`, `info`, concrete `inspect` and
 `doctor` are local-state reads. `search` is the deliberate discovery exception:
 on an existing runtime it may perform one best-effort catalog refresh before
-showing a frozen local snapshot. That refresh may replace `config/catalog.cfg`,
+showing a frozen local snapshot. That refresh may replace the runtime `config/catalog.cfg`,
 but it does not mutate installed packages/state/defaults.
 
 `repair` is the public recovery command and mutates only where evidence yields a

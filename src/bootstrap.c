@@ -249,7 +249,6 @@ static CupError ensure_empty_state(void) {
     if (err == CUP_OK && status == STATE_FILE_MISSING) {
         err = state_save(&state, NULL, NULL);
     }
-    if (err == CUP_OK) err = state_validate(&state, stderr);
     state_free(&state);
     return err;
 }

@@ -37,11 +37,7 @@ function New-PrivateBootstrapDirectory {
 
 function Get-FixtureIdentity {
     $version = (Get-Content -LiteralPath (Join-Path $Script:CupTestProjectRoot 'VERSION') -Raw).Trim()
-    $git = Invoke-NativeProcess -FilePath 'git' `
-        -Arguments @('-C', $Script:CupTestProjectRoot, 'rev-parse', 'HEAD') `
-        -WorkingDirectory $Script:CupTestProjectRoot
-    if ($git.ExitCode -ne 0) { Fail-Test 'could not resolve recovery fixture commit' }
-    return [pscustomobject]@{ Version = $version; Commit = $git.Output.Trim() }
+    return [pscustomobject]@{ Version = $version; Commit = '0123456789abcdef0123456789abcdef01234567' }
 }
 
 function Write-ReleaseManifest {
@@ -217,8 +213,10 @@ try {
 
     Invoke-Cup -CommandArgs @('help') | Out-Null
     Invoke-Cup -CommandArgs @('--version') | Out-Null
+    $pendingPackageJournalHash = Get-Sha256Lower -Path $transactionPath
     $blocked = Invoke-Cup -CommandArgs @('list') -ExpectFailure
-    Assert-Contains $blocked 'a package transaction is active or requires recovery'
+    Assert-Contains $blocked '(missing on disk)'
+    Assert-Equals (Get-Sha256Lower -Path $transactionPath) $pendingPackageJournalHash
     $diagnosis = Invoke-Cup -CommandArgs @('doctor') -ExpectFailure
     Assert-Contains $diagnosis 'interrupted install transaction detected'
     $installRepair = Invoke-Cup -CommandArgs @('repair')
@@ -312,7 +310,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $cupRoot 'bin\cup.exe'), 'third-binary', [Text.Encoding]::ASCII)
     $thirdBinaryHash = Get-Sha256Lower -Path (Join-Path $cupRoot 'bin\cup.exe')
     $ambiguousOutput = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
-    Assert-Contains $ambiguousOutput 'interrupted operation cannot be repaired safely'
+    Assert-Contains $ambiguousOutput 'interrupted operation cannot be recovered safely'
     Assert-Equals (Get-Sha256Lower -Path (Join-Path $cupRoot 'bin\cup.exe')) $thirdBinaryHash
     Assert-PathExists $transactionPath
     Assert-PathExists (Join-Path $ambiguous.New 'release.txt')

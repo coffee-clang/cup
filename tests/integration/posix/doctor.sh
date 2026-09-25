@@ -132,10 +132,12 @@ run_cup_expect_failure "$TMP_ROOT/doctor-typo.out" not-a-command
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
 run_cup_expect_failure "$TMP_ROOT/doctor-parse.out" install
 assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
-for read_only_command in search list config info inspect; do
-    run_cup_expect_failure "$TMP_ROOT/doctor-$read_only_command.out" "$read_only_command"
-    assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
-done
+run_cup search >/dev/null
+run_cup list >/dev/null
+run_cup config >/dev/null
+run_cup info >/dev/null
+run_cup inspect compiler clang@99.0.0 >/dev/null
+assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$generation_journal_hash"
 
 cat > "$TEST_HOME/.cup/transaction.txt" <<'JOURNAL'
 format=2

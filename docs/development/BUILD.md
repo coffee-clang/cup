@@ -210,10 +210,10 @@ contract properties:
 
 - zlib's static library is present;
 - libcurl exposes exactly the required HTTP and HTTPS protocols;
-- libarchive libraries are present while its unused command-line utilities are
-  absent;
-- the generated OpenSSL configuration records the required no-apps,
-  no-autoload-config, no-docs and no-DSO build properties;
+- libarchive static metadata resolves entirely inside the prefix and does not
+  pull an ambient `libmd`;
+- the generated OpenSSL configuration disables automatic configuration loading
+  and dynamic module loading;
 - the required static archives, headers, pkg-config/curl-config metadata and
   test-only libraries are present for the selected profile.
 

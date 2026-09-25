@@ -53,11 +53,7 @@ function New-BootstrapSource {
         -Destination $catalog
 
     $version = (Get-Content -LiteralPath (Join-Path $Script:CupTestProjectRoot "VERSION") -Raw).Trim()
-    $git = Invoke-NativeProcess -FilePath "git" `
-        -Arguments @("-C", $Script:CupTestProjectRoot, "rev-parse", "HEAD") `
-        -WorkingDirectory $Script:CupTestProjectRoot
-    if ($git.ExitCode -ne 0) { Fail-Test "could not resolve bootstrap fixture commit" }
-    $commit = $git.Output.Trim()
+    $commit = "0123456789abcdef0123456789abcdef01234567"
     Write-Utf8NoBom -Path $release -Lines @(
         "format=2",
         "version=$version",

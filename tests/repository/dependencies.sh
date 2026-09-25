@@ -449,9 +449,7 @@ bash -eu -o pipefail -c '
             printf "/* dependency fixture */\n" > "$prefix/include/$header"
         done
         cat >"$prefix/include/openssl/configuration.h" <<'EOF_OPENSSL_CONFIGURATION'
-#define OPENSSL_NO_APPS
 #define OPENSSL_NO_AUTOLOAD_CONFIG
-#define OPENSSL_NO_DOCS
 #define OPENSSL_NO_DSO
 EOF_OPENSSL_CONFIGURATION
         for archive in \

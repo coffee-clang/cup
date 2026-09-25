@@ -142,10 +142,12 @@ try {
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
     Invoke-Cup -CommandArgs @('install') -ExpectFailure | Out-Null
     Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
-    foreach ($readOnlyCommand in @('search', 'list', 'config', 'info', 'inspect')) {
-        Invoke-Cup -CommandArgs @($readOnlyCommand) -ExpectFailure | Out-Null
-        Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
-    }
+    Invoke-Cup -CommandArgs @('search') | Out-Null
+    Invoke-Cup -CommandArgs @('list') | Out-Null
+    Invoke-Cup -CommandArgs @('config') | Out-Null
+    Invoke-Cup -CommandArgs @('info') | Out-Null
+    Invoke-Cup -CommandArgs @('inspect', 'compiler', 'clang@99.0.0') | Out-Null
+    Assert-Equals (Get-Sha256Lower -Path $transactionPath) $generationJournalHash
 
     Write-Utf8NoBom -Path $transactionPath -Lines @(
         'format=2',

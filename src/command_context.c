@@ -404,10 +404,6 @@ CupError command_context_load_state(CommandContext *context) {
         return CUP_ERR_INCONSISTENT_STATE;
     }
 
-    err = state_validate(&context->state, stderr);
-    if (err != CUP_OK) {
-        return CUP_ERR_INCONSISTENT_STATE;
-    }
     err = state_validate_current_host(&context->state, context->host_platform, stderr);
     if (err != CUP_OK) {
         return CUP_ERR_INCONSISTENT_STATE;

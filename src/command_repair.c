@@ -573,8 +573,7 @@ static CupError load_state_for_reconciliation(RepairContext *context) {
                      &context->state_status,
                      &context->state_identity,
                      NULL);
-    if (err == CUP_OK && context->state_status == STATE_FILE_LOADED &&
-        state_validate(&context->state, NULL) == CUP_OK) {
+    if (err == CUP_OK && context->state_status == STATE_FILE_LOADED) {
         return CUP_OK;
     }
     if (err == CUP_OK && context->state_status == STATE_FILE_MISSING) {

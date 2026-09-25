@@ -286,7 +286,7 @@ verify_successful_install() {
 }
 
 mkdir -p "$SOURCE" "$SERVER_ROOT" "$PACKAGE_ROOT"
-SOURCE_SHA=$(git -C "$ROOT" rev-parse HEAD)
+SOURCE_SHA=0123456789abcdef0123456789abcdef01234567
 source_snapshot="$WORK/source.tar"
 tar -C "$ROOT" --exclude='./.git' --exclude='./.vscode' --exclude='./build' --exclude='./deps' \
     -cf "$source_snapshot" .
@@ -370,7 +370,7 @@ make -C "$SOURCE" PLATFORM="$PLATFORM" BUILD_DIR="$SOURCE_BUILD_ROOT" \
 make -C "$SOURCE" PLATFORM="$PLATFORM" BUILD_DIR="$SOURCE_BUILD_ROOT" \
     DEPS_PREFIX="$DEPS_PREFIX" CUP_INTERNAL_DEPS_TARGET=deps-check \
     CUP_TEST_CONFIGURATION=release test-helpers >/dev/null
-cup="$SOURCE_BUILD_ROOT/$PLATFORM/release/bin/cup"
+CUP="$SOURCE_BUILD_ROOT/$PLATFORM/release/bin/cup"
 [ -x "$CUP" ] || fail "release executable was not produced: $CUP"
 
 printf '==> Rejecting a server outside the embedded trust bundle...\n'

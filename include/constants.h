@@ -40,7 +40,6 @@
 #define MAX_CATALOG_URL_LEN 896
 
 /* Scoped install defaults, profiles, toolchains and local preferences. */
-#define MAX_INSTALL_POLICY_LINE_LEN 512
 #define MAX_INSTALL_DEFAULTS CUP_GLOBAL_SCOPE_COUNT
 #define MAX_TOOL_PREFERENCES CUP_LOCAL_SCOPE_COUNT
 #define MAX_INSTALL_PROFILES 8
@@ -69,8 +68,6 @@
 
 /* Canonical installed asset filenames. */
 #define CUP_CATALOG_FILENAME "catalog.cfg"
-#define CUP_INSTALL_POSIX_FILENAME "install.sh"
-#define CUP_INSTALL_WINDOWS_FILENAME "install.ps1"
 #define CUP_PREFERENCES_FILENAME "preferences.txt"
 #define CUP_INFO_FILENAME "info.txt"
 #define CUP_MANIFEST_FILENAME "manifest.txt"
@@ -100,7 +97,5 @@
 #define CUP_BINARY_FILENAME "cup"
 #define CUP_UPDATE_HELPER_FILENAME "update-helper"
 #endif
-
-/* Development-only repository path. */
 
 #endif /* CUP_CONSTANTS_H */

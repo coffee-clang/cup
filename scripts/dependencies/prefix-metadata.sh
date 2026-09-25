@@ -247,9 +247,7 @@ dependency_openssl_configuration_valid() {
     configuration="$prefix/include/openssl/configuration.h"
     dependency_regular_nonempty_file "$configuration" || return 1
     for macro in \
-            OPENSSL_NO_APPS \
             OPENSSL_NO_AUTOLOAD_CONFIG \
-            OPENSSL_NO_DOCS \
             OPENSSL_NO_DSO; do
         grep -Eq "^[[:space:]]*#[[:space:]]*define[[:space:]]+$macro([[:space:]]|$)" \
             "$configuration" || return 1

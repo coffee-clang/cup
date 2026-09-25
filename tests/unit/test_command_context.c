@@ -52,7 +52,6 @@ static CupError ensure_runtime_result;
 static CupError root_path_result;
 static CupError state_load_result;
 static StateFileStatus state_file_status;
-static CupError state_validation_result;
 static CupError state_current_host_result;
 static CupError state_save_result;
 static int state_save_calls;
@@ -107,7 +106,6 @@ static void reset_scenario(void) {
     root_path_result = CUP_OK;
     state_load_result = CUP_OK;
     state_file_status = STATE_FILE_LOADED;
-    state_validation_result = CUP_OK;
     state_current_host_result = CUP_OK;
     state_save_result = CUP_OK;
     state_save_calls = 0;
@@ -319,12 +317,6 @@ CupError state_load(CupState *state,
     }
     *status = state_file_status;
     return state_load_result;
-}
-
-CupError state_validate(const CupState *state, FILE *diagnostics) {
-    (void)diagnostics;
-    TEST_ASSERT_NOT_NULL(state);
-    return state_validation_result;
 }
 
 CupError state_validate_current_host(const CupState *state,
@@ -742,10 +734,6 @@ static void test_load_contracts(void) {
 
     reset_scenario();
     state_file_status = STATE_FILE_MISSING;
-    TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_context_load_state(&context));
-
-    reset_scenario();
-    state_validation_result = CUP_ERR_VALIDATION;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_context_load_state(&context));
 
     reset_scenario();

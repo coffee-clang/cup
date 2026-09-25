@@ -23,7 +23,7 @@ prepare_bootstrap_source() {
         "$source_directory/THIRD_PARTY_NOTICES.txt" "$source_directory/catalog.cfg"
 
     version=$(cat "$PROJECT_ROOT/VERSION")
-    commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
+    commit=0123456789abcdef0123456789abcdef01234567
     {
         printf 'format=2\n'
         printf 'version=%s\n' "$version"
@@ -77,9 +77,10 @@ mv "$install_path" "$install_staging"
 write_package_journal install compiler clang 23.1.0 "$install_staging_name"
 run_cup help >/dev/null
 run_cup --version >/dev/null
+pending_package_journal_hash=$(hash_file "$TEST_HOME/.cup/transaction.txt")
 run_cup_expect_failure "$TMP_ROOT/pending-package-list.out" list
-assert_contains "$(cat "$TMP_ROOT/pending-package-list.out")" \
-    'a package transaction is active or requires recovery'
+assert_contains "$(cat "$TMP_ROOT/pending-package-list.out")" '(missing on disk)'
+assert_equals "$(hash_file "$TEST_HOME/.cup/transaction.txt")" "$pending_package_journal_hash"
 run_cup_expect_failure "$TMP_ROOT/pending-package-doctor.out" doctor
 assert_contains "$(cat "$TMP_ROOT/pending-package-doctor.out")" \
     'interrupted install transaction detected'
@@ -135,7 +136,7 @@ write_generation_release() {
     cp "$binary_source" "$directory/$binary_release_name"
     chmod 0700 "$directory/$binary_release_name"
     version=$(cat "$PROJECT_ROOT/VERSION")
-    commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
+    commit=0123456789abcdef0123456789abcdef01234567
     {
         printf 'format=2\n'
         printf 'version=%s\n' "$version"
@@ -255,7 +256,7 @@ chmod 0755 "$root/bin/cup"
 third_binary_hash=$(hash_file "$root/bin/cup")
 run_cup_expect_failure "$TMP_ROOT/ambiguous-generation-repair.out" repair
 output=$(cat "$TMP_ROOT/ambiguous-generation-repair.out")
-assert_contains "$output" 'interrupted operation cannot be repaired safely'
+assert_contains "$output" 'interrupted operation cannot be recovered safely'
 assert_equals "$(hash_file "$root/bin/cup")" "$third_binary_hash"
 assert_file "$root/transaction.txt"
 assert_file "$ambiguous_staging/new/release.txt"

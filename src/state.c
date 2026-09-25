@@ -349,8 +349,10 @@ CupError state_save(const CupState *state, const SystemPathIdentity *expected_id
     }
     for (i=0;i<state->installed_count;++i) c.installed[i]=&state->installed[i];
     for (i=0;i<state->default_count;++i) c.defaults[i]=&state->defaults[i];
-    qsort(c.installed,state->installed_count,sizeof(c.installed[0]),compare_identity_pointers);
-    qsort(c.defaults,state->default_count,sizeof(c.defaults[0]),compare_identity_pointers);
+    if (state->installed_count > 1)
+        qsort(c.installed,state->installed_count,sizeof(c.installed[0]),compare_identity_pointers);
+    if (state->default_count > 1)
+        qsort(c.defaults,state->default_count,sizeof(c.defaults[0]),compare_identity_pointers);
     if (layout_get_root(root,sizeof(root)) != CUP_OK || layout_get_state_path(path,sizeof(path)) != CUP_OK) { free(c.installed); return CUP_ERR_FILESYSTEM; }
     if (expected == NULL) err = filesystem_publish_new_file(root,"state",path,0,write_state_file,&c);
     else err = filesystem_replace_file_if_identity(root,"state",path,expected,0,write_state_file,&c);

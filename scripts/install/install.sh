@@ -293,16 +293,6 @@ installed_version() {
     case "$output" in 'cup '*) printf '%s\n' "${output#cup }" ;; *) return 1 ;; esac
 }
 
-version_compare() {
-    left=$1; right=$2; old_ifs=$IFS; IFS=.; set -- $left; l1=$1 l2=$2 l3=$3; set -- $right; r1=$1 r2=$2 r3=$3; IFS=$old_ifs
-    for pair in "$l1:$r1" "$l2:$r2" "$l3:$r3"; do
-        l=${pair%%:*}; r=${pair#*:}
-        if [ "$l" -lt "$r" ]; then printf '%s\n' -1; return 0; fi
-        if [ "$l" -gt "$r" ]; then printf '%s\n' 1; return 0; fi
-    done
-    printf '%s\n' 0
-}
-
 find_path_installation() {
     PATH_ROOT= PATH_BINARY=
     command_path=$(command -v cup 2>/dev/null || true); [ -n "$command_path" ] || return 1

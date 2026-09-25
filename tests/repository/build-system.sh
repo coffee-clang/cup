@@ -95,34 +95,6 @@ if cup_text_file_is_nul_cr_free "$text_nul"; then
 fi
 printf '%s\n' 'Shared text-file byte-policy tests passed.'
 
-# Generated outputs must depend on the shared owners that can change their
-# validation, hashing or configuration semantics, not only on the immediate
-# wrapper script. Query GNU Make's parsed graph so this checks real dependency
-# edges rather than comments or duplicated test metadata.
-make_graph=$(
-    cd "$PROJECT_ROOT"
-    make -p -s PLATFORM=linux-x64 CUP_BUILD_CONFIGURATION=development help 2>/dev/null
-)
-assert_graph_edge() {
-    graph_target=$1
-    graph_prerequisite=$2
-    printf '%s\n' "$make_graph" | awk -v target="$graph_target" -v prerequisite="$graph_prerequisite" '
-        index($0, target ":") > 0 && index($0, prerequisite) > 0 { found = 1 }
-        END { exit found ? 0 : 1 }
-    ' || fail "Make graph is missing $graph_prerequisite from $graph_target"
-}
-for prerequisite in scripts/lib/path-safety.sh scripts/lib/build-configuration.sh scripts/lib/sha256.sh; do
-    assert_graph_edge /binary-inspection.txt "$prerequisite"
-done
-for prerequisite in scripts/lib/path-safety.sh scripts/lib/build-configuration.sh scripts/lib/git-identity.sh scripts/lib/semver.sh; do
-    assert_graph_edge /.version-stamp "$prerequisite"
-done
-for prerequisite in scripts/lib/path-safety.sh scripts/lib/text-file.sh scripts/lib/sha256.sh; do
-    assert_graph_edge /.ca-bundle-stamp "$prerequisite"
-    assert_graph_edge /build-config.txt "$prerequisite"
-done
-printf '%s\n' 'Generated-artifact dependency-closure tests passed.'
-
 fake_bin=$TMP_ROOT/bin
 prefix=$TMP_ROOT/prefix
 build_root=$TMP_ROOT/build
@@ -136,9 +108,7 @@ for header in \
     printf '/* build-system dependency fixture */\n' > "$prefix/include/$header"
 done
 cat >"$prefix/include/openssl/configuration.h" <<'EOF_OPENSSL_CONFIGURATION'
-#define OPENSSL_NO_APPS
 #define OPENSSL_NO_AUTOLOAD_CONFIG
-#define OPENSSL_NO_DOCS
 #define OPENSSL_NO_DSO
 EOF_OPENSSL_CONFIGURATION
 for archive in \

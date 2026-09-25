@@ -75,7 +75,7 @@ JOURNAL
 invalid_state_hash=$(hash_file "$state_file")
 run_cup_expect_failure "$TMP_ROOT/ambiguous-state.out" repair
 assert_contains "$(cat "$TMP_ROOT/ambiguous-state.out")" \
-    'state.txt is missing or invalid while a package transaction is pending'
+    'interrupted operation cannot be recovered safely'
 assert_equals "$(hash_file "$state_file")" "$invalid_state_hash"
 assert_file "$transaction_file"
 rm -f "$transaction_file"
@@ -97,7 +97,7 @@ invalid_state_hash=$(hash_file "$state_file")
 invalid_generation_hash=$(hash_file "$transaction_file")
 run_cup_expect_failure "$TMP_ROOT/malformed-generation-invalid-state.out" repair
 output=$(cat "$TMP_ROOT/malformed-generation-invalid-state.out")
-assert_contains "$output" 'cup generation transaction journal is invalid'
+assert_contains "$output" 'interrupted operation cannot be recovered safely'
 assert_equals "$(hash_file "$state_file")" "$invalid_state_hash"
 assert_equals "$(hash_file "$transaction_file")" "$invalid_generation_hash"
 assert_missing "$state_file.invalid"
@@ -117,9 +117,9 @@ assert_file "$transaction_file"
 assert_equals "$(hash_file "$state_file")" "$state_hash"
 [ -d "$TEST_HOME/.cup/staging/ambiguous-data" ] ||
     fail 'repair removed staging data after an invalid journal'
-run_cup_expect_failure "$TMP_ROOT/blocked-by-invalid-journal.out" list
-assert_contains "$(cat "$TMP_ROOT/blocked-by-invalid-journal.out")" \
-    'transaction journal is invalid'
+invalid_journal_hash=$(hash_file "$transaction_file")
+run_cup list >/dev/null
+assert_equals "$(hash_file "$transaction_file")" "$invalid_journal_hash"
 rm -rf "$TEST_HOME/.cup/staging/ambiguous-data" "$transaction_file"
 
 # Without ambiguous transaction evidence, stale staging is deterministic garbage.

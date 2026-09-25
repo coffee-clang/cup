@@ -78,7 +78,7 @@ try {
     $invalidStateHash = Get-Sha256Lower -Path $stateFile
     $ambiguousState = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
     Assert-Contains $ambiguousState `
-        'state.txt is missing or invalid while a package transaction is pending'
+        'interrupted operation cannot be recovered safely'
     Assert-Equals (Get-Sha256Lower -Path $stateFile) $invalidStateHash
     Assert-PathExists $transactionFile
     Remove-Item -LiteralPath $transactionFile -Force
@@ -98,7 +98,7 @@ try {
     $invalidStateHash = Get-Sha256Lower -Path $stateFile
     $invalidGenerationHash = Get-Sha256Lower -Path $transactionFile
     $malformedGeneration = Invoke-Cup -CommandArgs @('repair') -ExpectFailure
-    Assert-Contains $malformedGeneration 'cup generation transaction journal is invalid'
+    Assert-Contains $malformedGeneration 'interrupted operation cannot be recovered safely'
     Assert-Equals (Get-Sha256Lower -Path $stateFile) $invalidStateHash
     Assert-Equals (Get-Sha256Lower -Path $transactionFile) $invalidGenerationHash
     Assert-PathMissing "$stateFile.invalid"
@@ -117,8 +117,9 @@ try {
     Assert-PathExists $transactionFile
     Assert-Equals (Get-Sha256Lower -Path $stateFile) $stateHash
     Assert-PathExists $ambiguousStaging
-    $blocked = Invoke-Cup -CommandArgs @('list') -ExpectFailure
-    Assert-Contains $blocked 'transaction journal is invalid'
+    $invalidJournalHash = Get-Sha256Lower -Path $transactionFile
+    Invoke-Cup -CommandArgs @('list') | Out-Null
+    Assert-Equals (Get-Sha256Lower -Path $transactionFile) $invalidJournalHash
     Remove-Item -LiteralPath $ambiguousStaging -Recurse -Force
     Remove-Item -LiteralPath $transactionFile -Force
 

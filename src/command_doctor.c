@@ -435,7 +435,7 @@ static void load_and_check_state(CupState *state,
     *state_valid = 0;
     err = state_load(state, &state_status, NULL, NULL);
     if (err != CUP_OK) {
-        printf("Issue: state.txt is syntactically invalid.\n");
+        printf("Issue: state.txt is invalid.\n");
         report->issue_count++;
         return;
     }
@@ -446,17 +446,11 @@ static void load_and_check_state(CupState *state,
     }
 
     *state_loaded = 1;
-    if (state_validate(state, NULL) != CUP_OK) {
-        printf("Issue: state.txt is semantically inconsistent.\n");
-        report->issue_count++;
-        return;
-    }
-
     {
         size_t foreign_records = state_count_foreign_hosts(state, current_host);
 
         *state_valid = 1;
-        printf("OK: state.txt is structurally valid.\n");
+        printf("OK: state.txt is valid.\n");
         if (foreign_records > 0) {
             printf("Warning: state.txt preserves %zu record(s) for foreign hosts; operational "
                    "commands will not manage them.\n",

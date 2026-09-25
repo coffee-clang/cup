@@ -26,7 +26,11 @@ static CupError buffer_write_result(int written, size_t size) {
     return written >= 0 && (size_t)written < size ? CUP_OK : CUP_ERR_BUFFER_TOO_SMALL;
 }
 
-void setUp(void) { state_path_error = CUP_OK; }
+void setUp(void) {
+    char path[MAX_PATH_LEN];
+    state_path_error = CUP_OK;
+    if (snprintf(path, sizeof(path), "%s/state.txt", temp_dir) > 0) (void)test_unlink(path);
+}
 void tearDown(void) {}
 
 CupError platform_get_host(char *buffer, size_t size) { return copy_field(buffer, size, "linux-x64"); }
@@ -173,6 +177,23 @@ static void test_tool_reference_prefers_same_tool_default_otherwise_max(void) {
     state_free(&state);
 }
 
+static void test_empty_state_round_trip(void) {
+    CupState state, loaded;
+    StateFileStatus status;
+    SystemPathIdentity identity = {0};
+
+    state_init(&state);
+    state_init(&loaded);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_save(&state, NULL, &identity));
+    TEST_ASSERT_TRUE(identity.valid);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, state_load(&loaded, &status, NULL, stderr));
+    TEST_ASSERT_EQUAL_INT(STATE_FILE_LOADED, status);
+    TEST_ASSERT_EQUAL_size_t(0, loaded.installed_count);
+    TEST_ASSERT_EQUAL_size_t(0, loaded.default_count);
+    state_free(&loaded);
+    state_free(&state);
+}
+
 static void test_save_load_format2_host_implicit(void) {
     CupState state, loaded; StateFileStatus status; SystemPathIdentity identity={0};
     PackageIdentity a=make_identity("clang","linux-x64","23.1.0");
@@ -251,6 +272,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_dynamic_mutation_and_defaults);
     RUN_TEST(test_tool_reference_prefers_same_tool_default_otherwise_max);
+    RUN_TEST(test_empty_state_round_trip);
     RUN_TEST(test_save_load_format2_host_implicit);
     RUN_TEST(test_load_validates_before_publish);
     RUN_TEST(test_rejects_legacy_and_malformed_state);

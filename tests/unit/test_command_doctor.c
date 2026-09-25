@@ -41,7 +41,6 @@ typedef struct {
     size_t missing_count;
     CupError state_result;
     StateFileStatus state_status;
-    CupError state_validate_result;
     int include_state_package;
     CupError journal_result;
     RuntimeJournalKind journal_kind;
@@ -402,12 +401,6 @@ CupError state_load(CupState *state,
     return CUP_OK;
 }
 
-CupError state_validate(const CupState *state, FILE *diagnostics) {
-    TEST_ASSERT_NULL(diagnostics);
-    (void)state;
-    return scenario.state_validate_result;
-}
-
 int state_find_installed(const CupState *state, const PackageIdentity *identity) {
     (void)identity;
     return state->installed_count > 0 ? 0 : -1;
@@ -641,7 +634,7 @@ static void test_state_issues(void) {
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INCONSISTENT_STATE, command_doctor());
 
     reset_scenario();
-    scenario.state_validate_result = CUP_ERR_VALIDATION;
+    scenario.state_result = CUP_ERR_STATE_LOAD;
     scenario.journal_result = CUP_ERR_VALIDATION;
     scenario.packages.issue_count = 1;
     scenario.packages.total_issue_count = 3;
