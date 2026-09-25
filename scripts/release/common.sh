@@ -270,15 +270,22 @@ validate_release_asset_modes() {
             stat -f '%Lp' "$asset_directory/$asset_name" 2>/dev/null) ||
             fail "could not inspect release asset mode: $asset_name"
         if [ "$actual_mode" != "${expected_mode#0}" ]; then
-            # MSYS2 synthesizes the executable bit for .exe files from the filename rather
-            # than a portable Unix mode. The final release snapshot is assembled on POSIX and
-            # still normalizes the Windows executable to the canonical 0644 mode there.
+            # MSYS2/NTFS cannot represent the release's Unix modes exactly. It synthesizes
+            # the executable bit for .exe files and can omit it for downloaded ELF/Mach-O
+            # binaries. The publishing job assembles the authoritative snapshot on POSIX,
+            # where every asset is normalized and checked against its canonical mode.
             case "${MSYSTEM:-}" in
                 UCRT64|CLANG64)
                     windows_binary=$(release_platform_binary_name windows-x64) ||
                         fail 'could not derive Windows release binary name'
                     [ "$asset_name" = "$windows_binary" ] &&
                         [ "$expected_mode" = 0644 ] && [ "$actual_mode" = 755 ] && continue
+                    for posix_platform in linux-x64 linux-arm64 macos-x64 macos-arm64; do
+                        posix_binary=$(release_platform_binary_name "$posix_platform") ||
+                            fail 'could not derive POSIX release binary name'
+                        [ "$asset_name" = "$posix_binary" ] &&
+                            [ "$expected_mode" = 0755 ] && [ "$actual_mode" = 644 ] && continue 2
+                    done
                     ;;
             esac
             fail "release asset has mode $actual_mode, expected ${expected_mode#0}: $asset_name"

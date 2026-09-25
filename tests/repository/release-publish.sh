@@ -350,32 +350,45 @@ fi
 [ ! -e "$TMP_ROOT/assembly-failure-output" ] ||
     fail 'failed candidate assembly published an output directory'
 
-# MSYS2 synthesizes executable mode bits for .exe files even when the canonical
-# transported mode is 0644. Validate the release-mode policy directly so the
-# fixture does not change the host platform selected by uname.
+# MSYS2/NTFS cannot expose every canonical Unix release mode. Validate only the
+# two known representation differences without weakening mode checks for other assets.
 mode_bin=$TMP_ROOT/mode-bin
 mode_fixture=$TMP_ROOT/mode-fixture
 mkdir -p "$mode_bin" "$mode_fixture"
 printf 'windows\n' > "$mode_fixture/cup-windows-x64.exe"
+printf 'linux\n' > "$mode_fixture/cup-linux-arm64"
+printf 'installer\n' > "$mode_fixture/install.sh"
 cat > "$mode_bin/stat" <<'MOCK_MODE_STAT'
 #!/usr/bin/env sh
 set -eu
-printf '%s\n' "${CUP_TEST_WINDOWS_EXE_MODE:?}"
+printf '%s\n' "${CUP_TEST_RELEASE_MODE:?}"
 MOCK_MODE_STAT
 chmod 0755 "$mode_bin/stat"
-validate_windows_mode() {
-    mode=$1
-    PATH="$mode_bin:$PATH" MSYSTEM=UCRT64 CUP_TEST_WINDOWS_EXE_MODE="$mode" \
+validate_msys_mode() {
+    asset=$1
+    mode=$2
+    PATH="$mode_bin:$PATH" MSYSTEM=UCRT64 CUP_TEST_RELEASE_MODE="$mode" \
         sh -c 'SCRIPT_DIR=$1; . "$SCRIPT_DIR/common.sh"; \
-            validate_release_asset_modes "$2" cup-windows-x64.exe' \
-        sh "$ROOT/scripts/release" "$mode_fixture"
+            validate_release_asset_modes "$2" "$3"' \
+        sh "$ROOT/scripts/release" "$mode_fixture" "$asset"
 }
-validate_windows_mode 755
-if validate_windows_mode 777 >"$TMP_ROOT/msys-bad.out" 2>&1; then
+validate_msys_mode cup-windows-x64.exe 755
+validate_msys_mode cup-linux-arm64 644
+if validate_msys_mode cup-windows-x64.exe 777 >"$TMP_ROOT/msys-windows-bad.out" 2>&1; then
     fail 'MSYS2 mode tolerance accepted an unrelated Windows executable mode'
 fi
-assert_contains "$(cat "$TMP_ROOT/msys-bad.out")" \
+assert_contains "$(cat "$TMP_ROOT/msys-windows-bad.out")" \
     'release asset has mode 777, expected 644: cup-windows-x64.exe'
+if validate_msys_mode cup-linux-arm64 666 >"$TMP_ROOT/msys-posix-bad.out" 2>&1; then
+    fail 'MSYS2 mode tolerance accepted an unrelated POSIX executable mode'
+fi
+assert_contains "$(cat "$TMP_ROOT/msys-posix-bad.out")" \
+    'release asset has mode 666, expected 755: cup-linux-arm64'
+if validate_msys_mode install.sh 644 >"$TMP_ROOT/msys-installer-bad.out" 2>&1; then
+    fail 'MSYS2 mode tolerance incorrectly covered install.sh'
+fi
+assert_contains "$(cat "$TMP_ROOT/msys-installer-bad.out")" \
+    'release asset has mode 644, expected 755: install.sh'
 [ "$(stat -c '%a' "$assembled/cup-windows-x64.exe")" = 644 ] ||
     fail 'MSYS2 mode tolerance changed the canonical Windows executable mode'
 
