@@ -14,18 +14,18 @@ catalog=$DEV_ROOT/config/catalog.cfg
 run_cup search compiler >"$TMP_ROOT/seed-search.out"
 assert_missing "$TEST_HOME/.cup"
 
-cat > "$catalog" <<'CATALOG'
+cat > "$catalog" <<CATALOG
 format=1
 revision=1
 update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
 package.0.component=compiler
 package.0.tool=clang
-package.0.host=linux-x64
-package.0.target=linux-x64
+package.0.host=$TEST_PLATFORM
+package.0.target=$TEST_PLATFORM
 package.0.version=98.0.1
 package.0.stable=true
 package.0.artifact.0.format=tar.gz
-package.0.artifact.0.url=https://example.invalid/clang-98.0.1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.url=https://example.invalid/clang-98.0.1-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
 package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
 CATALOG
 run_cup search compiler >"$TMP_ROOT/concrete-search.out"
@@ -38,35 +38,35 @@ cp "$TMP_ROOT/missing-sha.cfg" "$catalog"
 run_cup_expect_failure "$TMP_ROOT/missing-sha.out" search compiler
 
 # Production catalog artifact URLs require HTTPS; loopback HTTP is reserved for explicit tests.
-cat > "$catalog" <<'CATALOG'
+cat > "$catalog" <<CATALOG
 format=1
 revision=1
 update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
 package.0.component=compiler
 package.0.tool=clang
-package.0.host=linux-x64
-package.0.target=linux-x64
+package.0.host=$TEST_PLATFORM
+package.0.target=$TEST_PLATFORM
 package.0.version=98.0.1
 package.0.stable=true
 package.0.artifact.0.format=tar.gz
-package.0.artifact.0.url=http://example.invalid/clang-98.0.1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.url=http://example.invalid/clang-98.0.1-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
 package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
 CATALOG
 run_cup_expect_failure "$TMP_ROOT/insecure-artifact.out" search compiler
 
 # A structurally safe future version is tolerated but is not made operational by guessing.
-cat > "$catalog" <<'CATALOG'
+cat > "$catalog" <<CATALOG
 format=1
 revision=2
 update_url=https://github.com/coffee-clang/cup-components/releases/download/catalog/catalog.cfg
 package.0.component=compiler
 package.0.tool=clang
-package.0.host=linux-x64
-package.0.target=linux-x64
+package.0.host=$TEST_PLATFORM
+package.0.target=$TEST_PLATFORM
 package.0.version=future-1
 package.0.stable=true
 package.0.artifact.0.format=tar.gz
-package.0.artifact.0.url=https://example.invalid/clang-future-1-linux-x64-linux-x64.tar.gz
+package.0.artifact.0.url=https://example.invalid/clang-future-1-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
 package.0.artifact.0.sha256=0000000000000000000000000000000000000000000000000000000000000000
 CATALOG
 run_cup search compiler >"$TMP_ROOT/future-search.out"

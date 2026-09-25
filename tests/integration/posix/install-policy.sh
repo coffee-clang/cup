@@ -20,8 +20,12 @@ prepare_fixture() {
     make_package compiler clang 23.1.0 "$TEST_PLATFORM" clang clang++
     make_package compiler gcc 16.2.0-rev1 "$TEST_PLATFORM" gcc g++
     make_package debugger lldb 23.1.0 "$TEST_PLATFORM" lldb
-    make_package debugger gdb 17.2 "$TEST_PLATFORM" gdb
-    make_package linker ld 2.47 "$TEST_PLATFORM" ld
+    case "$TEST_PLATFORM" in
+        linux-*)
+            make_package debugger gdb 17.2 "$TEST_PLATFORM" gdb
+            make_package linker ld 2.47 "$TEST_PLATFORM" ld
+            ;;
+    esac
     make_package linker lld 23.1.0 "$TEST_PLATFORM" lld
     make_package formatter clang-format 23.1.0 "$TEST_PLATFORM" clang-format
     make_package linter clang-tidy 23.1.0 "$TEST_PLATFORM" clang-tidy

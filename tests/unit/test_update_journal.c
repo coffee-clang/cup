@@ -2,6 +2,7 @@
 
 #include "checksum.h"
 #include "constants.h"
+#include "filesystem.h"
 #include "generation.h"
 #include "layout.h"
 #include "path.h"
@@ -147,7 +148,13 @@ static void copy_target_asset(const char *new_dir, GenerationAssetId id) {
     char source[MAX_PATH_LEN];
     TEST_ASSERT_EQUAL_INT(CUP_OK, generation_asset_spec(id, &spec));
     generation_path(source, sizeof(source), new_dir, id);
+    if (spec.read_only) {
+        TEST_ASSERT_EQUAL_INT(CUP_OK, system_set_read_only(spec.destination, 0));
+    }
     TEST_ASSERT_EQUAL_INT(CUP_OK, system_copy_file(source, spec.destination));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        filesystem_apply_required_permissions(spec.destination, spec.executable, spec.read_only));
 }
 
 static void begin_transaction(UpdateJournal *journal,

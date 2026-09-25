@@ -263,6 +263,7 @@ assert_file "$ambiguous_staging/new/release.txt"
 assert_file "$ambiguous_old/$binary_release_name"
 
 # Reset the isolated fixture after verifying evidence preservation.
+chmod u+w "$root/release.txt" "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.txt"
 cp "$ambiguous_old/release.txt" "$root/release.txt"
 cp "$ambiguous_old/LICENSE" "$root/LICENSE"
 cp "$ambiguous_old/THIRD_PARTY_NOTICES.txt" "$root/THIRD_PARTY_NOTICES.txt"
