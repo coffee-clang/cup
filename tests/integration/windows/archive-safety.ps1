@@ -49,7 +49,7 @@ try {
     $escapedPath = Join-Path $cupRoot 'components\compiler\clang\windows-x64\escape.txt'
     Assert-PathMissing $escapedPath
 
-    $backslashVersion = '30.1.5'
+    $backslashVersion = '30.1.3'
     $backslashPackage = "clang-$backslashVersion-windows-x64-windows-x64"
     $backslashEntry = "$backslashPackage/bin\escape.cmd"
     [void](New-ZipPackageFixture `
@@ -59,7 +59,7 @@ try {
     [void](Assert-InstallRejected $backslashVersion `
         'archive contains multiple or unsafe top-level roots')
 
-    $mismatchVersion = '30.1.3'
+    $mismatchVersion = '30.1.4'
     $mismatchFixture = New-ZipPackageFixture -Version $mismatchVersion
     Set-PackageCatalogArtifact `
         -Tool 'clang' `
@@ -71,7 +71,7 @@ try {
         -Version $mismatchVersion `
         -ExtraArgs @('--format', 'tar.gz'))
 
-    $invalidVersion = '30.1.4'
+    $invalidVersion = '30.1.5'
     $invalidPackage = "clang-$invalidVersion-windows-x64-windows-x64"
     Ensure-FixtureRuntimeRoot
     $invalidArtifact = Join-Path $Script:CupTestRoot "artifacts\$invalidPackage.zip"

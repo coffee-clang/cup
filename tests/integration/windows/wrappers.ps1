@@ -13,8 +13,7 @@ try {
         -Tool "clang" `
         -Version "23.1.0" `
         -Entries @("clang", "clang++")
-    Set-PackageCatalogUpdateUrl -Url 'http://127.0.0.1:1/catalog.cfg'
-    Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
+    Invoke-Cup -CommandArgs @("install", "compiler", "clang@23.1.0") | Out-Null
 
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-23.1.0-windows-x64:clang"
     $wrapper = Join-Path $Script:CupTestHome ".cup\bin\clang.cmd"
@@ -32,7 +31,7 @@ try {
     Assert-PathMissing $stale
 
     New-TestPackage -Component "linker" -Tool "lld" -Version "23.1.0" -Entries @("cup")
-    $reserved = Invoke-Cup -CommandArgs @("install", "linker", "lld@stable") -ExpectFailure
+    $reserved = Invoke-Cup -CommandArgs @("install", "linker", "lld@23.1.0") -ExpectFailure
     Assert-Contains $reserved "conflicts with cup itself"
 
     New-TestPackage `
@@ -41,7 +40,7 @@ try {
         -Version "23.1.0" `
         -Entries @("CLANG")
     $collision = Invoke-Cup `
-        -CommandArgs @("install", "formatter", "clang-format@stable") `
+        -CommandArgs @("install", "formatter", "clang-format@23.1.0") `
         -ExpectFailure
     Assert-Contains $collision "declared by more than one default package"
 

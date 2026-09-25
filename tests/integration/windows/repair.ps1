@@ -204,7 +204,12 @@ try {
     $uninstallFailed = Invoke-Cup -CommandArgs @('repair')
     Assert-Contains $uninstallFailed 'Acknowledged failed cup uninstall (error 6).'
     Assert-PathMissing $transactionFile
-    Assert-CupHealthy
+    $doctor = Invoke-Cup -CommandArgs @('doctor')
+    Assert-Contains $doctor "Warning: installed package 'compiler:clang@23.1.0' is not listed by the current catalog."
+    Assert-Contains $doctor 'Doctor found 1 warning(s), but no blocking issues.'
+    Assert-NotContains $doctor 'Error:'
+    Assert-NotContains $doctor 'Issue:'
+    Assert-NotContains $doctor 'Incomplete:'
 
     Write-Host 'Windows repair tests passed.'
 } finally {

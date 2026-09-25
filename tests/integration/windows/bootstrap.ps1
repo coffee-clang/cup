@@ -185,11 +185,13 @@ try {
     [void](Invoke-Bootstrap -Source $downgradeSource -Base $downgradeBase)
     $downgradeRoot = Join-Path $downgradeBase '.cup'
     $downgradeRelease = Join-Path $downgradeRoot 'release.txt'
+    (Get-Item -LiteralPath $downgradeRelease -Force).IsReadOnly = $false
     $releaseLines = @(Get-Content -LiteralPath $downgradeRelease)
     for ($i = 0; $i -lt $releaseLines.Count; $i++) {
         if ($releaseLines[$i].StartsWith('version=')) { $releaseLines[$i] = 'version=999.0.0' }
     }
     Write-Utf8NoBom -Path $downgradeRelease -Lines $releaseLines
+    (Get-Item -LiteralPath $downgradeRelease -Force).IsReadOnly = $true
     $downgradeBinary = Join-Path $downgradeRoot 'bin\cup.exe'
     $downgradeBinaryHash = Get-Sha256Lower -Path $downgradeBinary
     $downgrade = Invoke-Bootstrap -Source $downgradeSource -Base $downgradeBase -ExpectFailure
