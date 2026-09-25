@@ -350,12 +350,67 @@ try {
     $env:USERPROFILE = $shellProfile
     $env:CUP_INSTALL_ALLOW_INSECURE = '1'
     $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port"
-    $shellInstallOutput = @(& $shell.Source $installSh[0] 2>&1)
-    $shellInstallStatus = $LASTEXITCODE
+
+    # install.sh may report the optional Coffee outcome on stderr while still
+    # completing the core installation successfully. Capture the native process
+    # streams explicitly so PowerShell does not turn expected stderr into an
+    # ErrorRecord before the shell's final exit status can be checked.
+    $shellStdoutPath = Join-Path $testWorkRoot 'shell-install.stdout'
+    $shellStderrPath = Join-Path $testWorkRoot 'shell-install.stderr'
+    $shellProcess = $null
+    try {
+        $shellArguments = '"' + $installSh[0] + '"'
+        $shellProcess = Start-Process -FilePath $shell.Source `
+            -ArgumentList $shellArguments `
+            -RedirectStandardOutput $shellStdoutPath `
+            -RedirectStandardError $shellStderrPath `
+            -WorkingDirectory $shellProfile `
+            -NoNewWindow `
+            -PassThru
+        [void]$shellProcess.Handle
+        if (-not $shellProcess.WaitForExit(300000)) {
+            Stop-TestProcessTree -Process $shellProcess
+            throw 'Windows shell handoff timed out'
+        }
+        $shellProcess.WaitForExit()
+        $shellInstallStatus = $shellProcess.ExitCode
+        $shellInstallOutput = @()
+        if (Test-Path -LiteralPath $shellStdoutPath) {
+            $shellInstallOutput += @(Get-Content -LiteralPath $shellStdoutPath)
+        }
+        if (Test-Path -LiteralPath $shellStderrPath) {
+            $shellInstallOutput += @(Get-Content -LiteralPath $shellStderrPath)
+        }
+    } finally {
+        if ($null -ne $shellProcess) {
+            $shellProcess.Dispose()
+        }
+        Remove-Item -LiteralPath $shellStdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $shellStderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $shellInstallText = $shellInstallOutput -join [Environment]::NewLine
+    if (-not [string]::IsNullOrEmpty($shellInstallText)) {
+        Write-Host $shellInstallText
+    }
     if ($shellInstallStatus -ne 0) {
-        throw (
-            "Windows shell handoff failed with exit code $shellInstallStatus`n" +
-            ($shellInstallOutput -join [Environment]::NewLine))
+        throw "Windows shell handoff failed with exit code $shellInstallStatus`n$shellInstallText"
+    }
+    if ($shellInstallText -notlike "*cup $Version installed successfully.*") {
+        throw "Windows shell handoff did not report a completed core installation`n$shellInstallText"
+    }
+    $coffeeOutcomeCount = 0
+    foreach ($coffeeOutcome in @(
+        'Coffee installed successfully.',
+        'Warning: Coffee was installed, but derived commands need repair; run cup repair.',
+        'Warning: Coffee was not installed; the cup core installation is ready.'
+    )) {
+        if ($shellInstallText.Contains($coffeeOutcome)) {
+            $coffeeOutcomeCount++
+        }
+    }
+    if ($coffeeOutcomeCount -ne 1) {
+        throw "Windows shell handoff did not report one Coffee outcome`n$shellInstallText"
     }
     $shellInstalled = Join-Path $shellProfile '.cup\bin\cup.exe'
     $shellVersion = & $shellInstalled --version
