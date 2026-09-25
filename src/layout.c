@@ -37,6 +37,7 @@ typedef struct {
     char path[MAX_PATH_LEN];
     SystemPathIdentity identity;
     int active;
+    int private_unpublished;
 } RootSnapshot;
 
 static RootSnapshot root_snapshot;
@@ -638,6 +639,7 @@ CupError layout_root_snapshot_begin_private_at(const char *root) {
     }
     root_snapshot.identity = identity;
     root_snapshot.active = 1;
+    root_snapshot.private_unpublished = 1;
     return CUP_OK;
 }
 
@@ -679,11 +681,13 @@ CupError layout_root_snapshot_validate(void) {
     if (!root_snapshot.active) {
         return CUP_ERR_TRANSACTION;
     }
-    /* Recheck handoff after the canonical lock: a process that crossed the pre-root barrier
-     * before handoff publication must retreat before mutation. */
-    err = reject_active_handoff(root_snapshot.path);
-    if (err != CUP_OK) {
-        return err;
+    /* Published canonical roots recheck handoff after the lock. A private bootstrap root is
+     * not yet a handoff slot, so only its identity remains authoritative until publication. */
+    if (!root_snapshot.private_unpublished) {
+        err = reject_active_handoff(root_snapshot.path);
+        if (err != CUP_OK) {
+            return err;
+        }
     }
     err = system_get_path_identity(root_snapshot.path, &current);
     if (err != CUP_OK) {
@@ -1179,11 +1183,13 @@ CupError layout_ensure_root(void) {
         goto done;
     }
 
-    /* A snapshot may predate handoff publication; recheck before root creation, permission
-     * repair or marker publication. */
-    err = reject_active_handoff(root);
-    if (err != CUP_OK) {
-        goto done;
+    /* Canonical roots may acquire a handoff after snapshot selection. Private bootstrap roots
+     * have no handoff slot until publication. */
+    if (!root_snapshot.private_unpublished) {
+        err = reject_active_handoff(root);
+        if (err != CUP_OK) {
+            goto done;
+        }
     }
 
     if (!root_snapshot.identity.valid) {

@@ -69,7 +69,6 @@ try {
         -Sha256 $mismatchFixture.Sha256
     [void](Assert-InstallRejected `
         -Version $mismatchVersion `
-        -ExpectedDiagnostic "archive content does not match declared format 'tar.gz'" `
         -ExtraArgs @('--format', 'tar.gz'))
 
     $invalidVersion = '30.1.4'

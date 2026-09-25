@@ -29,10 +29,11 @@ try {
     Assert-Equals (Get-Sha256Lower -Path $packageManifest) $manifestHash
 
     # State entries with no package are removed together with their defaults.
-    Add-Content -LiteralPath $stateFile -Encoding utf8 -Value @(
+    [string[]]$stateLines = Get-Content -LiteralPath $stateFile
+    Write-Utf8NoBom -Path $stateFile -Lines ($stateLines + @(
         'installed.debugger.windows-x64=lldb@23.1.0',
         'default.debugger.windows-x64=lldb@23.1.0'
-    )
+    ))
     $stale = Invoke-Cup -CommandArgs @('repair')
     Assert-Contains $stale "Removed stale state record 'debugger:lldb@23.1.0'."
     Assert-NotContains (Get-Content -LiteralPath $stateFile -Raw) 'lldb@23.1.0'

@@ -13,6 +13,7 @@ try {
         -Tool "clang" `
         -Version "23.1.0" `
         -Entries @("clang", "clang++")
+    Set-PackageCatalogUpdateUrl -Url 'http://127.0.0.1:1/catalog.cfg'
     Invoke-Cup -CommandArgs @("install", "compiler", "clang@stable") | Out-Null
 
     Assert-Equals (Invoke-ManagedCommand -Name "clang") "clang-23.1.0-windows-x64:clang"

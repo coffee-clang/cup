@@ -694,6 +694,28 @@ static void test_runtime_wrong_path_type(void) {
     TEST_ASSERT_TRUE(issues > 0);
 }
 
+
+static void test_private_unpublished_snapshot_skips_canonical_handoff(void) {
+    char base[1024];
+    char root[1024];
+    char selected[1024];
+
+    TEST_ASSERT_TRUE(snprintf(base, sizeof(base), "%s/private-unpublished", temp_dir) > 0);
+    TEST_ASSERT_EQUAL_INT(CUP_OK, system_make_directory(base));
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        system_create_temp_directory(
+            base, CUP_INSTALL_TEMP_PREFIX, root, sizeof(root)));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_begin_private_at(root));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_get_root(selected, sizeof(selected)));
+    TEST_ASSERT_TRUE(path_equal(root, selected));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_root());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_ensure_runtime());
+    TEST_ASSERT_EQUAL_INT(CUP_OK, layout_root_snapshot_validate());
+    layout_root_snapshot_end();
+    TEST_ASSERT_EQUAL_INT(0, test_remove_tree(root));
+}
+
 static void test_root_snapshot_has_single_owner(void) {
     char home[1024];
     char root[1024];
@@ -859,6 +881,7 @@ void register_layout_tests(void) {
     RUN_TEST(test_runtime_wrong_path_type);
     RUN_TEST(test_directory_creation_prevalidates_identity);
     RUN_TEST(test_recovery_paths);
+    RUN_TEST(test_private_unpublished_snapshot_skips_canonical_handoff);
     RUN_TEST(test_root_snapshot_has_single_owner);
     RUN_TEST(test_root_snapshot_is_stable_and_identity_bound);
     RUN_TEST(test_root_snapshot_does_not_adopt_concurrent_creation);
