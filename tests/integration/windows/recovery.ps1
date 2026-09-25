@@ -6,34 +6,6 @@ param(
 )
 . (Join-Path $PSScriptRoot "..\..\support\windows\common.ps1")
 
-function New-PrivateBootstrapDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $security = New-Object Security.AccessControl.DirectorySecurity
-    $security.SetOwner($identity.User)
-    $security.SetAccessRuleProtection($true, $false)
-    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-        [Security.AccessControl.InheritanceFlags]::ObjectInherit
-    $propagation = [Security.AccessControl.PropagationFlags]::None
-    $principals = @(
-        $identity.User,
-        [Security.Principal.SecurityIdentifier]::new(
-            [Security.Principal.WellKnownSidType]::LocalSystemSid, $null),
-        [Security.Principal.SecurityIdentifier]::new(
-            [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
-    )
-    foreach ($principal in $principals) {
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
-            $principal,
-            [Security.AccessControl.FileSystemRights]::FullControl,
-            $inheritance,
-            $propagation,
-            [Security.AccessControl.AccessControlType]::Allow)
-        [void]$security.AddAccessRule($rule)
-    }
-    [IO.Directory]::CreateDirectory($Path, $security) | Out-Null
-}
 
 function Get-FixtureIdentity {
     $version = (Get-Content -LiteralPath (Join-Path $Script:CupTestProjectRoot 'VERSION') -Raw).Trim()
@@ -65,7 +37,7 @@ function Write-ReleaseManifest {
 function New-BootstrapSource {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    New-PrivateBootstrapDirectory -Path $Path
+    New-PrivateTestDirectory -Path $Path
     Copy-Item -LiteralPath $Script:CupTestExecutable `
         -Destination (Join-Path $Path 'cup-windows-x64.exe')
     Copy-Item -LiteralPath (Join-Path $Script:CupTestProjectRoot 'LICENSE') `

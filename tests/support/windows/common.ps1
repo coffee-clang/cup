@@ -142,6 +142,35 @@ function New-RealTestDirectory {
     return $item.FullName
 }
 
+function New-PrivateTestDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $security = New-Object Security.AccessControl.DirectorySecurity
+    $security.SetOwner($identity.User)
+    $security.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $propagation = [Security.AccessControl.PropagationFlags]::None
+    $principals = @(
+        $identity.User,
+        [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::LocalSystemSid, $null),
+        [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    )
+    foreach ($principal in $principals) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $principal,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            $propagation,
+            [Security.AccessControl.AccessControlType]::Allow)
+        [void]$security.AddAccessRule($rule)
+    }
+    [IO.Directory]::CreateDirectory($Path, $security) | Out-Null
+}
+
 function New-IsolatedTestRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -630,6 +659,7 @@ function Assert-CupStatus {
 # Catalog and package fixtures used by command-level suites.
 function Ensure-FixtureRuntimeRoot {
     $root = Join-Path $Script:CupTestHome '.cup'
+    New-PrivateTestDirectory -Path $root
     foreach ($child in @('components', 'staging', 'config', 'bin')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $root $child) | Out-Null
     }
