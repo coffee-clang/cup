@@ -820,7 +820,7 @@ try {
     }
     $updateText = $updateOutput -join "`n"
     if ($updateText -notlike (
-            "*cup update to $nextVersion verified; it will finish automatically when this command exits.*")) {
+            "*cup $nextVersion is ready; the update will finish automatically after this command exits.*")) {
         throw "cup update cup did not report the accepted update handoff`n$updateText"
     }
 

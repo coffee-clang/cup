@@ -376,7 +376,7 @@ attempt_fresh_coffee() {
     fi
     coffee_state=$("$INSTALLED_BINARY" list package-manager 2>/dev/null || true)
     case "$coffee_state" in
-        *'package-manager:coffee@'*)
+        *'package-manager: coffee@'*)
             printf 'Warning: Coffee was installed, but derived commands need repair; run cup repair.\n' >&2
             return 0
             ;;

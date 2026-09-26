@@ -553,7 +553,7 @@ try {
                 Fail 'optional Coffee installation left an unresolved cup transaction; run cup repair'
             }
             $coffeeState = @(& $installed list package-manager 2>$null)
-            if ($LASTEXITCODE -eq 0 -and ($coffeeState -join "`n") -match 'package-manager:coffee@') {
+            if ($LASTEXITCODE -eq 0 -and ($coffeeState -join "`n") -match 'package-manager: coffee@') {
                 Write-Warning 'Coffee was installed, but derived commands need repair; run cup repair.'
             } else {
                 Write-Warning 'Coffee was not installed; the cup core installation is ready.'

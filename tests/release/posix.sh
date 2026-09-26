@@ -233,7 +233,7 @@ update_output=$(
 )
 printf '%s\n' "$update_output"
 printf '%s\n' "$update_output" | \
-    grep -F "cup update to $next_version verified; it will finish automatically when this command exits." \
+    grep -F "cup $next_version is ready; the update will finish automatically after this command exits." \
         >/dev/null
 
 attempt=0

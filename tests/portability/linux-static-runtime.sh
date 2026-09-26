@@ -269,7 +269,7 @@ verify_successful_install() {
     local list_output wrapper_output staging
 
     list_output=$(HOME="$home" "$CUP" list compiler)
-    grep -F 'compiler:clang@99.0.0' <<<"$list_output" >/dev/null ||
+    grep -F 'compiler: clang@99.0.0' <<<"$list_output" >/dev/null ||
         fail 'installed package is missing from cup list'
     HOME="$home" "$CUP" doctor >/dev/null ||
         fail 'cup doctor rejected the completed installation'

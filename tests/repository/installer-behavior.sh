@@ -212,7 +212,7 @@ if [ "${1:-}" = --internal-root-probe ]; then
 fi
 if [ "${1:-}" = list ] && [ "${2:-}" = package-manager ]; then
     case "${CUP_COFFEE_MODE:-unavailable}" in
-        poststate) printf 'package-manager:coffee@1.0.0\n' ;;
+        poststate) printf 'package-manager: coffee@1.0.0\n' ;;
     esac
     exit 0
 fi
