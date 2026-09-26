@@ -9,19 +9,19 @@ param(
 try {
     Initialize-TestEnvironment -Name "install-policy" -ExecutablePath $CupExecutablePath
 
-    Ensure-FixtureRuntimeRoot
-    $emptyUpdate = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
-        -Arguments @('update') -WorkingDirectory $Script:CupTestDevRoot
-    Assert-Equals ([string]$emptyUpdate.ExitCode) '0'
-    Assert-Equals $emptyUpdate.Stdout 'No installed tools to update.'
-    Assert-NotContains $emptyUpdate.Stderr 'Refreshing catalog'
-
     $initial = Invoke-Cup -CommandArgs @("config")
     Assert-Contains $initial "Install preferences for host 'windows-x64', target 'windows-x64'"
     Assert-Contains $initial "compiler           clang"
     Assert-Contains $initial "official default"
     Assert-Contains $initial "analyzer           -                  -                  unavailable"
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup")
+
+    Ensure-FixtureRuntimeRoot
+    $emptyUpdate = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('update') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$emptyUpdate.ExitCode) '0'
+    Assert-Equals $emptyUpdate.Stdout 'No installed tools to update.'
+    Assert-NotContains $emptyUpdate.Stderr 'Refreshing catalog'
 
     New-TestPackage -Component "compiler" -Tool "clang" -Version "23.1.0" `
         -Entries @("clang", "clang++")
