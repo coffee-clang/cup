@@ -70,24 +70,24 @@ function Get-CanonicalAsciiLines {
     return @($parts[0..($parts.Length - 2)])
 }
 
-# Run child PowerShell scripts while preserving expected stderr and exit status.
-function Invoke-PowerShellScript {
+# Run release-test child processes without letting PowerShell reinterpret native
+# stderr as a terminating error. Progress and diagnostics legitimately use stderr.
+function Invoke-ReleaseProcess {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$ScriptPath,
+        [string]$FilePath,
+        [string]$Arguments = '',
         [Parameter(Mandatory = $true)]
         [string]$WorkingDirectory
     )
 
     $id = [Guid]::NewGuid().ToString('N')
-    $stdoutPath = Join-Path $testWorkRoot "powershell-$id.stdout"
-    $stderrPath = Join-Path $testWorkRoot "powershell-$id.stderr"
-
+    $stdoutPath = Join-Path $testWorkRoot "process-$id.stdout"
+    $stderrPath = Join-Path $testWorkRoot "process-$id.stderr"
     $process = $null
     try {
-        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
-        $process = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList $arguments `
+        $process = Start-Process -FilePath $FilePath `
+            -ArgumentList $Arguments `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath `
             -WorkingDirectory $WorkingDirectory `
@@ -96,7 +96,7 @@ function Invoke-PowerShellScript {
         [void]$process.Handle
         if (-not $process.WaitForExit(300000)) {
             Stop-TestProcessTree -Process $process
-            throw "PowerShell release fixture timed out: $ScriptPath"
+            throw "Release test process timed out: $FilePath"
         }
         $process.WaitForExit()
 
@@ -119,6 +119,32 @@ function Invoke-PowerShellScript {
         Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Invoke-PowerShellScript {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory
+    )
+
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    return Invoke-ReleaseProcess -FilePath 'powershell.exe' `
+        -Arguments $arguments -WorkingDirectory $WorkingDirectory
+}
+
+function Invoke-ReleaseNative {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+
+    # Current release-test invocations use fixed option tokens without whitespace.
+    $argumentText = $Arguments -join ' '
+    return Invoke-ReleaseProcess -FilePath $FilePath `
+        -Arguments $argumentText -WorkingDirectory (Get-Location).Path
 }
 
 function Test-InstallerMetadataFailure {
@@ -466,8 +492,9 @@ try {
     $savedInstalledPath = $env:Path
     try {
         $env:Path = "$(Split-Path -Parent $installed);$savedInstalledPath"
-        $doctorOutput = @(& $installed doctor 2>&1)
-        $doctorStatus = $LASTEXITCODE
+        $doctorResult = Invoke-ReleaseNative -FilePath $installed -Arguments @('doctor')
+        $doctorOutput = $doctorResult.Output
+        $doctorStatus = $doctorResult.ExitCode
     } finally {
         $env:Path = $savedInstalledPath
     }
@@ -507,8 +534,9 @@ try {
     $savedCustomPath = $env:Path
     try {
         $env:Path = "$(Split-Path -Parent $customCup);$savedCustomPath"
-        $customDoctor = @(& $customCup doctor 2>&1)
-        $customDoctorStatus = $LASTEXITCODE
+        $customDoctorResult = Invoke-ReleaseNative -FilePath $customCup -Arguments @('doctor')
+        $customDoctor = $customDoctorResult.Output
+        $customDoctorStatus = $customDoctorResult.ExitCode
     } finally {
         $env:Path = $savedCustomPath
     }
@@ -540,8 +568,9 @@ try {
     $savedRelocatedPath = $env:Path
     try {
         $env:Path = "$(Split-Path -Parent $relocatedCup);$savedRelocatedPath"
-        $relocatedDoctor = @(& $relocatedCup doctor 2>&1)
-        $relocatedDoctorStatus = $LASTEXITCODE
+        $relocatedDoctorResult = Invoke-ReleaseNative -FilePath $relocatedCup -Arguments @('doctor')
+        $relocatedDoctor = $relocatedDoctorResult.Output
+        $relocatedDoctorStatus = $relocatedDoctorResult.ExitCode
     } finally {
         $env:Path = $savedRelocatedPath
     }
@@ -549,8 +578,10 @@ try {
         ($relocatedDoctor -join [Environment]::NewLine) -notlike '*Doctor found no issues.*') {
         throw 'Relocated Windows reinstall did not leave a healthy installation'
     }
-    $customUninstall = @(& $relocatedCup uninstall --yes 2>&1)
-    if ($LASTEXITCODE -ne 0) {
+    $customUninstallResult = Invoke-ReleaseNative -FilePath $relocatedCup `
+        -Arguments @('uninstall', '--yes')
+    $customUninstall = $customUninstallResult.Output
+    if ($customUninstallResult.ExitCode -ne 0) {
         throw "Relocated custom-root uninstall failed`n$($customUninstall -join [Environment]::NewLine)"
     }
     $customDeadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -604,8 +635,9 @@ try {
     $savedForeignPath = $env:Path
     try {
         $env:Path = "$(Split-Path -Parent $foreignInstalled);$savedForeignPath"
-        $foreignDoctor = @(& $foreignInstalled doctor 2>&1)
-        $foreignDoctorStatus = $LASTEXITCODE
+        $foreignDoctorResult = Invoke-ReleaseNative -FilePath $foreignInstalled -Arguments @('doctor')
+        $foreignDoctor = $foreignDoctorResult.Output
+        $foreignDoctorStatus = $foreignDoctorResult.ExitCode
     } finally {
         $env:Path = $savedForeignPath
     }
@@ -613,8 +645,10 @@ try {
         ($foreignDoctor -join [Environment]::NewLine) -notlike "*Doctor found no issues.*") {
         throw "Fallback-root cup doctor did not report a healthy installation"
     }
-    $foreignUninstall = @(& $foreignInstalled uninstall --yes 2>&1)
-    if ($LASTEXITCODE -ne 0) {
+    $foreignUninstallResult = Invoke-ReleaseNative -FilePath $foreignInstalled `
+        -Arguments @('uninstall', '--yes')
+    $foreignUninstall = $foreignUninstallResult.Output
+    if ($foreignUninstallResult.ExitCode -ne 0) {
         throw "Fallback-root uninstall failed`n$($foreignUninstall -join "`n")"
     }
     $foreignDeadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -714,8 +748,9 @@ try {
     $binaryHashBeforeRepair = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
     $stagingDirectory = Join-Path $env:USERPROFILE ".cup\staging"
     Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    $repairOutput = @(& $installed repair 2>&1)
-    $repairStatus = $LASTEXITCODE
+    $repairResult = Invoke-ReleaseNative -FilePath $installed -Arguments @('repair')
+    $repairOutput = $repairResult.Output
+    $repairStatus = $repairResult.ExitCode
     $repairText = $repairOutput -join [Environment]::NewLine
     if (-not [string]::IsNullOrEmpty($repairText)) {
         Write-Host $repairText
@@ -814,9 +849,10 @@ try {
     }
 
     $env:CUP_INSTALL_BASE_URL = "http://127.0.0.1:$port/update-fixture"
-    $updateOutput = @(& $installed update cup 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "cup update cup failed with exit code $LASTEXITCODE`n$($updateOutput -join "`n")"
+    $updateResult = Invoke-ReleaseNative -FilePath $installed -Arguments @('update', 'cup')
+    $updateOutput = $updateResult.Output
+    if ($updateResult.ExitCode -ne 0) {
+        throw "cup update cup failed with exit code $($updateResult.ExitCode)`n$($updateOutput -join "`n")"
     }
     $updateText = $updateOutput -join "`n"
     if ($updateText -notlike (
@@ -869,8 +905,9 @@ try {
     $savedUpdatedPath = $env:Path
     try {
         $env:Path = "$(Split-Path -Parent $installed);$savedUpdatedPath"
-        $updatedDoctorOutput = @(& $installed doctor 2>&1)
-        $updatedDoctorStatus = $LASTEXITCODE
+        $updatedDoctorResult = Invoke-ReleaseNative -FilePath $installed -Arguments @('doctor')
+        $updatedDoctorOutput = $updatedDoctorResult.Output
+        $updatedDoctorStatus = $updatedDoctorResult.ExitCode
     } finally {
         $env:Path = $savedUpdatedPath
     }
@@ -897,9 +934,11 @@ try {
     # The assembled candidate performs its detached uninstall smoke test.
     $uninstallHandoffMessage =
         "Uninstall started. Cleanup will finish automatically after this command exits."
-    $uninstallOutput = & $installed uninstall --yes 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed cup uninstall failed with exit code $LASTEXITCODE"
+    $uninstallResult = Invoke-ReleaseNative -FilePath $installed `
+        -Arguments @('uninstall', '--yes')
+    $uninstallOutput = $uninstallResult.Output
+    if ($uninstallResult.ExitCode -ne 0) {
+        throw "Installed cup uninstall failed with exit code $($uninstallResult.ExitCode)"
     }
     $uninstallText = $uninstallOutput -join "`n"
     if ($uninstallText -notlike "*$uninstallHandoffMessage*") {
