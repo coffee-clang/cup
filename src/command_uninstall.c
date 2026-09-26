@@ -206,9 +206,8 @@ CupError command_uninstall(int assume_yes) {
      * then on the helper owns recovery and root destruction. */
     err = uninstall_helper_start(root_path, temporary_path, token, &lock);
     if (err == CUP_OK) {
-        printf("Uninstall handoff accepted; cleanup continues in the background. "
-               "You can close this terminal. The PATH entry was not removed.\n"
-               "Recovery path if cleanup fails: %s\n",
+        printf("Uninstall started. Cleanup will finish automatically after this command exits.\n"
+               "PATH was not changed. If cleanup fails, cup data remains at '%s'.\n",
                temporary_path);
         journal_created = 0;
     }
@@ -219,7 +218,7 @@ done:
     if (journal_created) {
         if (clear_unstarted_journal(root_path, temporary_path, token, &lock) != CUP_OK) {
             fprintf(stderr,
-                    "Error: uninstall handoff cleanup was incomplete. Run 'cup repair'.\n");
+                    "Error: uninstall cleanup could not be prepared safely. Run 'cup repair'.\n");
             err = CUP_ERR_TRANSACTION;
         }
     }

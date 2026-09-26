@@ -168,15 +168,15 @@ cross roots and repositories.
 
 ## `info.txt`
 
-`info.txt` describes the package. Required information includes:
+`info.txt` describes the package. Common required information includes:
 
 ```text
 package.component=<component>
 package.tool=<tool>
 package.version=<complete package version>
-package.revision_reason=<only for -revN>
 platform.host=<host>
 platform.target=<target>
+build.environment=<build environment>
 source.primary.name=<source>
 source.primary.version=<unsuffixed upstream version>
 source.primary.url=<source URL>
@@ -184,8 +184,11 @@ source.primary.sha256=<source digest>
 entry.<metadata-id>=<relative command path>
 ```
 
-Producer metadata may additionally describe triples, runtime family, build
-information, bundled dependencies or features when that information has real
+`package.revision_reason` is additionally required exactly when the complete package
+version ends in `-revN`.
+
+Producer metadata may additionally describe triples, runtime family, additional
+build details, bundled dependencies or features when that information has real
 inspection value. `info.txt` does not repeat transport formats or a constant
 `self-contained` flag.
 

@@ -83,7 +83,7 @@ prepare_fixture() {
 # Installation, catalog and default behavior.
 test_install_defaults() {
     output=$(run_cup install clang@22.1.5)
-    assert_contains "$output" 'set it as the first default'
+    assert_contains "$output" '(default)'
     assert_equals "$(run_native_wrapper clang)" \
         "clang-22.1.5-$TEST_PLATFORM:clang"
 
@@ -91,7 +91,7 @@ test_install_defaults() {
     wrapper_hash=$(hash_file "$(native_wrapper_path clang)")
     reinstall=$(run_cup install compiler clang@22.1.5 2>&1)
     assert_contains "$reinstall" \
-        "Package 'compiler:clang@22.1.5' is already installed"
+        "clang@22.1.5 is already installed"
     assert_contains "$reinstall" 'no changes were made.'
     assert_not_contains "$reinstall" 'Error:'
     assert_equals "$(hash_file "$TEST_HOME/.cup/state.txt")" "$state_hash"
@@ -102,7 +102,7 @@ test_install_defaults() {
     fi
 
     second=$(run_cup install compiler clang@23.1.0)
-    assert_not_contains "$second" 'set it as the first default'
+    assert_not_contains "$second" '(default)'
     assert_contains "$(run_cup info compiler)" \
         "compiler [$TEST_PLATFORM]: clang@22.1.5"
     assert_equals "$(run_native_wrapper clang)" \
@@ -120,7 +120,7 @@ test_catalog_views() {
     assert_contains "$info_output" "compiler [$TEST_PLATFORM]: clang@22.1.5"
     assert_contains "$info_output" "debugger [$TEST_PLATFORM]: lldb@22.1.5"
     assert_contains "$info_output" 'commands: clang, clang++'
-    assert_contains "$info_output" 'status: default'
+    assert_not_contains "$info_output" 'status: default'
 
     component_info=$(run_cup info compiler)
     assert_contains "$component_info" "compiler [$TEST_PLATFORM]: clang@22.1.5"
@@ -137,9 +137,9 @@ test_catalog_views() {
     assert_not_contains "$component_catalog" 'debugger:'
 
     installed=$(run_cup list compiler)
-    assert_contains "$installed" 'compiler:clang@22.1.5'
-    assert_contains "$installed" 'compiler:clang@23.1.0'
-    assert_not_contains "$installed" 'debugger:lldb@22.1.5'
+    assert_contains "$installed" 'compiler: clang@22.1.5'
+    assert_contains "$installed" 'compiler: clang@23.1.0'
+    assert_not_contains "$installed" 'debugger: lldb@22.1.5'
 }
 
 test_missing_default() {
@@ -153,7 +153,7 @@ test_missing_default() {
 test_updates() {
     component_update=$(run_cup update compiler)
     assert_contains "$component_update" \
-        '0 package(s) installed, 1 default(s) moved'
+        '0 installed, 1 default(s) updated'
     assert_contains "$(run_cup info compiler)" \
         "compiler [$TEST_PLATFORM]: clang@23.1.0 (stable)"
     assert_equals "$(run_native_wrapper clang)" \
@@ -161,7 +161,7 @@ test_updates() {
 
     global_update=$(run_cup update)
     assert_contains "$global_update" \
-        '1 package(s) installed, 1 default(s) moved'
+        '1 installed, 1 default(s) updated'
     assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/22.1.5/bin/lldb"
     assert_file "$TEST_HOME/.cup/components/debugger/lldb/$TEST_PLATFORM/23.1.0/bin/lldb"
     assert_contains "$(run_cup info debugger)" \
@@ -188,7 +188,7 @@ test_updates() {
 
     idempotent=$(run_cup update clang)
     assert_contains "$idempotent" \
-        '0 package(s) installed, 0 default(s) moved'
+        '0 installed, 0 default(s) updated'
 }
 
 # Cross-target, development-update and removal boundaries.
@@ -196,15 +196,15 @@ test_target_scopes() {
     [ "$TEST_PLATFORM" = linux-x64 ] || return 0
 
     all_installed=$(run_cup list)
-    assert_contains "$all_installed" 'compiler:gcc@16.2.0-rev1 [target windows-x64]'
+    assert_contains "$all_installed" 'compiler: gcc@16.2.0-rev1 [target windows-x64]'
 
     native_installed=$(run_cup list --target "$TEST_PLATFORM")
-    assert_contains "$native_installed" 'compiler:clang@23.1.0'
-    assert_not_contains "$native_installed" 'compiler:gcc@16.2.0-rev1'
+    assert_contains "$native_installed" 'compiler: clang@23.1.0'
+    assert_not_contains "$native_installed" 'compiler: gcc@16.2.0-rev1'
 
     cross_installed=$(run_cup list compiler --target windows-x64)
-    assert_contains "$cross_installed" 'compiler:gcc@16.2.0-rev1'
-    assert_not_contains "$cross_installed" 'compiler:clang@23.1.0'
+    assert_contains "$cross_installed" 'compiler: gcc@16.2.0-rev1'
+    assert_not_contains "$cross_installed" 'compiler: clang@23.1.0'
 
     cross=$(run_cup info --target windows-x64)
     assert_contains "$cross" 'compiler [windows-x64]: gcc@16.2.0-rev1 (stable)'
@@ -244,12 +244,12 @@ test_remove_default_without_promotion() {
     assert_contains "$(run_cup info compiler --target "$TEST_PLATFORM")" \
         "No default for component 'compiler' on host '$TEST_PLATFORM', target '$TEST_PLATFORM'."
     native_installed=$(run_cup list compiler --target "$TEST_PLATFORM")
-    assert_contains "$native_installed" 'compiler:clang@22.1.5'
-    assert_not_contains "$native_installed" 'compiler:clang@23.1.0'
+    assert_contains "$native_installed" 'compiler: clang@22.1.5'
+    assert_not_contains "$native_installed" 'compiler: clang@23.1.0'
     assert_cup_healthy
 
-    assert_contains "$(run_cup remove clang)" 'Removed compiler clang -> clang@22.1.5'
-    assert_not_contains "$(run_cup list compiler --target "$TEST_PLATFORM")" 'compiler:clang@'
+    assert_contains "$(run_cup remove clang)" 'Removed compiler clang@22.1.5'
+    assert_not_contains "$(run_cup list compiler --target "$TEST_PLATFORM")" 'compiler: clang@'
     assert_cup_healthy
 }
 

@@ -256,7 +256,7 @@ printf 'format=2\nproduct=coffee-clang/cup\nlayout=2\nhost=linux-x64\n' > "$root
 "$CUP_TEST_CP" "$source_directory/catalog.cfg" "$root/config/catalog.cfg"
 printf 'format=2\n' > "$root/state.txt"
 printf 'CUP_BOOTSTRAP_ROOT=%s\n' "$root"
-printf 'Verified cup %s generation installed.\n' "${CUP_TEST_RELEASE_VERSION:?}"
+printf 'cup core installed and verified.\n'
 FAKE_CUP
     chmod 0755 "$fixture/cup-linux-x64"
     printf 'license fixture\n' > "$fixture/LICENSE"

@@ -105,7 +105,7 @@ try {
     Write-Host '==> Downloading a concrete package artifact through loopback...'
     Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$validVersion") | Out-Null
     Assert-Contains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
-        "compiler:clang@$validVersion"
+        "compiler: clang@$validVersion"
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
 
@@ -128,7 +128,7 @@ try {
     Assert-Contains $failure 'downloaded package failed SHA-256 verification'
     Assert-PathMissing (Join-Path $Script:CupTestHome ".cup\cache\$badExpectedSha")
     Assert-NotContains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
-        "compiler:clang@$badVersion"
+        "compiler: clang@$badVersion"
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
 

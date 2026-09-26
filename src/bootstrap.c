@@ -492,9 +492,9 @@ CupError bootstrap_start(const char *source_directory,
 
     if (err == CUP_OK) {
         printf("CUP_BOOTSTRAP_ROOT=%s\n", published_root);
-        printf("Verified cup %s generation installed.\n", source.metadata.version);
+        printf("cup core installed and verified.\n");
     } else {
-        fprintf(stderr, "Error: verified cup generation could not be installed safely.\n");
+        fprintf(stderr, "Error: verified cup release could not be installed safely.\n");
     }
     bootstrap_source_free(&source);
     return err;

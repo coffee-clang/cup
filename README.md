@@ -26,8 +26,8 @@ The core model is deliberately small:
 - defaults decide which installed package provides a component's commands;
 - preferences affect abbreviated future installs without changing current defaults;
 - profiles select several components, while toolchains select a curated set of tools;
-- package bytes, metadata and release assets are verified before they are committed;
-- interrupted mutations leave recovery information for `cup doctor` and `cup repair`.
+- package bytes, metadata and release assets are verified before installation is accepted;
+- interrupted changes leave recovery information for `cup doctor` and `cup repair`.
 
 Supported `cup` hosts are Linux x64/ARM64, macOS x64/ARM64 and Windows x64.
 Cross-target packages are supported when they are present in the catalog.
@@ -48,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/c
 
 The default root is `~/.cup` on Linux/macOS and `%USERPROFILE%\.cup` on
 Windows. The installer may offer to add its `bin` directory to the current
-user's PATH; `cup` itself does not require or modify a system-wide PATH.
+user's PATH; `cup` itself never edits PATH.
 
 ## Quick start
 
@@ -82,6 +82,6 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 
 `cup` installs complete packages; it is not a source build system, system package
 manager or global sysroot manager. Tool-specific build choices and native
-native validation belong to `cup-components`. `cup` owns package selection, download
+validation belong to `cup-components`. `cup` owns package selection, download
 and admission, local state, defaults, command wrappers, recovery and its own
 release lifecycle.

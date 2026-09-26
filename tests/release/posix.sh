@@ -233,7 +233,7 @@ update_output=$(
 )
 printf '%s\n' "$update_output"
 printf '%s\n' "$update_output" | \
-    grep -F "Verified cup update handoff accepted for $next_version. The generation will be committed after this process exits." \
+    grep -F "cup update to $next_version verified; it will finish automatically when this command exits." \
         >/dev/null
 
 attempt=0
@@ -263,14 +263,11 @@ if find "$test_home/.cup/staging" -mindepth 1 -name 'cup-update-*' -print -quit 
 fi
 
 # The assembled release performs its detached uninstall smoke test.
-uninstall_handoff_message='Uninstall handoff accepted; cleanup continues in the background. '
-uninstall_handoff_message="${uninstall_handoff_message}You can close this terminal. "
-uninstall_handoff_message="${uninstall_handoff_message}The PATH entry was not removed."
+uninstall_handoff_message='Uninstall started. Cleanup will finish automatically after this command exits.'
 uninstall_output=$(HOME="$test_home" "$installed_cup" uninstall --yes 2>&1)
 printf '%s\n' "$uninstall_output"
 printf '%s\n' "$uninstall_output" | grep -F "$uninstall_handoff_message" >/dev/null
-printf '%s\n' "$uninstall_output" | grep -F 'Recovery path if cleanup fails: ' >/dev/null
-printf '%s\n' "$uninstall_output" | grep -F "$test_home/.cup-uninstall-" >/dev/null
+printf '%s\n' "$uninstall_output" | grep -F "PATH was not changed. If cleanup fails, cup data remains at '$test_home/.cup-uninstall-" >/dev/null
 if ! cup_test_wait_for_uninstall "$test_home/.cup" "$test_home"; then
     residue=$(cup_test_uninstall_residue "$test_home")
     [ ! -e "$test_home/.cup" ] && [ ! -L "$test_home/.cup" ] ||

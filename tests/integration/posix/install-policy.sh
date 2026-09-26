@@ -46,7 +46,7 @@ prepare_fixture() {
 test_defaults_profile() {
     output=$(run_cup config)
     assert_contains "$output" \
-        "Install selections for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
+        "Install preferences for host '$TEST_PLATFORM', target '$TEST_PLATFORM'"
     assert_contains "$output" \
         'compiler           clang              clang              official default'
     assert_contains "$(run_cup config --target windows-x64)" \
@@ -59,7 +59,7 @@ test_defaults_profile() {
     output=$(run_cup install PROFILE MINIMAL)
     assert_contains "$output" "Installing profile 'minimal' (2 packages)"
     assert_contains "$output" \
-        "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
+        "Installed profile 'minimal': 2 installed, 0 skipped."
     assert_file "$(component_root compiler clang 23.1.0)/info.txt"
     assert_file "$(component_root linker lld 23.1.0)/info.txt"
 }
@@ -107,7 +107,7 @@ test_gnu_toolchain() {
             output=$(run_cup install TOOLCHAIN GNU)
             assert_contains "$output" "Installing toolchain 'gnu' (3 packages)"
             assert_contains "$output" \
-                "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
+                "Installed toolchain 'gnu': 2 installed, 1 skipped."
             assert_file "$(component_root debugger gdb 17.2)/info.txt"
             assert_file "$(component_root linker ld 2.47)/info.txt"
             ;;
@@ -130,7 +130,7 @@ test_toolchain_explicit() {
 
     output=$(run_cup install TOOLCHAIN LLVM)
     assert_contains "$output" "Installing toolchain 'llvm' (6 packages)"
-    assert_contains "$output" "Install group 'llvm' completed: 4 package(s) installed, 2 skipped."
+    assert_contains "$output" "Installed toolchain 'llvm': 4 installed, 2 skipped."
     assert_file "$(component_root debugger lldb 23.1.0)/info.txt"
     assert_file "$(component_root formatter clang-format 23.1.0)/info.txt"
     assert_file "$(component_root linter clang-tidy 23.1.0)/info.txt"

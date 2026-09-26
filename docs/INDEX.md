@@ -54,5 +54,5 @@ persistent format, platform boundary or recovery rule.
 `cup` intentionally does not require privilege elevation, build component tools
 from source during `cup install`, maintain a system-wide package database, manage
 a global sysroot or rewrite the system PATH. Package availability is limited to
-the built-in component/tool domain and the installed catalog. `stable` is the
+the built-in component/tool domain and the current catalog. `stable` is the
 only symbolic package release selector.

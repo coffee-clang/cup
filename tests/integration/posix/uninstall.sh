@@ -7,9 +7,7 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$TESTS_ROOT/support/posix/cli.sh"
 . "$TESTS_ROOT/support/posix/uninstall.sh"
 
-uninstall_started_message='Uninstall handoff accepted; cleanup continues in the background. '
-uninstall_started_message="${uninstall_started_message}You can close this terminal. "
-uninstall_started_message="${uninstall_started_message}The PATH entry was not removed."
+uninstall_started_message='Uninstall started. Cleanup will finish automatically after this command exits.'
 
 test_begin uninstall
 prepare_command_environment
@@ -19,7 +17,7 @@ cup_root=$TEST_HOME/.cup
 printf 'fixture\n' > "$cup_root/components/fixture.txt"
 output=$(run_cup uninstall --yes)
 assert_contains "$output" "$uninstall_started_message"
-assert_contains "$output" 'Recovery path if cleanup fails: '
+assert_contains "$output" "PATH was not changed. If cleanup fails, cup data remains at '"
 assert_contains "$output" '.cup-uninstall-'
 
 if ! cup_test_wait_for_uninstall "$cup_root" "$TEST_HOME"; then

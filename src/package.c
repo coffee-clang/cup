@@ -383,15 +383,8 @@ static CupError validate_package_common_metadata(const PackageMetadata *metadata
                                                  const PackageIdentity *identity,
                                                  FILE *diagnostics) {
     static const char *const required_declarations[] = {
-        "platform.host_triple",
-        "platform.target_triple",
-        "platform.family",
-        "platform.runtime",
-        "platform.thread_model",
         "build.environment",
-        "build.source_policy",
         "source.primary.name",
-        "source.primary.version",
         "source.primary.url"
     };
     const char *source_digest;

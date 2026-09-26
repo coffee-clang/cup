@@ -20,7 +20,7 @@ install_supported_format() {
     else
         run_cup install compiler "clang@$version" --format "$format" >/dev/null
     fi
-    assert_contains "$(run_cup list compiler)" "compiler:clang@$version"
+    assert_contains "$(run_cup list compiler)" "compiler: clang@$version"
     assert_cup_healthy
 }
 
@@ -62,7 +62,7 @@ run_cup_expect_failure "$TMP_ROOT/archive-format-mismatch.out" \
     install compiler clang@98.1.1 --format tar.xz
 assert_contains "$(cat "$TMP_ROOT/archive-format-mismatch.out")" \
     "archive content does not match declared format 'tar.xz'"
-assert_not_contains "$(run_cup list compiler 2>/dev/null)" 'compiler:clang@98.1.1'
+assert_not_contains "$(run_cup list compiler 2>/dev/null)" 'compiler: clang@98.1.1'
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
@@ -71,7 +71,7 @@ run_cup_expect_failure "$TMP_ROOT/archive-plain-tar.out" \
     install compiler clang@98.1.2
 assert_contains "$(cat "$TMP_ROOT/archive-plain-tar.out")" \
     "archive content does not match declared format 'tar.gz'"
-assert_not_contains "$(run_cup list compiler 2>/dev/null)" 'compiler:clang@98.1.2'
+assert_not_contains "$(run_cup list compiler 2>/dev/null)" 'compiler: clang@98.1.2'
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
@@ -101,7 +101,7 @@ create_unsafe_archive() {
 safe_symlink_version=98.2.1
 create_unsafe_archive "$safe_symlink_version" safe-symlink
 run_cup install compiler "clang@$safe_symlink_version" >/dev/null
-assert_contains "$(run_cup list compiler)" "compiler:clang@$safe_symlink_version"
+assert_contains "$(run_cup list compiler)" "compiler: clang@$safe_symlink_version"
 assert_cup_healthy
 
 index=1
@@ -138,7 +138,7 @@ for case in traversal absolute symlink symlink-parent duplicate case-collision \
     esac
     [ -z "$expected" ] || assert_contains "$output" "$expected"
     assert_not_contains "$output" '==> Validating package...'
-    assert_not_contains "$(run_cup list compiler 2>/dev/null)" "compiler:clang@$version"
+    assert_not_contains "$(run_cup list compiler 2>/dev/null)" "compiler: clang@$version"
     assert_missing "$TMP_ROOT/outside.txt"
     assert_missing "$absolute_escape"
     assert_missing "$TEST_HOME/.cup/transaction.txt"

@@ -441,12 +441,9 @@ static CupError install_plan_exact_local_noop(const InstallPlan *plan,
     if (err != CUP_OK) {
         return err;
     }
-    printf("Package '%s:%s@%s' is already installed for host '%s', target '%s'; "
-           "no changes were made.\n",
-           identity.component,
+    printf("%s@%s is already installed for target '%s'; no changes were made.\n",
            identity.tool,
            identity.version,
-           identity.host_platform,
            identity.target_platform);
     *handled = 1;
     return CUP_ERR_ALREADY_INSTALLED;
@@ -612,8 +609,8 @@ execute_plan:
         }
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Install group '%s' stopped while processing package %zu of %zu: "
-                    "%zu installed, %zu skipped. Completed installations were retained.\n",
+                    "Installation of '%s' stopped at package %zu of %zu: "
+                    "%zu installed, %zu skipped. Completed installations were kept.\n",
                     plan.description,
                     i + 1,
                     plan.count,
@@ -624,7 +621,8 @@ execute_plan:
         installed_count++;
     }
 
-    printf("Install group '%s' completed: %zu package(s) installed, %zu skipped.\n",
+    printf("Installed %s '%s': %zu installed, %zu skipped.\n",
+           plan.kind == INSTALL_PLAN_PROFILE ? "profile" : "toolchain",
            plan.description,
            installed_count,
            skipped_count);

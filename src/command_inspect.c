@@ -158,7 +158,7 @@ CupError command_inspect(const char *component, const char *selector, const char
     /* Print only after the complete metadata file has passed parsing and validation. */
     printf("Package information for %s ", component);
     package_request_print(stdout, &request);
-    printf(" on host '%s', target '%s':\n\n", context.host_platform, context.target_platform);
+    printf(":\n\n");
     print_package_info(&validated.metadata);
     err = CUP_OK;
 

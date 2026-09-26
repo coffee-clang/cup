@@ -80,18 +80,75 @@ static long validation_timeout(DownloadValidation validation) {
     return validation == DOWNLOAD_VALIDATE_ARCHIVE ? 7200L : 300L;
 }
 
+typedef struct {
+    DownloadValidation validation;
+    curl_off_t last_bytes;
+    int last_percent;
+    int started;
+    int enabled;
+} DownloadProgress;
+
+static const char *download_progress_label(DownloadValidation validation) {
+    return validation == DOWNLOAD_VALIDATE_ARCHIVE ? "package" : "cup";
+}
+
+static void report_download_progress(DownloadProgress *progress,
+                                     curl_off_t download_total,
+                                     curl_off_t downloaded) {
+    const curl_off_t unknown_total_step = (curl_off_t)64 * 1024 * 1024;
+
+    if (progress == NULL || !progress->enabled || downloaded <= 0) {
+        return;
+    }
+
+    if (download_total > 0) {
+        int percent = (int)((double)downloaded * 100.0 / (double)download_total);
+
+        if (percent > 100) {
+            percent = 100;
+        }
+        if ((!progress->started && percent < 25 && percent < 100) ||
+            (progress->started &&
+             ((percent == 100 && progress->last_percent == 100) ||
+              (percent < 100 && percent < progress->last_percent + 25)))) {
+            return;
+        }
+
+        printf("==> Downloading %s: %d%% (%.1f MiB / %.1f MiB)\n",
+               download_progress_label(progress->validation),
+               percent,
+               (double)downloaded / (1024.0 * 1024.0),
+               (double)download_total / (1024.0 * 1024.0));
+        progress->last_percent = percent;
+    } else {
+        if ((!progress->started && downloaded < (curl_off_t)8 * 1024 * 1024) ||
+            (progress->started && downloaded < progress->last_bytes + unknown_total_step)) {
+            return;
+        }
+        printf("==> Downloading %s: %.1f MiB\n",
+               download_progress_label(progress->validation),
+               (double)downloaded / (1024.0 * 1024.0));
+    }
+
+    progress->last_bytes = downloaded;
+    progress->started = 1;
+}
+
 static int progress_callback(void *userdata,
                              curl_off_t download_total,
                              curl_off_t downloaded,
                              curl_off_t upload_total,
                              curl_off_t uploaded) {
-    (void)userdata;
-    (void)download_total;
-    (void)downloaded;
+    DownloadProgress *progress = userdata;
+
     (void)upload_total;
     (void)uploaded;
 
-    return interrupt_requested() ? 1 : 0;
+    if (interrupt_requested()) {
+        return 1;
+    }
+    report_download_progress(progress, download_total, downloaded);
+    return 0;
 }
 
 #define SETOPT(handle, option, value) \
@@ -113,6 +170,7 @@ static CURLcode configure_transfer(CURL *curl,
                                    const char *url,
                                    DownloadValidation validation,
                                    FILE *file,
+                                   DownloadProgress *progress,
                                    char *error_buffer,
                                    int report_errors) {
     CURLcode result = CURLE_OK;
@@ -141,6 +199,7 @@ static CURLcode configure_transfer(CURL *curl,
     SETOPT(curl, CURLOPT_WRITEDATA, file);
     SETOPT(curl, CURLOPT_NOPROGRESS, 0L);
     SETOPT(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+    SETOPT(curl, CURLOPT_XFERINFODATA, progress);
 
 cleanup:
     return result;
@@ -312,12 +371,18 @@ static CupError download_file_checked_internal(const char *url,
     char temporary_path[MAX_PATH_LEN] = "";
     long response_code = 0;
     int close_status = 0;
+    DownloadProgress progress;
 
     if (text_is_empty(url) || text_is_empty(destination) ||
         (validation != DOWNLOAD_VALIDATE_METADATA &&
          validation != DOWNLOAD_VALIDATE_BINARY && validation != DOWNLOAD_VALIDATE_ARCHIVE)) {
         return CUP_ERR_INVALID_INPUT;
     }
+
+    memset(&progress, 0, sizeof(progress));
+    progress.validation = validation;
+    progress.last_percent = -25;
+    progress.enabled = report_errors && validation != DOWNLOAD_VALIDATE_METADATA;
 
     /* Create the transfer beside the destination so the final replace stays on one filesystem. */
     err = path_parent(parent, sizeof(parent), destination);
@@ -357,7 +422,8 @@ static CupError download_file_checked_internal(const char *url,
 
     /* Apply protocol, trust, timeout and size policy before the first network byte is accepted. */
     error_buffer[0] = '\0';
-    result = configure_transfer(curl, url, validation, file, error_buffer, report_errors);
+    result =
+        configure_transfer(curl, url, validation, file, &progress, error_buffer, report_errors);
     if (result == CURLE_OK) {
         result = curl_easy_perform(curl);
         response_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -385,7 +451,7 @@ static CupError download_file_checked_internal(const char *url,
     curl_global_cleanup();
     if (sync_err != CUP_OK || close_status != 0) {
         if (report_errors) {
-            fprintf(stderr, "Error: failed to commit downloaded data for '%s'.\n", url);
+            fprintf(stderr, "Error: failed to save downloaded data for '%s'.\n", url);
         }
         return remove_temporary_download(temporary_path, CUP_ERR_FILESYSTEM);
     }
@@ -411,8 +477,7 @@ static CupError download_file_checked_internal(const char *url,
     if (err == CUP_ERR_COMMIT) {
         if (report_errors) {
             fprintf(stderr,
-                    "Error: downloaded data may already be published at '%s', but final durability "
-                    "could not be confirmed.\n",
+                    "Error: downloaded data may already be saved at '%s', but cup could not confirm it safely.\n",
                     destination);
         }
     }

@@ -82,8 +82,8 @@ static CupError initialize_runtime(void) {
     state_free(&state);
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
-                "Error: initial state.txt may already be published, but its durability could not "
-                "be confirmed. Run 'cup doctor' before retrying.\n");
+                "Error: initial state may already be saved, but cup could not confirm it safely. "
+                "Run 'cup doctor' before retrying.\n");
     }
     return err;
 }

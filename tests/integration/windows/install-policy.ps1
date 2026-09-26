@@ -10,7 +10,7 @@ try {
     Initialize-TestEnvironment -Name "install-policy" -ExecutablePath $CupExecutablePath
 
     $initial = Invoke-Cup -CommandArgs @("config")
-    Assert-Contains $initial "Install selections for host 'windows-x64', target 'windows-x64'"
+    Assert-Contains $initial "Install preferences for host 'windows-x64', target 'windows-x64'"
     Assert-Contains $initial "compiler           clang"
     Assert-Contains $initial "official default"
     Assert-Contains $initial "analyzer           -                  -                  unavailable"
@@ -42,7 +42,7 @@ try {
     $profile = Invoke-Cup -CommandArgs @("install", "PROFILE", "MINIMAL")
     Assert-Contains $profile "Installing profile 'minimal' (2 packages)"
     Assert-Contains $profile `
-        "Install group 'minimal' completed: 2 package(s) installed, 0 skipped."
+        "Installed profile 'minimal': 2 installed, 0 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
         ".cup\components\compiler\clang\windows-x64\23.1.0\info.txt")
     Assert-PathExists (Join-Path $Script:CupTestHome `
@@ -62,7 +62,7 @@ try {
     $gnu = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "GNU")
     Assert-Contains $gnu "Installing toolchain 'gnu' (3 packages)"
     Assert-Contains $gnu `
-        "Install group 'gnu' completed: 2 package(s) installed, 1 skipped."
+        "Installed toolchain 'gnu': 2 installed, 1 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
         ".cup\components\debugger\gdb\windows-x64\17.2\info.txt")
     Assert-PathExists (Join-Path $Script:CupTestHome `
@@ -94,7 +94,7 @@ try {
     $llvm = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "LLVM")
     Assert-Contains $llvm "Installing toolchain 'llvm' (6 packages)"
     Assert-Contains $llvm `
-        "Install group 'llvm' completed: 4 package(s) installed, 2 skipped."
+        "Installed toolchain 'llvm': 4 installed, 2 skipped."
     foreach ($relative in @(
         ".cup\components\debugger\lldb\windows-x64\23.1.0\info.txt",
         ".cup\components\formatter\clang-format\windows-x64\23.1.0\info.txt",

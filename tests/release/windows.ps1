@@ -820,8 +820,7 @@ try {
     }
     $updateText = $updateOutput -join "`n"
     if ($updateText -notlike (
-            "*Verified cup update handoff accepted for $nextVersion. " +
-            "The generation will be committed after this process exits.*")) {
+            "*cup update to $nextVersion verified; it will finish automatically when this command exits.*")) {
         throw "cup update cup did not report the accepted update handoff`n$updateText"
     }
 
@@ -897,8 +896,7 @@ try {
 
     # The assembled candidate performs its detached uninstall smoke test.
     $uninstallHandoffMessage =
-        "Uninstall handoff accepted; cleanup continues in the background. " +
-        "You can close this terminal. The PATH entry was not removed."
+        "Uninstall started. Cleanup will finish automatically after this command exits."
     $uninstallOutput = & $installed uninstall --yes 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Installed cup uninstall failed with exit code $LASTEXITCODE"
@@ -907,9 +905,9 @@ try {
     if ($uninstallText -notlike "*$uninstallHandoffMessage*") {
         throw "Installed cup uninstall did not report accepted detached handoff"
     }
-    if ($uninstallText -notlike "*Recovery path if cleanup fails: *" -or
+    if ($uninstallText -notlike "*PATH was not changed. If cleanup fails, cup data remains at '*" -or
         $uninstallText -notlike "*.cup-uninstall-*") {
-        throw "Installed cup uninstall did not report its detached recovery path"
+        throw "Installed cup uninstall did not report its cleanup fallback path"
     }
     $cupRoot = Join-Path $env:USERPROFILE ".cup"
     $deadline = [DateTime]::UtcNow.AddSeconds(20)

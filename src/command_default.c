@@ -83,8 +83,8 @@ static CupError commit_default(CommandContext *context,
         &context->state, &context->state_identity, &context->state_identity);
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
-                "Error: the default state may already be saved, but its durability could not "
-                "be confirmed. Run 'cup doctor' before retrying.\n");
+                "Error: the default may already be saved, but cup could not confirm it safely. "
+                "Run 'cup doctor' before retrying.\n");
     }
     if (err != CUP_OK) {
         return err;
@@ -124,12 +124,11 @@ CupError command_default(const char *component, const char *selector, const char
         err = commit_default(&context, &package, &wrappers);
     }
     if (err == CUP_OK) {
-        printf("Default %s for host '%s', target '%s' set to ",
+        printf("Default %s set to %s@%s for target '%s'.\n",
                component,
-               context.host_platform,
+               package.tool,
+               package.version,
                context.target_platform);
-        package_request_print(stdout, &request);
-        printf(".\n");
     }
 
     wrapper_plan_free(&wrappers);

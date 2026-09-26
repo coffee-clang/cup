@@ -91,8 +91,7 @@ CupError update_helper_start(const char *root, const char *token, SystemLock *lo
     return system_start_update_helper(helper, root, token, lock);
 }
 
-/* Detached helper execution. Handoff authority remains continuous while the parent exits and this
- * helper returns to the canonical lock before it touches update state. */
+/* Match the journal workspace suffix encoded in one validated update token. */
 static int token_matches_temporary_name(const char *token, const char *temporary_name) {
     size_t token_length;
     size_t name_length;

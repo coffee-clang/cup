@@ -73,8 +73,9 @@ cup install clang@stable
 After installation, the package keeps the concrete version that was resolved at
 that time even if the catalog later changes its stable release.
 
-`cup` does not use semantic-version ordering to guess package releases. The
-catalog is responsible for the available versions and the stable selection.
+The catalog defines the available versions and which one is `stable`. `cup` uses
+its package-version ordering only to compare concrete releases; it does not derive
+`stable` from the version list.
 
 ## Preferences and defaults
 
@@ -163,20 +164,19 @@ user-manageable base as long as its managed leaf remains valid.
 
 `cup` does not build GCC, LLVM or the other tools during `cup install`.
 `cup-components` produces complete packages and publishes their checksums and
-metadata. `cup` selects, downloads, verifies, extracts and commits those packages.
+metadata. `cup` selects, downloads, verifies, extracts and installs those packages.
 
 This split keeps tool-specific build knowledge in the producer and package/state
 management in `cup`. See [Packages](../design/PACKAGES.md) for the package contract.
 
 ## Recovery model
 
-Commands that can leave persistent state half changed use a transaction journal.
-The local state file is the deciding commit point for package install/remove.
-Package update installs a newer immutable package through the same install
-transaction. Self-update and uninstall use detached native helpers because the running `cup`
-executable or root cannot always be replaced in place.
+Commands that can be interrupted keep recovery information until the result can be
+determined safely. Package update installs a newer immutable package through the same
+installation path as an ordinary package. Self-update and uninstall may continue in a
+separate process after the current `cup` process exits.
 
-Normal mutating commands stop when recovery information is pending. `cup doctor`
+Normal state-changing commands stop when recovery information is pending. `cup doctor`
 is read-only and reports the condition; `cup repair` changes files only when the
 saved state and filesystem give one safe result.
 

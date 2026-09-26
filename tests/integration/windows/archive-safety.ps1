@@ -20,7 +20,7 @@ function Assert-InstallRejected(
     }
     Assert-NotContains `
         (Invoke-Cup -CommandArgs @('list', 'compiler')) `
-        "compiler:clang@$Version"
+        "compiler: clang@$Version"
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     return $output
 }

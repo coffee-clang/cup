@@ -97,10 +97,10 @@ static CupError require_trusted_current_generation(void) {
         if (binary_mismatch) {
             fprintf(stderr,
                     "Error: the installed cup binary does not match its release manifest. "
-                    "Use the official installer to repair the cup generation before 'cup update cup'.\n");
+                    "Use the official installer to repair cup before 'cup update cup'.\n");
         } else {
             fprintf(stderr,
-                    "Error: the installed cup generation metadata is not trustworthy. "
+                    "Error: the installed cup release metadata is not trustworthy. "
                     "Run 'cup repair'; if the binary itself is damaged, use the official installer.\n");
         }
         return CUP_ERR_VALIDATION;
@@ -244,7 +244,7 @@ CupError self_update_start(void) {
     if (err == CUP_OK) err = prepare_update_files(&files);
     if (err == CUP_OK) err = discover_target(&files, &latest, &update_available);
     if (err == CUP_OK && update_available) {
-        printf("==> Downloading cup %s (installed: %s)...\n", latest.version, CUP_VERSION_BASE);
+        printf("==> Preparing cup update %s -> %s...\n", CUP_VERSION_BASE, latest.version);
         err = fetch_versioned_target(&files, &latest, &target);
     }
     if (err == CUP_OK && update_available) {
@@ -268,7 +268,7 @@ CupError self_update_start(void) {
     if (err == CUP_OK && update_available) err = interrupt_safe_point();
     if (err == CUP_OK && update_available) err = update_helper_start(root, helper_token, &context.lock);
     if (err == CUP_OK && update_available) {
-        printf("Verified cup update handoff accepted for %s. The generation will be committed after this process exits.\n",
+        printf("cup %s is ready; the update will finish automatically after this command exits.\n",
                target.version);
     }
 

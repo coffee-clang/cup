@@ -38,7 +38,7 @@ static CupError show_configuration(const InstallPolicy *policy,
                                    const char *target) {
     size_t i;
 
-    printf("Install selections for host '%s', target '%s':\n\n", host, target);
+    printf("Install preferences for host '%s', target '%s':\n\n", host, target);
     printf("%-18s %-18s %-18s %s\n", "Component", "Effective tool", "Official default", "Source");
     for (i = 0; i < registry_component_count(); ++i) {
         const char *component = registry_component_at(i);
@@ -76,8 +76,8 @@ static CupError save_preferences(ToolPreferences *preferences) {
 
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
-                "Error: preferences may already be updated, but their durability could not be "
-                "confirmed. Run 'cup config' before retrying.\n");
+                "Error: preferences may already be saved, but cup could not confirm them safely. "
+                "Run 'cup config' before retrying.\n");
     }
     return err;
 }

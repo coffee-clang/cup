@@ -65,14 +65,14 @@ function Initialize-LifecycleFixture {
 
 function Test-InstallDefaults {
     $installed = Invoke-Cup -CommandArgs @("install", "clang@22.1.5")
-    Assert-Contains $installed "set it as the first default"
+    Assert-Contains $installed "(default)"
 
     $statePath = Join-Path $Script:CupTestHome ".cup\state.txt"
     $wrapperPath = Join-Path $Script:CupTestHome ".cup\bin\clang.cmd"
     $stateHash = (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash
     $wrapperHash = (Get-FileHash -LiteralPath $wrapperPath -Algorithm SHA256).Hash
     $reinstall = Invoke-Cup -CommandArgs @("install", "compiler", "clang@22.1.5")
-    Assert-Contains $reinstall "Package 'compiler:clang@22.1.5' is already installed"
+    Assert-Contains $reinstall "clang@22.1.5 is already installed"
     Assert-Contains $reinstall "no changes were made."
     Assert-NotContains $reinstall "Error:"
     Assert-Equals ((Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash) $stateHash
@@ -86,7 +86,7 @@ function Test-InstallDefaults {
     }
 
     $second = Invoke-Cup -CommandArgs @("install", "compiler", "clang@23.1.0")
-    Assert-NotContains $second "set it as the first default"
+    Assert-NotContains $second "(default)"
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `
         "compiler [windows-x64]: clang@22.1.5"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") `
@@ -114,17 +114,17 @@ function Test-TargetScopes {
         "install", "compiler", "clang@stable", "--target", "linux-x64") | Out-Null
 
     $allInstalled = Invoke-Cup -CommandArgs @("list")
-    Assert-Contains $allInstalled "compiler:clang@23.1.0 [target linux-x64]"
+    Assert-Contains $allInstalled "compiler: clang@23.1.0 [target linux-x64]"
 
     $nativeInstalled = Invoke-Cup -CommandArgs @(
         "list", "--target", "windows-x64")
-    Assert-Contains $nativeInstalled "compiler:clang@23.1.0"
+    Assert-Contains $nativeInstalled "compiler: clang@23.1.0"
     Assert-NotContains $nativeInstalled "[target linux-x64]"
 
     $crossInstalled = Invoke-Cup -CommandArgs @(
         "list", "compiler", "--target", "linux-x64")
-    Assert-Contains $crossInstalled "compiler:clang@23.1.0"
-    Assert-NotContains $crossInstalled "compiler:clang@22.1.5"
+    Assert-Contains $crossInstalled "compiler: clang@23.1.0"
+    Assert-NotContains $crossInstalled "compiler: clang@22.1.5"
 
     $crossInfo = Invoke-Cup -CommandArgs @("info", "--target", "linux-x64")
     Assert-Contains $crossInfo "compiler [linux-x64]: clang@23.1.0 (stable)"
@@ -137,28 +137,28 @@ function Test-CatalogViews {
     $infoOutput = Invoke-Cup -CommandArgs @("info")
     Assert-Contains $infoOutput "compiler [windows-x64]: clang@22.1.5"
     Assert-Contains $infoOutput "debugger [windows-x64]: gdb@17.1"
-    Assert-Contains $infoOutput "status: default"
+    Assert-NotContains $infoOutput "status: default"
 
     $catalog = Invoke-Cup -CommandArgs @("search", "compiler")
     Assert-Contains $catalog "Available tools for component 'compiler'"
     Assert-Contains $catalog "clang"
 
     $installed = Invoke-Cup -CommandArgs @("list", "compiler")
-    Assert-Contains $installed "compiler:clang@22.1.5"
-    Assert-Contains $installed "compiler:clang@23.1.0"
-    Assert-NotContains $installed "debugger:gdb@17.1"
+    Assert-Contains $installed "compiler: clang@22.1.5"
+    Assert-Contains $installed "compiler: clang@23.1.0"
+    Assert-NotContains $installed "debugger: gdb@17.1"
 }
 
 function Test-Updates {
     $componentUpdate = Invoke-Cup -CommandArgs @("update", "compiler")
-    Assert-Contains $componentUpdate "0 package(s) installed, 1 default(s) moved"
+    Assert-Contains $componentUpdate "0 installed, 1 default(s) updated"
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "compiler")) `
         "compiler [windows-x64]: clang@23.1.0 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "clang") `
         "clang-23.1.0-windows-x64:clang"
 
     $globalUpdate = Invoke-Cup -CommandArgs @("update")
-    Assert-Contains $globalUpdate "1 package(s) installed, 1 default(s) moved"
+    Assert-Contains $globalUpdate "1 installed, 1 default(s) updated"
     Assert-Contains (Invoke-Cup -CommandArgs @("info", "debugger")) `
         "debugger [windows-x64]: gdb@17.2 (stable)"
     Assert-Equals (Invoke-ManagedCommand -Name "gdb") "gdb-17.2-windows-x64:gdb"
@@ -179,7 +179,7 @@ function Test-Updates {
         "compiler [windows-x64]: clang@22.1.5"
     Invoke-Cup -CommandArgs @("default", "compiler", "clang@stable") | Out-Null
     Assert-Contains (Invoke-Cup -CommandArgs @("update", "clang")) `
-        "0 package(s) installed, 0 default(s) moved"
+        "0 installed, 0 default(s) updated"
 }
 
 function Test-RemoveDefaultWithoutPromotion {
@@ -207,18 +207,18 @@ function Test-RemoveDefaultWithoutPromotion {
         "No default for component 'compiler' on host 'windows-x64', target 'windows-x64'."
     $nativeInstalled = Invoke-Cup -CommandArgs @(
         "list", "compiler", "--target", "windows-x64")
-    Assert-Contains $nativeInstalled "compiler:clang@22.1.5"
-    Assert-NotContains $nativeInstalled "compiler:clang@23.1.0"
+    Assert-Contains $nativeInstalled "compiler: clang@22.1.5"
+    Assert-NotContains $nativeInstalled "compiler: clang@23.1.0"
     Assert-Contains (Invoke-Cup -CommandArgs @(
-        "list", "compiler", "--target", "linux-x64")) "compiler:clang@23.1.0"
+        "list", "compiler", "--target", "linux-x64")) "compiler: clang@23.1.0"
     Assert-CupHealthy
 
     $removed = Invoke-Cup -CommandArgs @("remove", "clang")
-    Assert-Contains $removed "Removed compiler clang -> clang@22.1.5"
+    Assert-Contains $removed "Removed compiler clang@22.1.5"
     Assert-NotContains (Invoke-Cup -CommandArgs @(
-        "list", "compiler", "--target", "windows-x64")) "compiler:clang@"
+        "list", "compiler", "--target", "windows-x64")) "compiler: clang@"
     Assert-Contains (Invoke-Cup -CommandArgs @(
-        "list", "compiler", "--target", "linux-x64")) "compiler:clang@23.1.0"
+        "list", "compiler", "--target", "linux-x64")) "compiler: clang@23.1.0"
     Assert-CupHealthy
 }
 

@@ -270,8 +270,7 @@ static CupError prepare_remove(RemoveOperation *operation,
     }
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
-                "Error: transaction journal was created, but its durability could "
-                "not be confirmed. Run 'cup repair'.\n");
+                "Error: removal recovery data could not be saved safely. Run 'cup repair'.\n");
         return err;
     }
     if (err != CUP_OK) {
@@ -287,7 +286,9 @@ static CupError stage_removal(RemoveOperation *operation) {
     CupError err;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
-    printf("==> Moving package to temporary storage...\n");
+    printf("==> Removing %s@%s...\n",
+           operation->package.tool,
+           operation->package.version);
 
     err = interrupt_safe_point();
     if (err != CUP_OK) {
@@ -297,8 +298,8 @@ static CupError stage_removal(RemoveOperation *operation) {
     if (err != CUP_OK && commit_state == SYSTEM_COMMIT_APPLIED) {
         operation->package_moved = 1;
         fprintf(stderr,
-                "Error: package was moved to temporary storage, but its durability "
-                "could not be confirmed. Run 'cup repair'.\n");
+                "Error: the package was prepared for removal, but cup could not confirm it safely. "
+                "Run 'cup repair'.\n");
         return CUP_ERR_COMMIT;
     }
 
@@ -350,8 +351,8 @@ static CupError commit_removal(RemoveOperation *operation) {
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
-                    "Error: removal state was applied, but its durability could "
-                    "not be confirmed. Run 'cup repair'.\n");
+                    "Error: removal state may already be saved, but cup could not confirm it safely. "
+                    "Run 'cup repair'.\n");
         }
         return err;
     }
@@ -366,8 +367,8 @@ static CupError commit_removal(RemoveOperation *operation) {
 
     if (runtime_journal_clear_if_identity(&operation->journal_identity) != CUP_OK) {
         fprintf(stderr,
-                "Warning: package removal committed, but transaction cleanup "
-                "failed. Run 'cup repair'.\n");
+                "Warning: package removal succeeded, but recovery data could not be cleaned up. "
+                "Run 'cup repair'.\n");
         cleanup_failed = 1;
     } else {
         operation->journal_started = 0;
@@ -408,10 +409,10 @@ static CupError rollback_removal(RemoveOperation *operation) {
 }
 
 static void print_remove_result(const RemoveOperation *operation) {
-    printf("Removed %s ", operation->package.component);
-    package_request_print(stdout, &operation->request);
-    printf(" for host '%s', target '%s'.\n",
-           operation->package.host_platform,
+    printf("Removed %s %s@%s for target '%s'.\n",
+           operation->package.component,
+           operation->package.tool,
+           operation->package.version,
            operation->package.target_platform);
 }
 

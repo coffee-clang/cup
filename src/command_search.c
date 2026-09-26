@@ -76,13 +76,13 @@ static size_t print_target_scope(const PackageCatalog *catalog,
         end++;
     }
 
-    printf("%s%s: stable %s; versions ",
-           scope_indent,
-           first->target_platform,
-           stable == NULL ? "none" : stable);
+    printf("%s%s: ", scope_indent, first->target_platform);
     for (i = start; i < end; ++i) {
         const PackageCatalogEntry *entry = &catalog->packages[i];
-        printf("%s%s", i == start ? "" : ",", entry->version);
+        printf("%s%s", i == start ? "" : ", ", entry->version);
+        if (stable != NULL && strcmp(entry->version, stable) == 0) {
+            printf(" (stable)");
+        }
         if (entry->revision_reason[0] != '\0') {
             printf(" [%s]", entry->revision_reason);
         }
@@ -224,7 +224,7 @@ CupError command_search(const char *component, const char *target_override) {
         refresh_err = catalog_refresh_existing(&updated, CATALOG_REFRESH_QUIET);
         if (refresh_err != CUP_OK) {
             fprintf(stderr,
-                    "Warning: catalog refresh failed; showing the local catalog snapshot.\n");
+                    "Warning: catalog refresh failed; showing the local catalog.\n");
         }
         err = command_context_begin_read_only(&context, target_override);
         if (err != CUP_OK) {

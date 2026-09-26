@@ -83,9 +83,9 @@ fixed set of tools. For example:
 cup install toolchain llvm
 ```
 
-Group installs are preflighted as a whole, but individual package commits are
-sequential. If a later package fails, packages that completed earlier remain
-installed.
+`cup` checks the whole group before installing the first package, but individual
+packages are installed sequentially. If a later package fails, packages that
+completed earlier remain installed.
 
 ## 4. Understand defaults and commands
 
@@ -150,7 +150,7 @@ Update `cup` itself separately:
 cup update cup
 ```
 
-If an interrupted mutation leaves recovery data, `cup doctor` reports the
+If an interrupted operation leaves recovery data, `cup doctor` reports the
 condition and `cup repair` handles cases that can be resolved safely.
 
 To remove `cup` and every package stored below its managed root:

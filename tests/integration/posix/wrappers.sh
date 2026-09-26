@@ -40,7 +40,7 @@ make_package linker lld 23.1.0 "$TEST_PLATFORM" cup
 run_cup_expect_failure "$TMP_ROOT/reserved-entry.out" \
     install linker lld@23.1.0
 assert_contains "$(cat "$TMP_ROOT/reserved-entry.out")" 'conflicts with cup itself'
-assert_not_contains "$(run_cup list)" 'linker:lld@23.1.0'
+assert_not_contains "$(run_cup list)" 'linker: lld@23.1.0'
 
 if [ "${TEST_PLATFORM%%-*}" = macos ]; then
     make_package formatter clang-format 23.1.0 "$TEST_PLATFORM" CLANG

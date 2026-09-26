@@ -892,7 +892,7 @@ static void test_info_states(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@2.0 (stable)"));
     TEST_ASSERT_NOT_NULL(strstr(output, "clang, clang++"));
-    TEST_ASSERT_NOT_NULL(strstr(output, "status: default"));
+    TEST_ASSERT_NULL(strstr(output, "status: default"));
     free(output);
 
     reset_scenario();
@@ -925,8 +925,8 @@ static void test_search_catalog(void) {
     TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_QUIET, catalog_refresh_diagnostics);
     TEST_ASSERT_NOT_NULL(strstr(output, "compiler:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "debugger:"));
-    TEST_ASSERT_NOT_NULL(strstr(output, "windows-x64: stable 2.0"));
-    TEST_ASSERT_NOT_NULL(strstr(output, "linux-x64: stable 2.0; versions 2.0,1.0"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "windows-x64: 2.0 (stable)"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "linux-x64: 2.0 (stable), 1.0"));
     free(output);
 
     output = capture_result(run_search_target, &result);
@@ -1051,7 +1051,7 @@ static void test_search_variants(void) {
     add_catalog_entry("compiler", "clang", "linux-x64", "windows-x64", "2.0", "2.0");
     output = capture_result(run_search_all_target, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
-    TEST_ASSERT_NOT_NULL(strstr(output, "windows-x64: stable 2.0"));
+    TEST_ASSERT_NOT_NULL(strstr(output, "windows-x64: 2.0 (stable)"));
     free(output);
 
     reset_scenario();

@@ -69,6 +69,8 @@ static void *mock_write_userdata;
 static curl_off_t mock_max_filesize;
 static curl_xferinfo_callback mock_progress_callback;
 static void *mock_progress_userdata;
+static curl_off_t mock_progress_total;
+static curl_off_t mock_progress_downloaded;
 
 static CupError artifact_open_results[MAX_SEQUENCE];
 static ArtifactVerificationStatus artifact_open_statuses[MAX_SEQUENCE];
@@ -236,6 +238,8 @@ static void reset_mocks(void) {
     mock_max_filesize = 0;
     mock_progress_callback = NULL;
     mock_progress_userdata = NULL;
+    mock_progress_total = 1;
+    mock_progress_downloaded = 0;
     artifact_open_count = 0;
     artifact_open_index = 0;
     artifact_discard_result = CUP_OK;
@@ -358,7 +362,11 @@ CURLcode curl_easy_perform(CURL *curl) {
         }
     }
     if (mock_progress_callback != NULL &&
-        mock_progress_callback(mock_progress_userdata, 1, 0, 0, 0) != 0) {
+        mock_progress_callback(mock_progress_userdata,
+                               mock_progress_total,
+                               mock_progress_downloaded,
+                               0,
+                               0) != 0) {
         return CURLE_ABORTED_BY_CALLBACK;
     }
     if (mock_write_userdata == NULL) {
@@ -559,6 +567,117 @@ static void test_file_success(void) {
         download_file("https://example.invalid/resource", destination, DOWNLOAD_VALIDATE_METADATA));
     read_text(destination, content, sizeof(content));
     TEST_ASSERT_EQUAL_STRING("downloaded data\n", content);
+}
+
+static void test_download_progress_output(void) {
+    char destination[1024];
+    char output[512];
+    FILE *capture;
+    int saved_stdout;
+    size_t bytes;
+    CupError result;
+
+    reset_mocks();
+    mock_progress_total = (curl_off_t)100 * 1024 * 1024;
+    mock_progress_downloaded = (curl_off_t)10 * 1024 * 1024;
+    build_path(destination, sizeof(destination), "progress-archive-early.out");
+
+    capture = tmpfile();
+    TEST_ASSERT_NOT_NULL(capture);
+    fflush(stdout);
+    saved_stdout = test_dup_fd(TEST_PLATFORM_STDOUT_FD);
+    TEST_ASSERT_TRUE(saved_stdout >= 0);
+    TEST_ASSERT_TRUE(
+        test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDOUT_FD) >= 0);
+    result = download_file("https://example.invalid/archive",
+                           destination,
+                           DOWNLOAD_VALIDATE_ARCHIVE);
+    fflush(stdout);
+    TEST_ASSERT_TRUE(test_dup2_fd(saved_stdout, TEST_PLATFORM_STDOUT_FD) >= 0);
+    TEST_ASSERT_EQUAL_INT(0, test_close_fd(saved_stdout));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_SET));
+    bytes = fread(output, 1, sizeof(output) - 1, capture);
+    output[bytes] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, fclose(capture));
+    TEST_ASSERT_EQUAL_STRING("", output);
+
+    reset_mocks();
+    mock_progress_total = (curl_off_t)100 * 1024 * 1024;
+    mock_progress_downloaded = (curl_off_t)25 * 1024 * 1024;
+    build_path(destination, sizeof(destination), "progress-archive.out");
+
+    capture = tmpfile();
+    TEST_ASSERT_NOT_NULL(capture);
+    fflush(stdout);
+    saved_stdout = test_dup_fd(TEST_PLATFORM_STDOUT_FD);
+    TEST_ASSERT_TRUE(saved_stdout >= 0);
+    TEST_ASSERT_TRUE(
+        test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDOUT_FD) >= 0);
+    result = download_file("https://example.invalid/archive",
+                           destination,
+                           DOWNLOAD_VALIDATE_ARCHIVE);
+    fflush(stdout);
+    TEST_ASSERT_TRUE(test_dup2_fd(saved_stdout, TEST_PLATFORM_STDOUT_FD) >= 0);
+    TEST_ASSERT_EQUAL_INT(0, test_close_fd(saved_stdout));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_SET));
+    bytes = fread(output, 1, sizeof(output) - 1, capture);
+    output[bytes] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, fclose(capture));
+    TEST_ASSERT_NOT_NULL(strstr(
+        output, "==> Downloading package: 25% (25.0 MiB / 100.0 MiB)"));
+
+    reset_mocks();
+    mock_progress_total = (curl_off_t)100 * 1024 * 1024;
+    mock_progress_downloaded = (curl_off_t)25 * 1024 * 1024;
+    build_path(destination, sizeof(destination), "progress-binary.out");
+
+    capture = tmpfile();
+    TEST_ASSERT_NOT_NULL(capture);
+    fflush(stdout);
+    saved_stdout = test_dup_fd(TEST_PLATFORM_STDOUT_FD);
+    TEST_ASSERT_TRUE(saved_stdout >= 0);
+    TEST_ASSERT_TRUE(
+        test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDOUT_FD) >= 0);
+    result = download_file("https://example.invalid/binary",
+                           destination,
+                           DOWNLOAD_VALIDATE_BINARY);
+    fflush(stdout);
+    TEST_ASSERT_TRUE(test_dup2_fd(saved_stdout, TEST_PLATFORM_STDOUT_FD) >= 0);
+    TEST_ASSERT_EQUAL_INT(0, test_close_fd(saved_stdout));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_SET));
+    bytes = fread(output, 1, sizeof(output) - 1, capture);
+    output[bytes] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, fclose(capture));
+    TEST_ASSERT_NOT_NULL(strstr(
+        output, "==> Downloading cup: 25% (25.0 MiB / 100.0 MiB)"));
+
+    reset_mocks();
+    mock_progress_total = (curl_off_t)100 * 1024 * 1024;
+    mock_progress_downloaded = (curl_off_t)25 * 1024 * 1024;
+    build_path(destination, sizeof(destination), "progress-metadata.out");
+
+    capture = tmpfile();
+    TEST_ASSERT_NOT_NULL(capture);
+    fflush(stdout);
+    saved_stdout = test_dup_fd(TEST_PLATFORM_STDOUT_FD);
+    TEST_ASSERT_TRUE(saved_stdout >= 0);
+    TEST_ASSERT_TRUE(
+        test_dup2_fd(test_file_descriptor(capture), TEST_PLATFORM_STDOUT_FD) >= 0);
+    result = download_file("https://example.invalid/metadata",
+                           destination,
+                           DOWNLOAD_VALIDATE_METADATA);
+    fflush(stdout);
+    TEST_ASSERT_TRUE(test_dup2_fd(saved_stdout, TEST_PLATFORM_STDOUT_FD) >= 0);
+    TEST_ASSERT_EQUAL_INT(0, test_close_fd(saved_stdout));
+    TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(0, fseek(capture, 0, SEEK_SET));
+    bytes = fread(output, 1, sizeof(output) - 1, capture);
+    output[bytes] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, fclose(capture));
+    TEST_ASSERT_EQUAL_STRING("", output);
 }
 
 static void assert_download_argument_failures(const char *destination) {
@@ -876,6 +995,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_protocol_policy);
     RUN_TEST(test_file_success);
+    RUN_TEST(test_download_progress_output);
     RUN_TEST(test_file_failures);
     RUN_TEST(test_cache_source_results);
     return UNITY_END();

@@ -81,12 +81,12 @@ static int print_package_health(const PackageIdentity *package,
     int is_on_disk;
 
     if (package_identity_format_selector(package, selector, sizeof(selector)) != CUP_OK) {
-        printf("- %s:(invalid state record)\n", package->component);
+        printf("- %s: (invalid state record)\n", package->component);
         *degraded = 1;
         return 0;
     }
 
-    printf("- %s:%s", package->component, selector);
+    printf("- %s: %s", package->component, selector);
     if (target_override == NULL) {
         printf(" [target %s]", package->target_platform);
     }
@@ -182,7 +182,7 @@ CupError command_list(const char *component, const char *target_override) {
     catalog_err = command_context_load_catalog(&context);
     if (catalog_err != CUP_OK) {
         fprintf(stderr,
-                "Warning: package catalog is unavailable; showing local installed state without stable annotations.\n");
+                "Warning: package catalog unavailable; showing installed packages without stable markers.\n");
     }
 
     /* Sort the private state snapshot directly; no persistent state is modified. */

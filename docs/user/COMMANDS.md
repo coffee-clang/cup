@@ -136,8 +136,8 @@ The view form shows the effective tool used by abbreviated component installs.
 `config set` stores a preference for one component/target scope. The root supplies
 host implicitly. It affects future `cup install <component>` and profile installs;
 it does not change the current default or existing packages. If no preference
-exists, install planning uses the official default compiled into that `cup`
-generation.
+exists, install planning uses the official default built into that `cup`
+version.
 
 `config reset <component>` removes one scoped preference. `config reset` without
 a component clears every preference for the selected target.
@@ -166,10 +166,10 @@ user preference -> official default -> error if neither exists
 An omitted release means `stable`.
 
 Profiles select several components through the same preference/default rule.
-Toolchains contain explicit curated tools and ignore preferences. `cup` resolves
-and validates a complete group before the first package is installed, so an
-unavailable member does not cause a knowingly partial plan. Package commits are
-still sequential: if a later package fails, earlier completed packages remain
+Toolchains contain explicit curated tools and ignore preferences. `cup` checks the
+complete group before installing the first package, so an unavailable member does
+not cause a knowingly partial plan. Packages are still
+installed sequentially: if a later package fails, earlier completed packages remain
 installed.
 
 The first valid package installed in an empty component/target scope may become
@@ -267,9 +267,10 @@ releases.
 cup doctor
 ```
 
-Checks the installed `cup` generation, live catalog, local state, preferences,
-packages, defaults, pending transactions and derived wrappers. It is strictly read-only. A nonzero exit
-status means at least one problem was found or an inspection could not complete.
+Checks the installed `cup` files, live catalog, local state, preferences, packages,
+defaults, pending recovery information and derived wrappers. It is strictly read-only.
+A nonzero exit status means at least one problem was found or an inspection could
+not complete.
 
 ## Recover: `repair`
 
@@ -280,9 +281,10 @@ cup repair
 `repair` handles states that can be reconstructed or recovered safely. It can,
 for example, finish or undo an interrupted package operation, reconcile valid
 packages with state, preserve invalid identifiable objects for diagnosis,
-repair verifiable same-generation metadata/legal assets, restore a malformed
-official live catalog from its authenticated release snapshot, and rebuild
-wrappers from valid defaults. Development repair does not manufacture a catalog snapshot.
+repair verifiable metadata/legal assets that match the installed `cup` version,
+restore a malformed official live catalog from its authenticated release snapshot,
+and rebuild wrappers from valid defaults. Development repair does not manufacture
+a catalog snapshot.
 
 Ambiguous data is left untouched and reported. `repair` does not replace its own
 main executable; reinstall `cup` when `cup`/`cup.exe` itself is missing or damaged.
@@ -295,18 +297,18 @@ cup uninstall --yes
 ```
 
 Removes the selected `cup` root and its installed packages. The command asks for
-confirmation unless `--yes` is present. Cleanup continues through a detached
-native helper after the initiating process exits, so successful return means the
-handoff was accepted, not necessarily that every pathname has already vanished.
+confirmation unless `--yes` is present. Cleanup continues after the initiating
+process exits, so successful return means cleanup has started, not necessarily that
+every pathname has already vanished.
 
-`cup` prints the detached recovery path used if cleanup later fails. PATH is not
-changed.
+If cleanup later fails, `cup` prints where the remaining data can be recovered.
+PATH is not changed.
 
 ## Concurrency and recovery
 
 Help/version do not use the managed root. Read-only commands can share access to
 one healthy runtime snapshot. State-changing commands require exclusive access
-and fail when another mutation owns the installation.
+and fail when another state-changing command owns the installation.
 
 A pending transaction blocks normal commands that could conflict with recovery.
 `doctor` can inspect it and `repair` is the public command allowed to resolve it.
@@ -315,9 +317,9 @@ A pending transaction blocks normal commands that could conflict with recovery.
 
 Malformed selectors, unsupported platforms/tools, invalid options and values
 that exceed the documented internal limits are rejected before the requested
-operation commits state. Read-only queries may still print useful information
-when optional catalog data is unavailable, but they report that degraded result
-instead of claiming full success.
+operation changes managed state. Read-only queries may still print useful
+information when optional catalog data is unavailable, but they report that
+degraded result instead of claiming full success.
 
 ## Exit status
 
@@ -328,7 +330,7 @@ instead of claiming full success.
 | `3` | requested package or selection is unavailable |
 | `4` | invalid catalog, state, metadata or validated package state |
 | `5` | network, TLS, timeout or download failure |
-| `6` | filesystem, locking, archive, transaction, commit or recovery failure |
+| `6` | filesystem, locking, archive, installation/update or recovery failure |
 | `70` | internal failure |
 | `130` | interrupted operation |
 

@@ -328,8 +328,7 @@ CupError runtime_journal_require_none(void) {
 
     if (err != CUP_OK) {
         fprintf(stderr,
-                "Error: transaction journal is invalid. "
-                "Run 'cup doctor' and 'cup repair'.\n");
+                "Error: recovery data is invalid. Run 'cup doctor' and 'cup repair'.\n");
         return CUP_ERR_TRANSACTION;
     }
     if (kind == RUNTIME_JOURNAL_MISSING) {

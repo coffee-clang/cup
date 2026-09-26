@@ -56,7 +56,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "  -h, --help                   Show this help.\n"
      "Defaults:\n  Uses the current host and shows every target when --target is omitted.\n"
      "Examples:\n  cup search\n  cup search compiler --target linux-x64\n"
-     "Effects:\n  Never initializes the local cup installation. Existing runtimes may refresh the live catalog before displaying one snapshot."},
+     "Effects:\n  Read-only; may refresh the package catalog before showing results."},
     {"list",
      "list [<component>] [--target <target-platform>]",
      "List installed packages.",
@@ -66,7 +66,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "  -h, --help                   Show this help.\n"
      "Defaults:\n  Uses the current host and all installed targets.\n"
      "Examples:\n  cup list\n  cup list compiler --target linux-x64\n"
-     "Effects:\n  Read-only; invalid package entries are reported and return a nonzero status."},
+     "Effects:\n  Read-only; reports installed packages that are missing or invalid."},
     {"install",
      "install [<component>] <tool>[@<release>] [--target <target-platform>] "
      "[--format|-f <archive-format>] | install <component> [--target <target-platform>] "
@@ -85,9 +85,9 @@ static const CommandHelp COMMAND_HELP[] = {
      "Examples:\n  cup install gcc\n  cup install gcc@stable\n  cup install compiler\n"
      "  cup install compiler gcc@stable\n  cup install profile "
      "standard\n  cup install toolchain llvm\n"
-     "Effects:\n  Each package is staged and validated before its recoverable commit.\n"
-     "  Group installs are sequential and not atomic as a whole.\n"
-     "  Installing an already valid package leaves it unchanged."},
+     "Effects:\n  Downloads, validates and installs each selected package.\n"
+     "  Group installs run one package at a time.\n"
+     "  Already-installed valid packages are left unchanged."},
     {"remove",
      "remove [<component>] <tool>[@<release>] [--target <target-platform>]",
      "Remove one installed release.",
@@ -138,8 +138,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup default compiler clang@stable\n"
      "  cup default compiler clang@23.1.0\n"
-     "Effects:\n  Resolves an installed package, then updates the default and provided commands.\n"
-     "  It never installs a missing package."},
+     "Effects:\n  Updates the default and its commands; does not install missing packages."},
     {"info",
      "info [<component>] [--target <target-platform>]",
      "Show defaults and their provided commands.",
@@ -149,8 +148,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "this help.\n"
      "Defaults:\n  Shows every target when --target is omitted.\n"
      "Examples:\n  cup info\n  cup info compiler --target linux-x64\n"
-     "Effects:\n  Read-only; invalid defaults or provided commands are reported and return a "
-     "nonzero status."},
+     "Effects:\n  Read-only; reports invalid defaults or commands."},
     {"inspect",
      "inspect <component> <tool>@<release> [--target <target-platform>]",
      "Inspect an installed package.",
@@ -162,8 +160,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "Defaults:\n  Uses the current host and target.\n"
      "Examples:\n  cup inspect compiler clang@stable\n"
      "  cup inspect compiler clang@23.1.0\n"
-     "Effects:\n  Read-only; never installs a missing package or initializes the local cup "
-     "installation."},
+     "Effects:\n  Read-only; does not install missing packages."},
     {"doctor",
      "doctor",
      "Diagnose cup without modifying files.",
@@ -171,7 +168,7 @@ static const CommandHelp COMMAND_HELP[] = {
      "Arguments:\n  None.\nOptions:\n  -h, --help  Show this help.\n"
      "Defaults:\n  Checks the current user's cup installation.\n"
      "Examples:\n  cup doctor\n"
-     "Effects:\n  Strictly read-only; never initializes the local cup installation."},
+     "Effects:\n  Read-only; does not repair or initialize cup."},
     {"repair",
      "repair",
      "Repair recoverable installation state.",
@@ -182,14 +179,13 @@ static const CommandHelp COMMAND_HELP[] = {
      "Effects:\n  May repair configuration, state, packages and commands provided by defaults."},
     {"uninstall",
      "uninstall [--yes]",
-     "Hand cup removal to the detached cleanup helper.",
-     "Description:\n  Schedule removal of the selected cup installation without changing PATH.\n"
+     "Uninstall cup and all cup-managed data.",
+     "Description:\n  Remove the selected cup installation without changing PATH.\n"
      "Arguments:\n  None.\nOptions:\n  --yes  Skip the confirmation prompt.\n  -h, --help  Show "
      "this help.\n"
      "Defaults:\n  Prompts before removal.\n"
      "Examples:\n  cup uninstall\n  cup uninstall --yes\n"
-     "Effects:\n  Success means the detached helper accepted the handoff. Cleanup continues in "
-     "the background, and cup prints the recovery path; PATH is unchanged."}};
+     "Effects:\n  Cleanup finishes automatically after this command exits; PATH is unchanged."}};
 
 static CupError normalize_selector(const char *input, char *output, size_t output_size) {
     char tool[MAX_IDENTIFIER_LEN];

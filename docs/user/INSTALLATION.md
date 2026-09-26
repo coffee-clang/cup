@@ -15,7 +15,7 @@ windows-x64
 
 Package availability is a separate question: a supported `cup` host may have only
 some component/target combinations in the current catalog. Use `cup search` to
-see what can be installed from the current release.
+see what can be installed from the current catalog.
 
 ## Linux and macOS
 
@@ -109,7 +109,7 @@ For the first package workflow, continue with [Getting started](GETTING_STARTED.
 ## Reinstall
 
 Running the official installer again verifies a complete release before
-replacing `cup`'s managed program-generation assets. Installed component packages,
+replacing the managed `cup` program files. Installed component packages,
 preferences, state and a valid live catalog remain in the selected root.
 
 The installer can update an older `cup` or reinstall the same release. It does not
@@ -167,7 +167,7 @@ ownership marker to force adoption of an unknown tree.
 A recognized `cup` 0.3.5 layout-1 root is not upgraded in place and is not bypassed
 by silently switching to `.coffee-cup`. Back up anything you need, uninstall or
 move the old managed root out of the way, then run the current installer for a
-fresh `cup` 0.4 root.
+fresh current-layout `cup` root.
 
 ## Uninstall
 
@@ -179,12 +179,11 @@ cup uninstall --yes
 Without `--yes`, `cup` asks for confirmation. Uninstall removes the selected `cup`
 root and the packages stored inside it, but does not edit PATH.
 
-The cleanup must continue after the initiating executable exits, so `cup` hands the
-operation to a native helper. A successful command means that handoff has been
-accepted; final removal may finish shortly afterwards. `cup` prints the detached
-recovery path used if cleanup cannot complete.
+Cleanup continues after the initiating executable exits. A successful command means
+that cleanup has started; final removal may finish shortly afterwards. If cleanup
+cannot complete, `cup` prints where the remaining data can be recovered.
 
-If such a detached recovery directory remains, preserve it until the failure is
+If such a recovery directory remains, preserve it until the failure is
 understood. A later installer does not automatically adopt or delete it.
 
 ## Troubleshooting and recovery

@@ -89,7 +89,7 @@ publish_artifact "$valid_version"
 
 printf '==> Downloading a concrete package artifact through loopback...\n'
 run_cup install compiler "clang@$valid_version" >/dev/null
-assert_contains "$(run_cup list compiler 2>/dev/null)" "compiler:clang@$valid_version"
+assert_contains "$(run_cup list compiler 2>/dev/null)" "compiler: clang@$valid_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 
@@ -113,7 +113,7 @@ assert_contains "$(cat "$TMP_ROOT/digest-mismatch.out")" \
     'downloaded package failed SHA-256 verification'
 assert_missing "$TEST_HOME/.cup/cache/$bad_expected_sha"
 assert_not_contains "$(run_cup list compiler 2>/dev/null)" \
-    "compiler:clang@$bad_version"
+    "compiler: clang@$bad_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
 

@@ -329,8 +329,8 @@ static void print_skip(const UpdatePlanItem *item) {
         }
     } else if (item->action == UPDATE_ACTION_AHEAD) {
         fprintf(stderr,
-                "Warning: installed reference %s:%s@%s for target '%s' is ahead of catalog "
-                "stable %s; no downgrade was applied.\n",
+                "Warning: installed %s:%s@%s for target '%s' is newer than catalog "
+                "stable %s; keeping the installed version.\n",
                 item->reference.component,
                 item->reference.tool,
                 item->reference.version,
@@ -406,14 +406,12 @@ CupError command_update(const char *selector) {
         }
 
         if (item->action == UPDATE_ACTION_EQUAL) {
-            printf("==> Verifying current %s:%s@%s for target '%s'...\n",
-                   item->reference.component,
+            printf("==> Checking %s@%s for target '%s'...\n",
                    item->reference.tool,
                    item->reference.version,
                    item->reference.target_platform);
         } else {
-            printf("==> Updating %s:%s for target '%s' (%s -> %s)...\n",
-                   item->reference.component,
+            printf("==> Updating %s for target '%s' (%s -> %s)...\n",
                    item->reference.tool,
                    item->reference.target_platform,
                    item->reference.version,
@@ -432,9 +430,9 @@ CupError command_update(const char *selector) {
         }
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Update for '%s' stopped while processing family %zu of %zu: "
-                    "%zu package(s) installed, %zu default(s) moved, %zu family/families "
-                    "skipped. Previous releases were retained.\n",
+                    "Update for '%s' stopped at package %zu of %zu: "
+                    "%zu installed, %zu default(s) updated, %zu skipped. "
+                    "Previous releases were kept.\n",
                     label,
                     i + 1,
                     plan.count,
@@ -448,8 +446,8 @@ CupError command_update(const char *selector) {
         moved_default_count += (size_t)default_moved;
     }
 
-    printf("Update completed for '%s': %zu package(s) installed, %zu default(s) moved, "
-           "%zu family/families skipped; previous releases were retained.\n",
+    printf("Update complete for '%s': %zu installed, %zu default(s) updated, "
+           "%zu skipped. Previous releases were kept.\n",
            label,
            installed_count,
            moved_default_count,

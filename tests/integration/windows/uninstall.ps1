@@ -162,15 +162,14 @@ try {
     Invoke-Cup -CommandArgs @("config", "set", "compiler", "clang") | Out-Null
 
     $uninstallStartedMessage =
-        "Uninstall handoff accepted; cleanup continues in the background. " +
-        "You can close this terminal. The PATH entry was not removed."
+        "Uninstall started. Cleanup will finish automatically after this command exits."
 
     $cupRoot = Join-Path $Script:CupTestHome ".cup"
     Write-Utf8NoBom -Path (Join-Path $cupRoot "components\fixture.txt") -Lines @("fixture")
     $carrierBaselinePids = @(Get-CleanupCarrierProcessIds)
     $output = Invoke-Cup -CommandArgs @("uninstall", "--yes")
     Assert-Contains $output $uninstallStartedMessage
-    Assert-Contains $output "Recovery path if cleanup fails: "
+    Assert-Contains $output "PATH was not changed. If cleanup fails, cup data remains at '"
     Assert-Contains $output ".cup-uninstall-"
     Wait-ForCleanUninstall -CanonicalRoot $cupRoot
 

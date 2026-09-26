@@ -200,12 +200,9 @@ static CupError check_existing_install(InstallOperation *operation) {
         return CUP_OK;
     }
 
-    printf("Package '%s:%s@%s' is already installed for host '%s', "
-           "target '%s'; no changes were made.\n",
-           operation->artifact_spec.identity.component,
+    printf("%s@%s is already installed for target '%s'; no changes were made.\n",
            operation->artifact_spec.identity.tool,
            operation->artifact_spec.identity.version,
-           operation->artifact_spec.identity.host_platform,
            operation->artifact_spec.identity.target_platform);
     return CUP_ERR_ALREADY_INSTALLED;
 }
@@ -250,8 +247,7 @@ static CupError begin_install_commit(InstallOperation *operation) {
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
-                    "Error: transaction journal was created, but its durability "
-                    "could not be confirmed. Run 'cup repair'.\n");
+                    "Error: installation recovery data could not be saved safely. Run 'cup repair'.\n");
         }
         return err;
     }
@@ -322,7 +318,7 @@ static CupError extract_install_package(InstallOperation *operation) {
     PackageCacheSource cache_source;
     CupError err;
 
-    printf("==> Resolving package archive for %s@%s...\n",
+    printf("==> Resolving %s@%s...\n",
            operation->artifact_spec.identity.tool,
            operation->artifact_spec.identity.version);
 
@@ -335,9 +331,9 @@ static CupError extract_install_package(InstallOperation *operation) {
         CupError cleanup_err = release_install_artifact(&operation->artifact);
         return cleanup_err == CUP_OK ? CUP_ERR_INTERRUPT : cleanup_err;
     }
-    printf(cache_source == PACKAGE_CACHE_SOURCE_CACHE
-               ? "==> Using cached package archive.\n"
-               : "==> Downloaded package archive.\n");
+    if (cache_source == PACKAGE_CACHE_SOURCE_CACHE) {
+        printf("==> Using cached package archive.\n");
+    }
 
     err = extract_and_validate_package(operation);
     if (err != CUP_OK) {
@@ -407,8 +403,8 @@ static CupError save_default_change(InstallOperation *operation) {
                      &operation->context.state_identity);
     if (err == CUP_ERR_COMMIT) {
         fprintf(stderr,
-                "Error: the updated default may already be saved, but its durability could not "
-                "be confirmed. Run 'cup doctor' before retrying.\n");
+                "Error: the updated default may already be saved, but cup could not confirm it safely. "
+                "Run 'cup doctor' before retrying.\n");
     }
     if (err != CUP_OK) {
         return err;
@@ -440,7 +436,7 @@ static CupError commit_install(InstallOperation *operation) {
     int cleanup_failed = 0;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
-    printf("==> Committing installation...\n");
+    printf("==> Installing package...\n");
 
     err = begin_install_commit(operation);
     if (err != CUP_OK) {
@@ -455,8 +451,8 @@ static CupError commit_install(InstallOperation *operation) {
         if (commit_state == SYSTEM_COMMIT_APPLIED) {
             operation->package_moved = 1;
             fprintf(stderr,
-                    "Error: package was moved into place, but its durability could "
-                    "not be confirmed. Run 'cup repair'.\n");
+                    "Error: the package was installed, but cup could not confirm it was saved safely. "
+                    "Run 'cup repair'.\n");
             return CUP_ERR_COMMIT;
         }
         return err;
@@ -479,8 +475,8 @@ static CupError commit_install(InstallOperation *operation) {
     if (err != CUP_OK) {
         if (err == CUP_ERR_COMMIT) {
             fprintf(stderr,
-                    "Error: installation state was applied, but its durability "
-                    "could not be confirmed. Run 'cup repair'.\n");
+                    "Error: installation state may already be saved, but cup could not confirm it safely. "
+                    "Run 'cup repair'.\n");
         }
         return err;
     }
@@ -488,7 +484,7 @@ static CupError commit_install(InstallOperation *operation) {
     err = runtime_journal_clear_if_identity(&operation->journal_identity);
     if (err != CUP_OK) {
         fprintf(stderr,
-                "Warning: installation committed, but transaction cleanup failed. "
+                "Warning: installation succeeded, but recovery data could not be cleaned up. "
                 "Run 'cup repair'.\n");
         cleanup_failed = 1;
     } else {
@@ -499,8 +495,8 @@ static CupError commit_install(InstallOperation *operation) {
         err = wrapper_plan_apply(&operation->wrappers);
         if (err != CUP_OK) {
             fprintf(stderr,
-                    "Error: installation and its default were saved, but selector "
-                    "points could not be rebuilt. Run 'cup repair'.\n");
+                    "Error: installation and its default were saved, but commands could not be rebuilt. "
+                    "Run 'cup repair'.\n");
             return CUP_ERR_COMMIT;
         }
     }
@@ -538,13 +534,12 @@ static CupError rollback_install(InstallOperation *operation) {
 }
 
 static void print_install_result(const InstallOperation *operation) {
-    printf("Installed %s %s@%s for host '%s', target '%s'%s.\n",
+    printf("Installed %s %s@%s for target '%s'%s.\n",
            operation->artifact_spec.identity.component,
            operation->artifact_spec.identity.tool,
            operation->artifact_spec.identity.version,
-           operation->artifact_spec.identity.host_platform,
            operation->artifact_spec.identity.target_platform,
-           operation->made_default ? " and set it as the first default" : "");
+           operation->made_default ? " (default)" : "");
 }
 
 /* Shared one-scope execution used by install and update. */

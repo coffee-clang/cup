@@ -47,18 +47,21 @@ static char temp_dir[CUP_TEST_TEMP_PATH_SIZE];
 
 #define TEST_PACKAGE_SHA \
     "0000000000000000000000000000000000000000000000000000000000000000"
+#define TEST_PACKAGE_REQUIRED_METADATA_WITH_SHA(sha) \
+    "build.environment=test\n" \
+    "source.primary.name=llvm-project\n" \
+    "source.primary.version=22.1.5\n" \
+    "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n" \
+    "source.primary.sha256=" sha "\n"
+#define TEST_PACKAGE_REQUIRED_METADATA TEST_PACKAGE_REQUIRED_METADATA_WITH_SHA(TEST_PACKAGE_SHA)
 #define TEST_PACKAGE_COMMON_METADATA_WITH_SHA(sha) \
     "platform.host_triple=" TEST_PACKAGE_TRIPLE "\n" \
     "platform.target_triple=" TEST_PACKAGE_TRIPLE "\n" \
     "platform.family=gnu\n" \
     "platform.runtime=" TEST_PACKAGE_RUNTIME "\n" \
     "platform.thread_model=posix\n" \
-    "build.environment=test\n" \
     "build.source_policy=fixture\n" \
-    "source.primary.name=llvm-project\n" \
-    "source.primary.version=22.1.5\n" \
-    "source.primary.url=https://example.invalid/clang-22.1.5.tar.xz\n" \
-    "source.primary.sha256=" sha "\n"
+    TEST_PACKAGE_REQUIRED_METADATA_WITH_SHA(sha)
 #define TEST_PACKAGE_COMMON_METADATA TEST_PACKAGE_COMMON_METADATA_WITH_SHA(TEST_PACKAGE_SHA)
 
 static unsigned int recovery_serial;
@@ -482,6 +485,21 @@ static void test_common_metadata_contract(void) {
                               TEST_PACKAGE_HOST,
                               TEST_PACKAGE_HOST,
                               "22.1.5"));
+
+    /* The consumer must accept the common producer contract without optional
+     * platform/build inspection metadata. */
+    build_path(root, sizeof(root), "producer-common-contract");
+    make_valid_package(root);
+    join_path(info, sizeof(info), root, CUP_INFO_FILENAME);
+    write_text(info,
+               "package.component=compiler\n"
+               "package.tool=clang\n"
+               "package.version=22.1.5\n"
+               "platform.host=" TEST_PACKAGE_HOST "\n"
+               "platform.target=" TEST_PACKAGE_HOST "\n"
+               TEST_PACKAGE_REQUIRED_METADATA
+               "entry.clang=" TEST_PACKAGE_ENTRY "\n");
+    TEST_ASSERT_EQUAL_INT(CUP_OK, package_validate(root, &identity, stderr));
 
     build_path(root, sizeof(root), "obsolete-package-fields");
     make_valid_package(root);

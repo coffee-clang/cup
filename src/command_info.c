@@ -111,7 +111,7 @@ static CupError print_info_entry(const CommandContext *context,
             printf("%s%s", i == 0 ? "" : ", ", wrappers.items[i].name);
         }
     }
-    printf("\n  status: default\n");
+    printf("\n");
 
     wrapper_plan_free(&wrappers);
     return CUP_OK;
@@ -170,7 +170,7 @@ CupError command_info(const char *component, const char *target_override) {
     catalog_err = command_context_load_catalog(&context);
     if (catalog_err != CUP_OK) {
         fprintf(stderr,
-                "Warning: package catalog is unavailable; showing local defaults without stable annotations.\n");
+                "Warning: package catalog unavailable; showing defaults without stable markers.\n");
     }
 
     package_identity_sort(context.state.defaults, context.state.default_count);
