@@ -418,6 +418,8 @@ function Invoke-NativeProcess {
 
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
+            Stdout = $stdout
+            Stderr = $stderr
             Output = ($parts -join "`n")
         }
     } finally {

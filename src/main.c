@@ -1155,7 +1155,7 @@ int main(int argc, char *argv[]) {
     ParsedCommand parsed;
     CupError result;
 
-    /* Keep newline-terminated progress ahead of stderr diagnostics in redirected logs. */
+    /* Keep newline-terminated command results prompt when stdout is redirected. */
     (void)setvbuf(stdout, NULL, _IOLBF, 0);
     system_set_restrictive_umask();
 

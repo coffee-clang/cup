@@ -28,6 +28,7 @@
 #include "uninstall_helper.h"
 #include "uninstall_journal.h"
 #include "text.h"
+#include "ui.h"
 #include "version.h"
 
 #include <stdio.h>
@@ -741,7 +742,7 @@ CupError command_repair(void) {
     CupError err;
 
     repair_context_init(&context);
-    printf("==> Repairing cup...\n");
+    ui_phase("Repairing cup...");
 
     err = platform_get_host(context.current_host, sizeof(context.current_host));
     if (err != CUP_OK) goto done;

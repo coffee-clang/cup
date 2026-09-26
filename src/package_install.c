@@ -11,6 +11,7 @@
 #include "package_extract.h"
 #include "runtime_journal.h"
 #include "wrappers.h"
+#include "ui.h"
 #include "filesystem.h"
 #include "interrupt.h"
 #include "layout.h"
@@ -286,11 +287,18 @@ static CupError prepare_install(InstallOperation *operation,
 
 /* Archive extraction is authenticated by the catalog artifact digest; manifest.txt then owns
  * exact extracted-tree integrity. */
+static void update_item_progress(size_t count, void *userdata) {
+    ui_progress_update_count((UiProgress *)userdata, count, "item");
+}
+
 static CupError extract_and_validate_package(InstallOperation *operation) {
+    UiProgress progress;
     CupError err;
 
-    printf("==> Extracting package...\n");
-    err = package_extract_verified(&operation->artifact, operation->staging_path);
+    ui_progress_begin(&progress, "Extracting package");
+    err = package_extract_verified_with_progress(
+        &operation->artifact, operation->staging_path, update_item_progress, &progress);
+    ui_progress_end(&progress);
     if (err != CUP_OK) {
         return err;
     }
@@ -298,9 +306,14 @@ static CupError extract_and_validate_package(InstallOperation *operation) {
         return CUP_ERR_INTERRUPT;
     }
 
-    printf("==> Validating package...\n");
-    return package_validate_integrity(
-        operation->staging_path, &operation->artifact_spec.identity, stderr);
+    ui_progress_begin(&progress, "Validating package");
+    err = package_validate_integrity_with_progress(operation->staging_path,
+                                                   &operation->artifact_spec.identity,
+                                                   stderr,
+                                                   update_item_progress,
+                                                   &progress);
+    ui_progress_end(&progress);
+    return err;
 }
 
 static CupError release_install_artifact(VerifiedArtifact *artifact) {
@@ -318,9 +331,9 @@ static CupError extract_install_package(InstallOperation *operation) {
     PackageCacheSource cache_source;
     CupError err;
 
-    printf("==> Resolving %s@%s...\n",
-           operation->artifact_spec.identity.tool,
-           operation->artifact_spec.identity.version);
+    ui_phase("Resolving %s@%s...",
+             operation->artifact_spec.identity.tool,
+             operation->artifact_spec.identity.version);
 
     err = package_cache_fetch_artifact(
         &operation->artifact, &operation->artifact_spec, &cache_source);
@@ -332,7 +345,7 @@ static CupError extract_install_package(InstallOperation *operation) {
         return cleanup_err == CUP_OK ? CUP_ERR_INTERRUPT : cleanup_err;
     }
     if (cache_source == PACKAGE_CACHE_SOURCE_CACHE) {
-        printf("==> Using cached package archive.\n");
+        ui_phase("Using cached package archive.");
     }
 
     err = extract_and_validate_package(operation);
@@ -436,7 +449,7 @@ static CupError commit_install(InstallOperation *operation) {
     int cleanup_failed = 0;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
-    printf("==> Installing package...\n");
+    ui_phase("Installing package...");
 
     err = begin_install_commit(operation);
     if (err != CUP_OK) {

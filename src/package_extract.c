@@ -586,7 +586,9 @@ static CupError leave_extraction_root(ExtractionRoot *root) {
 static CupError package_extract_reader(struct archive *reader,
                                        const char *staging_path,
                                        PackageArchiveFormat expected_format,
-                                       const char *format_value) {
+                                       const char *format_value,
+                                       PackageExtractProgress progress,
+                                       void *progress_data) {
     struct archive *writer = NULL;
     struct archive_entry *entry;
     ExtractedPathTable paths = {0};
@@ -736,6 +738,9 @@ static CupError package_extract_reader(struct archive *reader,
         }
 
         extracted_count++;
+        if (progress != NULL) {
+            progress(extracted_count, progress_data);
+        }
     }
 
     /* Close all resources before deciding whether a complete payload was produced. */
@@ -755,7 +760,10 @@ static CupError package_extract_reader(struct archive *reader,
     return err;
 }
 
-CupError package_extract_verified(VerifiedArtifact *artifact, const char *staging_path) {
+CupError package_extract_verified_with_progress(VerifiedArtifact *artifact,
+                                                const char *staging_path,
+                                                PackageExtractProgress progress,
+                                                void *progress_data) {
     struct archive *reader = NULL;
     const char *format_name;
     CupError err;
@@ -771,5 +779,10 @@ CupError package_extract_verified(VerifiedArtifact *artifact, const char *stagin
     if (err != CUP_OK) {
         return CUP_ERR_ARCHIVE;
     }
-    return package_extract_reader(reader, staging_path, artifact->format, format_name);
+    return package_extract_reader(
+        reader, staging_path, artifact->format, format_name, progress, progress_data);
+}
+
+CupError package_extract_verified(VerifiedArtifact *artifact, const char *staging_path) {
+    return package_extract_verified_with_progress(artifact, staging_path, NULL, NULL);
 }

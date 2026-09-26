@@ -259,6 +259,7 @@ COMMON_SRC := \
     src/uninstall_helper.c \
     src/update_helper.c \
     src/text.c \
+    src/ui.c \
     src/system.c \
     src/registry.c \
     src/download.c \

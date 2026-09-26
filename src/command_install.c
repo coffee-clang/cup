@@ -15,6 +15,7 @@
 #include "registry.h"
 #include "state.h"
 #include "text.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -561,7 +562,9 @@ CupError command_install(const char *selector,
 
     /* Network is never performed while the shared planning snapshot is locked. */
     command_context_end(&context);
-    refresh_err = catalog_refresh_existing(&refreshed, has_symbolic ? CATALOG_REFRESH_QUIET : CATALOG_REFRESH_REPORT_ERRORS);
+    ui_phase("Refreshing catalog...");
+    refresh_err = catalog_refresh_existing(
+        &refreshed, has_symbolic ? CATALOG_REFRESH_QUIET : CATALOG_REFRESH_REPORT_ERRORS);
     if (!has_symbolic && refresh_err != CUP_OK) {
         return refresh_err;
     }
@@ -594,11 +597,11 @@ execute_plan:
         return package_install_artifact(&plan.items[0].artifact_spec);
     }
 
-    printf("==> Installing %s '%s' (%zu package%s)...\n",
-           plan.kind == INSTALL_PLAN_PROFILE ? "profile" : "toolchain",
-           plan.description,
-           plan.count,
-           plan.count == 1 ? "" : "s");
+    ui_phase("Installing %s '%s' (%zu package%s)...",
+             plan.kind == INSTALL_PLAN_PROFILE ? "profile" : "toolchain",
+             plan.description,
+             plan.count,
+             plan.count == 1 ? "" : "s");
     for (i = 0; i < plan.count; ++i) {
         InstallPlanItem *item = &plan.items[i];
 

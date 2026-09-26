@@ -9,6 +9,13 @@ param(
 try {
     Initialize-TestEnvironment -Name "install-policy" -ExecutablePath $CupExecutablePath
 
+    Ensure-FixtureRuntimeRoot
+    $emptyUpdate = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('update') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$emptyUpdate.ExitCode) '0'
+    Assert-Equals $emptyUpdate.Stdout 'No installed tools to update.'
+    Assert-NotContains $emptyUpdate.Stderr 'Refreshing catalog'
+
     $initial = Invoke-Cup -CommandArgs @("config")
     Assert-Contains $initial "Install preferences for host 'windows-x64', target 'windows-x64'"
     Assert-Contains $initial "compiler           clang"
@@ -40,7 +47,6 @@ try {
     $env:NO_PROXY = '127.0.0.1'
 
     $profile = Invoke-Cup -CommandArgs @("install", "PROFILE", "MINIMAL")
-    Assert-Contains $profile "Installing profile 'minimal' (2 packages)"
     Assert-Contains $profile `
         "Installed profile 'minimal': 2 installed, 0 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
@@ -60,7 +66,6 @@ try {
         ".cup\components\compiler\gcc\windows-x64\16.2.0-rev1\info.txt")
 
     $gnu = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "GNU")
-    Assert-Contains $gnu "Installing toolchain 'gnu' (3 packages)"
     Assert-Contains $gnu `
         "Installed toolchain 'gnu': 2 installed, 1 skipped."
     Assert-PathExists (Join-Path $Script:CupTestHome `
@@ -92,7 +97,6 @@ try {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $preferences) | Out-Null
     Write-Utf8NoBom -Path $preferences -Lines @("format=broken", "preset=gnu")
     $llvm = Invoke-Cup -CommandArgs @("install", "TOOLCHAIN", "LLVM")
-    Assert-Contains $llvm "Installing toolchain 'llvm' (6 packages)"
     Assert-Contains $llvm `
         "Installed toolchain 'llvm': 4 installed, 2 skipped."
     foreach ($relative in @(

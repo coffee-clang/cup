@@ -31,6 +31,10 @@ fail() {
     exit 1
 }
 
+phase() {
+    printf '==> %s\n' "$*" >&2
+}
+
 cleanup() {
     [ -z "$WORK" ] || rm -rf -- "$WORK"
 }
@@ -145,11 +149,19 @@ download_asset() {
     case "$asset" in cup-*) maximum=$MAX_BINARY_BYTES ;; *) maximum=$MAX_TEXT_BYTES ;; esac
     destination=$WORK/$asset
     url=$BASE_URL/$asset
-    curl -q --fail --location --silent --show-error \
-        --proto "=$TRANSPORT_PROTOCOL" --proto-redir "=$TRANSPORT_PROTOCOL" \
-        --max-redirs "$MAX_REDIRECTS" \
-        --connect-timeout 15 --max-time 180 --speed-time 30 --speed-limit 1024 \
-        --max-filesize "$maximum" --output "$destination" "$url" || fail "could not download $asset"
+    if [ "$asset" = "$BINARY_ASSET" ] && [ -t 2 ]; then
+        curl -q --fail --location --progress-bar --show-error \
+            --proto "=$TRANSPORT_PROTOCOL" --proto-redir "=$TRANSPORT_PROTOCOL" \
+            --max-redirs "$MAX_REDIRECTS" \
+            --connect-timeout 15 --max-time 180 --speed-time 30 --speed-limit 1024 \
+            --max-filesize "$maximum" --output "$destination" "$url" || fail "could not download $asset"
+    else
+        curl -q --fail --location --silent --show-error \
+            --proto "=$TRANSPORT_PROTOCOL" --proto-redir "=$TRANSPORT_PROTOCOL" \
+            --max-redirs "$MAX_REDIRECTS" \
+            --connect-timeout 15 --max-time 180 --speed-time 30 --speed-limit 1024 \
+            --max-filesize "$maximum" --output "$destination" "$url" || fail "could not download $asset"
+    fi
     [ -f "$destination" ] && [ ! -L "$destination" ] && [ -s "$destination" ] ||
         fail "downloaded asset is not a non-empty regular file: $asset"
     size=$(wc -c < "$destination") || fail "could not measure $asset"
@@ -526,9 +538,11 @@ detect_platform
 require_commands
 create_work_directory
 
+phase "Downloading cup $CUP_RELEASE_VERSION..."
 download_asset release.txt
 validate_release_manifest
 for asset in "$BINARY_ASSET" LICENSE THIRD_PARTY_NOTICES.txt catalog.cfg; do download_asset "$asset"; done
+phase 'Verifying release...'
 verify_asset "$BINARY_ASSET" "$BINARY_SHA"
 verify_asset LICENSE "$LICENSE_SHA"
 verify_asset THIRD_PARTY_NOTICES.txt "$NOTICES_SHA"
@@ -538,6 +552,7 @@ chmod 0700 "$WORK/$BINARY_ASSET" || fail 'could not make the verified bootstrap 
 choose_installation
 check_target_version
 printf 'cup will be installed in %s\n' "$SELECTED_ROOT"
+phase 'Installing cup...'
 bootstrap_output=$("$WORK/$BINARY_ASSET" --internal-bootstrap "$WORK" "$SELECTED_BASE") || fail 'the verified cup bootstrap transaction was rejected'
 parse_bootstrap_root "$bootstrap_output"
 validate_committed_root

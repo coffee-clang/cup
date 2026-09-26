@@ -15,6 +15,7 @@
 #include "state.h"
 #include "system.h"
 #include "text.h"
+#include "ui.h"
 #include "package_transaction.h"
 #include "update_journal.h"
 #include "runtime_journal.h"
@@ -679,7 +680,7 @@ CupError command_doctor(void) {
 
     package_catalog_init(&catalog);
     state_init(&state);
-    printf("==> Checking cup installation...\n");
+    ui_phase("Checking cup installation...");
 
     err = layout_check_root_candidates(&root_issue_count);
     if (err != CUP_OK) {

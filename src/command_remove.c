@@ -19,6 +19,7 @@
 #include "system.h"
 #include "package_transaction.h"
 #include "text.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,9 +287,9 @@ static CupError stage_removal(RemoveOperation *operation) {
     CupError err;
     SystemCommitState commit_state = SYSTEM_COMMIT_NOT_APPLIED;
 
-    printf("==> Removing %s@%s...\n",
-           operation->package.tool,
-           operation->package.version);
+    ui_phase("Removing %s@%s...",
+             operation->package.tool,
+             operation->package.version);
 
     err = interrupt_safe_point();
     if (err != CUP_OK) {

@@ -484,9 +484,11 @@ static int path_keys_have_collision(ManifestPathKeys *keys) {
     return 0;
 }
 
-CupError package_manifest_verify(const char *base_path,
-                                 const char *host_platform,
-                                 FILE *diagnostics) {
+CupError package_manifest_verify_with_progress(const char *base_path,
+                                               const char *host_platform,
+                                               FILE *diagnostics,
+                                               PackageManifestProgress progress,
+                                               void *progress_data) {
     ManifestPathKeys path_keys = {0};
     SystemPathIdentity identity;
     FILE *file = NULL;
@@ -572,6 +574,9 @@ CupError package_manifest_verify(const char *base_path,
             goto done;
         }
         entry_count++;
+        if (progress != NULL) {
+            progress(entry_count, progress_data);
+        }
     }
 
     if (path_keys_have_collision(&path_keys)) {
@@ -596,4 +601,11 @@ done:
     }
     free_path_keys(&path_keys);
     return err;
+}
+
+CupError package_manifest_verify(const char *base_path,
+                                 const char *host_platform,
+                                 FILE *diagnostics) {
+    return package_manifest_verify_with_progress(
+        base_path, host_platform, diagnostics, NULL, NULL);
 }

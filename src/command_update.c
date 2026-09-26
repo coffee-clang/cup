@@ -15,6 +15,7 @@
 #include "self_update.h"
 #include "state.h"
 #include "text.h"
+#include "ui.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -300,6 +301,7 @@ static CupError update_catalog(void) {
         return err;
     }
 
+    ui_phase("Refreshing catalog...");
     err = catalog_refresh_existing(&updated, CATALOG_REFRESH_REPORT_ERRORS);
     if (err == CUP_OK) {
         printf(updated ? "Catalog updated.\n" : "Catalog is already current.\n");
@@ -379,6 +381,7 @@ CupError command_update(const char *selector) {
     }
 
     /* Package update requires one committed catalog refresh before any package planning. */
+    ui_phase("Refreshing catalog...");
     err = catalog_refresh_existing(&catalog_updated, CATALOG_REFRESH_REPORT_ERRORS);
     if (err != CUP_OK) {
         return err;
@@ -406,16 +409,16 @@ CupError command_update(const char *selector) {
         }
 
         if (item->action == UPDATE_ACTION_EQUAL) {
-            printf("==> Checking %s@%s for target '%s'...\n",
-                   item->reference.tool,
-                   item->reference.version,
-                   item->reference.target_platform);
+            ui_phase("Checking %s@%s for target '%s'...",
+                     item->reference.tool,
+                     item->reference.version,
+                     item->reference.target_platform);
         } else {
-            printf("==> Updating %s for target '%s' (%s -> %s)...\n",
-                   item->reference.tool,
-                   item->reference.target_platform,
-                   item->reference.version,
-                   item->artifact_spec.identity.version);
+            ui_phase("Updating %s for target '%s' (%s -> %s)...",
+                     item->reference.tool,
+                     item->reference.target_platform,
+                     item->reference.version,
+                     item->artifact_spec.identity.version);
         }
         err = package_install_update_artifact(&item->artifact_spec,
                                               &item->reference,

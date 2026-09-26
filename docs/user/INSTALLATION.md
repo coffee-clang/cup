@@ -31,8 +31,10 @@ The default executable path is:
 
 The installer downloads the official release over HTTPS, verifies its release
 metadata and SHA-256 checksum chain, and then runs the verified `cup` executable to
-finish bootstrap. Installation is reported successful only after the installed
-version can be validated.
+finish bootstrap. Download, verification and installation are shown as separate
+phases; an interactive terminal may also show in-place transfer progress for the
+main executable. Redirected/non-interactive output does not emit animation frames.
+Installation is reported successful only after the installed version can be validated.
 
 ## Windows
 

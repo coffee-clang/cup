@@ -9,6 +9,12 @@ TESTS_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 test_begin install-policy
 prepare_command_environment
 
+# An empty update is resolved from local state before any catalog network access.
+ensure_fixture_runtime_root
+run_cup update >"$TMP_ROOT/update-empty.stdout" 2>"$TMP_ROOT/update-empty.stderr"
+assert_equals "$(cat "$TMP_ROOT/update-empty.stdout")" 'No installed tools to update.'
+assert_not_contains "$(cat "$TMP_ROOT/update-empty.stderr")" 'Refreshing catalog'
+
 # Shared package fixture for scoped defaults and curated plans.
 component_root() {
     component=$1 tool=$2 version=$3
@@ -57,7 +63,6 @@ test_defaults_profile() {
     assert_contains "$output" 'gnu          gcc, gdb, ld'
 
     output=$(run_cup install PROFILE MINIMAL)
-    assert_contains "$output" "Installing profile 'minimal' (2 packages)"
     assert_contains "$output" \
         "Installed profile 'minimal': 2 installed, 0 skipped."
     assert_file "$(component_root compiler clang 23.1.0)/info.txt"
@@ -105,7 +110,6 @@ test_gnu_toolchain() {
     case "$TEST_PLATFORM" in
         linux-*)
             output=$(run_cup install TOOLCHAIN GNU)
-            assert_contains "$output" "Installing toolchain 'gnu' (3 packages)"
             assert_contains "$output" \
                 "Installed toolchain 'gnu': 2 installed, 1 skipped."
             assert_file "$(component_root debugger gdb 17.2)/info.txt"
@@ -129,7 +133,6 @@ test_toolchain_explicit() {
     printf 'format=broken\npreset=gnu\n' > "$TEST_HOME/.cup/config/preferences.txt"
 
     output=$(run_cup install TOOLCHAIN LLVM)
-    assert_contains "$output" "Installing toolchain 'llvm' (6 packages)"
     assert_contains "$output" "Installed toolchain 'llvm': 4 installed, 2 skipped."
     assert_file "$(component_root debugger lldb 23.1.0)/info.txt"
     assert_file "$(component_root formatter clang-format 23.1.0)/info.txt"

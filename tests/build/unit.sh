@@ -229,8 +229,13 @@ compile_test() {
 }
 
 # Suite registration remains explicit. Platform-neutral suites compile everywhere.
+compile_test test_ui \
+    "$ROOT/tests/unit/test_ui.c" \
+    "$ROOT/src/ui.c"
+
 compile_test test_command_queries \
     "$ROOT/tests/unit/test_command_queries.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/command_list.c" \
     "$ROOT/src/command_default.c" \
     "$ROOT/src/command_info.c" \
@@ -296,6 +301,7 @@ compile_test test_uninstall_journal \
 
 compile_test test_command_repair \
     "$ROOT/tests/unit/test_command_repair.c" \
+    "$ROOT/src/ui.c" \
     -DCUP_VERSION_OFFICIAL=0 \
     "$ROOT/src/command_repair.c" \
     "$ROOT/src/runtime_recovery.c" \
@@ -384,6 +390,7 @@ compile_test test_install_policy \
 
 compile_test test_command_update \
     "$ROOT/tests/unit/test_command_update.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/command_update.c" \
     "$ROOT/src/package_selector.c" \
     "$ROOT/src/path.c" \
@@ -392,11 +399,13 @@ compile_test test_command_update \
 
 compile_test test_package_install \
     "$ROOT/tests/unit/test_package_install.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/package_install.c" \
     "$ROOT/src/text.c"
 
 compile_test test_command_install \
     "$ROOT/tests/unit/test_command_install.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/command_install.c" \
     "$ROOT/src/package_archive_format.c" \
     "$ROOT/src/package_selector.c" \
@@ -412,10 +421,12 @@ compile_test test_command_config \
 
 compile_test test_command_remove \
     "$ROOT/tests/unit/test_command_remove.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/command_remove.c"
 
 compile_test test_command_doctor \
     "$ROOT/tests/unit/test_command_doctor.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/command_doctor.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"
@@ -484,6 +495,7 @@ compile_test test_package_artifact \
 
 compile_test test_package_cache \
     "$ROOT/tests/unit/test_package_cache.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/download.c" \
     "$ROOT/src/package_cache.c" \
     "$ROOT/src/layout.c" \
@@ -627,6 +639,7 @@ compile_test test_state \
 
 compile_test test_self_update \
     "$ROOT/tests/unit/test_self_update.c" \
+    "$ROOT/src/ui.c" \
     "$ROOT/src/self_update.c" \
     "$ROOT/src/path.c" \
     "$ROOT/src/text.c"

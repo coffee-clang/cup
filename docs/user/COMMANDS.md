@@ -31,6 +31,14 @@ Platforms use `<os>-<arch>`, for example `linux-x64`, `macos-arm64` and
 
 For the terminology behind these arguments, see [Concepts](CONCEPTS.md).
 
+### Output and progress
+
+Command results are written to standard output. Operational phases, progress, warnings and
+diagnostics use standard error, so redirected query output remains clean. Long operations reuse
+one progress line on an interactive terminal when real progress is available; redirected output
+receives one stable line per phase instead of terminal animation frames. `cup` never invents a
+percentage when the total amount of work is unknown.
+
 ## Command overview
 
 | Command | Purpose | Changes the `cup` root? |

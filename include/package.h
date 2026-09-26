@@ -13,6 +13,7 @@
 #include "domain.h"
 #include "error.h"
 #include "package_metadata.h"
+#include "package_manifest.h"
 #include "system.h"
 
 #define MAX_PACKAGE_SCAN_ISSUES 256
@@ -137,6 +138,11 @@ CupError package_validate(const char *base_path,
 CupError package_validate_integrity(const char *base_path,
                                     const PackageIdentity *identity,
                                     FILE *diagnostics);
+CupError package_validate_integrity_with_progress(const char *base_path,
+                                                  const PackageIdentity *identity,
+                                                  FILE *diagnostics,
+                                                  PackageManifestProgress progress,
+                                                  void *progress_data);
 
 /* Check whether the canonical package path exists, regardless of path type. */
 CupError package_path_exists(const PackageIdentity *identity, int *exists);

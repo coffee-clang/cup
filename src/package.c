@@ -622,15 +622,25 @@ CupError package_validate(const char *base_path,
     return err;
 }
 
-CupError package_validate_integrity(const char *base_path,
-                                    const PackageIdentity *identity,
-                                    FILE *diagnostics) {
+CupError package_validate_integrity_with_progress(const char *base_path,
+                                                  const PackageIdentity *identity,
+                                                  FILE *diagnostics,
+                                                  PackageManifestProgress progress,
+                                                  void *progress_data) {
     CupError err = package_validate(base_path, identity, diagnostics);
 
     if (err != CUP_OK) {
         return err;
     }
-    return package_manifest_verify(base_path, identity->host_platform, diagnostics);
+    return package_manifest_verify_with_progress(
+        base_path, identity->host_platform, diagnostics, progress, progress_data);
+}
+
+CupError package_validate_integrity(const char *base_path,
+                                    const PackageIdentity *identity,
+                                    FILE *diagnostics) {
+    return package_validate_integrity_with_progress(
+        base_path, identity, diagnostics, NULL, NULL);
 }
 
 CupError package_path_exists(const PackageIdentity *identity, int *exists) {

@@ -10,6 +10,7 @@
 #include "package_catalog.h"
 #include "package_selector.h"
 
+#include "ui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -221,6 +222,7 @@ CupError command_search(const char *component, const char *target_override) {
 
         command_context_end(&context);
         memset(&context, 0, sizeof(context));
+        ui_phase("Refreshing catalog...");
         refresh_err = catalog_refresh_existing(&updated, CATALOG_REFRESH_QUIET);
         if (refresh_err != CUP_OK) {
             fprintf(stderr,

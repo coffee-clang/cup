@@ -11,6 +11,7 @@
 #include "path.h"
 #include "system.h"
 #include "text.h"
+#include "ui.h"
 
 #include <curl/curl.h>
 #if defined(CUP_USE_OPENSSL_INIT)
@@ -86,16 +87,17 @@ typedef struct {
     int last_percent;
     int started;
     int enabled;
+    UiProgress ui;
 } DownloadProgress;
 
 static const char *download_progress_label(DownloadValidation validation) {
-    return validation == DOWNLOAD_VALIDATE_ARCHIVE ? "package" : "cup";
+    return validation == DOWNLOAD_VALIDATE_ARCHIVE ? "Downloading package" : "Downloading cup";
 }
 
 static void report_download_progress(DownloadProgress *progress,
                                      curl_off_t download_total,
                                      curl_off_t downloaded) {
-    const curl_off_t unknown_total_step = (curl_off_t)64 * 1024 * 1024;
+    const curl_off_t unknown_total_step = (curl_off_t)4 * 1024 * 1024;
 
     if (progress == NULL || !progress->enabled || downloaded <= 0) {
         return;
@@ -107,27 +109,17 @@ static void report_download_progress(DownloadProgress *progress,
         if (percent > 100) {
             percent = 100;
         }
-        if ((!progress->started && percent < 25 && percent < 100) ||
-            (progress->started &&
-             ((percent == 100 && progress->last_percent == 100) ||
-              (percent < 100 && percent < progress->last_percent + 25)))) {
+        if (progress->started && percent == progress->last_percent) {
             return;
         }
-
-        printf("==> Downloading %s: %d%% (%.1f MiB / %.1f MiB)\n",
-               download_progress_label(progress->validation),
-               percent,
-               (double)downloaded / (1024.0 * 1024.0),
-               (double)download_total / (1024.0 * 1024.0));
+        ui_progress_update_bytes(
+            &progress->ui, (uint64_t)downloaded, (uint64_t)download_total);
         progress->last_percent = percent;
     } else {
-        if ((!progress->started && downloaded < (curl_off_t)8 * 1024 * 1024) ||
-            (progress->started && downloaded < progress->last_bytes + unknown_total_step)) {
+        if (progress->started && downloaded < progress->last_bytes + unknown_total_step) {
             return;
         }
-        printf("==> Downloading %s: %.1f MiB\n",
-               download_progress_label(progress->validation),
-               (double)downloaded / (1024.0 * 1024.0));
+        ui_progress_update_bytes(&progress->ui, (uint64_t)downloaded, 0);
     }
 
     progress->last_bytes = downloaded;
@@ -381,7 +373,7 @@ static CupError download_file_checked_internal(const char *url,
 
     memset(&progress, 0, sizeof(progress));
     progress.validation = validation;
-    progress.last_percent = -25;
+    progress.last_percent = -1;
     progress.enabled = report_errors && validation != DOWNLOAD_VALIDATE_METADATA;
 
     /* Create the transfer beside the destination so the final replace stays on one filesystem. */
@@ -425,9 +417,13 @@ static CupError download_file_checked_internal(const char *url,
     result =
         configure_transfer(curl, url, validation, file, &progress, error_buffer, report_errors);
     if (result == CURLE_OK) {
+        if (progress.enabled) {
+            ui_progress_begin(&progress.ui, download_progress_label(validation));
+        }
         result = curl_easy_perform(curl);
         response_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     }
+    ui_progress_end(&progress.ui);
 
     /* Classify the transfer before issuing durability I/O for bytes that will be rejected. */
     curl_easy_cleanup(curl);

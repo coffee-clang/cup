@@ -15,6 +15,7 @@
 #include "runtime_journal.h"
 #include "system.h"
 #include "text.h"
+#include "ui.h"
 #include "update_helper.h"
 #include "update_journal.h"
 #include "version.h"
@@ -152,7 +153,7 @@ static CupError discover_target(const UpdateFiles *files,
     *update_available = 0;
     err = build_latest_asset_url(url, sizeof(url), CUP_RELEASE_METADATA_FILENAME);
     if (err == CUP_OK) {
-        printf("==> Checking for a cup update...\n");
+        ui_phase("Checking for a cup update...");
         err = download_file(url, files->discovery, DOWNLOAD_VALIDATE_METADATA);
     }
     if (err == CUP_OK) err = release_metadata_load(files->discovery, latest);
@@ -244,7 +245,7 @@ CupError self_update_start(void) {
     if (err == CUP_OK) err = prepare_update_files(&files);
     if (err == CUP_OK) err = discover_target(&files, &latest, &update_available);
     if (err == CUP_OK && update_available) {
-        printf("==> Preparing cup update %s -> %s...\n", CUP_VERSION_BASE, latest.version);
+        ui_phase("Preparing cup update %s -> %s...", CUP_VERSION_BASE, latest.version);
         err = fetch_versioned_target(&files, &latest, &target);
     }
     if (err == CUP_OK && update_available) {

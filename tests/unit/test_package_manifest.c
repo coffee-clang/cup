@@ -29,6 +29,12 @@
 #endif
 
 static char root[CUP_TEST_TEMP_PATH_SIZE];
+static size_t progress_count;
+
+static void record_progress(size_t count, void *userdata) {
+    (void)userdata;
+    progress_count = count;
+}
 
 static void join_path(char *buffer, size_t size, const char *left, const char *right) {
     int written = snprintf(buffer, size, "%s/%s", left, right);
@@ -125,6 +131,12 @@ static void test_valid_manifest(void) {
 
     create_basic_tree(tool, sizeof(tool));
     write_basic_manifest();
+    progress_count = 0;
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        package_manifest_verify_with_progress(
+            root, TEST_MANIFEST_HOST, stderr, record_progress, NULL));
+    TEST_ASSERT_EQUAL_size_t(3, progress_count);
     TEST_ASSERT_EQUAL_INT(CUP_OK, package_manifest_verify(root, TEST_MANIFEST_HOST, stderr));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_manifest_verify(NULL, TEST_MANIFEST_HOST, stderr));
     TEST_ASSERT_EQUAL_INT(CUP_ERR_INVALID_INPUT, package_manifest_verify(root, NULL, stderr));

@@ -89,7 +89,14 @@ managed filesystem state. They cover workflows such as:
 - platform-specific filesystem behavior.
 
 Network-dependent cases use local controlled servers/fixtures. They do not rely
-on the public package service to decide whether source tests pass.
+on the public package service to decide whether source tests pass. Integration
+coverage includes successful/idempotent catalog refresh, best-effort search refresh
+and fallback, real package transfer, and local no-op paths that must not require
+network access. Redirected CLI runs also verify the output-channel contract: semantic
+results stay on standard output while operational phases use standard error without
+terminal animation frames. The UI renderer is unit-tested separately for redirected and
+interactive progress formatting so terminal-only behavior remains covered without making
+integration tests depend on a pseudo-terminal.
 
 Fault-injection helpers exist where a real failure boundary is important—for
 example publication, journal or filesystem transitions. A test is not added

@@ -125,14 +125,25 @@ CupError filesystem_remove_tree(const char *path) {
     return cleanup_result;
 }
 
-CupError package_manifest_verify(const char *base_path,
-                                 const char *host_platform,
-                                 FILE *diagnostics) {
+CupError package_manifest_verify_with_progress(const char *base_path,
+                                               const char *host_platform,
+                                               FILE *diagnostics,
+                                               PackageManifestProgress progress,
+                                               void *progress_data) {
     (void)base_path;
     (void)host_platform;
     (void)diagnostics;
+    (void)progress;
+    (void)progress_data;
     manifest_calls++;
     return manifest_result;
+}
+
+CupError package_manifest_verify(const char *base_path,
+                                 const char *host_platform,
+                                 FILE *diagnostics) {
+    return package_manifest_verify_with_progress(
+        base_path, host_platform, diagnostics, NULL, NULL);
 }
 
 void setUp(void) {

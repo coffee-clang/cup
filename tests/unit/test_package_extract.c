@@ -40,6 +40,12 @@ typedef struct {
 static char root[1024];
 static int interrupted;
 static unsigned archive_number;
+static size_t progress_count;
+
+static void record_progress(size_t count, void *userdata) {
+    (void)userdata;
+    progress_count = count;
+}
 
 static void join_path(char *buffer, size_t size, const char *left, const char *right) {
     int written = snprintf(buffer, size, "%s/%s", left, right);
@@ -167,6 +173,25 @@ static CupError extract_archive_fixture(const char *archive_path,
     return err;
 }
 
+static CupError extract_archive_fixture_with_progress(const char *archive_path,
+                                                      const char *destination,
+                                                      PackageArchiveFormat format) {
+    VerifiedArtifact artifact;
+    CupError err;
+
+    memset(&artifact, 0, sizeof(artifact));
+    artifact.file = fopen(archive_path, "rb");
+    if (artifact.file == NULL) {
+        return CUP_ERR_ARCHIVE;
+    }
+    artifact.format = format;
+    progress_count = 0;
+    err = package_extract_verified_with_progress(
+        &artifact, destination, record_progress, NULL);
+    TEST_ASSERT_EQUAL_INT(0, fclose(artifact.file));
+    return err;
+}
+
 static CupError extract_entries(const TestEntry *entries,
                                 size_t count,
                                 char *destination,
@@ -275,6 +300,26 @@ static void test_valid_archive(void) {
 }
 
 #endif
+
+static void test_progress_reports_extracted_entries(void) {
+    const TestEntry entries[] = {
+        {TEST_DIRECTORY, "pkg/", NULL, NULL, 0},
+        {TEST_DIRECTORY, "pkg/bin/", NULL, NULL, 0},
+        {TEST_FILE, "pkg/bin/tool", "hello", NULL, 1},
+        {TEST_FILE, "pkg/readme", "text", NULL, 0},
+    };
+    char archive_path[1024];
+    char output[1024];
+
+    create_archive(archive_path, sizeof(archive_path), entries, 4);
+    TEST_ASSERT_TRUE(snprintf(output, sizeof(output), "%s/progress-output", root) > 0);
+    make_dir(output);
+    TEST_ASSERT_EQUAL_INT(
+        CUP_OK,
+        extract_archive_fixture_with_progress(
+            archive_path, output, PACKAGE_ARCHIVE_FORMAT_TAR_GZ));
+    TEST_ASSERT_EQUAL_size_t(3, progress_count);
+}
 
 static void test_unsafe_paths(void) {
     const TestEntry absolute[] = {
@@ -530,6 +575,7 @@ int main(void) {
     RUN_TEST(test_invalid_inputs);
     RUN_TEST(test_destination_and_declared_format);
     RUN_TEST(test_valid_archive);
+    RUN_TEST(test_progress_reports_extracted_entries);
     RUN_TEST(test_unsafe_paths);
     RUN_TEST(test_link_and_unsupported_entry_types);
     RUN_TEST(test_path_collisions);

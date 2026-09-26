@@ -368,13 +368,21 @@ CupError package_cache_fetch_artifact(VerifiedArtifact *artifact,
     return CUP_OK;
 }
 
-CupError package_extract_verified(VerifiedArtifact *artifact, const char *tmp_path) {
+CupError package_extract_verified_with_progress(VerifiedArtifact *artifact,
+                                                const char *tmp_path,
+                                                PackageExtractProgress progress,
+                                                void *progress_data) {
     int index = extract_calls++;
 
     TEST_ASSERT_NOT_NULL(artifact);
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", tmp_path);
     TEST_ASSERT_TRUE(index < MAX_STEPS);
+    if (progress != NULL) progress(1, progress_data);
     return extract_results[index];
+}
+
+CupError package_extract_verified(VerifiedArtifact *artifact, const char *tmp_path) {
+    return package_extract_verified_with_progress(artifact, tmp_path, NULL, NULL);
 }
 
 CupError verified_artifact_discard(VerifiedArtifact *artifact) {
@@ -417,15 +425,25 @@ CupError checksum_sha256_file(const char *path, char *hex, size_t size) {
     return buffer_write_result(snprintf(hex, size, "%s", manifest_digest), size);
 }
 
-CupError package_validate_integrity(const char *base_path,
-                          const PackageIdentity *identity,
-                          FILE *diagnostics) {
+CupError package_validate_integrity_with_progress(const char *base_path,
+                                                  const PackageIdentity *identity,
+                                                  FILE *diagnostics,
+                                                  PackageManifestProgress progress,
+                                                  void *progress_data) {
     (void)diagnostics;
     int index = validate_calls++;
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", base_path);
     TEST_ASSERT_NOT_NULL(identity);
     TEST_ASSERT_TRUE(index < MAX_STEPS);
+    if (progress != NULL) progress(1, progress_data);
     return validate_results[index];
+}
+
+CupError package_validate_integrity(const char *base_path,
+                          const PackageIdentity *identity,
+                          FILE *diagnostics) {
+    return package_validate_integrity_with_progress(
+        base_path, identity, diagnostics, NULL, NULL);
 }
 
 void validated_package_init(ValidatedPackage *package) {

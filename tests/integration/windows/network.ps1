@@ -46,6 +46,27 @@ function Publish-NetworkPackage {
     }
 }
 
+
+function Publish-NewerCatalogSnapshot {
+    param([Parameter(Mandatory = $true)][string]$ServerRoot)
+
+    $runtimeCatalog = Join-Path $Script:CupTestHome '.cup\config\catalog.cfg'
+    [string[]]$lines = Get-Content -LiteralPath $runtimeCatalog
+    $revision = $null
+    $updated = foreach ($line in $lines) {
+        if ($line -match '^revision=([0-9]+)$') {
+            $revision = [int]$Matches[1]
+            "revision=$($revision + 1)"
+        } else {
+            $line
+        }
+    }
+    if ($null -eq $revision) { Fail-Test 'runtime catalog has no canonical revision' }
+    $remoteCatalog = Join-Path $ServerRoot 'catalog.cfg'
+    Write-Utf8NoBom -Path $remoteCatalog -Lines $updated
+    return $remoteCatalog
+}
+
 try {
     Initialize-TestEnvironment -Name 'network' -ExecutablePath $CupExecutablePath
     Ensure-FixtureRuntimeRoot
@@ -103,11 +124,72 @@ try {
     [void](Publish-NetworkPackage -Version $validVersion -ServerRoot $serverRoot -Port $port)
 
     Write-Host '==> Downloading a concrete package artifact through loopback...'
-    Invoke-Cup -CommandArgs @('install', 'compiler', "clang@$validVersion") | Out-Null
+    $installResult = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('install', 'compiler', "clang@$validVersion") `
+        -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$installResult.ExitCode) '0'
+    Assert-Contains $installResult.Stdout "Installed compiler clang@$validVersion"
+    Assert-NotContains $installResult.Stdout '==>'
+    foreach ($phase in @(
+        '==> Resolving clang@97.0.1...',
+        '==> Downloading package...',
+        '==> Extracting package...',
+        '==> Validating package...',
+        '==> Installing package...')) {
+        Assert-Contains $installResult.Stderr $phase
+    }
     Assert-Contains (Invoke-Cup -CommandArgs @('list', 'compiler')) `
         "compiler: clang@$validVersion"
     Assert-PathMissing (Join-Path $Script:CupTestHome '.cup\transaction.txt')
     Assert-CupHealthy
+
+    Write-Host '==> Confirming an exact installed package needs no network access...'
+    Set-PackageCatalogUpdateUrl -Url 'http://127.0.0.1:1/catalog.cfg'
+    $noOpInstall = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('install', 'compiler', "clang@$validVersion") `
+        -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$noOpInstall.ExitCode) '0'
+    Assert-Contains $noOpInstall.Stdout "clang@$validVersion is already installed"
+    Assert-NotContains $noOpInstall.Stderr 'Refreshing catalog'
+
+    Write-Host '==> Refreshing and reusing the live catalog through loopback...'
+    $catalogUrl = "http://127.0.0.1:$port/catalog.cfg"
+    Set-PackageCatalogUpdateUrl -Url $catalogUrl
+    $remoteCatalog = Publish-NewerCatalogSnapshot -ServerRoot $serverRoot
+    $runtimeCatalog = Join-Path $Script:CupTestHome '.cup\config\catalog.cfg'
+    $catalogUpdate = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('update', 'catalog') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$catalogUpdate.ExitCode) '0'
+    Assert-Equals $catalogUpdate.Stdout 'Catalog updated.'
+    Assert-Contains $catalogUpdate.Stderr '==> Refreshing catalog...'
+    Assert-Equals (Get-Sha256Lower -Path $runtimeCatalog) `
+        (Get-Sha256Lower -Path $remoteCatalog)
+
+    $catalogCurrent = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('update', 'catalog') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$catalogCurrent.ExitCode) '0'
+    Assert-Equals $catalogCurrent.Stdout 'Catalog is already current.'
+    Assert-Contains $catalogCurrent.Stderr '==> Refreshing catalog...'
+
+    Write-Host '==> Refreshing search best-effort while keeping results on stdout...'
+    $remoteCatalog = Publish-NewerCatalogSnapshot -ServerRoot $serverRoot
+    $searchResult = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('search', 'compiler') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$searchResult.ExitCode) '0'
+    Assert-Contains $searchResult.Stdout "Available tools for component 'compiler'"
+    Assert-NotContains $searchResult.Stdout '==>'
+    Assert-Contains $searchResult.Stderr '==> Refreshing catalog...'
+    Assert-Equals (Get-Sha256Lower -Path $runtimeCatalog) `
+        (Get-Sha256Lower -Path $remoteCatalog)
+
+    Set-PackageCatalogUpdateUrl -Url 'http://127.0.0.1:1/catalog.cfg'
+    $searchFallback = Invoke-NativeProcess -FilePath $Script:CupTestExecutable `
+        -Arguments @('search', 'compiler') -WorkingDirectory $Script:CupTestDevRoot
+    Assert-Equals ([string]$searchFallback.ExitCode) '0'
+    Assert-Contains $searchFallback.Stdout "Available tools for component 'compiler'"
+    Assert-Contains $searchFallback.Stderr `
+        'Warning: catalog refresh failed; showing the local catalog.'
+    Set-PackageCatalogUpdateUrl -Url $catalogUrl
 
     $badVersion = '97.0.2'
     $badPackage = Publish-NetworkPackage -Version $badVersion -ServerRoot $serverRoot -Port $port

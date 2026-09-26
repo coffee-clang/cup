@@ -30,6 +30,10 @@ function Fail([string]$Message) {
     throw "Error: $Message"
 }
 
+function Write-Phase([string]$Message) {
+    [Console]::Error.WriteLine("==> $Message")
+}
+
 function Assert-InstallerIdentity {
     if ($ReleaseVersion.Contains('@CUP_RELEASE_') -or
         $ReleaseTag.Contains('@CUP_RELEASE_') -or
@@ -180,6 +184,11 @@ function Receive-Asset([string]$Name) {
     $requestCancellation = [Threading.CancellationTokenSource]::new()
     $requestCancellation.CancelAfter([TimeSpan]::FromSeconds($DownloadTimeoutSeconds))
     $completed = $false
+    $showProgress = (
+        $Name -ceq 'cup-windows-x64.exe' -and
+        [Environment]::UserInteractive -and
+        -not [Console]::IsErrorRedirected
+    )
 
     try {
         for ($redirect = 0; $redirect -le $MaxRedirects; $redirect++) {
@@ -247,6 +256,16 @@ function Receive-Asset([string]$Name) {
                             Fail "downloaded asset is too large: $Name"
                         }
                         $output.Write($buffer, 0, $count)
+                        if ($showProgress) {
+                            if ($null -ne $contentLength -and $contentLength -gt 0) {
+                                $percent = [Math]::Min(100, [int](100 * $total / $contentLength))
+                                Write-Progress -Activity "Downloading cup $ReleaseVersion" `
+                                    -Status "$total / $contentLength bytes" -PercentComplete $percent
+                            } else {
+                                Write-Progress -Activity "Downloading cup $ReleaseVersion" `
+                                    -Status "$total bytes"
+                            }
+                        }
 
                         if ($window.Elapsed.TotalSeconds -ge $LowSpeedSeconds) {
                             $minimum = $LowSpeedBytesPerSecond * $window.Elapsed.TotalSeconds
@@ -280,6 +299,9 @@ function Receive-Asset([string]$Name) {
         }
         Fail "could not download $Name`: $message"
     } finally {
+        if ($showProgress) {
+            Write-Progress -Activity "Downloading cup $ReleaseVersion" -Completed
+        }
         $requestCancellation.Dispose()
         $client.Dispose()
         $handler.Dispose()
@@ -523,10 +545,14 @@ try {
     $Work = New-PrivateDirectory
     $binaryAsset = 'cup-windows-x64.exe'
 
+    Write-Phase "Downloading cup $ReleaseVersion..."
     Receive-Asset 'release.txt'
     Assert-ReleaseManifest
     foreach ($asset in @($binaryAsset, 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'catalog.cfg')) {
         Receive-Asset $asset
+    }
+    Write-Phase 'Verifying release...'
+    foreach ($asset in @($binaryAsset, 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'catalog.cfg')) {
         Assert-ManifestAsset $asset
     }
 
@@ -534,6 +560,7 @@ try {
     $selection = Select-Installation $bootstrap
     $freshInstall = -not (Test-NativeRootProbe $bootstrap $selection.Root)
     Write-Host "cup will be installed in $($selection.Root)"
+    Write-Phase 'Installing cup...'
     $bootstrapOutput = @(& $bootstrap --internal-bootstrap $Work $selection.Base)
     if ($LASTEXITCODE -ne 0) { Fail 'the verified cup bootstrap transaction was rejected' }
     $bootstrapRoot = Get-BootstrapRoot $bootstrapOutput $selection.Root

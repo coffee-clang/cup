@@ -67,7 +67,7 @@ run_cup_expect_status() (
 
 assert_cup_healthy() (
     assert_missing "$TEST_HOME/.cup/transaction.txt"
-    run_cup doctor >/dev/null
+    run_cup doctor >/dev/null 2>&1
     if [ -d "$TEST_HOME/.cup/staging" ] &&
        find "$TEST_HOME/.cup/staging" -mindepth 1 -print -quit | grep . >/dev/null; then
         fail 'package runtime contains leftover staging content'

@@ -71,6 +71,36 @@ export CUP_INSTALL_ALLOW_INSECURE=1
 export NO_PROXY=127.0.0.1
 export no_proxy=127.0.0.1
 
+
+set_runtime_catalog_url() {
+    url=$1
+    runtime_catalog=$TEST_HOME/.cup/config/catalog.cfg
+    temporary=$runtime_catalog.tmp
+    awk -v url="$url" '
+        /^update_url=/ { print "update_url=" url; next }
+        { print }
+    ' "$runtime_catalog" > "$temporary" || fail 'could not update runtime catalog URL'
+    mv "$temporary" "$runtime_catalog"
+}
+
+publish_newer_catalog_snapshot() {
+    runtime_catalog=$TEST_HOME/.cup/config/catalog.cfg
+    remote_catalog=$server_root/catalog.cfg
+    revision=$(awk -F= '/^revision=/{print $2; exit}' "$runtime_catalog")
+    case "$revision" in ''|*[!0-9]*) fail 'invalid runtime catalog revision' ;; esac
+    awk -v revision="$((revision + 1))" '
+        /^revision=/ { print "revision=" revision; next }
+        { print }
+    ' "$runtime_catalog" > "$remote_catalog" || fail 'could not publish newer catalog fixture'
+}
+
+assert_single_phase() {
+    file=$1
+    phase=$2
+    count=$(grep -Fc "$phase" "$file" || true)
+    assert_equals "$count" 1 "expected exactly one non-interactive phase '$phase'"
+}
+
 publish_artifact() {
     version=$1
     archive=$TMP_ROOT/artifacts/clang-$version-$TEST_PLATFORM-$TEST_PLATFORM.tar.gz
@@ -88,10 +118,65 @@ make_package_format compiler clang "$valid_version" "$TEST_PLATFORM" tar.gz clan
 publish_artifact "$valid_version"
 
 printf '==> Downloading a concrete package artifact through loopback...\n'
-run_cup install compiler "clang@$valid_version" >/dev/null
+install_stdout=$TMP_ROOT/install.stdout
+install_stderr=$TMP_ROOT/install.stderr
+run_cup install compiler "clang@$valid_version" >"$install_stdout" 2>"$install_stderr"
+assert_contains "$(cat "$install_stdout")" "Installed compiler clang@$valid_version"
+assert_not_contains "$(cat "$install_stdout")" '==>'
+for phase in \
+        '==> Resolving clang@97.0.1...' \
+        '==> Downloading package...' \
+        '==> Extracting package...' \
+        '==> Validating package...' \
+        '==> Installing package...'; do
+    assert_single_phase "$install_stderr" "$phase"
+done
+if LC_ALL=C grep "$(printf '\r')" "$install_stderr" >/dev/null 2>&1; then
+    fail 'redirected progress output contained carriage-return animation frames'
+fi
 assert_contains "$(run_cup list compiler 2>/dev/null)" "compiler: clang@$valid_version"
 assert_missing "$TEST_HOME/.cup/transaction.txt"
 assert_cup_healthy
+
+printf '==> Confirming an exact installed package needs no network access...\n'
+set_runtime_catalog_url 'http://127.0.0.1:1/catalog.cfg'
+run_cup install compiler "clang@$valid_version" \
+    >"$TMP_ROOT/install-noop.stdout" 2>"$TMP_ROOT/install-noop.stderr"
+assert_contains "$(cat "$TMP_ROOT/install-noop.stdout")" \
+    "clang@$valid_version is already installed"
+assert_not_contains "$(cat "$TMP_ROOT/install-noop.stderr")" 'Refreshing catalog'
+
+printf '==> Refreshing and reusing the live catalog through loopback...\n'
+catalog_url="http://127.0.0.1:$port/catalog.cfg"
+set_runtime_catalog_url "$catalog_url"
+publish_newer_catalog_snapshot
+runtime_catalog=$TEST_HOME/.cup/config/catalog.cfg
+remote_catalog=$server_root/catalog.cfg
+run_cup update catalog >"$TMP_ROOT/catalog-update.stdout" 2>"$TMP_ROOT/catalog-update.stderr"
+assert_equals "$(cat "$TMP_ROOT/catalog-update.stdout")" 'Catalog updated.'
+assert_single_phase "$TMP_ROOT/catalog-update.stderr" '==> Refreshing catalog...'
+assert_equals "$(hash_file "$runtime_catalog")" "$(hash_file "$remote_catalog")" \
+    'catalog refresh did not publish the remote snapshot'
+run_cup update catalog >"$TMP_ROOT/catalog-current.stdout" 2>"$TMP_ROOT/catalog-current.stderr"
+assert_equals "$(cat "$TMP_ROOT/catalog-current.stdout")" 'Catalog is already current.'
+assert_single_phase "$TMP_ROOT/catalog-current.stderr" '==> Refreshing catalog...'
+
+printf '==> Refreshing search best-effort while keeping results on stdout...\n'
+publish_newer_catalog_snapshot
+run_cup search compiler >"$TMP_ROOT/search.stdout" 2>"$TMP_ROOT/search.stderr"
+assert_contains "$(cat "$TMP_ROOT/search.stdout")" "Available tools for component 'compiler'"
+assert_not_contains "$(cat "$TMP_ROOT/search.stdout")" '==>'
+assert_single_phase "$TMP_ROOT/search.stderr" '==> Refreshing catalog...'
+assert_equals "$(hash_file "$runtime_catalog")" "$(hash_file "$remote_catalog")" \
+    'search refresh did not publish the remote snapshot'
+
+set_runtime_catalog_url 'http://127.0.0.1:1/catalog.cfg'
+run_cup search compiler >"$TMP_ROOT/search-fallback.stdout" 2>"$TMP_ROOT/search-fallback.stderr"
+assert_contains "$(cat "$TMP_ROOT/search-fallback.stdout")" \
+    "Available tools for component 'compiler'"
+assert_contains "$(cat "$TMP_ROOT/search-fallback.stderr")" \
+    'Warning: catalog refresh failed; showing the local catalog.'
+set_runtime_catalog_url "$catalog_url"
 
 bad_version=97.0.2
 make_package_format compiler clang "$bad_version" "$TEST_PLATFORM" tar.gz clang
