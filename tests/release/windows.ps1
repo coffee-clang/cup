@@ -1,4 +1,4 @@
-# Exercises one prevalidated Windows release candidate, native
+﻿# Exercises one prevalidated Windows release candidate, native
 # executable, installer, and runtime lifecycle.
 
 param(
@@ -868,8 +868,8 @@ try {
             try {
                 $candidateVersion = @(& $installed --version 2>$null)
                 if ($LASTEXITCODE -eq 0 -and $candidateVersion -ceq "cup $nextVersion") {
-                    & $installed doctor *> $null
-                    if ($LASTEXITCODE -eq 0) {
+                    $doctorProbe = Invoke-ReleaseNative -FilePath $installed -Arguments @('doctor')
+                    if ($doctorProbe.ExitCode -eq 0) {
                         $updatedInstalledVersion = $candidateVersion
                         break
                     }
