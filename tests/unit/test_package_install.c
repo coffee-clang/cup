@@ -76,7 +76,6 @@ static int interrupt_calls;
 static int safe_point_calls;
 static int discard_calls;
 static int remove_calls;
-static int ensure_dir_calls;
 static int move_calls;
 static int clear_calls;
 static int save_calls;
@@ -131,7 +130,6 @@ static void reset_scenario(void) {
     safe_point_calls = 0;
     discard_calls = 0;
     remove_calls = 0;
-    ensure_dir_calls = 0;
     move_calls = 0;
     clear_calls = 0;
     save_calls = 0;
@@ -481,7 +479,6 @@ CupError filesystem_remove_tree(const char *path) {
 
 CupError filesystem_ensure_directory(const char *path) {
     TEST_ASSERT_EQUAL_STRING("/tmp/staging", path);
-    ensure_dir_calls++;
     return ensure_dir_result;
 }
 

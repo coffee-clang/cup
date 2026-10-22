@@ -481,6 +481,7 @@ static void test_empty_update_avoids_network(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update(NULL));
     TEST_ASSERT_EQUAL_INT(0, refresh_calls);
     TEST_ASSERT_EQUAL_INT(1, begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
     TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
 
     reset_scenario();
@@ -499,6 +500,7 @@ static void test_refresh_is_required_before_planning(void) {
     TEST_ASSERT_EQUAL_INT(1, refresh_calls);
     TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_REPORT_ERRORS, refresh_diagnostics);
     TEST_ASSERT_EQUAL_INT(1, begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
     TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
     TEST_ASSERT_EQUAL_INT(0, update_call_count);
 }
@@ -519,6 +521,7 @@ static void test_reference_uses_same_tool_default_otherwise_max(void) {
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_update("clang"));
     TEST_ASSERT_EQUAL_INT(1, refresh_calls);
     TEST_ASSERT_EQUAL_INT(2, begin_calls);
+    TEST_ASSERT_EQUAL_INT(2, end_calls);
     TEST_ASSERT_EQUAL_INT(1, load_catalog_calls);
     TEST_ASSERT_EQUAL_INT(2, update_call_count);
     assert_call(0, "compiler", "clang", "linux-x64", "2.0.0", "clang@1.0.0", "clang@1.0.0");

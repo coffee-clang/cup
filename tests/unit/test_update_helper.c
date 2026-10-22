@@ -214,6 +214,7 @@ static void test_run_commits_under_reacquired_authority(void) {
                                             "authority"));
     TEST_ASSERT_EQUAL_INT(1, handoff_accept_calls);
     TEST_ASSERT_EQUAL_INT(1, handoff_lock_calls);
+    TEST_ASSERT_EQUAL_INT(0, handoff_release_calls);
     TEST_ASSERT_EQUAL_INT(1, commit_calls);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
     TEST_ASSERT_EQUAL_INT(1, layout_end_calls);

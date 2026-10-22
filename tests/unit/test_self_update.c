@@ -433,6 +433,7 @@ static void test_current_binary_must_be_trusted_before_staging(void) {
     current_binary_digest = DIGEST_BAD;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_VALIDATION, self_update_start());
     TEST_ASSERT_EQUAL_INT(1, context_begin_calls);
+    TEST_ASSERT_EQUAL_INT(1, context_end_calls);
     TEST_ASSERT_EQUAL_INT(1, release_load_calls);
     TEST_ASSERT_EQUAL_INT(0, temp_directory_calls);
     TEST_ASSERT_EQUAL_INT(0, download_calls);
@@ -466,6 +467,7 @@ static void test_newer_release_is_pinned_then_handed_off(void) {
     TEST_ASSERT_EQUAL_STRING("https://example.test/cup/1.2.4/THIRD_PARTY_NOTICES.txt", urls[3]);
     TEST_ASSERT_NOT_NULL(strstr(urls[4], "https://example.test/cup/1.2.4/cup-"));
     TEST_ASSERT_EQUAL_INT(DOWNLOAD_VALIDATE_BINARY, validations[4]);
+    TEST_ASSERT_EQUAL_INT(1, ensure_directory_calls);
     TEST_ASSERT_EQUAL_INT(1, generation_prepare_calls);
     TEST_ASSERT_EQUAL_INT(1, helper_prepare_calls);
     TEST_ASSERT_EQUAL_INT(1, journal_begin_calls);

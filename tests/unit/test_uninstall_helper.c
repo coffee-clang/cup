@@ -23,8 +23,11 @@ static CupError executable_path_result;
 static CupError copy_result;
 static CupError executable_result;
 static CupError start_result;
-static CupError unlink_result;
+#if defined(_WIN32)
 static CupError cleanup_validate_result;
+#else
+static CupError unlink_result;
+#endif
 static CupError handoff_result;
 static CupError root_validate_result;
 static CupError journal_load_result;
@@ -48,7 +51,9 @@ static int copy_calls;
 static int remove_helper_calls;
 static int start_calls;
 static int unlink_calls;
+#if defined(_WIN32)
 static int cleanup_validate_calls;
+#endif
 static int handoff_accept_calls;
 static int handoff_release_calls;
 static int validate_calls;
@@ -60,8 +65,10 @@ static int remove_contents_calls;
 static int remove_journal_calls;
 static int remove_root_calls;
 static int sequence;
+#if defined(_WIN32)
 static int cleanup_validate_sequence;
 static int handoff_sequence;
+#endif
 static int detaching_sequence;
 static int move_sequence;
 
@@ -71,8 +78,11 @@ static void reset_scenario(void) {
     copy_result = CUP_OK;
     executable_result = CUP_OK;
     start_result = CUP_OK;
-    unlink_result = CUP_OK;
+#if defined(_WIN32)
     cleanup_validate_result = CUP_OK;
+#else
+    unlink_result = CUP_OK;
+#endif
     handoff_result = CUP_OK;
     root_validate_result = CUP_OK;
     journal_load_result = CUP_OK;
@@ -96,7 +106,9 @@ static void reset_scenario(void) {
     remove_helper_calls = 0;
     start_calls = 0;
     unlink_calls = 0;
+#if defined(_WIN32)
     cleanup_validate_calls = 0;
+#endif
     handoff_accept_calls = 0;
     handoff_release_calls = 0;
     validate_calls = 0;
@@ -108,8 +120,10 @@ static void reset_scenario(void) {
     remove_journal_calls = 0;
     remove_root_calls = 0;
     sequence = 0;
+#if defined(_WIN32)
     cleanup_validate_sequence = 0;
     handoff_sequence = 0;
+#endif
     detaching_sequence = 0;
     move_sequence = 0;
 }
@@ -243,7 +257,11 @@ CupError system_handoff_accept(SystemHandoff *handoff,
     TEST_ASSERT_EQUAL_STRING("wait", parent_signal_value);
     TEST_ASSERT_EQUAL_STRING("authority", authority_value);
     handoff_accept_calls++;
+#if defined(_WIN32)
     handoff_sequence = ++sequence;
+#else
+    ++sequence;
+#endif
     if (handoff_result != CUP_OK) {
         return handoff_result;
     }

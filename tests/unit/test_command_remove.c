@@ -485,6 +485,7 @@ void package_request_print(FILE *stream, const PackageRequest *request) {
 }
 
 static void assert_common_cleanup(void) {
+    TEST_ASSERT_EQUAL_INT(1, context_begin_calls);
     TEST_ASSERT_EQUAL_INT(1, context_end_calls);
     TEST_ASSERT_EQUAL_INT(1, plan_free_calls);
 }

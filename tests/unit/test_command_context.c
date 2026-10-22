@@ -638,6 +638,7 @@ static void test_runtime_recheck(void) {
     TEST_ASSERT_EQUAL_INT(1, state_save_calls);
     command_context_end(&context);
     TEST_ASSERT_EQUAL_INT(1, lock_release_calls);
+    TEST_ASSERT_EQUAL_INT(1, package_catalog_init_calls);
     TEST_ASSERT_EQUAL_INT(1, package_catalog_free_calls);
 
     reset_scenario();

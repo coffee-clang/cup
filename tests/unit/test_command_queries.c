@@ -766,11 +766,13 @@ static void test_list_empty(void) {
     CupError result;
     char *output = capture_result(run_list_empty, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
     TEST_ASSERT_NOT_NULL(strstr(output, "No packages installed"));
     free(output);
 
     begin_result = CUP_ERR_LOCK;
     TEST_ASSERT_EQUAL_INT(CUP_ERR_LOCK, command_list(NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(2, end_calls);
 }
 
 static void test_list_entries(void) {
@@ -830,6 +832,7 @@ static void test_default_and_inspect_catalog_policy(void) {
     add_info("platform.target", "linux-x64");
     add_info("entry.clang", "bin/clang");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_inspect("compiler", "clang@1.0", NULL));
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
     TEST_ASSERT_EQUAL_INT(0, load_catalog_calls);
     TEST_ASSERT_EQUAL_INT(0, catalog_refresh_calls);
 
@@ -850,6 +853,7 @@ static void test_default_flow(void) {
 
     add_installed("compiler", "linux-x64", "linux-x64", "clang@2.0");
     TEST_ASSERT_EQUAL_INT(CUP_OK, command_default("compiler", "clang@stable", NULL));
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
 
     reset_scenario();
     add_installed("compiler", "linux-x64", "linux-x64", "clang@1.0");
@@ -890,6 +894,7 @@ static void test_info_states(void) {
     add_catalog_entry("compiler", "clang", "linux-x64", "linux-x64", "2.0", "2.0");
     output = capture_result(run_info_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
+    TEST_ASSERT_EQUAL_INT(1, end_calls);
     TEST_ASSERT_NOT_NULL(strstr(output, "clang@2.0 (stable)"));
     TEST_ASSERT_NOT_NULL(strstr(output, "clang, clang++"));
     TEST_ASSERT_NULL(strstr(output, "status: default"));
@@ -922,6 +927,7 @@ static void test_search_catalog(void) {
     output = capture_result(run_search_all, &result);
     TEST_ASSERT_EQUAL_INT(CUP_OK, result);
     TEST_ASSERT_EQUAL_INT(1, catalog_refresh_calls);
+    TEST_ASSERT_EQUAL_INT(2, end_calls);
     TEST_ASSERT_EQUAL_INT(CATALOG_REFRESH_QUIET, catalog_refresh_diagnostics);
     TEST_ASSERT_NOT_NULL(strstr(output, "compiler:"));
     TEST_ASSERT_NOT_NULL(strstr(output, "debugger:"));
